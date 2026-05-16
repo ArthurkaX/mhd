@@ -135,9 +135,6 @@ impl eframe::App for OverlayApp {
         } else {
             // Hide the window completely from the OS
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-1000.0, -1000.0)));
-            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
         }
     }
 
