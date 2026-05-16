@@ -112,7 +112,7 @@ impl eframe::App for OverlayApp {
         }
 
         if brightness_visible {
-            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point());
+            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point(), theme.clone());
         }
 
         // Keep the main loop alive to process timeouts and commands
@@ -173,10 +173,13 @@ fn show_brightness_viewport(
     parent_ctx: &egui::Context,
     brightness_value: u32,
     pixels_per_point: f32,
+    theme: Option<egui::Visuals>,
 ) {
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / pixels_per_point;
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32 / pixels_per_point;
-    let window_size = egui::vec2(260.0, 90.0);
+    
+    // Proportions matching the screenshot
+    let window_size = egui::vec2(390.0, 90.0);
     let margin = egui::vec2(48.0, 48.0);
 
     parent_ctx.show_viewport_immediate(
@@ -196,21 +199,86 @@ fn show_brightness_viewport(
             ))
             .with_inner_size(window_size),
         move |ctx, _class| {
+            if let Some(visuals) = &theme {
+                ctx.set_visuals(visuals.clone());
+            }
+
             egui::CentralPanel::default().show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_size(egui::vec2(220.0, 70.0));
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!("Brightness: {}%", brightness_value))
-                                .strong()
-                                .size(16.0),
+                let frame = egui::Frame::window(ui.style())
+                    .fill(ui.visuals().window_fill)
+                    .stroke(ui.visuals().window_stroke)
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 12,
+                        bottom: 12,
+                    });
+
+                frame.show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(window_size.x - 32.0, window_size.y - 24.0));
+
+                    // Monitor Name
+                    ui.label(
+                        egui::RichText::new("EK251Q G")
+                            .color(ui.visuals().text_color())
+                            .size(16.0),
+                    );
+
+                    ui.add_space(12.0);
+
+                    // Slider Track Row
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        // The text takes some space, we allocate the rest for the track
+                        let text_width = 40.0;
+                        let spacing = 12.0;
+                        let available_width = ui.available_width() - text_width - spacing;
+                        
+                        let thumb_height = 28.0;
+                        let (rect, _response) = ui.allocate_exact_size(
+                            egui::vec2(available_width, thumb_height),
+                            egui::Sense::hover(),
                         );
-                        ui.add_space(4.0);
-                        ui.add(
-                            egui::ProgressBar::new(brightness_value as f32 / 100.0)
-                                .animate(true)
-                                .corner_radius(egui::CornerRadius::same(4)),
+
+                        let fraction = brightness_value as f32 / 100.0;
+                        let active_color = ui.visuals().selection.bg_fill;
+                        let track_color = ui.visuals().extreme_bg_color;
+
+                        // Track line
+                        let track_height = 2.0;
+                        let track_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.min.x, rect.center().y - track_height / 2.0),
+                            egui::vec2(rect.width(), track_height),
+                        );
+
+                        ui.painter().rect_filled(track_rect, 0.0, track_color);
+
+                        // Filled track
+                        let filled_width = rect.width() * fraction;
+                        let filled_rect = egui::Rect::from_min_size(
+                            track_rect.min,
+                            egui::vec2(filled_width, track_height),
+                        );
+                        ui.painter().rect_filled(filled_rect, 0.0, active_color);
+
+                        // Thumb block (tall and narrow like the screenshot)
+                        let thumb_width = 8.0;
+                        let thumb_x = (track_rect.min.x + filled_width - thumb_width / 2.0)
+                            .clamp(rect.min.x, rect.max.x - thumb_width);
+
+                        let thumb_rect = egui::Rect::from_min_size(
+                            egui::pos2(thumb_x, rect.center().y - thumb_height / 2.0),
+                            egui::vec2(thumb_width, thumb_height),
+                        );
+                        ui.painter().rect_filled(thumb_rect, 0.0, active_color);
+
+                        ui.add_space(spacing);
+                        
+                        // Value text
+                        ui.label(
+                            egui::RichText::new(format!("{}", brightness_value))
+                                .color(ui.visuals().text_color())
+                                .size(16.0),
                         );
                     });
                 });

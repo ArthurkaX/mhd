@@ -1,4 +1,4 @@
-﻿use std::sync::mpsc;
+use std::sync::mpsc;
 
 use crate::action::Action;
 use crate::monitor;
@@ -41,8 +41,39 @@ impl ActionWorker {
     }
 
     fn run_loop(self) {
-        while let Ok(msg) = self.rx.recv() {
-            match msg {
+        let mut pending = None;
+
+        loop {
+            let msg = if let Some(m) = pending.take() {
+                m
+            } else {
+                match self.rx.recv() {
+                    Ok(m) => m,
+                    Err(_) => break,
+                }
+            };
+
+            let action_to_execute = msg;
+
+            // Prevent queue buildup: drop identical pending execution messages
+            if let ActionMessage::Execute(ref act1) = action_to_execute {
+                let desc1 = act1.describe();
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(ActionMessage::Execute(act2)) if act2.describe() == desc1 => {
+                            // Drop identical action that accumulated while we were busy
+                        }
+                        Ok(other_msg) => {
+                            // Different message, save it for the next iteration
+                            pending = Some(other_msg);
+                            break;
+                        }
+                        Err(_) => break, // Channel empty
+                    }
+                }
+            }
+
+            match action_to_execute {
                 ActionMessage::Execute(action) => {
                     if !self.quiet {
                         println!("mhd: triggered: {}", action.describe());
