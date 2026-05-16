@@ -34,6 +34,15 @@ fn force_wake_window() {
     }
 }
 
+fn force_hide_window() {
+    let title: Vec<u16> = "mhd_overlay\0".encode_utf16().collect();
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) {
+            let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_HIDE);
+        }
+    }
+}
+
 pub fn show_brightness(value: u32, name: String) {
     println!("mhd: UI: show_brightness({}, {})", value, name);
     let ctx = {
@@ -150,7 +159,7 @@ impl eframe::App for OverlayApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             self.is_currently_visible = true;
         } else if !should_be_visible && self.is_currently_visible {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            force_hide_window();
             self.is_currently_visible = false;
         }
 
