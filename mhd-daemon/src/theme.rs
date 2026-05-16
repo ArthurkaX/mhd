@@ -94,3 +94,25 @@ pub fn map_zed_to_egui(zed: &ZedTheme) -> Visuals {
 
     visuals
 }
+
+pub fn load_theme(theme_name: &str, config_path: &std::path::Path) -> Option<Visuals> {
+    // If config_path is like .config/mhd/config.toml, we should look in .config/mhd/themes/
+    let parent = config_path.parent().unwrap_or(std::path::Path::new(""));
+    let theme_path = parent.join("themes").join(format!("{}.json", theme_name));
+    
+    // Fallback to local themes dir if it doesn't exist next to config
+    let theme_path = if theme_path.exists() {
+        theme_path
+    } else {
+        std::path::PathBuf::from("themes").join(format!("{}.json", theme_name))
+    };
+
+    if let Ok(content) = std::fs::read_to_string(theme_path) {
+        if let Ok(zed_file) = serde_json::from_str::<ZedThemeFile>(&content) {
+            if let Some(zed_theme) = zed_file.themes.first() {
+                return Some(map_zed_to_egui(zed_theme));
+            }
+        }
+    }
+    None
+}

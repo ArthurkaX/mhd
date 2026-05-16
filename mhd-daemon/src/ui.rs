@@ -49,8 +49,9 @@ fn send_ipc(msg: &str) {
 
 pub fn run_ui_server() {
     let config_path = crate::resolve_config_path();
-    let config = crate::config::Config::load(&config_path).unwrap_or_default();
-    let theme = config.theme.as_deref().and_then(|t| crate::theme::load_theme(t, &config_path));
+    let config_content = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let config = crate::config::AppConfig::parse(&config_content, &config_path).ok();
+    let theme = config.and_then(|c| c.theme).and_then(|t| crate::theme::load_theme(&t, &config_path));
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

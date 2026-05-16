@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-fn resolve_config_path() -> PathBuf {
+pub fn resolve_config_path() -> PathBuf {
     if let Ok(custom) = env::var("MHD_CONFIG") {
         return PathBuf::from(custom);
     }
