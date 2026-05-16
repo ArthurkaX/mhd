@@ -109,18 +109,20 @@ impl eframe::App for OverlayApp {
         }
 
         if about_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             show_about_ui(ctx, theme.clone());
         } else if brightness_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             show_brightness_ui(ctx, brightness_value, &monitor_name, theme.clone());
+            // Only poll for the timeout when the brightness UI is actually visible
+            ctx.request_repaint_after(Duration::from_millis(100));
         } else {
-            // Hide the window
+            // Hide the window completely from the OS
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-1000.0, -1000.0)));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
         }
-
-        // Keep the main loop alive to process timeouts and commands
-        ctx.request_repaint_after(Duration::from_millis(if brightness_visible { 16 } else { 100 }));
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -277,6 +279,7 @@ pub fn run_ui_thread() {
             .with_decorations(false)
             .with_transparent(true)
             .with_active(false)
+            .with_visible(false)
             .with_taskbar(false)
             .with_always_on_top()
             .with_position(egui::pos2(-1000.0, -1000.0))
