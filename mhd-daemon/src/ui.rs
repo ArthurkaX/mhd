@@ -28,8 +28,7 @@ pub struct UiState {
 fn force_wake_window() {
     let title: Vec<u16> = "mhd_overlay\0".encode_utf16().collect();
     unsafe {
-        let hwnd = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr()));
-        if hwnd != windows::Win32::Foundation::HWND::default() {
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
     }
