@@ -19,6 +19,8 @@ struct RawBinding {
     command: Option<String>,
     #[serde(default)]
     target_scheme: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
 }
 
 /// Top-level TOML config structure.
@@ -53,9 +55,8 @@ pub struct AppConfig {
 impl AppConfig {
     /// Parse and validate config from a TOML string.
     pub fn parse(content: &str, _path: &Path) -> Result<Self, String> {
-        let raw: RawConfig = toml::from_str(content).map_err(|e| {
-            format!("config parse error: {e}")
-        })?;
+        let raw: RawConfig =
+            toml::from_str(content).map_err(|e| format!("config parse error: {e}"))?;
 
         let active_scheme = raw.active_scheme.unwrap_or_else(|| "default".to_string());
         let mut bindings = Vec::new();
@@ -70,7 +71,10 @@ impl AppConfig {
         }
 
         for raw_b in &raw.binding {
-            let scheme = raw_b.scheme.clone().unwrap_or_else(|| "default".to_string());
+            let scheme = raw_b
+                .scheme
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
 
             // Parse trigger
             let parsed_trigger = parse_trigger(&raw_b.trigger)?;
@@ -78,19 +82,30 @@ impl AppConfig {
             // Validate and create action
             let action = match raw_b.action.as_str() {
                 "replace_key" => {
-                    let keys = raw_b.keys.as_ref()
+                    let keys = raw_b
+                        .keys
+                        .as_ref()
                         .ok_or_else(|| "replace_key action requires 'keys' field".to_string())?;
                     Action::new_replace_key(keys)?
                 }
                 "run_ps" => {
-                    let command = raw_b.command.as_ref()
+                    let command = raw_b
+                        .command
+                        .as_ref()
                         .ok_or_else(|| "run_ps action requires 'command' field".to_string())?;
                     Action::new_run_ps(command)?
                 }
                 "switch_scheme" => {
-                    let target = raw_b.target_scheme.as_ref()
-                        .ok_or_else(|| "switch_scheme action requires 'target_scheme' field".to_string())?;
+                    let target = raw_b.target_scheme.as_ref().ok_or_else(|| {
+                        "switch_scheme action requires 'target_scheme' field".to_string()
+                    })?;
                     Action::new_switch_scheme(target)?
+                }
+                "set_brightness" => {
+                    let value = raw_b.value.as_ref().ok_or_else(|| {
+                        "set_brightness action requires 'value' field".to_string()
+                    })?;
+                    Action::new_set_brightness(value)?
                 }
                 "quit" => Action::Quit,
                 other => {
@@ -142,7 +157,10 @@ impl AppConfig {
         })
     }
 
-    fn build_trigger_map(bindings: &[Binding], active_scheme: &str) -> HashMap<crate::trigger::Trigger, usize> {
+    fn build_trigger_map(
+        bindings: &[Binding],
+        active_scheme: &str,
+    ) -> HashMap<crate::trigger::Trigger, usize> {
         let mut map = HashMap::new();
         for (i, binding) in bindings.iter().enumerate() {
             if binding.scheme == active_scheme {
@@ -162,9 +180,7 @@ impl AppConfig {
 
     /// Look up a trigger in the active scheme.
     pub fn lookup_trigger(&self, trigger: &crate::trigger::Trigger) -> Option<&Binding> {
-        self.trigger_map
-            .get(trigger)
-            .map(|&i| &self.bindings[i])
+        self.trigger_map.get(trigger).map(|&i| &self.bindings[i])
     }
 
     /// Switch the active scheme. Returns false if the scheme doesn't exist.

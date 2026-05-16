@@ -3,13 +3,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, PeekMessageW, TranslateMessage, DispatchMessageW,
-    SetWindowsHookExW, UnhookWindowsHookEx, MSG, PM_REMOVE,
-    PostQuitMessage,
-    WM_QUIT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_XBUTTONDOWN, WM_XBUTTONUP,
-    HHOOK, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, LLKHF_INJECTED,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PostQuitMessage, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
+    MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::action::Action;
@@ -42,12 +39,16 @@ static KB_HOOK: LazyLock<Mutex<Option<SendHook>>> = LazyLock::new(|| Mutex::new(
 /// Global mouse hook handle.
 static MOUSE_HOOK: LazyLock<Mutex<Option<SendHook>>> = LazyLock::new(|| Mutex::new(None));
 
-pub fn run(
-    config: AppConfig,
+/// Entry point used by `app.rs`. Accepts a shared config so reloads are visible.
+pub fn run_with_config(
+    config: Arc<Mutex<AppConfig>>,
     tx: ActionSender,
     quiet: bool,
 ) -> Result<(), String> {
-    let config = Arc::new(Mutex::new(config));
+    run_impl(config, tx, quiet)
+}
+
+fn run_impl(config: Arc<Mutex<AppConfig>>, tx: ActionSender, quiet: bool) -> Result<(), String> {
     let state = Box::new(HookState {
         config: config.clone(),
         tx,
@@ -63,9 +64,7 @@ pub fn run(
     }
 
     // Install keyboard hook
-    let kb_hook = unsafe {
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0)
-    };
+    let kb_hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0) };
     match kb_hook {
         Ok(h) => {
             let mut guard = KB_HOOK.lock().unwrap();
@@ -79,9 +78,7 @@ pub fn run(
     }
 
     // Install mouse hook
-    let mouse_hook = unsafe {
-        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0)
-    };
+    let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0) };
     match mouse_hook {
         Ok(h) => {
             let mut guard = MOUSE_HOOK.lock().unwrap();
@@ -105,42 +102,20 @@ pub fn run(
         println!("mhd: listening");
     }
 
-    // Message loop
+    // Blocking message loop. Low-level hooks are delivered through this thread's
+    // message queue; IPC shutdown wakes it with PostThreadMessageW(WM_QUIT).
     let mut msg = MSG::default();
     loop {
-        // Process all pending messages
-        loop {
-            let has_msg = unsafe {
-                PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE)
-            };
-            if !has_msg.as_bool() {
-                break;
-            }
-            if msg.message == WM_QUIT as u32 {
-                cleanup();
-                return Ok(());
-            }
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-
-        // Wait for next message (blocking)
         let ret = unsafe { GetMessageW(&mut msg, HWND::default(), 0, 0) };
-        if !ret.as_bool() {
-            // WM_QUIT
-            break;
+        if ret.0 <= 0 || msg.message == WM_QUIT as u32 {
+            cleanup();
+            return Ok(());
         }
-
         unsafe {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
-
-    cleanup();
-    Ok(())
 }
 
 fn cleanup() {
@@ -200,7 +175,9 @@ unsafe extern "system" fn keyboard_hook_proc(
             // Look up the binding and determine action type, then drop the lock before acting
             let match_result = {
                 let config = state.config.lock().unwrap();
-                config.lookup_trigger(&trigger).map(|b| (b.action.clone(), b.trigger_name.clone()))
+                config
+                    .lookup_trigger(&trigger)
+                    .map(|b| (b.action.clone(), b.trigger_name.clone()))
             };
 
             if let Some((action, _trigger_name)) = match_result {
@@ -265,7 +242,9 @@ unsafe extern "system" fn mouse_hook_proc(
 
                 let match_result = {
                     let config = state.config.lock().unwrap();
-                    config.lookup_trigger(&trigger).map(|b| (b.action.clone(), b.trigger_name.clone()))
+                    config
+                        .lookup_trigger(&trigger)
+                        .map(|b| (b.action.clone(), b.trigger_name.clone()))
                 };
 
                 if let Some((action, _trigger_name)) = match_result {
@@ -296,7 +275,13 @@ unsafe extern "system" fn mouse_hook_proc(
         } else if msg_type == WM_XBUTTONUP as u32 {
             let xbutton = (ms_struct.mouseData >> 16) as u8;
             if xbutton == 1 || xbutton == 2 {
-                if state.swallowed_mouse.lock().unwrap().take(&xbutton).is_some() {
+                if state
+                    .swallowed_mouse
+                    .lock()
+                    .unwrap()
+                    .take(&xbutton)
+                    .is_some()
+                {
                     return LRESULT(1); // Swallow the button-up too
                 }
             }

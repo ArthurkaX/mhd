@@ -1,0 +1,2 @@
+#define IDI_MHD 1
+IDI_MHD ICON "mhd.ico"

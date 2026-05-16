@@ -214,8 +214,8 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
         "numpad8" => 0x68,
         "numpad9" => 0x69,
         "numpadmultiply" | "numpad_star" => 0x6A,
-        "numpadadd" | "numpad_plus" => 0x6B,
-        "numpadsubtract" | "numpad_minus" => 0x6D,
+        "numpadadd" | "numpad_plus" | "numpad_add" => 0x6B,
+        "numpadsubtract" | "numpad_minus" | "numpad_subtract" => 0x6D,
         "numpaddivide" | "numpad_slash" => 0x6F,
         "numpadenter" => 0x6C,
         "numpaddecimal" | "numpad_dot" => 0x6E,
@@ -237,16 +237,13 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
 
 /// Check if a virtual key code is a modifier key.
 pub fn is_modifier_vk(vk: u32) -> bool {
-    matches!(
-        vk,
-        0x10 | 0x11 | 0x12 | 0x5B | 0x5C
-    )
+    matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C)
 }
 
 /// Get currently pressed modifier keys.
 pub fn get_pressed_modifiers() -> Modifiers {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_MENU, VK_SHIFT, VK_CONTROL, VK_LWIN, VK_RWIN,
+        GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
 
     let mut mods = 0u8;

@@ -1,15 +1,22 @@
+//! mhd — hotkey daemon with DDC/CI brightness control.
+//!
+//! Single binary: tray + daemon core by default, headless via --daemon.
+
+#![windows_subsystem = "windows"]
+
 mod action;
+mod app;
+mod brightness;
 mod config;
 mod hook;
+mod ipc;
+mod tray;
 mod trigger;
 mod worker;
 
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
-
-use config::AppConfig;
-use worker::ActionWorker;
 
 fn resolve_config_path() -> PathBuf {
     if let Ok(custom) = env::var("MHD_CONFIG") {
@@ -43,9 +50,6 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 #
 # Uncomment bindings to enable them.
 #
-# Requires the VirtualDesktop PowerShell module:
-#   Install-Module VirtualDesktop -Scope CurrentUser
-#
 # Optional startup scheme. If omitted, "default" is used.
 # active_scheme = "default"
 
@@ -72,40 +76,47 @@ action = "quit"
 # action = "replace_key"
 # keys = "ctrl+win+right"
 
-# Switch to desktop 1.
+# Increase monitor brightness via DDC/CI.
 # [[binding]]
-# trigger = "alt+1"
-# action = "run_ps"
-# command = "Switch-Desktop -Desktop 0"
+# trigger = "ctrl+alt+numpad_add"
+# action = "set_brightness"
+# value = "+5"
 
-# Move active window to desktop 1.
+# Decrease monitor brightness via DDC/CI.
 # [[binding]]
-# trigger = "alt+shift+1"
+# trigger = "ctrl+alt+numpad_subtract"
+# action = "set_brightness"
+# value = "-5"
+
+# Open Windows Terminal.
+# [[binding]]
+# trigger = "ctrl+alt+t"
 # action = "run_ps"
-# command = "Move-Window -Desktop 0"
+# command = "Start-Process wt"
 "#;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let mut quiet = false;
-    let mut edit = false;
+    let mut no_tray = false;
 
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "--quiet" => quiet = true,
-            "--edit" => edit = true,
+            "--daemon" | "--no-tray" => no_tray = true,
+            "--help" | "-h" => {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
             other => {
                 eprintln!("mhd: unknown argument: {other}");
+                print_help();
                 return ExitCode::FAILURE;
             }
         }
     }
 
     let config_path = resolve_config_path();
-
-    if edit {
-        return run_edit(&config_path);
-    }
 
     // Check if config exists
     if !config_path.exists() {
@@ -122,80 +133,65 @@ fn main() -> ExitCode {
         }
     }
 
-    // Read and parse config
-    let config_content = match std::fs::read_to_string(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("mhd: cannot read config: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let app_config = match AppConfig::parse(&config_content, &config_path) {
-        Ok(c) => c,
+    // Create the app core
+    let app = match app::App::new(config_path.clone(), quiet) {
+        Ok(a) => a,
         Err(e) => {
             eprintln!("mhd: {e}");
             return ExitCode::FAILURE;
         }
     };
 
-    // Check for empty active bindings
-    if app_config.active_bindings().is_empty() {
-        eprintln!("mhd: config empty: {}", config_path.display());
-        return ExitCode::FAILURE;
-    }
+    let handle = app.handle();
 
-    if !quiet {
-        println!("mhd: loaded config: {}", config_path.display());
-        println!(
-            "mhd: loaded bindings: {}",
-            app_config.active_bindings().len()
-        );
-    }
+    // Start IPC server on background thread (always — needed for
+    // external control in headless mode, and useful for debugging
+    // even with tray).
+    let _ipc_handle = ipc::run_ipc_server(handle.clone());
 
-    // Create action worker and get sender
-    let (worker, tx) = ActionWorker::new(quiet);
+    if no_tray {
+        // Headless / daemon mode: block on the hook message loop.
+        if !quiet {
+            println!("mhd: daemon mode (no tray)");
+        }
+        if let Err(e) = app.run() {
+            eprintln!("mhd: {e}");
+            return ExitCode::FAILURE;
+        }
+        if !quiet {
+            println!("mhd: stopped");
+        }
+    } else {
+        // Full mode: spawn hook loop on background thread, run tray on
+        // the main thread. The main thread owns the UI message pump.
+        let app_for_hooks = app; // consume App
 
-    // Spawn worker thread for action execution
-    let _worker_handle = worker.spawn();
+        // Spawn the hook thread
+        let hook_handle = std::thread::spawn(move || {
+            if let Err(e) = app_for_hooks.run() {
+                eprintln!("mhd: hook error: {e}");
+            }
+        });
 
-    // Install hooks and run message loop
-    if let Err(e) = hook::run(app_config, tx, quiet) {
-        eprintln!("mhd: {e}");
-        return ExitCode::FAILURE;
+        // Run the tray on the main thread (blocks until quit)
+        tray::run(handle);
+
+        // Tray exited – make sure hooks stop too
+        let _ = hook_handle.join();
+        if !quiet {
+            println!("mhd: stopped");
+        }
     }
 
     ExitCode::SUCCESS
 }
 
-fn run_edit(config_path: &PathBuf) -> ExitCode {
-    if !config_path.exists() {
-        if let Err(e) = create_example_config(config_path) {
-            eprintln!("mhd: {e}");
-            return ExitCode::FAILURE;
-        }
-    }
-
-    // Open with default editor via ShellExecuteW
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWDEFAULT;
-    use windows::core::PCWSTR;
-
-    let wide_path = config_path.to_str().unwrap_or("");
-    let mut wide: Vec<u16> = wide_path.encode_utf16().collect();
-    wide.push(0);
-
-    unsafe {
-        let _ = ShellExecuteW(
-            HWND::default(),
-            PCWSTR::null(),
-            PCWSTR(wide.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWDEFAULT,
-        );
-    }
-
-    ExitCode::SUCCESS
+fn print_help() {
+    eprintln!("mhd — hotkey daemon with DDC/CI brightness control");
+    eprintln!();
+    eprintln!("Usage:");
+    eprintln!("  mhd.exe               Run with system tray (default)");
+    eprintln!("  mhd.exe --daemon      Run headless (no tray)");
+    eprintln!("  mhd.exe --quiet       Suppress startup messages");
+    eprintln!("  mhd.exe --help        Show this help");
 }

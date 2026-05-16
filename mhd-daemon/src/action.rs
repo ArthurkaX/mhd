@@ -1,4 +1,4 @@
-use crate::trigger::{parse_keys, PhysicalKey, KeyCombo};
+use crate::trigger::{KeyCombo, PhysicalKey, parse_keys};
 
 /// An action to execute when a trigger fires.
 #[derive(Debug, Clone)]
@@ -6,6 +6,7 @@ pub enum Action {
     ReplaceKey { keys: KeyCombo },
     RunPs { command: String },
     SwitchScheme { target_scheme: String },
+    SetBrightness { relative: bool, value: i32 },
     Quit,
 }
 
@@ -36,15 +37,69 @@ impl Action {
         })
     }
 
+    /// Validate and create a set_brightness action.
+    /// Format: "+5", "-10" (relative), or "50" (absolute 0-100).
+    pub fn new_set_brightness(raw: &str) -> Result<Self, String> {
+        let s = raw.trim();
+        if s.is_empty() {
+            return Err("set_brightness value must not be empty".to_string());
+        }
+
+        if let Some(rest) = s.strip_prefix('+') {
+            let v: i32 = rest
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid brightness delta: '{s}'"))?;
+            if v == 0 {
+                return Err("brightness delta must not be zero".to_string());
+            }
+            Ok(Action::SetBrightness {
+                relative: true,
+                value: v,
+            })
+        } else if let Some(rest) = s.strip_prefix('-') {
+            let v: i32 = rest
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid brightness delta: '{s}'"))?;
+            if v == 0 {
+                return Err("brightness delta must not be zero".to_string());
+            }
+            Ok(Action::SetBrightness {
+                relative: true,
+                value: -v,
+            })
+        } else {
+            let v: u32 = s
+                .parse()
+                .map_err(|_| format!("invalid brightness value: '{s}'"))?;
+            if v > 100 {
+                return Err("brightness must be between 0 and 100".to_string());
+            }
+            Ok(Action::SetBrightness {
+                relative: false,
+                value: v as i32,
+            })
+        }
+    }
+
     /// Get a human-readable description of the action.
     pub fn describe(&self) -> String {
         match self {
             Action::ReplaceKey { keys } => {
                 let mut parts = Vec::new();
-                if keys.modifiers.alt() { parts.push("Alt".to_string()); }
-                if keys.modifiers.ctrl() { parts.push("Ctrl".to_string()); }
-                if keys.modifiers.shift() { parts.push("Shift".to_string()); }
-                if keys.modifiers.win() { parts.push("Win".to_string()); }
+                if keys.modifiers.alt() {
+                    parts.push("Alt".to_string());
+                }
+                if keys.modifiers.ctrl() {
+                    parts.push("Ctrl".to_string());
+                }
+                if keys.modifiers.shift() {
+                    parts.push("Shift".to_string());
+                }
+                if keys.modifiers.win() {
+                    parts.push("Win".to_string());
+                }
                 match keys.key {
                     Some(PhysicalKey::Keyboard(vk)) => parts.push(vk_to_name(vk)),
                     Some(PhysicalKey::MouseButton(n)) => parts.push(format!("MouseButton{n}")),
@@ -54,6 +109,13 @@ impl Action {
             }
             Action::RunPs { command } => format!("run_ps: {command}"),
             Action::SwitchScheme { target_scheme } => format!("switch_scheme: {target_scheme}"),
+            Action::SetBrightness { relative, value } => {
+                if *relative {
+                    format!("set_brightness: {:+}", value)
+                } else {
+                    format!("set_brightness: {}%", value)
+                }
+            }
             Action::Quit => "quit".to_string(),
         }
     }
