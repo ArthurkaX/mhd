@@ -2,7 +2,7 @@
 
 **mhd** is a lightweight background daemon that remaps keys, mouse buttons, and keyboard shortcuts using low-level Windows hooks. No drivers, no kernel components — just one portable `.exe` file.
 
-Think of it as a programmable `AutoHotkey`-lite that runs silently in the background, driven by a simple TOML config file, with a tray icon for control.
+Modernized with **Rust 2024** and a high-performance **egui** overlay system.
 
 ---
 
@@ -22,131 +22,68 @@ Think of it as a programmable `AutoHotkey`-lite that runs silently in the backgr
 │                   │                           │                 │
 │         Direct internal calls           Direct internal calls   │
 │                   │                           │                 │
-│   ┌───────────────▼──────────────┐                              │
-│   │         Tray Module          │                              │
-│   │                              │                              │
-│   │  🟢 Tray Icon                │                              │
-│   │  ┌────────────┐              │                              │
-│   │  │Status: OK   │              │                              │
-│   │  │Edit Config  │              │                              │
-│   │  │Reload Config│              │                              │
-│   │  │Quit mhd     │              │                              │
-│   │  └────────────┘              │                              │
-│   └──────────────────────────────┘                              │
+│   ┌───────────────▼──────────────┐   ┌────────▼────────────────┐│
+│   │         Tray Module          │   │      UI Overlays        ││
+│   │                              │   │      (egui/eframe)      ││
+│   │  🟢 Tray Icon                │   │                         ││
+│   │  ┌────────────┐              │   │  🔅 Brightness Bar      ││
+│   │  │Status: OK   │              │   │  ℹ️  About Window       ││
+│   │  │Edit Config  │              │   │  🎨 Custom Themes      ││
+│   │  │Reload Config│              │   └────────────────────────┘│
+│   │  │Quit mhd     │              │                             │
+│   │  └────────────┘              │                             │
+│   └──────────────────────────────┘                             │
 │                                                                 │
 │   User runs:                                                    │
 │   mhd.exe                                                       │
-│   → starts daemon + tray (default)                              │
-│                                                                 │
-│   mhd.exe --daemon                                              │
-│   → starts daemon headless (no tray)                            │
+│   → starts daemon + tray + UI overlay                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-**User experience:**
-1. Download `mhd.exe` (and optionally `mHD_32.png` for the tray icon)
-2. Put them in any folder
-3. Launch `mhd.exe` — it starts the daemon and shows a tray icon
-4. Right-click the tray icon to edit config, reload, or quit
-5. Config lives at `%USERPROFILE%\.config\mhd\config.toml` (auto-created on first run)
-6. Add `mhd.exe` to Windows Startup for auto-launch at login
 
 ---
 
 ## Features
 
-- **Key remapping** — replace any key or shortcut with another (e.g. `CapsLock` → `Alt+Shift`, or `MouseButton4` → `Ctrl+Win+Left`)
-- **Mouse button bindings** — bind side buttons (XButton1/XButton2, a.k.a. "Mouse4"/"Mouse5") to keyboard shortcuts or PowerShell commands
-- **Run arbitrary PowerShell** — execute any PowerShell command on a hotkey
-- **Monitor brightness control** — adjust monitor brightness directly via DDC/CI (no external tools needed)
-- **Scheme switching** — define multiple layers of bindings and switch between them at runtime
-- **Tray icon** — see daemon status at a glance, manage everything from the context menu
-- **Low-level hooks** — uses `WH_KEYBOARD_LL` / `WH_MOUSE_LL`, works in most applications
-- **Portable** — single small binary, no installation, no admin rights required (for most features)
+- **Key remapping** — replace any key or shortcut with another (e.g. `CapsLock` → `Alt+Shift`).
+- **Mouse button bindings** — bind side buttons (XButton1/XButton2) to any action.
+- **DDC/CI Brightness Overlay** — adjust monitor brightness with smooth visual feedback (OSD).
+- **Modern UI** — hardware-accelerated overlays using `egui` 0.33.
+- **Theme Support** — load Zed-compatible JSON themes (e.g., `One Dark`, `Nightfox`).
+- **Run arbitrary PowerShell** — execute any script on a hotkey.
+- **Low-level hooks** — highly responsive `WH_KEYBOARD_LL` / `WH_MOUSE_LL`.
+- **Portable & Tiny** — single binary, Rust 2024, no installation required.
 
 ---
 
 ## Quick Start
 
 ### 1. Build from source
+Requires Rust 1.85+ (for Edition 2024).
 
 ```powershell
-cd mhd
 cargo build --release
 ```
 
-Output binary: `target\release\mhd.exe`
-
-### 2. Run
-
-```powershell
-# Launch (with tray icon)
-.\mhd.exe
-```
-
-A tray icon appears. On first run, a default config is created at:
+### 2. Configure
+On first run, `mhd` creates a default config at:
 `%USERPROFILE%\.config\mhd\config.toml`
 
-### 3. Configure
-
-Right-click the tray icon → **Edit Config**. Uncomment the bindings you want, save, then right-click → **Reload Config**.
+To apply a theme, place a `.json` theme file (e.g. from Zed) in a `themes/` folder next to the exe or in the config dir, and set `theme = "one_dark"` in your `config.toml`.
 
 ---
 
 ## Actions
 
-### `quit`
-Exit the program.
+### `set_brightness`
+Adjust monitor brightness via DDC/CI with a visual OSD.
+- `value = "+5"` / `value = "-5"` / `value = "50"`
 
 ### `replace_key`
-Suppress the trigger and send a different key combination.
-- `trigger = "capslock"`, `action = "replace_key"`, `keys = "alt+shift"`
-- `trigger = "mouseButton4"`, `action = "replace_key"`, `keys = "ctrl+win+left"`
+Suppress trigger and send a different key combination.
+- `keys = "alt+shift"`, `keys = "ctrl+win+left"`
 
 ### `run_ps`
-Run a PowerShell command.
-- `command = "Start-Process wt"`
-
-### `set_brightness`
-Adjust monitor brightness via DDC/CI.
-- `value = "+5"` (increase)
-- `value = "-5"` (decrease)
-- `value = "50"` (absolute)
-
-### `vcp`
-Send a raw DDC/CI VCP feature command.
-- `code = "0x60"`, `value = "17"` (Set input to HDMI 1)
-- `code = "0x12"`, `value = "+10"` (Increase contrast)
-
-### `switch_scheme`
-Switch binding layers.
-
----
-
-## Command-Line Options
-
-| Flag | Description |
-|---|---|
-| *(none)* | Run with tray icon |
-| `--daemon` | Run headless (no tray icon) |
-| `--quiet` | Suppress startup log lines |
-| `--help` | Show help |
-
----
-
-## Troubleshooting
-
-- **"config empty"**: Uncomment at least one binding.
-- **Brightness issues**: Ensure DDC/CI is enabled in monitor OSD.
-- **Tray icon missing**: The icon is embedded in `mhd.exe`, but you can also place an `mHD_32.png` next to the exe to override it.
-
----
-
-## Internals
-
-1. **Main thread** runs the tray UI or hook loop.
-2. **Hook thread** (if in tray mode) handles `WH_KEYBOARD_LL` / `WH_MOUSE_LL`.
-3. **Worker thread** executes actions to keep hooks responsive.
+Run a PowerShell command: `command = "Start-Process wt"`
 
 ---
 
@@ -154,14 +91,25 @@ Switch binding layers.
 
 ```
 mhd/
-├── Cargo.toml          # workspace root
-├── icons/              # source icons and generation scripts
-├── mhd-daemon/         # main crate (produces mhd.exe)
+├── mhd-daemon/
 │   ├── src/
-│   │   ├── main.rs     # Entry & CLI
+│   │   ├── main.rs     # CLI & Entry
 │   │   ├── app.rs      # App orchestration
-│   │   ├── tray.rs     # Tray UI module
-│   │   ├── hook.rs     # Windows hooks
+│   │   ├── hook.rs     # Low-level Windows hooks
+│   │   ├── ui.rs       # egui Overlay system
+│   │   ├── tray.rs     # Win32 Tray Icon
+│   │   ├── theme.rs    # Zed theme parser
+│   │   ├── monitor.rs  # DDC/CI implementation
+│   │   ├── worker.rs   # Async action processor
 │   │   └── ...
-└── README.md
+└── themes/             # Included color schemes
 ```
+
+---
+
+## Internals
+
+1. **Main Thread**: Orchestrates lifecycle and signals.
+2. **Hook Thread**: Low-level message loop for keyboard/mouse events.
+3. **UI Thread**: Dedicated `winit` event loop for hardware-accelerated overlays.
+4. **Worker Thread**: Executes DDC/CI and shell commands to prevent hook lag.
