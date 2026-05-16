@@ -1,0 +1,22 @@
+{
+  "name": "Glass Dark",
+  "author": "Antigravity",
+  "themes": [
+    {
+      "name": "Glass Dark",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#000000AA",
+          "surface": "#ffffff15",
+          "border": "#ffffff33",
+          "text": "#ffffff",
+          "text.muted": "#aaaaaa",
+          "element.active": "#58a6ff",
+          "element.selected": "#ffffff22",
+          "element.hover": "#ffffff22"
+        }
+      }
+    }
+  ]
+}

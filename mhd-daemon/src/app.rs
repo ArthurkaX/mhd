@@ -42,6 +42,26 @@ impl AppHandle {
         let content = std::fs::read_to_string(&self.config_path)
             .map_err(|e| format!("cannot read config: {e}"))?;
         let new_config = AppConfig::parse(&content, &self.config_path)?;
+        
+        // Reload theme into UI state
+        if let Some(theme_name) = &new_config.theme {
+            let theme_path = std::path::PathBuf::from("themes").join(format!("{}.json", theme_name));
+            if let Ok(content) = std::fs::read_to_string(theme_path) {
+                if let Ok(zed_file) = serde_json::from_str::<crate::theme::ZedThemeFile>(&content) {
+                    if let Some(zed_theme) = zed_file.themes.first() {
+                        let visuals = crate::theme::map_zed_to_egui(zed_theme);
+                        if let Ok(mut state) = crate::ui::UI_STATE.lock() {
+                            state.theme = Some(visuals);
+                            // Force a repaint to immediately apply the theme if any window is open
+                            if let Some(ctx) = &state.ctx {
+                                ctx.request_repaint();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let bindings_count = new_config.active_bindings().len();
         let mut config = self.config.lock().unwrap();
         *config = new_config;
