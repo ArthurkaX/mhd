@@ -36,15 +36,19 @@ fn force_wake_window() {
 
 pub fn show_brightness(value: u32, name: String) {
     println!("mhd: UI: show_brightness({}, {})", value, name);
-    let mut state = match UI_STATE.lock() {
-        Ok(s) => s,
-        Err(_) => return,
+    let ctx = {
+        let mut state = match UI_STATE.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        state.brightness_value = value;
+        state.monitor_name = name;
+        state.brightness_visible = true;
+        state.last_update = Some(Instant::now());
+        state.ctx.clone()
     };
-    state.brightness_value = value;
-    state.monitor_name = name;
-    state.brightness_visible = true;
-    state.last_update = Some(Instant::now());
-    if let Some(ctx) = &state.ctx {
+    
+    if let Some(ctx) = ctx {
         force_wake_window();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.request_repaint();
@@ -53,24 +57,36 @@ pub fn show_brightness(value: u32, name: String) {
 
 pub fn show_about() {
     println!("mhd: UI: show_about()");
-    if let Ok(mut state) = UI_STATE.lock() {
-        state.about_visible = true;
-        if let Some(ctx) = &state.ctx {
-            force_wake_window();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.request_repaint();
+    let ctx = {
+        if let Ok(mut state) = UI_STATE.lock() {
+            state.about_visible = true;
+            state.ctx.clone()
+        } else {
+            None
         }
+    };
+
+    if let Some(ctx) = ctx {
+        force_wake_window();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.request_repaint();
     }
 }
 
 pub fn shutdown() {
-    if let Ok(mut state) = UI_STATE.lock() {
-        state.should_exit = true;
-        if let Some(ctx) = &state.ctx {
-            force_wake_window();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.request_repaint();
+    let ctx = {
+        if let Ok(mut state) = UI_STATE.lock() {
+            state.should_exit = true;
+            state.ctx.clone()
+        } else {
+            None
         }
+    };
+
+    if let Some(ctx) = ctx {
+        force_wake_window();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.request_repaint();
     }
 }
 
