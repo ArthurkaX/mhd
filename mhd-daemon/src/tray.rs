@@ -59,7 +59,7 @@ fn load_tray_icon() -> HICON {
         // Try to load embedded icon (IDI_MHD = 1)
         if let Ok(h) = LoadImageW(
             hinst,
-            PCWSTR(1 as *const u16),
+            PCWSTR(std::ptr::dangling::<u16>()),
             IMAGE_ICON,
             0,
             0,
@@ -227,13 +227,15 @@ unsafe extern "system" fn wnd_proc(
             // Safety: we haven't stored it yet, no concurrent access.
             let state = unsafe { &*state_ptr };
 
-            let mut nid = NOTIFYICONDATAW::default();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            nid.uCallbackMessage = WM_TRAYICON;
-            nid.hIcon = load_tray_icon();
+            let mut nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: hwnd,
+                uID: 1,
+                uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+                uCallbackMessage: WM_TRAYICON,
+                hIcon: load_tray_icon(),
+                ..Default::default()
+            };
 
             let tip = if state.app.status() {
                 "mhd — running\0"
@@ -266,7 +268,7 @@ unsafe extern "system" fn wnd_proc(
         }
 
         WM_COMMAND => {
-            let cmd = wparam.0 as usize;
+            let cmd = wparam.0;
             if let Some(state) = unsafe { state_ref() } {
                 match cmd {
                     CMD_EDIT_CONFIG => open_config_in_editor(&state.app),
@@ -321,11 +323,10 @@ pub fn run(app: AppHandle) {
         if let Ok(h) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        ) {
-            if h != HWND::default() {
+        )
+            && h != HWND::default() {
                 return;
             }
-        }
     }
 
     let hinst = unsafe { GetModuleHandleW(PCWSTR::null()).unwrap_or_default() };

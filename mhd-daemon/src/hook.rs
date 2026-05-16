@@ -105,7 +105,7 @@ fn run_impl(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
     let mut msg = MSG::default();
     loop {
         let ret = unsafe { GetMessageW(&mut msg, HWND::default(), 0, 0) };
-        if ret.0 <= 0 || msg.message == WM_QUIT as u32 {
+        if ret.0 <= 0 || msg.message == WM_QUIT {
             cleanup();
             return Ok(());
         }
@@ -146,11 +146,10 @@ fn signal_tray_to_quit() {
         if let Ok(hwnd) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        ) {
-            if hwnd != HWND::default() {
+        )
+            && hwnd != HWND::default() {
                 let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
             }
-        }
     }
 }
 
@@ -177,8 +176,8 @@ unsafe extern "system" fn keyboard_hook_proc(
         }
 
         let wparam = w_param.0 as u32;
-        let is_key_down = wparam == WM_KEYDOWN as u32 || wparam == WM_SYSKEYDOWN as u32;
-        let is_key_up = wparam == WM_KEYUP as u32 || wparam == WM_SYSKEYUP as u32;
+        let is_key_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+        let is_key_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
 
         if is_key_down && !is_modifier_vk(vk) {
             let modifiers = get_pressed_modifiers();
@@ -200,11 +199,10 @@ unsafe extern "system" fn keyboard_hook_proc(
                     Action::SwitchScheme { target_scheme } => {
                         let target = target_scheme.clone();
                         let mut config = state.handle.config.lock().unwrap();
-                        if config.switch_scheme(&target) {
-                            if !state.handle.quiet {
+                        if config.switch_scheme(&target)
+                            && !state.handle.quiet {
                                 println!("mhd: switched to scheme: {}", config.active_scheme());
                             }
-                        }
                     }
                     Action::Quit => {
                         if !state.handle.quiet {
@@ -220,11 +218,10 @@ unsafe extern "system" fn keyboard_hook_proc(
                 state.swallowed_keys.lock().unwrap().insert(vk);
                 return LRESULT(1); // Swallow the event
             }
-        } else if is_key_up {
-            if state.swallowed_keys.lock().unwrap().take(&vk).is_some() {
+        } else if is_key_up
+            && state.swallowed_keys.lock().unwrap().take(&vk).is_some() {
                 return LRESULT(1); // Swallow the key-up too
             }
-        }
     }
 
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
@@ -246,7 +243,7 @@ unsafe extern "system" fn mouse_hook_proc(
         let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         let msg_type = w_param.0 as u32;
 
-        if msg_type == WM_XBUTTONDOWN as u32 {
+        if msg_type == WM_XBUTTONDOWN {
             let xbutton = (ms_struct.mouseData >> 16) as u8;
 
             if xbutton == 1 || xbutton == 2 {
@@ -268,11 +265,10 @@ unsafe extern "system" fn mouse_hook_proc(
                         Action::SwitchScheme { target_scheme } => {
                             let target = target_scheme.clone();
                             let mut config = state.handle.config.lock().unwrap();
-                            if config.switch_scheme(&target) {
-                                if !state.handle.quiet {
+                            if config.switch_scheme(&target)
+                                && !state.handle.quiet {
                                     println!("mhd: switched to scheme: {}", config.active_scheme());
                                 }
-                            }
                         }
                         Action::Quit => {
                             if !state.handle.quiet {
@@ -289,10 +285,10 @@ unsafe extern "system" fn mouse_hook_proc(
                     return LRESULT(1); // Swallow the event
                 }
             }
-        } else if msg_type == WM_XBUTTONUP as u32 {
+        } else if msg_type == WM_XBUTTONUP {
             let xbutton = (ms_struct.mouseData >> 16) as u8;
-            if xbutton == 1 || xbutton == 2 {
-                if state
+            if (xbutton == 1 || xbutton == 2)
+                && state
                     .swallowed_mouse
                     .lock()
                     .unwrap()
@@ -301,7 +297,6 @@ unsafe extern "system" fn mouse_hook_proc(
                 {
                     return LRESULT(1); // Swallow the button-up too
                 }
-            }
         }
     }
 

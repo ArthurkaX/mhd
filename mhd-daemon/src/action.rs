@@ -1,4 +1,4 @@
-﻿use crate::trigger::{KeyCombo, PhysicalKey, parse_keys};
+use crate::trigger::{KeyCombo, PhysicalKey, parse_keys};
 
 /// An action to execute when a trigger fires.
 #[derive(Debug, Clone)]
@@ -87,8 +87,8 @@ impl Action {
     /// Validate and create a vcp action.
     /// Format: code="0x10", value="+5" or "50".
     pub fn new_vcp(code_raw: &str, value_raw: &str) -> Result<Self, String> {
-        let code = if code_raw.starts_with("0x") {
-            u8::from_str_radix(&code_raw[2..], 16)
+        let code = if let Some(stripped) = code_raw.strip_prefix("0x") {
+            u8::from_str_radix(stripped, 16)
         } else {
             code_raw.parse()
         }.map_err(|_| format!("invalid VCP code: {code_raw}"))?;

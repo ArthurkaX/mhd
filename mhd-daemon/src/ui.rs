@@ -84,14 +84,12 @@ impl eframe::App for OverlayApp {
             if state.should_exit {
                 (false, 0, String::new(), false, None, true)
             } else {
-                if let Some(last) = state.last_update {
-                    if last.elapsed() > Duration::from_secs(2) {
-                        if state.brightness_visible {
+                if let Some(last) = state.last_update
+                    && last.elapsed() > Duration::from_secs(2)
+                        && state.brightness_visible {
                             println!("mhd: UI: brightness timeout, hiding");
                             state.brightness_visible = false;
                         }
-                    }
-                }
 
                 (
                     state.brightness_visible,

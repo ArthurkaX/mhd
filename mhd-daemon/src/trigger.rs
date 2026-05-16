@@ -147,7 +147,7 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
     if s.len() == 1 {
         let ch = s.chars().next().unwrap();
         if ch.is_ascii_alphabetic() {
-            let vk = ('A' as u8) + (ch.to_ascii_uppercase() as u8 - 'A' as u8);
+            let vk = b'A' + (ch.to_ascii_uppercase() as u8 - b'A');
             return Ok(Some(PhysicalKey::Keyboard(vk)));
         }
         if ch.is_ascii_digit() {
@@ -157,14 +157,12 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
     }
 
     // Function keys f1-f24
-    if s.starts_with('f') && s.len() <= 3 {
-        if let Ok(n) = s[1..].parse::<u8>() {
-            if n >= 1 && n <= 24 {
+    if s.starts_with('f') && s.len() <= 3
+        && let Ok(n) = s[1..].parse::<u8>()
+            && (1..=24).contains(&n) {
                 let vk = 0x70u8 + (n - 1); // VK_F1 = 0x70
                 return Ok(Some(PhysicalKey::Keyboard(vk)));
             }
-        }
-    }
 
     // Named keys
     let vk = match s {

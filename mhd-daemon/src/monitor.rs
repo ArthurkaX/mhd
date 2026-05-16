@@ -41,7 +41,7 @@ struct Dxva2 {
 impl Dxva2 {
     fn load() -> Result<Self, String> {
         unsafe {
-            let name = PCSTR::from_raw("dxva2.dll\0".as_ptr());
+            let name = PCSTR::from_raw(c"dxva2.dll".as_ptr() as *const u8);
             let module = windows::Win32::System::LibraryLoader::LoadLibraryA(name)
                 .map_err(|e| format!("cannot load dxva2.dll: {e}"))?;
 

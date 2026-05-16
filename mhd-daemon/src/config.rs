@@ -141,14 +141,13 @@ impl AppConfig {
 
         // Validate that all switch_scheme targets exist
         for binding in &bindings {
-            if let Action::SwitchScheme { target_scheme } = &binding.action {
-                if !scheme_names.contains(target_scheme) {
+            if let Action::SwitchScheme { target_scheme } = &binding.action
+                && !scheme_names.contains(target_scheme) {
                     return Err(format!(
                         "switch_scheme target '{}' does not exist in config",
                         target_scheme
                     ));
                 }
-            }
         }
 
         // Check for duplicate triggers within same scheme
