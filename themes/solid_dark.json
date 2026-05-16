@@ -1,0 +1,22 @@
+{
+  "name": "Solid Dark",
+  "author": "Antigravity",
+  "themes": [
+    {
+      "name": "Solid Dark",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#1e1e1e",
+          "surface": "#252526",
+          "border": "#3c3c3c",
+          "text": "#cccccc",
+          "text.muted": "#858585",
+          "element.active": "#007acc",
+          "element.selected": "#37373d",
+          "element.hover": "#2a2d2e"
+        }
+      }
+    }
+  ]
+}
