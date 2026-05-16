@@ -59,7 +59,7 @@ fn load_tray_icon() -> HICON {
         // Try to load embedded icon (IDI_MHD = 1)
         if let Ok(h) = LoadImageW(
             hinst,
-            PCWSTR(std::ptr::dangling::<u16>()),
+            PCWSTR(1 as *const u16),
             IMAGE_ICON,
             0,
             0,
@@ -227,15 +227,13 @@ unsafe extern "system" fn wnd_proc(
             // Safety: we haven't stored it yet, no concurrent access.
             let state = unsafe { &*state_ptr };
 
-            let mut nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: hwnd,
-                uID: 1,
-                uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
-                uCallbackMessage: WM_TRAYICON,
-                hIcon: load_tray_icon(),
-                ..Default::default()
-            };
+            let mut nid = NOTIFYICONDATAW::default();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = hwnd;
+            nid.uID = 1;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            nid.uCallbackMessage = WM_TRAYICON;
+            nid.hIcon = load_tray_icon();
 
             let tip = if state.app.status() {
                 "mhd — running\0"
