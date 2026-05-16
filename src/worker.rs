@@ -3,8 +3,7 @@ use std::sync::mpsc;
 use crate::action::Action;
 use crate::trigger::{KeyCombo, PhysicalKey};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-    KEYBD_EVENT_FLAGS,
+    INPUT, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
 };
 
 /// Messages sent from hook callbacks to the worker thread.
@@ -78,10 +77,18 @@ fn send_replace_key(keys: &KeyCombo) {
     let mut inputs: Vec<INPUT> = Vec::new();
 
     // Press modifiers
-    if keys.modifiers.alt() { push_key_event(&mut inputs, 0x12, false); }
-    if keys.modifiers.ctrl() { push_key_event(&mut inputs, 0x11, false); }
-    if keys.modifiers.shift() { push_key_event(&mut inputs, 0x10, false); }
-    if keys.modifiers.win() { push_key_event(&mut inputs, 0x5B, false); }
+    if keys.modifiers.alt() {
+        push_key_event(&mut inputs, 0x12, false);
+    }
+    if keys.modifiers.ctrl() {
+        push_key_event(&mut inputs, 0x11, false);
+    }
+    if keys.modifiers.shift() {
+        push_key_event(&mut inputs, 0x10, false);
+    }
+    if keys.modifiers.win() {
+        push_key_event(&mut inputs, 0x5B, false);
+    }
 
     // Press and release the main key (if present)
     match keys.key {
@@ -99,10 +106,18 @@ fn send_replace_key(keys: &KeyCombo) {
     }
 
     // Release modifiers in reverse order
-    if keys.modifiers.win() { push_key_event(&mut inputs, 0x5B, true); }
-    if keys.modifiers.shift() { push_key_event(&mut inputs, 0x10, true); }
-    if keys.modifiers.ctrl() { push_key_event(&mut inputs, 0x11, true); }
-    if keys.modifiers.alt() { push_key_event(&mut inputs, 0x12, true); }
+    if keys.modifiers.win() {
+        push_key_event(&mut inputs, 0x5B, true);
+    }
+    if keys.modifiers.shift() {
+        push_key_event(&mut inputs, 0x10, true);
+    }
+    if keys.modifiers.ctrl() {
+        push_key_event(&mut inputs, 0x11, true);
+    }
+    if keys.modifiers.alt() {
+        push_key_event(&mut inputs, 0x12, true);
+    }
 
     if !inputs.is_empty() {
         unsafe {
@@ -112,7 +127,11 @@ fn send_replace_key(keys: &KeyCombo) {
 }
 
 fn push_key_event(inputs: &mut Vec<INPUT>, vk: u16, up: bool) {
-    let flags = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
+    let flags = if up {
+        KEYEVENTF_KEYUP
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
 
     let ki = KEYBDINPUT {
         wVk: VIRTUAL_KEY(vk),
@@ -129,7 +148,7 @@ fn push_key_event(inputs: &mut Vec<INPUT>, vk: u16, up: bool) {
 
 fn run_powershell(command: &str) {
     let result = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", command])
+        .args(["-Command", command])
         .spawn();
 
     if let Err(e) = result {

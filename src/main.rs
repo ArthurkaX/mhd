@@ -63,14 +63,14 @@ action = "quit"
 # Switch to the left virtual desktop using mouse button 4 (side button).
 # [[binding]]
 # trigger = "mouseButton4"
-# action = "run_ps"
-# command = "Switch-Desktop -Desktop (Get-LeftDesktop)"
+# action = "replace_key"
+# keys = "ctrl+win+left"
 
 # Switch to the right virtual desktop using mouse button 5 (side button).
 # [[binding]]
 # trigger = "mouseButton5"
-# action = "run_ps"
-# command = "Switch-Desktop -Desktop (Get-RightDesktop)"
+# action = "replace_key"
+# keys = "ctrl+win+right"
 
 # Switch to desktop 1.
 # [[binding]]
@@ -177,10 +177,10 @@ fn run_edit(config_path: &PathBuf) -> ExitCode {
     }
 
     // Open with default editor via ShellExecuteW
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWDEFAULT;
+    use windows::core::PCWSTR;
 
     let wide_path = config_path.to_str().unwrap_or("");
     let mut wide: Vec<u16> = wide_path.encode_utf16().collect();
