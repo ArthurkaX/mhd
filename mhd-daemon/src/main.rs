@@ -1,4 +1,4 @@
-﻿//! mhd â€” hotkey daemon with DDC/CI brightness control.
+//! mhd â€” hotkey daemon with DDC/CI brightness control.
 //!
 //! Single binary: tray + daemon core by default, headless via --daemon.
 
@@ -115,6 +115,10 @@ fn main() -> ExitCode {
 
     for arg in args.iter().skip(1) {
         match arg.as_str() {
+            "--ui-server" => {
+                crate::ui::run_ui_server();
+                return ExitCode::SUCCESS;
+            }
             "--quiet" => quiet = true,
             "--daemon" | "--no-tray" => no_tray = true,
             "--help" | "-h" => {
@@ -156,11 +160,6 @@ fn main() -> ExitCode {
     };
 
     let handle = app.handle();
-
-    // Start UI thread
-    std::thread::spawn(move || {
-        crate::ui::run_ui_thread();
-    });
 
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.

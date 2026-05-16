@@ -1,175 +1,158 @@
-use std::sync::{Arc, Mutex};
+use std::net::UdpSocket;
+use std::process::Child;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use eframe::egui;
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, FindWindowW, ShowWindow, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW,
-};
-use windows::core::PCWSTR;
 
-#[cfg(windows)]
-use winit::platform::windows::EventLoopBuilderExtWindows;
+use eframe::egui;
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 lazy_static::lazy_static! {
-    pub static ref UI_STATE: Arc<Mutex<UiState>> = Arc::new(Mutex::new(UiState::default()));
-}
-
-#[derive(Default)]
-pub struct UiState {
-    pub brightness_visible: bool,
-    pub brightness_value: u32,
-    pub monitor_name: String,
-    pub last_update: Option<Instant>,
-    pub about_visible: bool,
-    pub theme: Option<egui::Visuals>,
-    pub should_exit: bool,
-    pub ctx: Option<egui::Context>,
-}
-
-fn force_wake_window() {
-    let title: Vec<u16> = "mhd_overlay\0".encode_utf16().collect();
-    unsafe {
-        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) {
-            let _ = ShowWindow(hwnd, SW_SHOW);
-        }
-    }
-}
-
-fn force_hide_window() {
-    let title: Vec<u16> = "mhd_overlay\0".encode_utf16().collect();
-    unsafe {
-        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) {
-            let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_HIDE);
-        }
-    }
+    static ref UI_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 }
 
 pub fn show_brightness(value: u32, name: String) {
-    println!("mhd: UI: show_brightness({}, {})", value, name);
-    let ctx = {
-        let mut state = match UI_STATE.lock() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        state.brightness_value = value;
-        state.monitor_name = name;
-        state.brightness_visible = true;
-        state.last_update = Some(Instant::now());
-        state.ctx.clone()
-    };
-    
-    if let Some(ctx) = ctx {
-        force_wake_window();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.request_repaint();
-    }
+    send_ipc(&format!("B:{value}:{name}"));
 }
 
 pub fn show_about() {
-    println!("mhd: UI: show_about()");
-    let ctx = {
-        if let Ok(mut state) = UI_STATE.lock() {
-            state.about_visible = true;
-            state.ctx.clone()
-        } else {
-            None
-        }
-    };
-
-    if let Some(ctx) = ctx {
-        force_wake_window();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.request_repaint();
-    }
+    send_ipc("A");
 }
 
 pub fn shutdown() {
-    let ctx = {
-        if let Ok(mut state) = UI_STATE.lock() {
-            state.should_exit = true;
-            state.ctx.clone()
-        } else {
-            None
-        }
+    send_ipc("Q");
+}
+
+fn send_ipc(msg: &str) {
+    let mut child_guard = match UI_PROCESS.lock() {
+        Ok(g) => g,
+        Err(_) => return,
     };
 
-    if let Some(ctx) = ctx {
-        force_wake_window();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.request_repaint();
+    let is_running = child_guard.as_mut().map_or(false, |c| match c.try_wait() {
+        Ok(None) => true,
+        _ => false,
+    });
+
+    if !is_running {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Ok(child) = std::process::Command::new(exe).arg("--ui-server").spawn() {
+                *child_guard = Some(child);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250)); // Wait for eframe/wgpu initialization
+    }
+
+    if let Ok(sock) = UdpSocket::bind("127.0.0.1:0") {
+        let _ = sock.send_to(msg.as_bytes(), "127.0.0.1:34254");
     }
 }
 
-pub struct OverlayApp {
-    is_currently_visible: bool,
+pub fn run_ui_server() {
+    let config_path = crate::resolve_config_path();
+    let config = crate::config::Config::load(&config_path).unwrap_or_default();
+    let theme = config.theme.as_deref().and_then(|t| crate::theme::load_theme(t, &config_path));
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("mhd_overlay")
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_taskbar(false)
+            .with_always_on_top(),
+        ..Default::default()
+    };
+
+    let _ = eframe::run_native(
+        "mhd_overlay",
+        options,
+        Box::new(move |cc| {
+            if let Some(t) = &theme {
+                cc.egui_ctx.set_visuals(t.clone());
+            }
+            Ok(Box::new(UiServerApp::new()))
+        }),
+    );
 }
 
-impl OverlayApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        if let Ok(mut state) = UI_STATE.lock() {
-            state.ctx = Some(cc.egui_ctx.clone());
-            if let Some(visuals) = &state.theme {
-                cc.egui_ctx.set_visuals(visuals.clone());
-            }
+struct UiServerApp {
+    sock: Option<UdpSocket>,
+    brightness_visible: bool,
+    brightness_value: u32,
+    monitor_name: String,
+    about_visible: bool,
+    last_update: Instant,
+}
+
+impl UiServerApp {
+    fn new() -> Self {
+        // Try to bind, if it fails (another instance running?), we will just gracefully exit later
+        let sock = UdpSocket::bind("127.0.0.1:34254").ok();
+        if let Some(s) = &sock {
+            let _ = s.set_nonblocking(true);
         }
 
         Self {
-            is_currently_visible: false,
+            sock,
+            brightness_visible: false,
+            brightness_value: 0,
+            monitor_name: String::new(),
+            about_visible: false,
+            last_update: Instant::now(),
         }
     }
 }
 
-impl eframe::App for OverlayApp {
+impl eframe::App for UiServerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (brightness_visible, brightness_value, monitor_name, about_visible, theme, should_exit) = {
-            let mut state = match UI_STATE.lock() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-
-            if state.should_exit {
-                (false, 0, String::new(), false, None, true)
-            } else {
-                if let Some(last) = state.last_update
-                    && last.elapsed() > Duration::from_secs(2)
-                        && state.brightness_visible {
-                            println!("mhd: UI: brightness timeout, hiding");
-                            state.brightness_visible = false;
+        if let Some(sock) = &self.sock {
+            let mut buf = [0u8; 1024];
+            while let Ok((len, _)) = sock.recv_from(&mut buf) {
+                if let Ok(msg) = std::str::from_utf8(&buf[..len]) {
+                    if msg == "A" {
+                        self.about_visible = true;
+                        self.brightness_visible = false;
+                        self.last_update = Instant::now();
+                    } else if msg == "Q" {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        return;
+                    } else if msg.starts_with("B:") {
+                        let parts: Vec<&str> = msg.splitn(3, ':').collect();
+                        if parts.len() == 3 {
+                            if let Ok(v) = parts[1].parse() {
+                                self.brightness_value = v;
+                                self.monitor_name = parts[2].to_string();
+                                self.brightness_visible = true;
+                                self.about_visible = false;
+                                self.last_update = Instant::now();
+                            }
                         }
-
-                (
-                    state.brightness_visible,
-                    state.brightness_value,
-                    state.monitor_name.clone(),
-                    state.about_visible,
-                    state.theme.clone(),
-                    false,
-                )
+                    }
+                }
             }
-        };
-
-        if should_exit {
-            println!("mhd: UI: exiting");
+        } else {
+            // Socket failed to bind, abort
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
 
-        let should_be_visible = about_visible || brightness_visible;
-
-        if should_be_visible && !self.is_currently_visible {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            self.is_currently_visible = true;
-        } else if !should_be_visible && self.is_currently_visible {
-            force_hide_window();
-            self.is_currently_visible = false;
+        if self.brightness_visible && self.last_update.elapsed() > Duration::from_secs(2) {
+            self.brightness_visible = false;
         }
 
-        if about_visible {
-            show_about_ui(ctx, theme.clone());
-        } else if brightness_visible {
-            show_brightness_ui(ctx, brightness_value, &monitor_name, theme.clone());
-            // Only poll for the timeout when the brightness UI is actually visible
-            ctx.request_repaint_after(Duration::from_millis(100));
+        if !self.brightness_visible && !self.about_visible && self.last_update.elapsed() > Duration::from_millis(500) {
+            // Auto-terminate when nothing is displayed to free 100% of CPU and RAM
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
+
+        if self.about_visible {
+            show_about_ui(ctx);
+        } else if self.brightness_visible {
+            show_brightness_ui(ctx, self.brightness_value, &self.monitor_name);
+        }
+
+        // Keep polling UDP messages while the window is alive
+        ctx.request_repaint_after(Duration::from_millis(32));
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -177,7 +160,7 @@ impl eframe::App for OverlayApp {
     }
 }
 
-fn show_about_ui(ctx: &egui::Context, theme: Option<egui::Visuals>) {
+fn show_about_ui(ctx: &egui::Context) {
     let window_size = egui::vec2(320.0, 140.0);
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / ctx.pixels_per_point();
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32 / ctx.pixels_per_point();
@@ -190,14 +173,8 @@ fn show_about_ui(ctx: &egui::Context, theme: Option<egui::Visuals>) {
     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
     ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
 
-    if let Some(visuals) = &theme {
-        ctx.set_visuals(visuals.clone());
-    }
-
     if ctx.input(|i| i.pointer.primary_clicked() || i.viewport().close_requested()) {
-        if let Ok(mut state) = UI_STATE.lock() {
-            state.about_visible = false;
-        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         return;
     }
 
@@ -220,12 +197,7 @@ fn show_about_ui(ctx: &egui::Context, theme: Option<egui::Visuals>) {
     });
 }
 
-fn show_brightness_ui(
-    ctx: &egui::Context,
-    brightness_value: u32,
-    monitor_name: &str,
-    theme: Option<egui::Visuals>,
-) {
+fn show_brightness_ui(ctx: &egui::Context, brightness_value: u32, monitor_name: &str) {
     let window_size = egui::vec2(210.0, 50.0);
     let margin = egui::vec2(24.0, 34.0);
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / ctx.pixels_per_point();
@@ -238,10 +210,6 @@ fn show_brightness_ui(
     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(window_size));
     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
     ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-
-    if let Some(visuals) = &theme {
-        ctx.set_visuals(visuals.clone());
-    }
 
     let panel_frame = egui::Frame::window(&ctx.style())
         .fill(ctx.style().visuals.window_fill)
@@ -256,7 +224,6 @@ fn show_brightness_ui(
         });
 
     egui::CentralPanel::default().frame(panel_frame).show(ctx, |ui| {
-        // Monitor Name
         ui.label(
             egui::RichText::new(monitor_name)
                 .color(ui.visuals().text_color())
@@ -265,7 +232,6 @@ fn show_brightness_ui(
 
         ui.add_space(6.0);
 
-        // Slider Track Row
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             let track_width = 164.0;
             let spacing = 6.0;
@@ -279,7 +245,6 @@ fn show_brightness_ui(
             let active_color = ui.visuals().selection.bg_fill;
             let track_color = ui.visuals().extreme_bg_color;
 
-            // Track line
             let track_height = 1.0;
             let track_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.min.x, rect.center().y - track_height / 2.0),
@@ -288,7 +253,6 @@ fn show_brightness_ui(
 
             ui.painter().rect_filled(track_rect, 0.0, track_color);
 
-            // Filled track
             let filled_width = rect.width() * fraction;
             let filled_rect = egui::Rect::from_min_size(
                 track_rect.min,
@@ -296,7 +260,6 @@ fn show_brightness_ui(
             );
             ui.painter().rect_filled(filled_rect, 0.0, active_color);
 
-            // Thumb block
             let thumb_width = 4.0;
             let thumb_x = (track_rect.min.x + filled_width - thumb_width / 2.0)
                 .clamp(rect.min.x, rect.max.x - thumb_width);
@@ -309,7 +272,6 @@ fn show_brightness_ui(
 
             ui.add_space(spacing);
             
-            // Value text
             ui.label(
                 egui::RichText::new(format!("{}", brightness_value))
                     .color(ui.visuals().text_color())
@@ -317,34 +279,4 @@ fn show_brightness_ui(
             );
         });
     });
-}
-
-pub fn run_ui_thread() {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("mhd_overlay")
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_active(false)
-            .with_visible(false)
-            .with_taskbar(false)
-            .with_always_on_top()
-            .with_position(egui::pos2(-1000.0, -1000.0))
-            .with_inner_size(egui::vec2(1.0, 1.0)),
-        event_loop_builder: Some(Box::new(|builder| {
-            #[cfg(windows)]
-            builder.with_any_thread(true);
-        })),
-        ..Default::default()
-    };
-
-    let res = eframe::run_native(
-        "mhd_overlay",
-        options,
-        Box::new(|cc| Ok(Box::new(OverlayApp::new(cc)))),
-    );
-
-    if let Err(e) = res {
-        eprintln!("mhd: UI error: {e}");
-    }
 }
