@@ -1,3 +1,3 @@
 [workspace]
-members = ["mhd-daemon", "mhd-ui"]
+members = ["mhd-daemon"]
 resolver = "2"
