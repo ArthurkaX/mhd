@@ -49,6 +49,11 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Optional startup scheme. If omitted, "default" is used.
 # active_scheme = "default"
 
+# Quit mhd (Ctrl+Alt+F12).
+[[binding]]
+trigger = "ctrl+alt+f12"
+action = "quit"
+
 # Replace CapsLock with Alt+Shift for keyboard layout switching.
 # [[binding]]
 # trigger = "capslock"

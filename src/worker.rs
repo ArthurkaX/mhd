@@ -13,6 +13,8 @@ pub enum ActionMessage {
     Execute(Action),
     #[allow(dead_code)]
     SwitchScheme(String),
+    #[allow(dead_code)]
+    Quit,
 }
 
 /// The action worker runs on a dedicated thread and executes actions.
@@ -50,6 +52,10 @@ impl ActionWorker {
                 ActionMessage::SwitchScheme(_scheme) => {
                     // Handled in hook callback directly
                 }
+                ActionMessage::Quit => {
+                    // Quit is handled via PostQuitMessage in the hook callback
+                    break;
+                }
             }
         }
     }
@@ -60,7 +66,10 @@ fn execute_action(action: &Action) {
         Action::ReplaceKey { keys } => send_replace_key(keys),
         Action::RunPs { command } => run_powershell(command),
         Action::SwitchScheme { .. } => {
-            // Handled elsewhere
+            // Обрабатывается в другом месте
+        }
+        Action::Quit => {
+            // Обрабатывается через PostQuitMessage из обратного вызова хука
         }
     }
 }

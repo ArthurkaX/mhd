@@ -5,6 +5,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, PeekMessageW, TranslateMessage, DispatchMessageW,
     SetWindowsHookExW, UnhookWindowsHookEx, MSG, PM_REMOVE,
+    PostQuitMessage,
     WM_QUIT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
     WM_XBUTTONDOWN, WM_XBUTTONUP,
     HHOOK, WH_KEYBOARD_LL, WH_MOUSE_LL,
@@ -213,6 +214,12 @@ unsafe extern "system" fn keyboard_hook_proc(
                             }
                         }
                     }
+                    Action::Quit => {
+                        if !state.quiet {
+                            println!("mhd: quit");
+                        }
+                        unsafe { PostQuitMessage(0) };
+                    }
                     action => {
                         let _ = state.tx.send(ActionMessage::Execute(action.clone()));
                     }
@@ -271,6 +278,12 @@ unsafe extern "system" fn mouse_hook_proc(
                                     println!("mhd: switched to scheme: {}", config.active_scheme());
                                 }
                             }
+                        }
+                        Action::Quit => {
+                            if !state.quiet {
+                                println!("mhd: quit");
+                            }
+                            unsafe { PostQuitMessage(0) };
                         }
                         action => {
                             let _ = state.tx.send(ActionMessage::Execute(action.clone()));

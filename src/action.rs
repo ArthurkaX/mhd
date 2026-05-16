@@ -6,6 +6,7 @@ pub enum Action {
     ReplaceKey { keys: KeyCombo },
     RunPs { command: String },
     SwitchScheme { target_scheme: String },
+    Quit,
 }
 
 impl Action {
@@ -53,6 +54,7 @@ impl Action {
             }
             Action::RunPs { command } => format!("run_ps: {command}"),
             Action::SwitchScheme { target_scheme } => format!("switch_scheme: {target_scheme}"),
+            Action::Quit => "quit".to_string(),
         }
     }
 }

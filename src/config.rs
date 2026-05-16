@@ -92,6 +92,7 @@ impl AppConfig {
                         .ok_or_else(|| "switch_scheme action requires 'target_scheme' field".to_string())?;
                     Action::new_switch_scheme(target)?
                 }
+                "quit" => Action::Quit,
                 other => {
                     return Err(format!("unknown action: {other}"));
                 }
