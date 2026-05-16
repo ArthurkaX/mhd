@@ -31,6 +31,8 @@ struct RawConfig {
     #[serde(default)]
     active_scheme: Option<String>,
     #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
     binding: Vec<RawBinding>,
 }
 
@@ -52,6 +54,8 @@ pub struct AppConfig {
     scheme_names: HashSet<String>,
     /// Trigger map for the active scheme: Trigger -> index into bindings.
     trigger_map: HashMap<crate::trigger::Trigger, usize>,
+    /// The theme name from config.
+    pub theme: Option<String>,
 }
 
 impl AppConfig {
@@ -61,6 +65,7 @@ impl AppConfig {
             toml::from_str(content).map_err(|e| format!("config parse error: {e}"))?;
 
         let active_scheme = raw.active_scheme.unwrap_or_else(|| "default".to_string());
+        let theme = raw.theme;
         let mut bindings = Vec::new();
         let mut scheme_names = HashSet::new();
         scheme_names.insert("default".to_string());
@@ -167,6 +172,7 @@ impl AppConfig {
             bindings,
             scheme_names,
             trigger_map,
+            theme,
         })
     }
 

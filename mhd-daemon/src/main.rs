@@ -12,6 +12,8 @@ mod hook;
 mod tray;
 mod trigger;
 mod worker;
+mod ui;
+mod theme;
 
 use std::env;
 use std::path::PathBuf;
@@ -154,6 +156,11 @@ fn main() -> ExitCode {
     };
 
     let handle = app.handle();
+
+    // Start UI thread
+    std::thread::spawn(move || {
+        crate::ui::run_ui_thread();
+    });
 
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.

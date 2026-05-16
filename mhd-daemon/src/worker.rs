@@ -69,14 +69,19 @@ fn execute_action(action: &Action) {
             // ?????????????? ? ?????? ?????
         }
         Action::SetBrightness { relative, value } => {
-            if *relative {
-                if let Err(e) = monitor::adjust_brightness(*value) {
-                    eprintln!("mhd: brightness error: {e}");
-                }
+            let res = if *relative {
+                monitor::adjust_brightness(*value)
             } else {
-                if let Err(e) = monitor::set_brightness_absolute(*value as u32) {
-                    eprintln!("mhd: brightness error: {e}");
+                monitor::set_brightness_absolute(*value as u32)
+            };
+
+            match res {
+                Ok(_) => {
+                    if let Ok(new_val) = monitor::get_brightness() {
+                        crate::ui::show_brightness(new_val);
+                    }
                 }
+                Err(e) => eprintln!("mhd: brightness error: {e}"),
             }
         }
         Action::Vcp { code, relative, value } => {
