@@ -116,7 +116,7 @@ impl eframe::App for OverlayApp {
             // Hide the window
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-1000.0, -1000.0)));
-            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
         }
 
         // Keep the main loop alive to process timeouts and commands
@@ -277,7 +277,6 @@ pub fn run_ui_thread() {
             .with_decorations(false)
             .with_transparent(true)
             .with_active(false)
-            .with_mouse_passthrough(true)
             .with_taskbar(false)
             .with_always_on_top()
             .with_position(egui::pos2(-1000.0, -1000.0))
