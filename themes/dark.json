@@ -1,9 +1,9 @@
 {
-  "name": "Solid Dark",
+  "name": "Dark",
   "author": "Antigravity",
   "themes": [
     {
-      "name": "Solid Dark",
+      "name": "Dark",
       "appearance": "dark",
       "style": {
         "colors": {

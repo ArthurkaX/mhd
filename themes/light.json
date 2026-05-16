@@ -1,9 +1,9 @@
 {
-  "name": "Solid Light",
+  "name": "Light",
   "author": "Antigravity",
   "themes": [
     {
-      "name": "Solid Light",
+      "name": "Light",
       "appearance": "light",
       "style": {
         "colors": {
