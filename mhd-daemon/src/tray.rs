@@ -47,7 +47,7 @@ struct TrayState {
 static STATE: AtomicPtr<TrayState> = AtomicPtr::new(ptr::null_mut());
 
 unsafe fn state_ref<'a>() -> Option<&'a TrayState> {
-    STATE.load(Ordering::SeqCst).as_ref()
+    unsafe { STATE.load(Ordering::SeqCst).as_ref() }
 }
 
 // ── Icon loading ───────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ unsafe extern "system" fn wnd_proc(
             struct CreateStruct {
                 lp_create_params: *mut TrayState,
             }
-            let cs = &*(lparam.0 as *const CreateStruct);
+            let cs = unsafe { &*(lparam.0 as *const CreateStruct) };
             let state_ptr = cs.lp_create_params;
 
             // Safety: we haven't stored it yet, no concurrent access.

@@ -1,7 +1,7 @@
 [package]
 name = "mhd-daemon"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [[bin]]
 name = "mhd"
@@ -9,14 +9,13 @@ path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+toml = "1.0"
 serde_json = "1.0"
 lazy_static = "1.4"
-eframe = { version = "0.28", features = ["persistence"] }
-egui = "0.28"
-winit = "0.29"
+eframe = { version = "0.33", features = ["persistence"] }
+egui = "0.33"
+winit = "0.30"
 windows = { version = "0.58", features = [
-
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -32,4 +31,4 @@ windows = { version = "0.58", features = [
 ] }
 
 [build-dependencies]
-embed-resource = "2.5"
+embed-resource = "3.0"

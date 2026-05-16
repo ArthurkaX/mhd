@@ -177,7 +177,7 @@ fn show_brightness_viewport(
                         ui.add(
                             egui::ProgressBar::new(brightness_value as f32 / 100.0)
                                 .animate(true)
-                                .rounding(egui::Rounding::same(4.0)),
+                                .corner_radius(egui::CornerRadius::same(4)),
                         );
             });
         });

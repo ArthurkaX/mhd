@@ -57,7 +57,7 @@ pub fn map_zed_to_egui(zed: &ZedTheme) -> Visuals {
         bg_stroke: Stroke::new(1.0, border),
         fg_stroke: Stroke::new(1.0, text),
         expansion: 0.0,
-        rounding: egui::Rounding::same(4.0),
+        corner_radius: egui::CornerRadius::same(4),
     };
 
     visuals.widgets = Widgets {
@@ -81,7 +81,7 @@ pub fn map_zed_to_egui(zed: &ZedTheme) -> Visuals {
         stroke: Stroke::new(1.0, text),
     };
 
-    visuals.window_rounding = egui::Rounding::same(8.0);
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
     visuals.window_stroke = Stroke::new(1.0, border);
 
     visuals
