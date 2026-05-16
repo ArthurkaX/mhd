@@ -1,4 +1,4 @@
-//! mhd — hotkey daemon with DDC/CI brightness control.
+﻿//! mhd â€” hotkey daemon with DDC/CI brightness control.
 //!
 //! Single binary: tray + daemon core by default, headless via --daemon.
 
@@ -6,10 +6,9 @@
 
 mod action;
 mod app;
-mod brightness;
+mod monitor;
 mod config;
 mod hook;
-mod ipc;
 mod tray;
 mod trigger;
 mod worker;
@@ -17,6 +16,8 @@ mod worker;
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
 fn resolve_config_path() -> PathBuf {
     if let Ok(custom) = env::var("MHD_CONFIG") {
@@ -82,6 +83,13 @@ action = "quit"
 # action = "set_brightness"
 # value = "+5"
 
+# Set monitor input to HDMI 1 (0x60 is Input Select, 17 is HDMI 1 on some monitors).
+# [[binding]]
+# trigger = "ctrl+alt+f1"
+# action = "vcp"
+# code = "0x60"
+# value = "17"
+
 # Decrease monitor brightness via DDC/CI.
 # [[binding]]
 # trigger = "ctrl+alt+numpad_subtract"
@@ -96,6 +104,9 @@ action = "quit"
 "#;
 
 fn main() -> ExitCode {
+    // Try to attach to parent console so we can print messages if launched from a terminal.
+    unsafe { let _ = AttachConsole(ATTACH_PARENT_PROCESS); }
+
     let args: Vec<String> = env::args().collect();
     let mut quiet = false;
     let mut no_tray = false;
@@ -144,11 +155,6 @@ fn main() -> ExitCode {
 
     let handle = app.handle();
 
-    // Start IPC server on background thread (always — needed for
-    // external control in headless mode, and useful for debugging
-    // even with tray).
-    let _ipc_handle = ipc::run_ipc_server(handle.clone());
-
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.
         if !quiet {
@@ -176,7 +182,7 @@ fn main() -> ExitCode {
         // Run the tray on the main thread (blocks until quit)
         tray::run(handle);
 
-        // Tray exited – make sure hooks stop too
+        // Tray exited â€“ make sure hooks stop too
         let _ = hook_handle.join();
         if !quiet {
             println!("mhd: stopped");
@@ -187,7 +193,7 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    eprintln!("mhd — hotkey daemon with DDC/CI brightness control");
+    eprintln!("mhd â€” hotkey daemon with DDC/CI brightness control");
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  mhd.exe               Run with system tray (default)");

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+﻿use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -21,6 +21,8 @@ struct RawBinding {
     target_scheme: Option<String>,
     #[serde(default)]
     value: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
 }
 
 /// Top-level TOML config structure.
@@ -106,6 +108,17 @@ impl AppConfig {
                         "set_brightness action requires 'value' field".to_string()
                     })?;
                     Action::new_set_brightness(value)?
+                }
+                "vcp" => {
+                    let code = raw_b
+                        .code
+                        .as_ref()
+                        .ok_or_else(|| "vcp action requires 'code' field".to_string())?;
+                    let value = raw_b
+                        .value
+                        .as_ref()
+                        .ok_or_else(|| "vcp action requires 'value' field".to_string())?;
+                    Action::new_vcp(code, value)?
                 }
                 "quit" => Action::Quit,
                 other => {

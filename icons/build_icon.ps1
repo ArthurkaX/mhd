@@ -1,12 +1,32 @@
-Add-Type -AssemblyName System.Drawing
+$pngPath = Join-Path $PSScriptRoot "mHD_256.png"
+$icoPath = Join-Path $PSScriptRoot "mhd.ico"
 
-$dest = Join-Path $PSScriptRoot "mhd.ico"
+$pngBytes = [System.IO.File]::ReadAllBytes($pngPath)
+$pngSize = $pngBytes.Length
 
-$icon = New-Object System.Drawing.Icon((Join-Path $PSScriptRoot "mHD_256.png"), 256, 256)
+$icoHeader = [byte[]]@(
+    0, 0, # Reserved
+    1, 0, # Type (Icon)
+    1, 0  # Count
+)
 
-$stream = [System.IO.File]::Create($dest)
-$icon.Save($stream)
+$icoEntry = [byte[]]@(
+    0, 0, # Width, Height (0 means 256)
+    0,    # Color count
+    0,    # Reserved
+    1, 0, # Planes
+    32, 0,# Bit count
+    ($pngSize -band 0xff),
+    (($pngSize -shr 8) -band 0xff),
+    (($pngSize -shr 16) -band 0xff),
+    (($pngSize -shr 24) -band 0xff),
+    22, 0, 0, 0 # Offset (Header(6) + Entry(16) = 22)
+)
+
+$stream = [System.IO.File]::Create($icoPath)
+$stream.Write($icoHeader, 0, $icoHeader.Length)
+$stream.Write($icoEntry, 0, $icoEntry.Length)
+$stream.Write($pngBytes, 0, $pngBytes.Length)
 $stream.Close()
-$icon.Dispose()
 
-Write-Host "Created: $dest"
+Write-Host "Created: $icoPath"

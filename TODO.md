@@ -2,26 +2,25 @@
 
 ## Done ✅
 
-- [x] Daemon (`mhd-daemon`) with all actions: `replace_key`, `run_ps`, `set_brightness`, `switch_scheme`, `quit`
+- [x] Daemon (`mhd-daemon`) with all actions: `replace_key`, `run_ps`, `set_brightness`, `switch_scheme`, `quit`, `vcp`
 - [x] Brightness module via DDC/CI (`dxva2.dll`), dynamic loading
-- [x] IPC server over named pipe in daemon (`ipc.rs`)
 - [x] Tray UI: tray icon, context menu (Status / Edit Config / Reload Config / Quit mhd)
 - [x] Single binary migration: tray + daemon core in one process
 - [x] CLI: `mhd.exe`, `mhd.exe --daemon`, `mhd.exe --quiet`
 - [x] Icons: `mHD_16.png`, `mHD_32.png`, `mHD_256.png` in `icons/`
 - [x] README.md updated for single exe
 - [x] Workspace Cargo cleaned up: removed `mhd-ui`
+- [x] **Verify launch**: `mhd.exe`, `mhd.exe --daemon`, `mhd.exe --daemon --quiet`
+- [x] **Generic VCP command** (`action = "vcp"`) — contrast, input, volume, etc.
+- [x] **Icon in .exe** — embed via `embed-resource` + proper `.ico`
+- [x] **Build .ico** — generated via PowerShell from PNG
 
 ## To Do 🔧
 
 ### Final Polish
 
-- [ ] Update README for single exe (DONE in theory, but verifying)
-- [ ] Update TODO after migration (DONE)
-- [ ] Verify launch:
-  - `mhd.exe`
-  - `mhd.exe --daemon`
-  - `mhd.exe --daemon --quiet`
+- [x] Update README for single exe
+- [x] Update TODO after migration
 
 ### Required
 
@@ -35,9 +34,9 @@
 ### Nice to Have
 
 - [x] **Reload config without restarting daemon** (Done via `AppHandle::reload_config()`)
-- [ ] **Generic VCP command** (`action = "vcp"`) — contrast, input, volume, etc.
-- [ ] **Icon in .exe** — embed via `embed-resource` + proper `.ico`
-- [ ] **Build .ico** — need a classic BMP .ico
+- [x] **Generic VCP command** (Done)
+- [x] **Icon in .exe** (Done)
+- [x] **Build .ico** (Done)
 
 ### Future
 

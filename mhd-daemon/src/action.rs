@@ -1,4 +1,4 @@
-use crate::trigger::{KeyCombo, PhysicalKey, parse_keys};
+﻿use crate::trigger::{KeyCombo, PhysicalKey, parse_keys};
 
 /// An action to execute when a trigger fires.
 #[derive(Debug, Clone)]
@@ -7,6 +7,7 @@ pub enum Action {
     RunPs { command: String },
     SwitchScheme { target_scheme: String },
     SetBrightness { relative: bool, value: i32 },
+    Vcp { code: u8, relative: bool, value: i32 },
     Quit,
 }
 
@@ -45,11 +46,11 @@ impl Action {
             return Err("set_brightness value must not be empty".to_string());
         }
 
-        if let Some(rest) = s.strip_prefix('+') {
+        if let Some(rest) = s.strip_prefix("+") {
             let v: i32 = rest
                 .trim()
                 .parse()
-                .map_err(|_| format!("invalid brightness delta: '{s}'"))?;
+                .map_err(|_| format!("invalid brightness delta: ''{s}''"))?;
             if v == 0 {
                 return Err("brightness delta must not be zero".to_string());
             }
@@ -57,11 +58,11 @@ impl Action {
                 relative: true,
                 value: v,
             })
-        } else if let Some(rest) = s.strip_prefix('-') {
+        } else if let Some(rest) = s.strip_prefix("-") {
             let v: i32 = rest
                 .trim()
                 .parse()
-                .map_err(|_| format!("invalid brightness delta: '{s}'"))?;
+                .map_err(|_| format!("invalid brightness delta: ''{s}''"))?;
             if v == 0 {
                 return Err("brightness delta must not be zero".to_string());
             }
@@ -72,7 +73,7 @@ impl Action {
         } else {
             let v: u32 = s
                 .parse()
-                .map_err(|_| format!("invalid brightness value: '{s}'"))?;
+                .map_err(|_| format!("invalid brightness value: ''{s}''"))?;
             if v > 100 {
                 return Err("brightness must be between 0 and 100".to_string());
             }
@@ -80,6 +81,32 @@ impl Action {
                 relative: false,
                 value: v as i32,
             })
+        }
+    }
+
+    /// Validate and create a vcp action.
+    /// Format: code="0x10", value="+5" or "50".
+    pub fn new_vcp(code_raw: &str, value_raw: &str) -> Result<Self, String> {
+        let code = if code_raw.starts_with("0x") {
+            u8::from_str_radix(&code_raw[2..], 16)
+        } else {
+            code_raw.parse()
+        }.map_err(|_| format!("invalid VCP code: {code_raw}"))?;
+
+        let s = value_raw.trim();
+        if s.is_empty() {
+            return Err("vcp value must not be empty".to_string());
+        }
+
+        if let Some(rest) = s.strip_prefix("+") {
+            let v: i32 = rest.trim().parse().map_err(|_| format!("invalid vcp delta: {s}"))?;
+            Ok(Action::Vcp { code, relative: true, value: v })
+        } else if let Some(rest) = s.strip_prefix("-") {
+            let v: i32 = rest.trim().parse().map_err(|_| format!("invalid vcp delta: {s}"))?;
+            Ok(Action::Vcp { code, relative: true, value: -v })
+        } else {
+            let v: i32 = s.parse().map_err(|_| format!("invalid vcp value: {s}"))?;
+            Ok(Action::Vcp { code, relative: false, value: v })
         }
     }
 
@@ -114,6 +141,13 @@ impl Action {
                     format!("set_brightness: {:+}", value)
                 } else {
                     format!("set_brightness: {}%", value)
+                }
+            }
+            Action::Vcp { code, relative, value } => {
+                if *relative {
+                    format!("vcp: 0x{:02X} {:+}", code, value)
+                } else {
+                    format!("vcp: 0x{:02X} = {}", code, value)
                 }
             }
             Action::Quit => "quit".to_string(),

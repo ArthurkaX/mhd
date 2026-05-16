@@ -1,4 +1,4 @@
-//! Monitor brightness control via DDC/CI (dxva2.dll).
+﻿//! Monitor control via DDC/CI (dxva2.dll).
 
 use std::mem::transmute;
 
@@ -18,6 +18,10 @@ type GetMonitorBrightnessFn =
     unsafe extern "system" fn(PhysicalMonitorHandle, *mut u32, *mut u32, *mut u32) -> BOOL;
 type SetMonitorBrightnessFn =
     unsafe extern "system" fn(PhysicalMonitorHandle, u32) -> BOOL;
+type GetVCPFeatureAndVCPFeatureReplyFn =
+    unsafe extern "system" fn(PhysicalMonitorHandle, u8, *mut u32, *mut u32, *mut u32) -> BOOL;
+type SetVCPFeatureFn =
+    unsafe extern "system" fn(PhysicalMonitorHandle, u8, u32) -> BOOL;
 
 #[repr(C)]
 struct PhysicalMonitor {
@@ -30,11 +34,12 @@ struct Dxva2 {
     get_physical: GetPhysicalMonitorsFromHMONITORFn,
     get_brightness: GetMonitorBrightnessFn,
     set_brightness: SetMonitorBrightnessFn,
+    get_vcp: GetVCPFeatureAndVCPFeatureReplyFn,
+    set_vcp: SetVCPFeatureFn,
 }
 
 impl Dxva2 {
     fn load() -> Result<Self, String> {
-        // LoadLibraryA + transmute: the dxva2.dll is a system DLL, signatures are well-known.
         unsafe {
             let name = PCSTR::from_raw("dxva2.dll\0".as_ptr());
             let module = windows::Win32::System::LibraryLoader::LoadLibraryA(name)
@@ -62,6 +67,8 @@ impl Dxva2 {
                 ),
                 get_brightness: load!("GetMonitorBrightness", GetMonitorBrightnessFn),
                 set_brightness: load!("SetMonitorBrightness", SetMonitorBrightnessFn),
+                get_vcp: load!("GetVCPFeatureAndVCPFeatureReply", GetVCPFeatureAndVCPFeatureReplyFn),
+                set_vcp: load!("SetVCPFeature", SetVCPFeatureFn),
             })
         }
     }
@@ -88,7 +95,7 @@ fn first_physical_handle(dxva2: &Dxva2, hmon: HMONITOR) -> Result<PhysicalMonito
         monitors.set_len(count as usize);
 
         let handle = monitors[0].handle;
-        std::mem::forget(monitors); // leak — OS owns the structs
+        std::mem::forget(monitors); // leak -- OS owns the structs
         Ok(handle)
     }
 }
@@ -127,4 +134,37 @@ pub fn adjust_brightness(delta: i32) -> Result<(), String> {
     let current = get_brightness()? as i32;
     let new = (current + delta).clamp(0, 100) as u32;
     set_brightness_absolute(new)
+}
+
+pub fn set_vcp_feature(code: u8, value: u32) -> Result<(), String> {
+    let dxva2 = Dxva2::load()?;
+    let hmon = primary_monitor();
+    let handle = first_physical_handle(&dxva2, hmon)?;
+
+    unsafe {
+        if !(dxva2.set_vcp)(handle, code, value).as_bool() {
+            return Err(format!("cannot set VCP feature 0x{:02X}", code));
+        }
+    }
+    Ok(())
+}
+
+pub fn adjust_vcp_feature(code: u8, delta: i32) -> Result<(), String> {
+    let dxva2 = Dxva2::load()?;
+    let hmon = primary_monitor();
+    let handle = first_physical_handle(&dxva2, hmon)?;
+
+    unsafe {
+        let mut _vcp_type = 0u32;
+        let mut cur = 0u32;
+        let mut max = 0u32;
+        if !(dxva2.get_vcp)(handle, code, &mut _vcp_type, &mut cur, &mut max).as_bool() {
+            return Err(format!("cannot get VCP feature 0x{:02X}", code));
+        }
+        let new = (cur as i32 + delta).clamp(0, max as i32) as u32;
+        if !(dxva2.set_vcp)(handle, code, new).as_bool() {
+            return Err(format!("cannot set VCP feature 0x{:02X}", code));
+        }
+    }
+    Ok(())
 }

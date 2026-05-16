@@ -52,30 +52,44 @@ unsafe fn state_ref<'a>() -> Option<&'a TrayState> {
 // ── Icon loading ───────────────────────────────────────────────────────
 
 fn load_tray_icon() -> HICON {
-    // Try to find mHD_32.png next to the exe
-    let exe_dir = env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let icon_path = exe_dir.join("mHD_32.png");
-    let wide_icon: Vec<u16> = icon_path
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    unsafe {
+        let hinst = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
 
-    match unsafe {
-        LoadImageW(
+        // Try to load embedded icon (IDI_MHD = 1)
+        if let Ok(h) = LoadImageW(
+            hinst,
+            PCWSTR(1 as *const u16),
+            IMAGE_ICON,
+            0,
+            0,
+            windows::Win32::UI::WindowsAndMessaging::IMAGE_FLAGS(0),
+        ) {
+            return HICON(h.0);
+        }
+
+        // Fallback to mHD_32.png next to the exe
+        let exe_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let icon_path = exe_dir.join("mHD_32.png");
+        let wide_icon: Vec<u16> = icon_path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        match LoadImageW(
             None,
             PCWSTR::from_raw(wide_icon.as_ptr()),
             IMAGE_ICON,
             0,
             0,
             LR_LOADFROMFILE,
-        )
-    } {
-        Ok(h) => HICON(h.0),
-        Err(_) => HICON::default(),
+        ) {
+            Ok(h) => HICON(h.0),
+            Err(_) => HICON::default(),
+        }
     }
 }
 

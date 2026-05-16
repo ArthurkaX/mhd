@@ -142,10 +142,6 @@ impl App {
         let tid = unsafe { GetCurrentThreadId() };
         self.hook_thread_id.store(tid, Ordering::SeqCst);
 
-        if !self.quiet {
-            println!("mhd: listening");
-        }
-
         crate::hook::run_with_config(self.config, self.tx, self.quiet)
     }
 }

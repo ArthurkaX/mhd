@@ -18,22 +18,21 @@ Think of it as a programmable `AutoHotkey`-lite that runs silently in the backgr
 │   │  • WH_KEYBOARD_LL / WH_MOUSE_LL hooks                   │   │
 │   │  • TOML config management                               │   │
 │   │  • Action execution (SendInput, PowerShell, DDC/CI)     │   │
-│   │  • IPC server (named pipe for external control)         │   │
 │   └───────────────▲───────────────────────────▲─────────────┘   │
 │                   │                           │                 │
 │         Direct internal calls           Direct internal calls   │
 │                   │                           │                 │
-│   ┌───────────────▼──────────────┐   ┌────────▼─────────────┐   │
-│   │         Tray Module          │   │      IPC Server      │   │
-│   │                              │   │                      │   │
-│   │  🟢 Tray Icon                │   │  • status            │   │
-│   │  ┌────────────┐              │   │  • reload            │   │
-│   │  │Status: OK   │              │   │  • shutdown          │   │
-│   │  │Edit Config  │              │   └──────────────────────┘   │
-│   │  │Reload Config│              │                             │
-│   │  │Quit mhd     │              │     (headless control)      │
-│   │  └────────────┘              │                             │
-│   └──────────────────────────────┘                             │
+│   ┌───────────────▼──────────────┐                              │
+│   │         Tray Module          │                              │
+│   │                              │                              │
+│   │  🟢 Tray Icon                │                              │
+│   │  ┌────────────┐              │                              │
+│   │  │Status: OK   │              │                              │
+│   │  │Edit Config  │              │                              │
+│   │  │Reload Config│              │                              │
+│   │  │Quit mhd     │              │                              │
+│   │  └────────────┘              │                              │
+│   └──────────────────────────────┘                              │
 │                                                                 │
 │   User runs:                                                    │
 │   mhd.exe                                                       │
@@ -114,6 +113,11 @@ Adjust monitor brightness via DDC/CI.
 - `value = "-5"` (decrease)
 - `value = "50"` (absolute)
 
+### `vcp`
+Send a raw DDC/CI VCP feature command.
+- `code = "0x60"`, `value = "17"` (Set input to HDMI 1)
+- `code = "0x12"`, `value = "+10"` (Increase contrast)
+
 ### `switch_scheme`
 Switch binding layers.
 
@@ -133,8 +137,8 @@ Switch binding layers.
 ## Troubleshooting
 
 - **"config empty"**: Uncomment at least one binding.
-- **Brightness issues**: Ensure DDC/CI is enabled in monitor OSD. May require Administrator rights.
-- **Tray icon missing**: Ensure `mHD_32.png` is next to `mhd.exe`.
+- **Brightness issues**: Ensure DDC/CI is enabled in monitor OSD.
+- **Tray icon missing**: The icon is embedded in `mhd.exe`, but you can also place an `mHD_32.png` next to the exe to override it.
 
 ---
 
@@ -143,7 +147,6 @@ Switch binding layers.
 1. **Main thread** runs the tray UI or hook loop.
 2. **Hook thread** (if in tray mode) handles `WH_KEYBOARD_LL` / `WH_MOUSE_LL`.
 3. **Worker thread** executes actions to keep hooks responsive.
-4. **IPC thread** allows external control via named pipe.
 
 ---
 

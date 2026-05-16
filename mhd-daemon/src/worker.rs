@@ -1,7 +1,7 @@
-use std::sync::mpsc;
+﻿use std::sync::mpsc;
 
 use crate::action::Action;
-use crate::brightness;
+use crate::monitor;
 use crate::trigger::{KeyCombo, PhysicalKey};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
@@ -66,21 +66,32 @@ fn execute_action(action: &Action) {
         Action::ReplaceKey { keys } => send_replace_key(keys),
         Action::RunPs { command } => run_powershell(command),
         Action::SwitchScheme { .. } => {
-            // Обрабатывается в другом месте
+            // ?????????????? ? ?????? ?????
         }
         Action::SetBrightness { relative, value } => {
             if *relative {
-                if let Err(e) = brightness::adjust_brightness(*value) {
+                if let Err(e) = monitor::adjust_brightness(*value) {
                     eprintln!("mhd: brightness error: {e}");
                 }
             } else {
-                if let Err(e) = brightness::set_brightness_absolute(*value as u32) {
+                if let Err(e) = monitor::set_brightness_absolute(*value as u32) {
                     eprintln!("mhd: brightness error: {e}");
                 }
             }
         }
+        Action::Vcp { code, relative, value } => {
+            if *relative {
+                if let Err(e) = monitor::adjust_vcp_feature(*code, *value) {
+                    eprintln!("mhd: VCP error: {e}");
+                }
+            } else {
+                if let Err(e) = monitor::set_vcp_feature(*code, *value as u32) {
+                    eprintln!("mhd: VCP error: {e}");
+                }
+            }
+        }
         Action::Quit => {
-            // Обрабатывается через PostQuitMessage из обратного вызова хука
+            // ?????????????? ????? PostQuitMessage ?? ????????? ?????? ????
         }
     }
 }
