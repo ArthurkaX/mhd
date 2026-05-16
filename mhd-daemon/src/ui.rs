@@ -90,7 +90,9 @@ pub fn shutdown() {
     }
 }
 
-pub struct OverlayApp;
+pub struct OverlayApp {
+    is_currently_visible: bool,
+}
 
 impl OverlayApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -101,7 +103,9 @@ impl OverlayApp {
             }
         }
 
-        Self
+        Self {
+            is_currently_visible: false,
+        }
     }
 }
 
@@ -140,17 +144,22 @@ impl eframe::App for OverlayApp {
             return;
         }
 
-        if about_visible {
+        let should_be_visible = about_visible || brightness_visible;
+
+        if should_be_visible && !self.is_currently_visible {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.is_currently_visible = true;
+        } else if !should_be_visible && self.is_currently_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.is_currently_visible = false;
+        }
+
+        if about_visible {
             show_about_ui(ctx, theme.clone());
         } else if brightness_visible {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             show_brightness_ui(ctx, brightness_value, &monitor_name, theme.clone());
             // Only poll for the timeout when the brightness UI is actually visible
             ctx.request_repaint_after(Duration::from_millis(100));
-        } else {
-            // Hide the window completely from the OS
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
     }
 
