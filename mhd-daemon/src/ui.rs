@@ -35,6 +35,7 @@ pub fn show_brightness(value: u32, name: String) {
     state.brightness_visible = true;
     state.last_update = Some(Instant::now());
     if let Some(ctx) = &state.ctx {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.request_repaint();
     }
 }
@@ -44,6 +45,7 @@ pub fn show_about() {
     if let Ok(mut state) = UI_STATE.lock() {
         state.about_visible = true;
         if let Some(ctx) = &state.ctx {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.request_repaint();
         }
     }
@@ -53,6 +55,7 @@ pub fn shutdown() {
     if let Ok(mut state) = UI_STATE.lock() {
         state.should_exit = true;
         if let Some(ctx) = &state.ctx {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.request_repaint();
         }
     }
