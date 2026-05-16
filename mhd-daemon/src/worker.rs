@@ -108,8 +108,8 @@ fn execute_action(action: &Action) {
 
             match res {
                 Ok(_) => {
-                    if let Ok(new_val) = monitor::get_brightness() {
-                        crate::ui::show_brightness(new_val);
+                    if let Ok((new_val, name)) = monitor::get_brightness() {
+                        crate::ui::show_brightness(new_val, name);
                     }
                 }
                 Err(e) => eprintln!("mhd: brightness error: {e}"),

@@ -16,6 +16,7 @@ lazy_static::lazy_static! {
 pub struct UiState {
     pub brightness_visible: bool,
     pub brightness_value: u32,
+    pub monitor_name: String,
     pub last_update: Option<Instant>,
     pub about_visible: bool,
     pub theme: Option<egui::Visuals>,
@@ -23,13 +24,14 @@ pub struct UiState {
     pub ctx: Option<egui::Context>,
 }
 
-pub fn show_brightness(value: u32) {
-    println!("mhd: UI: show_brightness({})", value);
+pub fn show_brightness(value: u32, name: String) {
+    println!("mhd: UI: show_brightness({}, {})", value, name);
     let mut state = match UI_STATE.lock() {
         Ok(s) => s,
         Err(_) => return,
     };
     state.brightness_value = value;
+    state.monitor_name = name;
     state.brightness_visible = true;
     state.last_update = Some(Instant::now());
     if let Some(ctx) = &state.ctx {
@@ -73,14 +75,14 @@ impl OverlayApp {
 
 impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (brightness_visible, brightness_value, about_visible, theme, should_exit) = {
+        let (brightness_visible, brightness_value, monitor_name, about_visible, theme, should_exit) = {
             let mut state = match UI_STATE.lock() {
                 Ok(s) => s,
                 Err(_) => return,
             };
 
             if state.should_exit {
-                (false, 0, false, None, true)
+                (false, 0, String::new(), false, None, true)
             } else {
                 if let Some(last) = state.last_update {
                     if last.elapsed() > Duration::from_secs(2) {
@@ -94,6 +96,7 @@ impl eframe::App for OverlayApp {
                 (
                     state.brightness_visible,
                     state.brightness_value,
+                    state.monitor_name.clone(),
                     state.about_visible,
                     state.theme.clone(),
                     false,
@@ -112,7 +115,7 @@ impl eframe::App for OverlayApp {
         }
 
         if brightness_visible {
-            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point(), theme.clone());
+            show_brightness_viewport(ctx, brightness_value, &monitor_name, ctx.pixels_per_point(), theme.clone());
         }
 
         // Keep the main loop alive to process timeouts and commands
@@ -172,15 +175,16 @@ fn show_about_viewport(parent_ctx: &egui::Context, theme: Option<egui::Visuals>)
 fn show_brightness_viewport(
     parent_ctx: &egui::Context,
     brightness_value: u32,
+    monitor_name: &str,
     pixels_per_point: f32,
     theme: Option<egui::Visuals>,
 ) {
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / pixels_per_point;
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32 / pixels_per_point;
     
-    // Proportions matching the screenshot
-    let window_size = egui::vec2(390.0, 90.0);
-    let margin = egui::vec2(48.0, 48.0);
+    // Proportions matching the screenshot, halved + adjusted for clipping
+    let window_size = egui::vec2(210.0, 50.0);
+    let margin = egui::vec2(24.0, 34.0); // Lifted by 10px
 
     parent_ctx.show_viewport_immediate(
         egui::ViewportId::from_hash_of("mhd_brightness"),
@@ -203,38 +207,37 @@ fn show_brightness_viewport(
                 ctx.set_visuals(visuals.clone());
             }
 
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let frame = egui::Frame::window(ui.style())
-                    .fill(ui.visuals().window_fill)
-                    .stroke(ui.visuals().window_stroke)
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(egui::Margin {
-                        left: 16,
-                        right: 16,
-                        top: 12,
-                        bottom: 12,
-                    });
+            let panel_frame = egui::Frame::window(&ctx.style())
+                .fill(ctx.style().visuals.window_fill)
+                .stroke(ctx.style().visuals.window_stroke)
+                .corner_radius(egui::CornerRadius::same(3))
+                .inner_margin(egui::Margin {
+                    left: 8,
+                    right: 8,
+                    top: 6,
+                    bottom: 6,
+                });
 
-                frame.show(ui, |ui| {
-                    ui.set_min_size(egui::vec2(window_size.x - 32.0, window_size.y - 24.0));
-
+            egui::CentralPanel::default()
+                .frame(panel_frame)
+                .show(ctx, |ui| {
                     // Monitor Name
                     ui.label(
-                        egui::RichText::new("EK251Q G")
+                        egui::RichText::new(monitor_name)
                             .color(ui.visuals().text_color())
-                            .size(16.0),
+                            .size(8.0),
                     );
 
-                    ui.add_space(12.0);
+                    ui.add_space(6.0);
 
                     // Slider Track Row
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         // The text takes some space, we allocate the rest for the track
-                        let text_width = 40.0;
-                        let spacing = 12.0;
+                        let text_width = 24.0;
+                        let spacing = 6.0;
                         let available_width = ui.available_width() - text_width - spacing;
                         
-                        let thumb_height = 28.0;
+                        let thumb_height = 14.0;
                         let (rect, _response) = ui.allocate_exact_size(
                             egui::vec2(available_width, thumb_height),
                             egui::Sense::hover(),
@@ -245,7 +248,7 @@ fn show_brightness_viewport(
                         let track_color = ui.visuals().extreme_bg_color;
 
                         // Track line
-                        let track_height = 2.0;
+                        let track_height = 1.0;
                         let track_rect = egui::Rect::from_min_size(
                             egui::pos2(rect.min.x, rect.center().y - track_height / 2.0),
                             egui::vec2(rect.width(), track_height),
@@ -262,7 +265,7 @@ fn show_brightness_viewport(
                         ui.painter().rect_filled(filled_rect, 0.0, active_color);
 
                         // Thumb block (tall and narrow like the screenshot)
-                        let thumb_width = 8.0;
+                        let thumb_width = 4.0;
                         let thumb_x = (track_rect.min.x + filled_width - thumb_width / 2.0)
                             .clamp(rect.min.x, rect.max.x - thumb_width);
 
@@ -278,11 +281,10 @@ fn show_brightness_viewport(
                         ui.label(
                             egui::RichText::new(format!("{}", brightness_value))
                                 .color(ui.visuals().text_color())
-                                .size(16.0),
+                                .size(8.0),
                         );
                     });
                 });
-            });
         },
     );
 }

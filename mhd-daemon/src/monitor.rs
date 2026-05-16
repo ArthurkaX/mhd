@@ -1,4 +1,4 @@
-﻿//! Monitor control via DDC/CI (dxva2.dll).
+//! Monitor control via DDC/CI (dxva2.dll).
 
 use std::mem::transmute;
 
@@ -81,7 +81,7 @@ fn primary_monitor() -> HMONITOR {
     }
 }
 
-fn first_physical_handle(dxva2: &Dxva2, hmon: HMONITOR) -> Result<PhysicalMonitorHandle, String> {
+fn first_physical_monitor(dxva2: &Dxva2, hmon: HMONITOR) -> Result<(PhysicalMonitorHandle, String), String> {
     unsafe {
         let mut count: u32 = 0;
         if !(dxva2.get_number)(hmon, &mut count).as_bool() || count == 0 {
@@ -95,15 +95,20 @@ fn first_physical_handle(dxva2: &Dxva2, hmon: HMONITOR) -> Result<PhysicalMonito
         monitors.set_len(count as usize);
 
         let handle = monitors[0].handle;
+        
+        let desc_u16 = &monitors[0].description;
+        let len = desc_u16.iter().position(|&c| c == 0).unwrap_or(desc_u16.len());
+        let name = String::from_utf16_lossy(&desc_u16[..len]);
+
         std::mem::forget(monitors); // leak -- OS owns the structs
-        Ok(handle)
+        Ok((handle, name))
     }
 }
 
-pub fn get_brightness() -> Result<u32, String> {
+pub fn get_brightness() -> Result<(u32, String), String> {
     let dxva2 = Dxva2::load()?;
     let hmon = primary_monitor();
-    let handle = first_physical_handle(&dxva2, hmon)?;
+    let (handle, name) = first_physical_monitor(&dxva2, hmon)?;
 
     unsafe {
         let mut min = 0u32;
@@ -112,7 +117,7 @@ pub fn get_brightness() -> Result<u32, String> {
         if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
             return Err("cannot get brightness".to_string());
         }
-        Ok(cur)
+        Ok((cur, name))
     }
 }
 
@@ -120,7 +125,7 @@ pub fn set_brightness_absolute(value: u32) -> Result<(), String> {
     let v = value.min(100);
     let dxva2 = Dxva2::load()?;
     let hmon = primary_monitor();
-    let handle = first_physical_handle(&dxva2, hmon)?;
+    let (handle, _) = first_physical_monitor(&dxva2, hmon)?;
 
     unsafe {
         if !(dxva2.set_brightness)(handle, v).as_bool() {
@@ -131,15 +136,15 @@ pub fn set_brightness_absolute(value: u32) -> Result<(), String> {
 }
 
 pub fn adjust_brightness(delta: i32) -> Result<(), String> {
-    let current = get_brightness()? as i32;
-    let new = (current + delta).clamp(0, 100) as u32;
+    let (current, _) = get_brightness()?;
+    let new = (current as i32 + delta).clamp(0, 100) as u32;
     set_brightness_absolute(new)
 }
 
 pub fn set_vcp_feature(code: u8, value: u32) -> Result<(), String> {
     let dxva2 = Dxva2::load()?;
     let hmon = primary_monitor();
-    let handle = first_physical_handle(&dxva2, hmon)?;
+    let (handle, _) = first_physical_monitor(&dxva2, hmon)?;
 
     unsafe {
         if !(dxva2.set_vcp)(handle, code, value).as_bool() {
@@ -152,7 +157,7 @@ pub fn set_vcp_feature(code: u8, value: u32) -> Result<(), String> {
 pub fn adjust_vcp_feature(code: u8, delta: i32) -> Result<(), String> {
     let dxva2 = Dxva2::load()?;
     let hmon = primary_monitor();
-    let handle = first_physical_handle(&dxva2, hmon)?;
+    let (handle, _) = first_physical_monitor(&dxva2, hmon)?;
 
     unsafe {
         let mut _vcp_type = 0u32;
