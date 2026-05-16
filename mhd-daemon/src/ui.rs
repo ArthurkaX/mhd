@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use eframe::egui;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+    GetSystemMetrics, FindWindowW, ShowWindow, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW,
 };
+use windows::core::PCWSTR;
 
 #[cfg(windows)]
 use winit::platform::windows::EventLoopBuilderExtWindows;
@@ -24,6 +25,16 @@ pub struct UiState {
     pub ctx: Option<egui::Context>,
 }
 
+fn force_wake_window() {
+    let title: Vec<u16> = "mhd_overlay\0".encode_utf16().collect();
+    unsafe {
+        let hwnd = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr()));
+        if hwnd != windows::Win32::Foundation::HWND::default() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+    }
+}
+
 pub fn show_brightness(value: u32, name: String) {
     println!("mhd: UI: show_brightness({}, {})", value, name);
     let mut state = match UI_STATE.lock() {
@@ -35,6 +46,7 @@ pub fn show_brightness(value: u32, name: String) {
     state.brightness_visible = true;
     state.last_update = Some(Instant::now());
     if let Some(ctx) = &state.ctx {
+        force_wake_window();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.request_repaint();
     }
@@ -45,6 +57,7 @@ pub fn show_about() {
     if let Ok(mut state) = UI_STATE.lock() {
         state.about_visible = true;
         if let Some(ctx) = &state.ctx {
+            force_wake_window();
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.request_repaint();
         }
@@ -55,6 +68,7 @@ pub fn shutdown() {
     if let Ok(mut state) = UI_STATE.lock() {
         state.should_exit = true;
         if let Some(ctx) = &state.ctx {
+            force_wake_window();
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.request_repaint();
         }
