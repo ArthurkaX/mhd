@@ -20,6 +20,7 @@ pub struct UiState {
     pub about_visible: bool,
     pub theme: Option<egui::Visuals>,
     pub should_exit: bool,
+    pub ctx: Option<egui::Context>,
 }
 
 pub fn show_brightness(value: u32) {
@@ -31,18 +32,27 @@ pub fn show_brightness(value: u32) {
     state.brightness_value = value;
     state.brightness_visible = true;
     state.last_update = Some(Instant::now());
+    if let Some(ctx) = &state.ctx {
+        ctx.request_repaint();
+    }
 }
 
 pub fn show_about() {
     println!("mhd: UI: show_about()");
     if let Ok(mut state) = UI_STATE.lock() {
         state.about_visible = true;
+        if let Some(ctx) = &state.ctx {
+            ctx.request_repaint();
+        }
     }
 }
 
 pub fn shutdown() {
     if let Ok(mut state) = UI_STATE.lock() {
         state.should_exit = true;
+        if let Some(ctx) = &state.ctx {
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -50,7 +60,8 @@ pub struct OverlayApp;
 
 impl OverlayApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        if let Ok(state) = UI_STATE.lock() {
+        if let Ok(mut state) = UI_STATE.lock() {
+            state.ctx = Some(cc.egui_ctx.clone());
             if let Some(visuals) = &state.theme {
                 cc.egui_ctx.set_visuals(visuals.clone());
             }
@@ -73,7 +84,10 @@ impl eframe::App for OverlayApp {
             } else {
                 if let Some(last) = state.last_update {
                     if last.elapsed() > Duration::from_secs(2) {
-                        state.brightness_visible = false;
+                        if state.brightness_visible {
+                            println!("mhd: UI: brightness timeout, hiding");
+                            state.brightness_visible = false;
+                        }
                     }
                 }
 
@@ -88,6 +102,7 @@ impl eframe::App for OverlayApp {
         };
 
         if should_exit {
+            println!("mhd: UI: exiting");
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -97,9 +112,10 @@ impl eframe::App for OverlayApp {
         }
 
         if brightness_visible {
-            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point(), brightness_visible);
+            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point());
         }
 
+        // Keep the main loop alive to process timeouts and commands
         ctx.request_repaint_after(Duration::from_millis(if brightness_visible { 16 } else { 100 }));
     }
 
@@ -120,7 +136,7 @@ fn show_about_viewport(parent_ctx: &egui::Context, theme: Option<egui::Visuals>)
             .with_always_on_top()
             .with_active(true),
         move |ctx, _class| {
-        if let Some(visuals) = &theme {
+            if let Some(visuals) = &theme {
                 ctx.set_visuals(visuals.clone());
             }
 
@@ -129,7 +145,7 @@ fn show_about_viewport(parent_ctx: &egui::Context, theme: Option<egui::Visuals>)
                     state.about_visible = false;
                 }
                 return;
-        }
+            }
 
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
@@ -157,14 +173,13 @@ fn show_brightness_viewport(
     parent_ctx: &egui::Context,
     brightness_value: u32,
     pixels_per_point: f32,
-    brightness_visible: bool,
 ) {
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / pixels_per_point;
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32 / pixels_per_point;
     let window_size = egui::vec2(260.0, 90.0);
     let margin = egui::vec2(48.0, 48.0);
 
-    parent_ctx.show_viewport_deferred(
+    parent_ctx.show_viewport_immediate(
         egui::ViewportId::from_hash_of("mhd_brightness"),
         egui::ViewportBuilder::default()
             .with_title("mhd_brightness")
@@ -181,10 +196,6 @@ fn show_brightness_viewport(
             ))
             .with_inner_size(window_size),
         move |ctx, _class| {
-            if brightness_visible {
-                ctx.request_repaint();
-            }
-
             egui::CentralPanel::default().show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_min_size(egui::vec2(220.0, 70.0));
@@ -204,10 +215,6 @@ fn show_brightness_viewport(
                     });
                 });
             });
-
-            if !brightness_visible {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
         },
     );
 }

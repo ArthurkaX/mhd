@@ -3,12 +3,14 @@ use std::collections::HashMap;
 use egui::{Color32, Visuals, style::{Widgets, WidgetVisuals, Selection}, Stroke};
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ZedThemeFile {
     pub name: String,
     pub themes: Vec<ZedTheme>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ZedTheme {
     pub name: String,
     pub appearance: String,
