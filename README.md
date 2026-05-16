@@ -1,4 +1,4 @@
-﻿# mhd — Mouse & Hotkey Daemon for Windows
+# mhd — Mouse & Hotkey Daemon for Windows
 
 **mhd** is a lightweight background daemon that remaps keys, mouse buttons, and keyboard shortcuts using low-level Windows hooks. No drivers, no kernel components — just one portable `.exe` file.
 
@@ -48,7 +48,7 @@ Modernized with **Rust 2024** and a high-performance **egui** overlay system.
 - **Mouse button bindings** — bind side buttons (XButton1/XButton2) to any action.
 - **DDC/CI Brightness Overlay** — adjust monitor brightness with smooth visual feedback (OSD).
 - **Modern UI** — hardware-accelerated overlays using `egui` 0.33.
-- **Theme Support** — load Zed-compatible JSON themes (e.g., `One Dark`, `Nightfox`).
+- **Theme Support** — load Zed-compatible JSON themes with true Windows transparency support (e.g., `glass_dark`, `dark`, `light`).
 - **Run arbitrary PowerShell** — execute any script on a hotkey.
 - **Low-level hooks** — highly responsive `WH_KEYBOARD_LL` / `WH_MOUSE_LL`.
 - **Portable & Tiny** — single binary, Rust 2024, no installation required.
@@ -68,7 +68,7 @@ cargo build --release
 On first run, `mhd` creates a default config at:
 `%USERPROFILE%\.config\mhd\config.toml`
 
-To apply a theme, place a `.json` theme file (e.g. from Zed) in a `themes/` folder next to the exe or in the config dir, and set `theme = "one_dark"` in your `config.toml`.
+To apply a theme, place a `.json` theme file (e.g. from Zed) in a `themes/` folder next to the exe or in the config dir, and set `theme = "glass_dark"` in your `config.toml`.
 
 ---
 
