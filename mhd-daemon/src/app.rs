@@ -63,6 +63,7 @@ impl AppHandle {
                 let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
             }
         }
+        crate::ui::shutdown();
     }
 }
 
@@ -156,7 +157,8 @@ impl App {
         // Record the thread ID – this is where hooks + message loop live.
         let tid = unsafe { GetCurrentThreadId() };
         self.hook_thread_id.store(tid, Ordering::SeqCst);
+        let handle = self.handle();
 
-        crate::hook::run_with_config(self.config, self.tx, self.quiet)
+        crate::hook::run_with_config(handle, self.tx)
     }
 }

@@ -1,24 +1,23 @@
 use std::collections::HashSet;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PostQuitMessage, SetWindowsHookExW,
+    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW,
     TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
     WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::action::Action;
-use crate::config::AppConfig;
+use crate::app::AppHandle;
 use crate::trigger::{get_pressed_modifiers, is_modifier_vk, PhysicalKey, Trigger};
 use crate::worker::{ActionMessage, ActionSender};
 
 /// Global hook state, accessible from hook callbacks.
 struct HookState {
-    config: Arc<Mutex<AppConfig>>,
+    handle: AppHandle,
     tx: ActionSender,
-    quiet: bool,
     /// Set of keyboard VKs whose key-down was swallowed; their key-up should also be swallowed.
     swallowed_keys: Mutex<HashSet<u32>>,
     /// Set of mouse XButton numbers whose button-down was swallowed; their button-up should also be swallowed.
@@ -41,18 +40,17 @@ static MOUSE_HOOK: LazyLock<Mutex<Option<SendHook>>> = LazyLock::new(|| Mutex::n
 
 /// Entry point used by `app.rs`. Accepts a shared config so reloads are visible.
 pub fn run_with_config(
-    config: Arc<Mutex<AppConfig>>,
+    handle: AppHandle,
     tx: ActionSender,
-    quiet: bool,
 ) -> Result<(), String> {
-    run_impl(config, tx, quiet)
+    run_impl(handle, tx)
 }
 
-fn run_impl(config: Arc<Mutex<AppConfig>>, tx: ActionSender, quiet: bool) -> Result<(), String> {
+fn run_impl(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
+    let quiet = handle.quiet;
     let state = Box::new(HookState {
-        config: config.clone(),
+        handle,
         tx,
-        quiet,
         swallowed_keys: Mutex::new(HashSet::new()),
         swallowed_mouse: Mutex::new(HashSet::new()),
     });
@@ -139,6 +137,23 @@ fn cleanup() {
     }
 }
 
+fn signal_tray_to_quit() {
+    let class: Vec<u16> = "mhdTrayClass\0".encode_utf16().collect();
+    let title: Vec<u16> = "mhd-tray\0".encode_utf16().collect();
+    unsafe {
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+        if let Ok(hwnd) = FindWindowW(
+            PCWSTR::from_raw(class.as_ptr()),
+            PCWSTR::from_raw(title.as_ptr()),
+        ) {
+            if hwnd != HWND::default() {
+                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+}
+
 /// Keyboard low-level hook callback.
 #[allow(unused_unsafe)]
 unsafe extern "system" fn keyboard_hook_proc(
@@ -174,7 +189,7 @@ unsafe extern "system" fn keyboard_hook_proc(
 
             // Look up the binding and determine action type, then drop the lock before acting
             let match_result = {
-                let config = state.config.lock().unwrap();
+                let config = state.handle.config.lock().unwrap();
                 config
                     .lookup_trigger(&trigger)
                     .map(|b| (b.action.clone(), b.trigger_name.clone()))
@@ -184,18 +199,19 @@ unsafe extern "system" fn keyboard_hook_proc(
                 match &action {
                     Action::SwitchScheme { target_scheme } => {
                         let target = target_scheme.clone();
-                        let mut config = state.config.lock().unwrap();
+                        let mut config = state.handle.config.lock().unwrap();
                         if config.switch_scheme(&target) {
-                            if !state.quiet {
+                            if !state.handle.quiet {
                                 println!("mhd: switched to scheme: {}", config.active_scheme());
                             }
                         }
                     }
                     Action::Quit => {
-                        if !state.quiet {
+                        if !state.handle.quiet {
                             println!("mhd: quit");
                         }
-                        unsafe { PostQuitMessage(0) };
+                        state.handle.shutdown();
+                        signal_tray_to_quit();
                     }
                     action => {
                         let _ = state.tx.send(ActionMessage::Execute(action.clone()));
@@ -241,7 +257,7 @@ unsafe extern "system" fn mouse_hook_proc(
                 };
 
                 let match_result = {
-                    let config = state.config.lock().unwrap();
+                    let config = state.handle.config.lock().unwrap();
                     config
                         .lookup_trigger(&trigger)
                         .map(|b| (b.action.clone(), b.trigger_name.clone()))
@@ -251,18 +267,19 @@ unsafe extern "system" fn mouse_hook_proc(
                     match &action {
                         Action::SwitchScheme { target_scheme } => {
                             let target = target_scheme.clone();
-                            let mut config = state.config.lock().unwrap();
+                            let mut config = state.handle.config.lock().unwrap();
                             if config.switch_scheme(&target) {
-                                if !state.quiet {
+                                if !state.handle.quiet {
                                     println!("mhd: switched to scheme: {}", config.active_scheme());
                                 }
                             }
                         }
                         Action::Quit => {
-                            if !state.quiet {
+                            if !state.handle.quiet {
                                 println!("mhd: quit");
                             }
-                            unsafe { PostQuitMessage(0) };
+                            state.handle.shutdown();
+                            signal_tray_to_quit();
                         }
                         action => {
                             let _ = state.tx.send(ActionMessage::Execute(action.clone()));

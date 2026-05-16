@@ -19,6 +19,7 @@ pub struct UiState {
     pub last_update: Option<Instant>,
     pub about_visible: bool,
     pub theme: Option<egui::Visuals>,
+    pub should_exit: bool,
 }
 
 pub fn show_brightness(value: u32) {
@@ -39,6 +40,12 @@ pub fn show_about() {
     }
 }
 
+pub fn shutdown() {
+    if let Ok(mut state) = UI_STATE.lock() {
+        state.should_exit = true;
+    }
+}
+
 pub struct OverlayApp;
 
 impl OverlayApp {
@@ -55,32 +62,42 @@ impl OverlayApp {
 
 impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (brightness_visible, brightness_value, about_visible, theme) = {
+        let (brightness_visible, brightness_value, about_visible, theme, should_exit) = {
             let mut state = match UI_STATE.lock() {
                 Ok(s) => s,
                 Err(_) => return,
             };
 
-            if let Some(last) = state.last_update {
-                if last.elapsed() > Duration::from_secs(2) {
-                    state.brightness_visible = false;
+            if state.should_exit {
+                (false, 0, false, None, true)
+            } else {
+                if let Some(last) = state.last_update {
+                    if last.elapsed() > Duration::from_secs(2) {
+                        state.brightness_visible = false;
+                    }
                 }
-            }
 
-            (
-                state.brightness_visible,
-                state.brightness_value,
-                state.about_visible,
-                state.theme.clone(),
-            )
+                (
+                    state.brightness_visible,
+                    state.brightness_value,
+                    state.about_visible,
+                    state.theme.clone(),
+                    false,
+                )
+            }
         };
+
+        if should_exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
 
         if about_visible {
             show_about_viewport(ctx, theme.clone());
         }
 
         if brightness_visible {
-            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point());
+            show_brightness_viewport(ctx, brightness_value, ctx.pixels_per_point(), brightness_visible);
         }
 
         ctx.request_repaint_after(Duration::from_millis(if brightness_visible { 16 } else { 100 }));
@@ -140,6 +157,7 @@ fn show_brightness_viewport(
     parent_ctx: &egui::Context,
     brightness_value: u32,
     pixels_per_point: f32,
+    brightness_visible: bool,
 ) {
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / pixels_per_point;
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32 / pixels_per_point;
@@ -163,10 +181,14 @@ fn show_brightness_viewport(
             ))
             .with_inner_size(window_size),
         move |ctx, _class| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+            if brightness_visible {
+                ctx.request_repaint();
+            }
+
+            egui::CentralPanel::default().show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_min_size(egui::vec2(220.0, 70.0));
-            ui.vertical_centered(|ui| {
+                    ui.vertical_centered(|ui| {
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new(format!("Brightness: {}%", brightness_value))
@@ -179,9 +201,13 @@ fn show_brightness_viewport(
                                 .animate(true)
                                 .corner_radius(egui::CornerRadius::same(4)),
                         );
+                    });
+                });
             });
-        });
-            });
+
+            if !brightness_visible {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         },
     );
 }
