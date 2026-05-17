@@ -83,6 +83,33 @@ impl Argb {
         let b = (self.b as u32 * a + 127) / 255;
         (a << 24) | (r << 16) | (g << 8) | b
     }
+
+    /// Blend this color over a background color.
+    ///
+    /// Returns an opaque color (alpha = 255) that looks like this color
+    /// when drawn over the given background.
+    pub fn blend_over(self, background: Argb) -> Argb {
+        if self.a == 255 {
+            return Argb { a: 255, ..self };
+        }
+        if self.a == 0 {
+            return Argb { a: 255, ..background };
+        }
+
+        let a = self.a as u32;
+        let inv_a = 255 - a;
+
+        let r = (self.r as u32 * a + background.r as u32 * inv_a) / 255;
+        let g = (self.g as u32 * a + background.g as u32 * inv_a) / 255;
+        let b = (self.b as u32 * a + background.b as u32 * inv_a) / 255;
+
+        Argb {
+            a: 255,
+            r: r as u8,
+            g: g as u8,
+            b: b as u8,
+        }
+    }
 }
 
 // -----------------------------------------------------------------------

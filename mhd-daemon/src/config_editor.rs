@@ -22,6 +22,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext,
@@ -51,6 +52,7 @@ const ROUND_RADIUS_BASE: f32 = 14.0;
 const COMBO_POPUP_WIDTH: i32 = 260;
 const COMBO_POPUP_ITEM_HEIGHT: i32 = 24;
 const COMBO_POPUP_MAX_VISIBLE: i32 = 8;
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -88,6 +90,8 @@ struct SettingsState {
     theme_names: Vec<String>,
     /// Currently selected theme index
     theme_sel: usize,
+    /// Currently hovered index in the popup
+    hover_sel: Option<usize>,
     /// Combo popup window (when open)
     combo_popup: Option<HWND>,
     /// Whether the combo popup is open
@@ -178,6 +182,7 @@ pub fn show_config_editor(handle: AppHandle) {
         layout,
         theme_names,
         theme_sel,
+        hover_sel: None,
         combo_popup: None,
         combo_open,
     }));
@@ -864,16 +869,17 @@ unsafe extern "system" fn combo_popup_wndproc(
             let _ = GetClientRect(hwnd, &mut rc);
             let w = rc.right - rc.left;
             let h = rc.bottom - rc.top;
-            let item_h = COMBO_POPUP_ITEM_HEIGHT
-                .max((COMBO_POPUP_ITEM_HEIGHT as f32) as i32);
+
+            let (theme, scale) = if !state_ptr.is_null() {
+                (&(*state_ptr).theme, (*state_ptr).layout.scale)
+            } else {
+                (&NativeTheme::default(), 1.0)
+            };
+
+            let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * scale) as i32;
 
             // Background — use main background colour, not surface.
             // Surface is often transparent/light and makes text unreadable.
-            let theme = if !state_ptr.is_null() {
-                &(*state_ptr).theme
-            } else {
-                &NativeTheme::default()
-            };
             let bg = CreateSolidBrush(theme.background.to_colorref());
             let _ = FillRect(hdc, &rc, bg);
             let _ = DeleteObject(bg);
@@ -904,8 +910,17 @@ unsafe extern "system" fn combo_popup_wndproc(
                     };
 
                     // Hover/selected highlight
-                    if i == state.theme_sel {
-                        let sel_brush = CreateSolidBrush(theme.selected.to_colorref());
+                    let highlight = if i == state.theme_sel {
+                        Some(theme.selected)
+                    } else if state.hover_sel == Some(i) {
+                        Some(theme.hover)
+                    } else {
+                        None
+                    };
+
+                    if let Some(c) = highlight {
+                        let blended = c.blend_over(theme.background);
+                        let sel_brush = CreateSolidBrush(blended.to_colorref());
                         let _ = FillRect(hdc, &item_rc, sel_brush);
                         let _ = DeleteObject(sel_brush);
                     }
@@ -935,6 +950,53 @@ unsafe extern "system" fn combo_popup_wndproc(
             LRESULT(0)
         }
 
+        WM_MOUSEMOVE => {
+            let y = ((lparam.0 >> 16) as i16) as i32;
+            let state_ptr =
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+            if !state_ptr.is_null() {
+                let state = &mut *state_ptr;
+                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
+                // y includes 1px top border
+                let inner_y = if y > 0 { y - 1 } else { 0 };
+                let idx = (inner_y / item_h) as usize;
+
+                let new_hover = if idx < state.theme_names.len() {
+                    Some(idx)
+                } else {
+                    None
+                };
+
+                if state.hover_sel != new_hover {
+                    state.hover_sel = new_hover;
+                    let _ = InvalidateRect(hwnd, None, false);
+
+                    let mut tme = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut tme);
+                }
+            }
+            LRESULT(0)
+        }
+
+        WM_MOUSELEAVE => {
+            let state_ptr =
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+            if !state_ptr.is_null() {
+                let state = &mut *state_ptr;
+                if state.hover_sel.is_some() {
+                    state.hover_sel = None;
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+            }
+            LRESULT(0)
+        }
+
         WM_LBUTTONDOWN => {
             let y = ((lparam.0 >> 16) as i16) as i32;
             let state_ptr =
@@ -942,8 +1004,7 @@ unsafe extern "system" fn combo_popup_wndproc(
 
             if !state_ptr.is_null() {
                 let state = &mut *state_ptr;
-                let item_h = COMBO_POPUP_ITEM_HEIGHT
-                    .max((COMBO_POPUP_ITEM_HEIGHT as f32) as i32);
+                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
                 // y includes 1px top border
                 let inner_y = if y > 0 { y - 1 } else { 0 };
                 let idx = inner_y / item_h;
