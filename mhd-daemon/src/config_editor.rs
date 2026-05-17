@@ -614,6 +614,12 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let _ = DeleteObject(small_font);
     }
 
+    // GDI writes RGB into a 32-bit DIB but often leaves alpha as 0.
+    // For a layered window that makes buttons/lines/text transparent holes.
+    // Restore alpha for newly drawn RGB pixels while preserving the original
+    // per-pixel alpha of the rounded background (glass theme stays glassy).
+    fix_gdi_alpha(bits, lay.win_w, lay.win_h, theme.background);
+
     // ── UpdateLayeredWindow ────────────────────────────────────────
     let blend = BLENDFUNCTION {
         BlendOp: AC_SRC_OVER as u8,
@@ -652,6 +658,34 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
 }
 
 /// Draw a rectangular button on the DIB.
+fn fix_gdi_alpha(bits: *mut c_void, width: i32, height: i32, background: crate::native_theme::Argb) {
+    if bits.is_null() || width <= 0 || height <= 0 {
+        return;
+    }
+
+    let bg_px = background.to_premultiplied_argb_pixel();
+    unsafe {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
+        for px in pixels.iter_mut() {
+            let a = (*px >> 24) & 0xff;
+            let rgb = *px & 0x00ff_ffff;
+
+            // Do not touch transparent outside corners.
+            if *px == 0 {
+                continue;
+            }
+
+            // Do not force opaque alpha on the original glass background.
+            if *px == bg_px || a != 0 {
+                continue;
+            }
+
+            // GDI-drawn pixel: keep RGB, make it visible in the layered window.
+            *px = 0xff00_0000 | rgb;
+        }
+    }
+}
+
 fn draw_button(
     dib_dc: HDC,
     bits: *mut c_void,
@@ -754,8 +788,10 @@ unsafe extern "system" fn settings_wndproc(
                 return LRESULT(HT_BTN_CLOSE);
             }
 
-            // Everything else → transparent (pass through)
-            LRESULT(HTTRANSPARENT as isize)
+            // Everything else is normal client area. Returning custom hit-test
+            // values here turns clicks into WM_NCLBUTTONDOWN and our
+            // WM_LBUTTONDOWN handler never receives them.
+            LRESULT(HTCLIENT as isize)
         }
 
         WM_LBUTTONDOWN => {
@@ -850,9 +886,10 @@ unsafe extern "system" fn combo_item_wndproc(
             let _ = FillRect(hdc, &rc, bg);
             let _ = DeleteObject(bg);
 
-            // Item index from window user data
-            let idx = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
-            if idx > 0 && !state_ptr.is_null() {
+            // Item index from window user data (stored as index + 1)
+            let idx_raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
+            if idx_raw > 0 && !state_ptr.is_null() {
+                let idx = idx_raw - 1;
                 let state = &*state_ptr;
                 if let Some(name) = state.theme_names.get(idx) {
                     let _ = SetBkMode(hdc, TRANSPARENT);
@@ -883,8 +920,9 @@ unsafe extern "system" fn combo_item_wndproc(
             let popup = GetParent(hwnd).unwrap_or_default();
             let settings_parent = GetParent(popup).unwrap_or_default();
 
-            let idx = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
-            if idx > 0 {
+            let idx_raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
+            if idx_raw > 0 {
+                let idx = idx_raw - 1;
                 let state_ptr =
                     GetWindowLongPtrW(settings_parent, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
@@ -975,11 +1013,9 @@ fn open_combo_popup(state: &mut SettingsState) {
             )
         };
         if let Ok(hwnd_item) = item {
-            // Store theme index in window text
-            let idx_text = format!("{}\0", i);
-            let wide: Vec<u16> = idx_text.encode_utf16().collect();
+            // Store theme index as index + 1 (0 means no data).
             unsafe {
-                let _ = SetWindowTextW(hwnd_item, PCWSTR::from_raw(wide.as_ptr()));
+                let _ = SetWindowLongPtrW(hwnd_item, GWLP_USERDATA, (i + 1) as isize);
             }
         }
     }
