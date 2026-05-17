@@ -124,9 +124,7 @@ pub fn show_config_editor(handle: AppHandle) {
         lpszClassName: PCWSTR::from_raw(cls_name.as_ptr()),
         ..Default::default()
     };
-    if unsafe { RegisterClassW(&wc) } == 0 {
-        return;
-    }
+    let _ = unsafe { RegisterClassW(&wc) };
 
     // Also register combo item class
     let item_cls = to_utf16_z("mhd_combo_item_cls");
