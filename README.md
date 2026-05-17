@@ -33,7 +33,7 @@ loops everywhere). The UI is pure Win32 — no `egui`, no `winit`, no OpenGL.
 - **Low‑level hooks** — `WH_KEYBOARD_LL` / `WH_MOUSE_LL`, sub‑millisecond response.
 - **0 % CPU idle** — blocking message loops, zero polling in all threads.
 - **Native themes** — load JSON colour themes from `%USERPROFILE%\.config\mhd\themes\`.
-- **Styled config editor** — dark‑theme, native `EDIT` control with live TOML validation.
+- **Styled settings panel** — native UI with theme selector, hover effects, and full DPI scaling.
 - **Portable & tiny** — single binary, no installer, no runtime.
 
 ---
@@ -61,7 +61,7 @@ On first run, `mhd` creates a default config at:
 Uncomment the bindings you want to enable, then restart mhd or
 select **Reload Config** from the tray menu.
 
-Use the **Edit Config** tray menu item to open a styled native editor.
+Use the **Edit Config** tray menu item to open the styled settings panel.
 
 ---
 
@@ -146,7 +146,7 @@ mhd/
     ├── tray.rs           — System tray icon + context menu
     ├── osd.rs            — Native Win32 layered OSD (brightness bar)
     ├── about.rs          — Styled native About dialog
-    ├── config_editor.rs  — Styled native config file editor
+    ├── config_editor.rs  — Styled native settings panel
     ├── native_theme.rs   — JSON theme loader + colour helpers
     ├── monitor.rs        — DDC/CI via dxva2.dll, EDID monitor name
     ├── trigger.rs        — Hotkey parsing
