@@ -187,8 +187,8 @@ fn osd_thread(inner: Arc<Mutex<OsdInner>>) {
     }
 
     // ---- OSD live state (owned by this thread) ----
-    let mut value: u32 = 50;
-    let mut monitor_name: String = String::new();
+    let mut _value: u32 = 50;
+    let mut _monitor_name: String = String::new();
     let mut theme: NativeTheme = NativeTheme::default();
 
     // Work area of primary monitor
@@ -213,8 +213,8 @@ fn osd_thread(inner: Arc<Mutex<OsdInner>>) {
                 while let Some(cmd) = guard.queue.pop() {
                     match cmd {
                         OsdCommand::Show { value: v, monitor_name: n } => {
-                            value = v;
-                            monitor_name = n;
+                            _value = v;
+                            _monitor_name = n;
                             // Reset hide timer.
                             unsafe {
                                 let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
@@ -222,8 +222,8 @@ fn osd_thread(inner: Arc<Mutex<OsdInner>>) {
                             // Paint immediately and show.
                             paint_osd(
                                 hwnd,
-                                value,
-                                &monitor_name,
+                                _value,
+                                &_monitor_name,
                                 &work,
                                 osd_w,
                                 osd_h,

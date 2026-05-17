@@ -40,7 +40,6 @@ const PADDING: i32 = 24;
 const HEADER_HEIGHT_BASE: i32 = 64;
 const FOOTER_HEIGHT_BASE: i32 = 52;
 const ROW_HEIGHT_BASE: i32 = 32;
-const ROW_GAP: i32 = 8;
 const LABEL_WIDTH_BASE: i32 = 80;
 const BTN_WIDTH_BASE: i32 = 100;
 const BTN_HEIGHT_BASE: i32 = 30;
@@ -52,14 +51,6 @@ const ROUND_RADIUS_BASE: f32 = 14.0;
 const COMBO_POPUP_WIDTH: i32 = 260;
 const COMBO_POPUP_ITEM_HEIGHT: i32 = 24;
 const COMBO_POPUP_MAX_VISIBLE: i32 = 8;
-
-// ── Hit‑test regions ───────────────────────────────────────────────
-
-const HT_HEADER: isize = 10; // custom region IDs above HTCAPTION
-const HT_THEME_COMBO: isize = 20;
-const HT_THEME_ARROW: isize = 21;
-const HT_BTN_APPLY: isize = 30;
-const HT_BTN_CLOSE: isize = 31;
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -74,7 +65,6 @@ struct Layout {
     pad: i32,
     header_h: i32,
     footer_h: i32,
-    row_h: i32,
     label_w: i32,
     combo_x: i32,
     combo_w: i32,
@@ -269,7 +259,6 @@ fn compute_layout(scale: f32) -> Layout {
         pad,
         header_h,
         footer_h,
-        row_h,
         label_w,
         combo_x,
         combo_w,
@@ -287,7 +276,7 @@ fn compute_layout(scale: f32) -> Layout {
 
 // ── Theme list ──────────────────────────────────────────────────────
 
-fn build_theme_list(default_theme: &NativeTheme) -> Vec<String> {
+fn build_theme_list(_default_theme: &NativeTheme) -> Vec<String> {
     let mut names = Vec::new();
     names.push("built-in dark".to_string());
 
@@ -668,7 +657,7 @@ fn fix_gdi_alpha(bits: *mut c_void, width: i32, height: i32, background: crate::
     unsafe {
         let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
         for px in pixels.iter_mut() {
-            let a = (*px >> 24) & 0xff;
+            let _a = (*px >> 24) & 0xff;
             let rgb = *px & 0x00ff_ffff;
 
             // Do not touch transparent outside corners.
@@ -713,8 +702,8 @@ fn contrast_text_on(bg: Argb) -> bool {
 
 fn draw_button(
     dib_dc: HDC,
-    bits: *mut c_void,
-    win_w: i32,
+    _bits: *mut c_void,
+    _win_w: i32,
     x: i32,
     y: i32,
     w: i32,
@@ -764,7 +753,7 @@ unsafe extern "system" fn settings_wndproc(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LRESULT {
+) -> LRESULT { unsafe {
     match msg {
         WM_CREATE => LRESULT(0),
 
@@ -852,7 +841,7 @@ unsafe extern "system" fn settings_wndproc(
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-}
+}}
 
 // ── Combo popup ─────────────────────────────────────────────────────
 
@@ -861,7 +850,7 @@ unsafe extern "system" fn combo_popup_wndproc(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LRESULT {
+) -> LRESULT { unsafe {
     match msg {
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
@@ -872,7 +861,7 @@ unsafe extern "system" fn combo_popup_wndproc(
                 GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
 
             let mut rc = RECT::default();
-            GetClientRect(hwnd, &mut rc);
+            let _ = GetClientRect(hwnd, &mut rc);
             let w = rc.right - rc.left;
             let h = rc.bottom - rc.top;
             let item_h = COMBO_POPUP_ITEM_HEIGHT
@@ -970,7 +959,7 @@ unsafe extern "system" fn combo_popup_wndproc(
 
         WM_ACTIVATE => {
             // If losing activation, close popup
-            if LOWORD(wparam.0 as u32) == 0 {
+            if loword(wparam.0 as u32) == 0 {
                 let state_ptr =
                     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
@@ -982,9 +971,9 @@ unsafe extern "system" fn combo_popup_wndproc(
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-}
+}}
 
-fn LOWORD(dw: u32) -> u16 {
+fn loword(dw: u32) -> u16 {
     (dw & 0xffff) as u16
 }
 
