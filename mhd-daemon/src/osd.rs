@@ -103,7 +103,7 @@ pub fn start_osd() -> OsdHandle {
 /// Base width at 96 dpi — scaled to actual DPI at runtime.
 const OSD_WIDTH_BASE: i32 = 380;
 /// Base height at 96 dpi.
-const OSD_HEIGHT_BASE: i32 = 102;
+const OSD_HEIGHT_BASE: i32 = 112;
 /// Milliseconds the OSD stays visible after the last update.
 const HIDE_TIMEOUT_MS: u32 = 1200;
 const HIDE_TIMER_ID: usize = 1;
@@ -361,7 +361,7 @@ fn paint_osd(
         left: pad + radius / 2,
         top: name_y,
         right: width - pad,
-        bottom: name_y + font_h.abs() + 4,
+        bottom: name_y + font_h.abs() * 3 / 2,
     };
     let mut name_wz = to_utf16_z(monitor_name);
     unsafe {
@@ -379,7 +379,7 @@ fn paint_osd(
         left: pad + radius / 2,
         top: lbl_y,
         right: width - pad,
-        bottom: lbl_y + font_small_h.abs() + 2,
+        bottom: lbl_y + font_small_h.abs() * 3 / 2 + 4,
     };
     let mut label_wide = to_utf16_z("Brightness");
     unsafe {
@@ -497,54 +497,50 @@ fn paint_osd(
 /// Fill a 32-bit ARGB pixel buffer with a dark rounded rectangle.
 /// Pixels outside the rounded corners are set to transparent (0x00000000);
 /// interior pixels get `0xDD202020` (~87 % opaque near‑black).
-fn draw_rounded_rect(pixels: &mut [u32], width: i32, height: i32, r: i32) {
+/// Corner edges are anti‑aliased over a 1‑pixel falloff for smoothness.
+pub fn draw_rounded_rect(pixels: &mut [u32], width: i32, height: i32, r: i32) {
     let bg: u32 = 0xDD202020;
     let transparent: u32 = 0x00000000;
 
-    let tl = (r, r);
-    let tr = (width - r - 1, r);
-    let bl = (r, height - r - 1);
-    let br = (width - r - 1, height - r - 1);
-    let r_sq = r * r;
+    // Corner circle centres
+    let cr = r;
+    let tl_cx = cr;
+    let tl_cy = cr;
+    let tr_cx = width - cr - 1;
+    let tr_cy = cr;
+    let bl_cx = cr;
+    let bl_cy = height - cr - 1;
+    let br_cx = width - cr - 1;
+    let br_cy = height - cr - 1;
 
     for y in 0..height {
         for x in 0..width {
-            let outside = |cx: i32, cy: i32| -> bool {
-                let dx = x - cx;
-                let dy = y - cy;
-                (dx * dx + dy * dy) > r_sq
+            // Determine which corner this pixel belongs to (if any)
+            let (is_corner, cx, cy) = if x < cr && y < cr {
+                (true, tl_cx, tl_cy)
+            } else if x > tr_cx && y < cr {
+                (true, tr_cx, tr_cy)
+            } else if x < cr && y > bl_cy {
+                (true, bl_cx, bl_cy)
+            } else if x > br_cx && y > br_cy {
+                (true, br_cx, br_cy)
+            } else {
+                (false, 0, 0)
             };
 
-            let is_tl = x <= r && y <= r;
-            let is_tr = x >= tr.0 && y <= r;
-            let is_bl = x <= r && y >= bl.1;
-            let is_br = x >= br.0 && y >= br.1;
-
-            let pixel = if is_tl && outside(tl.0, tl.1) {
-                transparent
-            } else if is_tr && outside(tr.0, tr.1) {
-                transparent
-            } else if is_bl && outside(bl.0, bl.1) {
-                transparent
-            } else if is_br && outside(br.0, br.1) {
-                transparent
-            } else if is_tl || is_tr || is_bl || is_br {
-                // Anti-alias corners
-                let (cx, cy) = if is_tl {
-                    (tl.0, tl.1)
-                } else if is_tr {
-                    (tr.0, tr.1)
-                } else if is_bl {
-                    (bl.0, bl.1)
-                } else {
-                    (br.0, br.1)
-                };
+            let pixel = if is_corner {
                 let dx = (x - cx) as f32;
                 let dy = (y - cy) as f32;
                 let dist = (dx * dx + dy * dy).sqrt();
-                let alpha = 1.0 - (dist - r as f32).clamp(0.0, 1.0);
-                let a = (0xDD as f32 * alpha) as u32;
-                a | (a << 8) | (a << 16) | (a << 24)
+                // Smoothstep: 1.0 inside circle, 0.0 outside, linear falloff over 1px
+                let alpha = 1.0 - (dist - cr as f32).clamp(0.0, 1.0);
+                if alpha <= 0.0 {
+                    transparent
+                } else {
+                    let a = (0xDD as f32 * alpha) as u32;
+                    let rgb = (0x20 as f32 * alpha) as u32;
+                    a << 24 | rgb << 16 | rgb << 8 | rgb
+                }
             } else {
                 bg
             };
@@ -569,6 +565,6 @@ fn monitor_work_rect(_hwnd: Option<HWND>) -> RECT {
 }
 
 /// Encode `&str` as UTF‑16 with trailing NUL.
-fn to_utf16_z(s: &str) -> Vec<u16> {
+pub fn to_utf16_z(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

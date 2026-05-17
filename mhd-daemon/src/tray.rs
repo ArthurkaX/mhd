@@ -17,9 +17,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorPos,
-    GetMessageW, InsertMenuW, LoadImageW, MessageBoxW, PostQuitMessage, RegisterClassW,
+    GetMessageW, InsertMenuW, LoadImageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HICON, IMAGE_ICON, LR_LOADFROMFILE, MB_ICONINFORMATION, MB_OK, MF_BYPOSITION, MF_GRAYED,
+    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_GRAYED,
     MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY,
     WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
@@ -52,10 +52,6 @@ unsafe fn state_ref<'a>() -> Option<&'a TrayState> {
 }
 
 // ── Icon loading ───────────────────────────────────────────────────────
-
-fn to_utf16(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
 
 fn load_tray_icon() -> HICON {
     unsafe {
@@ -281,11 +277,7 @@ unsafe extern "system" fn wnd_proc(
                         }
                     }
                     CMD_ABOUT => {
-                        let title = to_utf16("mhd\0");
-                        let text = to_utf16("Mouse & Hotkey Daemon for Windows\n\nLightweight, single-binary, DDC/CI support.\0");
-                        unsafe {
-                            let _ = MessageBoxW(HWND::default(), PCWSTR::from_raw(text.as_ptr()), PCWSTR::from_raw(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
-                        }
+                        crate::about::show_about();
                     }
                     CMD_QUIT => {
                         state.app.shutdown();

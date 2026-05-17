@@ -13,6 +13,7 @@ mod tray;
 mod trigger;
 mod worker;
 mod osd;
+mod about;
 
 use std::env;
 use std::path::PathBuf;
