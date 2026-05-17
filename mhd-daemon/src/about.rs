@@ -1,5 +1,5 @@
 //! Styled native Win32 About dialog — layered rounded‑rect window
-//! with the same visual style as the OSD.
+//! with themed visual style matching the OSD.
 
 use std::ffi::c_void;
 
@@ -14,6 +14,7 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 
+use crate::native_theme::NativeTheme;
 use crate::osd::{draw_rounded_rect, to_utf16_z};
 
 // ── Layout constants (96 dpi base) ────────────────────────────────────
@@ -25,9 +26,9 @@ const ROUND_RADIUS_BASE: f32 = 14.0;
 
 // ── Public API ─────────────────────────────────────────────────────────
 
-/// Show a modal About dialog on the calling thread.
+/// Show a modal About dialog on the calling thread using the given theme.
 /// Blocks until the user dismisses it (click, Escape, or Enter).
-pub fn show_about() {
+pub fn show_about(theme: NativeTheme) {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -75,7 +76,7 @@ pub fn show_about() {
         let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
     }
 
-    paint_about(hwnd, w, h, scale);
+    paint_about(hwnd, w, h, scale, &theme);
 
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
@@ -124,7 +125,7 @@ extern "system" fn about_wndproc(
 
 // ── Painting ──────────────────────────────────────────────────────────
 
-fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
+fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTheme) {
     let screen_dc = unsafe { GetDC(None) };
 
     let bmi = BITMAPINFO {
@@ -160,7 +161,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
     unsafe {
         let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
-        draw_rounded_rect(pixels, width, height, radius);
+        draw_rounded_rect(pixels, width, height, radius, theme.background);
     }
 
     // Fonts
@@ -183,7 +184,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
 
     // ── Title ──
     let old_font = unsafe { SelectObject(dib_dc, hfont_title) };
-    unsafe { let _ = SetTextColor(dib_dc, COLORREF(0x00FFFFFF)); }
+    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
     let mut title_wz = to_utf16_z("mhd");
     let mut title_rc = RECT {
         left,
@@ -198,7 +199,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
     // ── Version ──
     let ver_y = title_rc.bottom + 4;
     unsafe { let _ = SelectObject(dib_dc, hfont_small); }
-    unsafe { let _ = SetTextColor(dib_dc, COLORREF(0x00999999)); }
+    unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
     let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
     let mut ver_wz = to_utf16_z(&ver);
     let mut ver_rc = RECT {
@@ -213,7 +214,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
 
     // ── Separator line ──
     let sep_y = ver_rc.bottom + 12;
-    let sep_brush = unsafe { CreateSolidBrush(COLORREF(0x00333333)) };
+    let sep_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
     let sep_rc = RECT {
         left,
         top: sep_y,
@@ -228,7 +229,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
     // ── Body text ──
     let body_y = sep_rc.bottom + 14;
     unsafe { let _ = SelectObject(dib_dc, hfont_body); }
-    unsafe { let _ = SetTextColor(dib_dc, COLORREF(0x00CCCCCC)); }
+    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
 
     let lines = [
         "Mouse & Hotkey Daemon for Windows",
@@ -252,7 +253,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32) {
 
     // ── Hint ──
     unsafe { let _ = SelectObject(dib_dc, hfont_small); }
-    unsafe { let _ = SetTextColor(dib_dc, COLORREF(0x00666666)); }
+    unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
     let mut hint_wz = to_utf16_z("Click or press Esc to close");
     let mut hint_rc = RECT {
         left,

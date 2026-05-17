@@ -177,34 +177,6 @@ fn show_menu(hwnd: HWND) {
     }
 }
 
-// ── Config editing ─────────────────────────────────────────────────────
-
-fn open_config_in_editor(app: &AppHandle) {
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-
-    let config_path = &app.config_path;
-    if let Some(parent) = config_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let wide_path: Vec<u16> = config_path
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    unsafe {
-        let _ = ShellExecuteW(
-            HWND::default(),
-            PCWSTR::null(),
-            PCWSTR(wide_path.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOW,
-        );
-    }
-}
-
 // ── Window procedure ───────────────────────────────────────────────────
 
 unsafe extern "system" fn wnd_proc(
@@ -270,14 +242,16 @@ unsafe extern "system" fn wnd_proc(
             let cmd = wparam.0;
             if let Some(state) = unsafe { state_ref() } {
                 match cmd {
-                    CMD_EDIT_CONFIG => open_config_in_editor(&state.app),
+                    CMD_EDIT_CONFIG => {
+                        crate::config_editor::show_config_editor(state.app.clone());
+                    }
                     CMD_RELOAD => {
                         if let Err(e) = state.app.reload_config() {
                             eprintln!("mhd: reload error: {e}");
                         }
                     }
                     CMD_ABOUT => {
-                        crate::about::show_about();
+                        crate::about::show_about(state.app.theme());
                     }
                     CMD_QUIT => {
                         state.app.shutdown();

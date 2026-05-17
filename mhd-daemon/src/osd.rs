@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WAIT_EVENT, WAIT_OBJECT_0, WPARAM};
+
+use crate::native_theme::NativeTheme;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
@@ -51,6 +53,7 @@ struct OsdInner {
 
 enum OsdCommand {
     Show { value: u32, monitor_name: String },
+    SetTheme(NativeTheme),
     Shutdown,
 }
 
@@ -60,6 +63,15 @@ impl OsdHandle {
     pub fn show_brightness(&self, value: u32, monitor_name: String) {
         let mut inner = self.inner.lock().unwrap();
         inner.queue.push(OsdCommand::Show { value, monitor_name });
+        unsafe {
+            let _ = SetEvent(inner.event.raw());
+        }
+    }
+
+    /// Update the theme used by the OSD thread.
+    pub fn set_theme(&self, theme: NativeTheme) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.queue.push(OsdCommand::SetTheme(theme));
         unsafe {
             let _ = SetEvent(inner.event.raw());
         }
@@ -175,8 +187,9 @@ fn osd_thread(inner: Arc<Mutex<OsdInner>>) {
     }
 
     // ---- OSD live state (owned by this thread) ----
-    let mut value: u32;
-    let mut monitor_name: String;
+    let mut value: u32 = 50;
+    let mut monitor_name: String = String::new();
+    let mut theme: NativeTheme = NativeTheme::default();
 
     // Work area of primary monitor
     let work = monitor_work_rect(None);
@@ -215,10 +228,14 @@ fn osd_thread(inner: Arc<Mutex<OsdInner>>) {
                                 osd_w,
                                 osd_h,
                                 scale,
+                                &theme,
                             );
                             unsafe {
                                 let _ = ShowWindow(hwnd, SW_SHOWNA);
                             }
+                        }
+                        OsdCommand::SetTheme(t) => {
+                            theme = t;
                         }
                         OsdCommand::Shutdown => {
                             drop(guard);
@@ -273,6 +290,7 @@ fn paint_osd(
     width: i32,
     height: i32,
     scale: f32,
+    theme: &NativeTheme,
 ) {
     let screen_dc = unsafe { GetDC(None) };
 
@@ -310,7 +328,7 @@ fn paint_osd(
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
     unsafe {
         let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
-        draw_rounded_rect(pixels, width, height, radius);
+        draw_rounded_rect(pixels, width, height, radius, theme.background);
     }
 
     // ---- create fonts ----
@@ -350,7 +368,7 @@ fn paint_osd(
 
     unsafe {
         let _ = SetBkMode(dib_dc, TRANSPARENT);
-        let _ = SetTextColor(dib_dc, COLORREF(0x00FFFFFF));
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
     }
 
     let pad = (PADDING as f32 * scale) as i32;
@@ -374,6 +392,9 @@ fn paint_osd(
     }
 
     // ---- "Brightness" label ----
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
     let lbl_y = name_y + font_h.abs() + 12;
     let mut lbl_rc = RECT {
         left: pad + radius / 2,
@@ -390,6 +411,10 @@ fn paint_osd(
             DT_LEFT | DT_SINGLELINE,
         );
     }
+    // Restore primary text colour for subsequent text
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
 
     // ---- progress bar ----
     let bar_y = lbl_y + font_small_h.abs() + 12;
@@ -399,7 +424,7 @@ fn paint_osd(
 
     // track
     {
-        let gray_brush = unsafe { CreateSolidBrush(COLORREF(0x00505050)) };
+        let track_brush = unsafe { CreateSolidBrush(theme.bar_background.to_colorref()) };
         let track_rc = RECT {
             left: bar_x,
             top: bar_y,
@@ -407,15 +432,15 @@ fn paint_osd(
             bottom: bar_y + bar_h,
         };
         unsafe {
-            let _ = FillRect(dib_dc, &track_rc, gray_brush);
-            let _ = DeleteObject(gray_brush);
+            let _ = FillRect(dib_dc, &track_rc, track_brush);
+            let _ = DeleteObject(track_brush);
         }
     }
 
     // fill
     let fill_w = ((bar_w as f32) * (value.min(100) as f32 / 100.0)) as i32;
     if fill_w > 0 {
-        let accent = unsafe { CreateSolidBrush(COLORREF(0x00FF8C00)) }; // orange accent
+        let accent = unsafe { CreateSolidBrush(theme.accent.to_colorref()) };
         let fill_rc = RECT {
             left: bar_x,
             top: bar_y,
@@ -494,12 +519,10 @@ fn paint_osd(
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-/// Fill a 32-bit ARGB pixel buffer with a dark rounded rectangle.
-/// Pixels outside the rounded corners are set to transparent (0x00000000);
-/// interior pixels get `0xDD202020` (~87 % opaque near‑black).
+/// Fill a 32-bit ARGB pixel buffer with a rounded rectangle.
 /// Corner edges are anti‑aliased over a 1‑pixel falloff for smoothness.
-pub fn draw_rounded_rect(pixels: &mut [u32], width: i32, height: i32, r: i32) {
-    let bg: u32 = 0xDD202020;
+pub fn draw_rounded_rect(pixels: &mut [u32], width: i32, height: i32, r: i32, color: crate::native_theme::Argb) {
+    let bg: u32 = color.to_premultiplied_argb_pixel();
     let transparent: u32 = 0x00000000;
 
     // Corner circle centres
@@ -533,13 +556,21 @@ pub fn draw_rounded_rect(pixels: &mut [u32], width: i32, height: i32, r: i32) {
                 let dy = (y - cy) as f32;
                 let dist = (dx * dx + dy * dy).sqrt();
                 // Smoothstep: 1.0 inside circle, 0.0 outside, linear falloff over 1px
-                let alpha = 1.0 - (dist - cr as f32).clamp(0.0, 1.0);
-                if alpha <= 0.0 {
+                let falloff = 1.0 - (dist - cr as f32).clamp(0.0, 1.0);
+                if falloff <= 0.0 {
                     transparent
                 } else {
-                    let a = (0xDD as f32 * alpha) as u32;
-                    let rgb = (0x20 as f32 * alpha) as u32;
-                    a << 24 | rgb << 16 | rgb << 8 | rgb
+                    // Extract original ARGB from premultiplied bg pixel
+                    let ba = ((bg >> 24) & 0xFF) as f32;
+                    let br = ((bg >> 16) & 0xFF) as f32;
+                    let bg_ = ((bg >> 8) & 0xFF) as f32;
+                    let bb = (bg & 0xFF) as f32;
+                    // Scale by falloff
+                    let na = (ba * falloff) as u32;
+                    let nr = (br * falloff) as u32;
+                    let ng = (bg_ * falloff) as u32;
+                    let nb = (bb * falloff) as u32;
+                    (na.min(255) << 24) | (nr.min(255) << 16) | (ng.min(255) << 8) | nb.min(255)
                 }
             } else {
                 bg

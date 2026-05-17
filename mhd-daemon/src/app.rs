@@ -13,6 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
 
 use crate::config::AppConfig;
+use crate::native_theme::NativeTheme;
 use crate::osd::OsdHandle;
 use crate::worker::{ActionSender, ActionWorker};
 
@@ -28,10 +29,16 @@ pub struct AppHandle {
     /// IPC/tray post WM_QUIT to this thread on shutdown.
     pub(crate) hook_thread_id: Arc<AtomicU32>,
     pub(crate) quiet: bool,
+    pub(crate) theme: Arc<Mutex<NativeTheme>>,
     osd: OsdHandle,
 }
 
 impl AppHandle {
+    /// Get the current theme.
+    pub fn theme(&self) -> NativeTheme {
+        self.theme.lock().unwrap().clone()
+    }
+
     /// Check whether the daemon core is still running.
     pub fn status(&self) -> bool {
         self.running.load(Ordering::SeqCst)
@@ -45,9 +52,23 @@ impl AppHandle {
             .map_err(|e| format!("cannot read config: {e}"))?;
         let new_config = AppConfig::parse(&content, &self.config_path)?;
 
+        let new_theme = crate::native_theme::load_theme(new_config.theme.as_deref());
+
         let bindings_count = new_config.active_bindings().len();
-        let mut config = self.config.lock().unwrap();
-        *config = new_config;
+
+        // Update theme first, then config
+        {
+            let mut theme = self.theme.lock().unwrap();
+            *theme = new_theme;
+        }
+        {
+            let mut config = self.config.lock().unwrap();
+            *config = new_config;
+        }
+
+        // Push theme to OSD
+        self.osd.set_theme(self.theme());
+
         if !self.quiet {
             println!("mhd: config reloaded ({bindings_count} bindings)");
         }
@@ -81,6 +102,7 @@ pub struct App {
     quiet: bool,
     tx: ActionSender,
     osd: OsdHandle,
+    theme: Arc<Mutex<NativeTheme>>,
 }
 
 impl App {
@@ -96,6 +118,8 @@ impl App {
         if app_config.active_bindings().is_empty() {
             return Err(format!("config empty: {}", config_path.display()));
         }
+
+        let native_theme = crate::native_theme::load_theme(app_config.theme.as_deref());
 
         let (worker, tx) = ActionWorker::new(quiet, osd.clone());
         // Worker thread runs until the channel closes (when `tx` is dropped).
@@ -120,6 +144,7 @@ impl App {
             quiet,
             tx,
             osd,
+            theme: Arc::new(Mutex::new(native_theme)),
         })
     }
 
@@ -136,6 +161,7 @@ impl App {
             hook_thread_id: self.hook_thread_id.clone(),
             quiet: self.quiet,
             osd: self.osd.clone(),
+            theme: self.theme.clone(),
         }
     }
 

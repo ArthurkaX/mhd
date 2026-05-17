@@ -14,6 +14,8 @@ mod trigger;
 mod worker;
 mod osd;
 mod about;
+mod native_theme;
+mod config_editor;
 
 use std::env;
 use std::path::PathBuf;
@@ -159,6 +161,9 @@ fn main() -> ExitCode {
     };
 
     let handle = app.handle();
+
+    // Push initial theme to OSD
+    osd_handle.set_theme(handle.theme());
 
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.
