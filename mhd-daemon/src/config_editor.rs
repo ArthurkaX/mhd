@@ -126,16 +126,17 @@ pub fn show_config_editor(handle: AppHandle) {
     };
     let _ = unsafe { RegisterClassW(&wc) };
 
-    // Also register combo item class
-    let item_cls = to_utf16_z("mhd_combo_item_cls");
-    let item_wc = WNDCLASSW {
+    // Combo popup class — regular popup, no child windows.
+    let popup_cls = to_utf16_z("mhd_combo_popup_cls");
+    let popup_wc = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(combo_item_wndproc),
+        lpfnWndProc: Some(combo_popup_wndproc),
         hInstance: hinstance,
-        lpszClassName: PCWSTR::from_raw(item_cls.as_ptr()),
+        lpszClassName: PCWSTR::from_raw(popup_cls.as_ptr()),
+        hbrBackground: HBRUSH::default(),
         ..Default::default()
     };
-    unsafe { RegisterClassW(&item_wc); }
+    unsafe { RegisterClassW(&popup_wc); }
 
     let theme = handle.theme();
 
@@ -841,7 +842,7 @@ unsafe extern "system" fn settings_wndproc(
 
 // ── Combo popup ─────────────────────────────────────────────────────
 
-unsafe extern "system" fn combo_item_wndproc(
+unsafe extern "system" fn combo_popup_wndproc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
@@ -852,48 +853,78 @@ unsafe extern "system" fn combo_item_wndproc(
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
 
-            // Settings window is: hwnd (item) → popup → settings
-            let popup = GetParent(hwnd).unwrap_or_default();
-            let settings_parent = GetParent(popup).unwrap_or_default();
+            // State pointer stored in the popup itself by open_combo_popup.
             let state_ptr =
-                GetWindowLongPtrW(settings_parent, GWLP_USERDATA) as *mut SettingsState;
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+            let mut rc = RECT::default();
+            GetClientRect(hwnd, &mut rc);
+            let w = rc.right - rc.left;
+            let h = rc.bottom - rc.top;
+            let item_h = COMBO_POPUP_ITEM_HEIGHT
+                .max((COMBO_POPUP_ITEM_HEIGHT as f32) as i32);
+
+            // Background
             let theme = if !state_ptr.is_null() {
                 &(*state_ptr).theme
             } else {
                 &NativeTheme::default()
             };
-
-            let mut rc = RECT::default();
-            GetClientRect(hwnd, &mut rc);
-
-            // Background
             let bg = CreateSolidBrush(theme.surface.to_colorref());
             let _ = FillRect(hdc, &rc, bg);
             let _ = DeleteObject(bg);
 
-            // Item index from window user data (stored as index + 1)
-            let idx_raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
-            if idx_raw > 0 && !state_ptr.is_null() {
-                let idx = idx_raw - 1;
+            // Border
+            let border_brush = CreateSolidBrush(theme.border.to_colorref());
+            let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: w, bottom: 1 }, border_brush);
+            let _ = FillRect(hdc, &RECT { left: 0, top: h - 1, right: w, bottom: h }, border_brush);
+            let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: 1, bottom: h }, border_brush);
+            let _ = FillRect(hdc, &RECT { left: w - 1, top: 0, right: w, bottom: h }, border_brush);
+            let _ = DeleteObject(border_brush);
+
+            // Draw each item
+            if !state_ptr.is_null() {
                 let state = &*state_ptr;
-                if let Some(name) = state.theme_names.get(idx) {
-                    let _ = SetBkMode(hdc, TRANSPARENT);
-                    let font =
-                        create_font(-(12.0 * state.layout.scale) as i32, false, "Segoe UI");
-                    let old_font = SelectObject(hdc, font);
+                let _ = SetBkMode(hdc, TRANSPARENT);
+                let font_h = -(12.0 * state.layout.scale) as i32;
+                let font = create_font(font_h, false, "Segoe UI");
+                let old_font = SelectObject(hdc, font);
+
+                for i in 0..state.theme_names.len().min(COMBO_POPUP_MAX_VISIBLE as usize) {
+                    let item_y = (i as i32) * item_h;
+                    let item_rc = RECT {
+                        left: 2,
+                        top: item_y,
+                        right: w - 2,
+                        bottom: item_y + item_h,
+                    };
+
+                    // Hover/selected highlight
+                    if i == state.theme_sel {
+                        let sel_brush = CreateSolidBrush(theme.selected.to_colorref());
+                        let _ = FillRect(hdc, &item_rc, sel_brush);
+                        let _ = DeleteObject(sel_brush);
+                    }
+
                     let _ = SetTextColor(hdc, theme.text.to_colorref());
-
-                    let mut wz = to_utf16_z(name);
-                    let _ = DrawTextW(
-                        hdc,
-                        &mut wz,
-                        &mut rc,
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                    );
-
-                    let _ = SelectObject(hdc, old_font);
-                    let _ = DeleteObject(font);
+                    if let Some(name) = state.theme_names.get(i) {
+                        let mut wz = to_utf16_z(name);
+                        let _ = DrawTextW(
+                            hdc,
+                            &mut wz,
+                            &mut RECT {
+                                left: 8,
+                                top: item_y,
+                                right: w - 8,
+                                bottom: item_y + item_h,
+                            },
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                        );
+                    }
                 }
+
+                let _ = SelectObject(hdc, old_font);
+                let _ = DeleteObject(font);
             }
 
             let _ = EndPaint(hwnd, &ps);
@@ -901,26 +932,34 @@ unsafe extern "system" fn combo_item_wndproc(
         }
 
         WM_LBUTTONDOWN => {
-            // Notify parent of selection
-            let popup = GetParent(hwnd).unwrap_or_default();
-            let settings_parent = GetParent(popup).unwrap_or_default();
+            let y = ((lparam.0 >> 16) as i16) as i32;
+            let state_ptr =
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
 
-            let idx_raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
-            if idx_raw > 0 {
-                let idx = idx_raw - 1;
+            if !state_ptr.is_null() {
+                let state = &mut *state_ptr;
+                let item_h = COMBO_POPUP_ITEM_HEIGHT
+                    .max((COMBO_POPUP_ITEM_HEIGHT as f32) as i32);
+                // y includes 1px top border
+                let inner_y = if y > 0 { y - 1 } else { 0 };
+                let idx = inner_y / item_h;
+                if idx >= 0 && (idx as usize) < state.theme_names.len() {
+                    state.theme_sel = idx as usize;
+                    apply_settings(state);
+                    close_combo_popup(state);
+                    paint_settings(state.hwnd, state_ptr, &state.layout);
+                }
+            }
+            LRESULT(0)
+        }
+
+        WM_ACTIVATE => {
+            // If losing activation, close popup
+            if LOWORD(wparam.0 as u32) == 0 {
                 let state_ptr =
-                    GetWindowLongPtrW(settings_parent, GWLP_USERDATA) as *mut SettingsState;
+                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
-                    let state = &mut *state_ptr;
-                    if idx < state.theme_names.len() {
-                        state.theme_sel = idx;
-                        // Apply immediately
-                        apply_settings(state);
-                        // Close popup
-                        close_combo_popup(state);
-                        // Repaint main window
-                        paint_settings(settings_parent, state_ptr, &state.layout);
-                    }
+                    close_combo_popup(&mut *state_ptr);
                 }
             }
             LRESULT(0)
@@ -928,6 +967,10 @@ unsafe extern "system" fn combo_item_wndproc(
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+fn LOWORD(dw: u32) -> u16 {
+    (dw & 0xffff) as u16
 }
 
 fn toggle_combo_popup(state: &mut SettingsState) {
@@ -945,6 +988,7 @@ fn open_combo_popup(state: &mut SettingsState) {
 
     let parent = state.hwnd;
     let lay = state.layout;
+    let state_ptr = state as *mut SettingsState;
 
     // Compute position below the combo box
     let mut combo_pt = POINT { x: lay.combo_x, y: lay.combo_y };
@@ -957,12 +1001,13 @@ fn open_combo_popup(state: &mut SettingsState) {
 
     let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
     let hinstance: HINSTANCE = hinst.into();
-    let cls_name = to_utf16_z("mhd_combo_item_cls");
+    let cls_name = to_utf16_z("mhd_combo_popup_cls");
 
-    // Create a layered popup for the dropdown list
+    // Regular popup window (not layered), no child HWNDs.
+    // The popup wndproc paints all items directly and handles hits by y.
     let popup = unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             PCWSTR::from_raw(cls_name.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
@@ -979,34 +1024,10 @@ fn open_combo_popup(state: &mut SettingsState) {
 
     let Ok(popup) = popup else { return };
 
-    // Create child item windows
-    for i in 0..state.theme_names.len().min(COMBO_POPUP_MAX_VISIBLE as usize) {
-        let item = unsafe {
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR::from_raw(cls_name.as_ptr()),
-                PCWSTR::null(),
-                WS_CHILD | WS_VISIBLE,
-                0,
-                (i as i32) * item_h,
-                popup_w,
-                item_h,
-                popup,
-                HMENU::default(),
-                hinstance,
-                None,
-            )
-        };
-        if let Ok(hwnd_item) = item {
-            // Store theme index as index + 1 (0 means no data).
-            unsafe {
-                let _ = SetWindowLongPtrW(hwnd_item, GWLP_USERDATA, (i + 1) as isize);
-            }
-        }
+    // Store state pointer so the popup wndproc can read theme/item info.
+    unsafe {
+        let _ = SetWindowLongPtrW(popup, GWLP_USERDATA, state_ptr as isize);
     }
-
-    // Paint the popup
-    paint_combo_popup(popup, state);
 
     state.combo_popup = Some(popup);
     state.combo_open.store(true, Ordering::SeqCst);
@@ -1021,95 +1042,6 @@ fn close_combo_popup(state: &mut SettingsState) {
         unsafe { DestroyWindow(popup).ok(); }
     }
     state.combo_open.store(false, Ordering::SeqCst);
-}
-
-fn paint_combo_popup(hwnd: HWND, state: &SettingsState) {
-    let theme = &state.theme;
-    let mut rc = RECT::default();
-    unsafe { let _ = GetClientRect(hwnd, &mut rc); }
-    let w = rc.right - rc.left;
-    let h = rc.bottom - rc.top;
-
-    let screen_dc = unsafe { GetDC(None) };
-
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: 0,
-            biSizeImage: 0,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        },
-        bmiColors: [RGBQUAD::default(); 1],
-    };
-
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let dib = unsafe { CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) };
-    let Ok(dib) = dib else {
-        unsafe { let _ = ReleaseDC(None, screen_dc); }
-        return;
-    };
-
-    let dib_dc = unsafe { CreateCompatibleDC(screen_dc) };
-    let old_bmp = unsafe { SelectObject(dib_dc, dib) };
-
-    // Background
-    let bg_pixel = theme.surface.to_premultiplied_argb_pixel();
-    unsafe {
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-        for px in pixels.iter_mut() {
-            *px = bg_pixel;
-        }
-    }
-
-    // Border
-    let border_color = theme.border.to_colorref();
-    let border_brush = unsafe { CreateSolidBrush(border_color) };
-    unsafe {
-        let _ = FillRect(dib_dc, &RECT { left: 0, top: 0, right: w, bottom: 1 }, border_brush);
-        let _ = FillRect(dib_dc, &RECT { left: 0, top: h - 1, right: w, bottom: h }, border_brush);
-        let _ = FillRect(dib_dc, &RECT { left: 0, top: 0, right: 1, bottom: h }, border_brush);
-        let _ = FillRect(dib_dc, &RECT { left: w - 1, top: 0, right: w, bottom: h }, border_brush);
-        let _ = DeleteObject(border_brush);
-    }
-
-    // UpdateLayeredWindow
-    let blend = BLENDFUNCTION {
-        BlendOp: AC_SRC_OVER as u8,
-        BlendFlags: 0,
-        SourceConstantAlpha: 255,
-        AlphaFormat: AC_SRC_ALPHA as u8,
-    };
-
-    let pt_src = POINT { x: 0, y: 0 };
-    let sz = SIZE { cx: w, cy: h };
-
-    unsafe {
-        let _ = UpdateLayeredWindow(
-            hwnd,
-            HDC::default(),
-            None,
-            Some(&sz),
-            dib_dc,
-            Some(&pt_src),
-            COLORREF(0),
-            Some(&blend),
-            ULW_ALPHA,
-        );
-    }
-
-    unsafe {
-        let _ = SelectObject(dib_dc, old_bmp);
-        let _ = DeleteObject(dib);
-        let _ = DeleteDC(dib_dc);
-        let _ = ReleaseDC(None, screen_dc);
-    }
 }
 
 // ── Apply logic ─────────────────────────────────────────────────────
