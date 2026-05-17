@@ -243,7 +243,7 @@ pub fn load_theme(theme_name: Option<&str>) -> NativeTheme {
 
 /// Load a theme from an explicit file path.  Returns an `Err` if the
 /// file cannot be read or is syntactically/structurally invalid.
-fn load_theme_from_path(path: &std::path::Path) -> Result<NativeTheme, String> {
+pub fn load_theme_from_path(path: &std::path::Path) -> Result<NativeTheme, String> {
     let json = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read theme file: {e}"))?;
     let file: ThemeFile = serde_json::from_str(&json)

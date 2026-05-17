@@ -1,14 +1,8 @@
-//! Styled native Win32 config‑file editor (modal, tray‑thread).
+//! Styled native Win32 Settings panel (modal, tray‑thread).
 //!
-//! Displays a dark‑theme popup with a multiline `EDIT` control for
-//! modifying `config.toml`.  Supports Save, Save & Reload, TOML
-//! validation, and dirty‑tracking with close confirmation.
-//
-//  Design note
-//  ───────────
-//  The window uses a normal popup with a rounded region rather than
-//  a per‑pixel layered window, because native child `EDIT` controls
-//  do not work reliably under `UpdateLayeredWindow` parents.
+//! Provides a structured settings UI one control at a time, starting
+//! with theme selection.  The window is a dark popup with rounded
+//! region, styled consistently with the OSD and About dialog.
 
 use std::ffi::c_void;
 
@@ -22,61 +16,66 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 
 use crate::app::AppHandle;
 use crate::native_theme::NativeTheme;
 use crate::osd::to_utf16_z;
 
+// ── Combo box raw constants (not in windows-rs 0.58) ────────────────
+
+const CBS_DROPDOWNLIST: u32 = 0x0003;
+const CBS_HASSTRINGS: u32 = 0x0200;
+const CB_ADDSTRING: u32 = 0x0143;
+const CB_SETCURSEL: u32 = 0x014E;
+const CB_GETCURSEL: u32 = 0x0147;
+const CB_GETLBTEXT: u32 = 0x0148;
+const CB_ERR: i32 = -1;
+
 // ── Control IDs ──────────────────────────────────────────────────────
 
-const IDC_EDIT: usize = 1001;
-const IDC_SAVE: usize = 1002;
-const IDC_SAVE_RELOAD: usize = 1003;
-const IDC_CANCEL: usize = 1004;
+const IDC_THEME_COMBO: usize = 1001;
+const IDC_APPLY: usize = 1002;
+const IDC_CLOSE: usize = 1003;
 
 const ROUND_RADIUS_BASE: f32 = 14.0;
-const PADDING: i32 = 20;
-const HEADER_HEIGHT_BASE: i32 = 72;
+const PADDING: i32 = 24;
+const HEADER_HEIGHT_BASE: i32 = 64;
 const FOOTER_HEIGHT_BASE: i32 = 56;
-const BUTTON_HEIGHT_BASE: i32 = 30;
-const BUTTON_WIDTH_BASE: i32 = 120;
+const ROW_HEIGHT_BASE: i32 = 28;
+const LABEL_WIDTH_BASE: i32 = 80;
 
 // ── Window dimensions (96 dpi base) ─────────────────────────────────
 
-const WIN_WIDTH_BASE: i32 = 780;
-const WIN_HEIGHT_BASE: i32 = 560;
+const WIN_WIDTH_BASE: i32 = 480;
+const WIN_HEIGHT_BASE: i32 = 320;
 
 // ── State ───────────────────────────────────────────────────────────
 
-struct ConfigEditorState {
+struct SettingsState {
     handle: AppHandle,
     theme: NativeTheme,
     hwnd: HWND,
-    edit: HWND,
-    dirty: bool,
-    loading: bool,
-    status_text: String,
-    surface_brush: HBRUSH,
-    background_brush: HBRUSH,
+    theme_combo: HWND,
+    // ── theme bookmark ──────────────────────────────────────────
+    // ⋮ Add new fields here for future settings controls.
 }
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Open the config editor on the current (tray) thread.
+/// Open the mhd Settings panel on the current (tray) thread.
 /// Blocks until the user dismisses the window.
 pub fn show_config_editor(handle: AppHandle) {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    let cls_name = to_utf16_z("mhd_config_editor_cls");
+    let cls_name = to_utf16_z("mhd_settings_cls");
     let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
     let hinstance: HINSTANCE = hinst.into();
 
     let wc = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(editor_wndproc),
+        lpfnWndProc: Some(settings_wndproc),
         hInstance: hinstance,
         lpszClassName: PCWSTR::from_raw(cls_name.as_ptr()),
         ..Default::default()
@@ -115,37 +114,27 @@ pub fn show_config_editor(handle: AppHandle) {
         let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
     }
 
-    // Create state and attach to window
+    // Create state
     let theme = handle.theme();
-    let surface_brush = unsafe { CreateSolidBrush(theme.surface.to_colorref()) };
-    let background_brush = unsafe { CreateSolidBrush(theme.background.to_colorref()) };
-
-    let state = Box::into_raw(Box::new(ConfigEditorState {
+    let state = Box::into_raw(Box::new(SettingsState {
         handle: handle.clone(),
         theme: theme.clone(),
         hwnd,
-        edit: HWND::default(),
-        dirty: false,
-        loading: true,
-        status_text: "Ready".into(),
-        surface_brush,
-        background_brush,
+        theme_combo: HWND::default(),
     }));
     unsafe {
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
     }
 
     // Create controls
-    create_controls(hwnd, hinstance, scale, &theme);
+    create_controls(hwnd, hinstance, scale);
 
-    // Read file content into edit control
-    let content = std::fs::read_to_string(&handle.config_path).unwrap_or_default();
-    let wide: Vec<u16> = content.encode_utf16().chain(std::iter::once(0)).collect();
+    // Populate theme combo (now that state has the combo HWND)
     unsafe {
-        let state_ref = &mut *(state);
-        state_ref.loading = true;
-        let _ = SetWindowTextW(state_ref.edit, PCWSTR::from_raw(wide.as_ptr()));
-        state_ref.loading = false;
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+        if !state_ptr.is_null() {
+            populate_theme_combo(&mut *state_ptr);
+        }
     }
 
     // Apply rounded region
@@ -176,63 +165,14 @@ pub fn show_config_editor(handle: AppHandle) {
         let _ = SetForegroundWindow(hwnd);
     }
 
-    // Nested message loop
+    // ── theme bookmark ─────────────────────────────────────────────
+    // Nested message loop – add new message intercepts here.
+
     let mut msg = MSG::default();
     loop {
         let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
         if !ret.as_bool() {
             break;
-        }
-
-        // Intercept keyboard shortcuts before TranslateMessage
-        if msg.message == WM_KEYDOWN {
-            let ctrl = (unsafe { GetKeyState(0x11) } as u16 & 0x8000) != 0; // VK_CONTROL
-            let vkey = msg.wParam.0 as u32;
-
-            if ctrl && vkey == 'S' as u32 {
-                // Ctrl+S → Save
-                let state_ref = unsafe { &mut *(state) };
-                let _ = do_save(state_ref);
-                update_theme_and_repaint(state_ref, hwnd);
-                continue;
-            }
-            if ctrl && vkey == 0x0D /* VK_RETURN */ {
-                // Ctrl+Enter → Save & Reload
-                let state_ref = unsafe { &mut *(state) };
-                let _ = do_save_and_reload(state_ref);
-                update_theme_and_repaint(state_ref, hwnd);
-                continue;
-            }
-        }
-
-        if msg.message == WM_KEYDOWN && msg.wParam.0 == 0x1B /* VK_ESCAPE */ {
-            let state_ref = unsafe { &mut *(state) };
-            if state_ref.dirty {
-                let ans = unsafe {
-                    MessageBoxW(
-                        hwnd,
-                        PCWSTR::from_raw(
-                            "Discard unsaved changes?\0".encode_utf16()
-                                .chain(std::iter::once(0))
-                                .collect::<Vec<u16>>()
-                                .as_ptr(),
-                        ),
-                        PCWSTR::from_raw(
-                            "mhd Config\0".encode_utf16()
-                                .chain(std::iter::once(0))
-                                .collect::<Vec<u16>>()
-                                .as_ptr(),
-                        ),
-                        MB_YESNO | MB_ICONWARNING,
-                    )
-                };
-                if ans == IDYES {
-                    unsafe { DestroyWindow(hwnd).ok(); }
-                }
-            } else {
-                unsafe { DestroyWindow(hwnd).ok(); }
-            }
-            continue;
         }
 
         unsafe {
@@ -241,25 +181,23 @@ pub fn show_config_editor(handle: AppHandle) {
         }
     }
 
-    // Cleanup state
+    // Free state
     unsafe {
-        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ConfigEditorState;
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
         if !ptr.is_null() {
             let _ = Box::from_raw(ptr);
         }
     }
 }
 
-fn update_theme_and_repaint(_state: &ConfigEditorState, hwnd: HWND) {
-    unsafe { let _ = InvalidateRect(hwnd, None, true); }
-}
-
 // ── Control creation ────────────────────────────────────────────────
 
-fn create_controls(parent: HWND, hinstance: HINSTANCE, scale: f32, _theme: &NativeTheme) {
+fn create_controls(parent: HWND, hinstance: HINSTANCE, scale: f32) {
     let pad = (PADDING as f32 * scale) as i32;
-    let btn_h = (BUTTON_HEIGHT_BASE as f32 * scale) as i32;
-    let btn_w = (BUTTON_WIDTH_BASE as f32 * scale) as i32;
+    let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
+    let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;
+    let btn_h = 28i32.max((28.0 * scale) as i32);
+    let btn_w = (100.0 * scale) as i32;
     let header_h = (HEADER_HEIGHT_BASE as f32 * scale) as i32;
     let footer_h = (FOOTER_HEIGHT_BASE as f32 * scale) as i32;
 
@@ -268,205 +206,192 @@ fn create_controls(parent: HWND, hinstance: HINSTANCE, scale: f32, _theme: &Nati
     let win_w = rc.right - rc.left;
     let win_h = rc.bottom - rc.top;
 
-    // Style helpers: cast i32 constants to WINDOW_STYLE (u32)
-    fn ws(v: i32) -> WINDOW_STYLE {
-        WINDOW_STYLE(v as u32)
-    }
+    // ── Theme row: combo box ───────────────────────────────────────
+    let combo_x = pad + label_w + 8;
+    let combo_w = win_w - pad * 2 - label_w - 8;
+    let combo_h = 22i32.max((22.0 * scale) as i32);
+    let combo_y = header_h + (row_h - combo_h) / 2;
 
-    // EDIT control
-    let edit_y = header_h;
-    let edit_h = win_h - header_h - footer_h;
-    let edit = unsafe {
-        CreateWindowExW(
+    unsafe {
+        let edit_cls = to_utf16_z("COMBOBOX");
+        let combo = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
-            PCWSTR::from_raw("EDIT\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
+            PCWSTR::from_raw(edit_cls.as_ptr()),
             PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL
-                | ws(ES_LEFT) | ws(ES_MULTILINE) | ws(ES_AUTOVSCROLL) | ws(ES_AUTOHSCROLL) | ws(ES_WANTRETURN),
-            pad,
-            edit_y,
-            win_w - pad * 2,
-            edit_h,
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_VSCROLL
+                | WINDOW_STYLE(CBS_DROPDOWNLIST | CBS_HASSTRINGS),
+            combo_x,
+            combo_y,
+            combo_w,
+            200, // drop-down height
             parent,
-            HMENU(IDC_EDIT as isize as *mut c_void),
+            HMENU(IDC_THEME_COMBO as isize as *mut c_void),
             hinstance,
             None,
-        )
-    };
-    if let Ok(hwnd_edit) = edit {
-        // Set font to Consolas
-        let font_name = to_utf16_z("Consolas");
-        let font_h = -(12.0 * scale) as i32;
-        let hfont = unsafe {
-            CreateFontW(
-                font_h, 0, 0, 0,
-                FW_NORMAL.0 as i32,
-                0, 0, 0,
-                DEFAULT_CHARSET.0 as u32,
-                OUT_DEFAULT_PRECIS.0 as u32,
-                CLIP_DEFAULT_PRECIS.0 as u32,
-                DEFAULT_QUALITY.0 as u32,
-                FF_DONTCARE.0 as u32,
-                PCWSTR::from_raw(font_name.as_ptr()),
-            )
-        };
-        unsafe {
-            let _ = SendMessageW(hwnd_edit, WM_SETFONT, WPARAM(hfont.0 as usize), LPARAM(1));
-        }
+        );
 
-        // Store edit HWND in state
-        unsafe {
-            let state_ptr = GetWindowLongPtrW(parent, GWLP_USERDATA) as *mut ConfigEditorState;
+        if let Ok(hwnd_combo) = combo {
+            let state_ptr =
+                GetWindowLongPtrW(parent, GWLP_USERDATA) as *mut SettingsState;
             if !state_ptr.is_null() {
-                (*state_ptr).edit = hwnd_edit;
+                (*state_ptr).theme_combo = hwnd_combo;
             }
         }
     }
 
-    fn btn_style() -> WINDOW_STYLE {
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32)
-    }
-
-    // Buttons
+    // ── Buttons ───────────────────────────────────────────────────
     let btn_y = win_h - footer_h + (footer_h - btn_h) / 2;
+    let btn_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32);
+    let btn_cls = to_utf16_z("BUTTON");
 
-    // Cancel
+    // Close
     unsafe {
+        let label = to_utf16_z("Close");
         let _ = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
-            PCWSTR::from_raw("BUTTON\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
-            PCWSTR::from_raw("Cancel\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
-            btn_style(),
+            PCWSTR::from_raw(btn_cls.as_ptr()),
+            PCWSTR::from_raw(label.as_ptr()),
+            btn_style,
             win_w - pad - btn_w,
             btn_y,
             btn_w,
             btn_h,
             parent,
-            HMENU(IDC_CANCEL as isize as *mut c_void),
+            HMENU(IDC_CLOSE as isize as *mut c_void),
             hinstance,
             None,
         );
     }
-    // Save & Reload
+
+    // Apply
     unsafe {
+        let label = to_utf16_z("Apply");
         let _ = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
-            PCWSTR::from_raw("BUTTON\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
-            PCWSTR::from_raw("Save && Reload\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
-            btn_style(),
-            win_w - pad - btn_w,
+            PCWSTR::from_raw(btn_cls.as_ptr()),
+            PCWSTR::from_raw(label.as_ptr()),
+            btn_style,
+            win_w - pad * 2 - btn_w * 2,
             btn_y,
             btn_w,
             btn_h,
             parent,
-            HMENU(IDC_SAVE_RELOAD as isize as *mut c_void),
-            hinstance,
-            None,
-        );
-    }
-    // Save
-    let save_x = win_w - pad * 2 - btn_w * 2;
-    unsafe {
-        let _ = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            PCWSTR::from_raw("BUTTON\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
-            PCWSTR::from_raw("Save\0".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr()),
-            btn_style(),
-            save_x,
-            btn_y,
-            btn_w,
-            btn_h,
-            parent,
-            HMENU(IDC_SAVE as isize as *mut c_void),
+            HMENU(IDC_APPLY as isize as *mut c_void),
             hinstance,
             None,
         );
     }
 }
 
+/// Scan the themes directory for `.json` files and populate the combo box.
+fn populate_theme_combo(state: &mut SettingsState) {
+    let current_theme = state.theme.name.clone();
+    let combo = state.theme_combo;
+
+    // Read available themes from disk
+    let themes_dir = crate::native_theme::themes_dir();
+    let mut names: Vec<String> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&themes_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                // Try to load the theme to get its display name
+                if let Ok(t) = crate::native_theme::load_theme_from_path(&path) {
+                    names.push(t.name.clone());
+                } else {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+    }
+
+    // Always offer the built-in dark theme first
+    names.insert(0, "built-in dark".into());
+
+    // Remove duplicates
+    names.sort();
+    names.dedup();
+
+    unsafe {
+        for (i, name) in names.iter().enumerate() {
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = SendMessageW(
+                combo,
+                CB_ADDSTRING,
+                WPARAM(0),
+                LPARAM(wide.as_ptr() as isize),
+            );
+
+            // Select if matches current theme
+            if *name == current_theme {
+                let _ = SendMessageW(combo, CB_SETCURSEL, WPARAM(i), LPARAM(0));
+            }
+        }
+
+        // If nothing selected, pick first
+        let cur = SendMessageW(combo, CB_GETCURSEL, WPARAM(0), LPARAM(0));
+        if cur.0 as i32 == CB_ERR {
+            let _ = SendMessageW(combo, CB_SETCURSEL, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 // ── Window procedure ────────────────────────────────────────────────
 
-unsafe extern "system" fn editor_wndproc(
+unsafe extern "system" fn settings_wndproc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_CREATE => {
-            return LRESULT(0);
-        }
+        WM_CREATE => LRESULT(0),
+
         WM_COMMAND => {
             let hi = ((wparam.0 >> 16) & 0xFFFF) as u32;
             let id = (wparam.0 & 0xFFFF) as usize;
 
-            // EN_CHANGE from edit control
-            if hi == 0x0300 /* EN_CHANGE */ && id == IDC_EDIT {
-                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ConfigEditorState;
-                if !state_ptr.is_null() {
-                    let state = &mut *state_ptr;
-                    if !state.loading {
-                        state.dirty = true;
-                        state.status_text = "Unsaved changes".into();
-                        let _ = InvalidateRect(hwnd, None, true);
-                    }
-                }
-                return LRESULT(0);
-            }
+            let state_ptr =
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
 
             // Button clicks
             if hi == 0 /* BN_CLICKED */ {
-                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ConfigEditorState;
                 if state_ptr.is_null() {
                     return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
                 let state = &mut *state_ptr;
 
                 match id {
-                    IDC_SAVE => {
-                        let _ = do_save(state);
-                        let _ = InvalidateRect(hwnd, None, true);
+                    IDC_APPLY => {
+                        apply_settings(state);
+                        InvalidateRect(hwnd, None, true);
                     }
-                    IDC_SAVE_RELOAD => {
-                        let _ = do_save_and_reload(state);
-                        let _ = InvalidateRect(hwnd, None, true);
-                    }
-                    IDC_CANCEL => {
-                        if state.dirty {
-                            let ans = MessageBoxW(
-                                hwnd,
-                                PCWSTR::from_raw(
-                                    "Discard unsaved changes?\0".encode_utf16()
-                                        .chain(std::iter::once(0))
-                                        .collect::<Vec<u16>>()
-                                        .as_ptr(),
-                                ),
-                                PCWSTR::from_raw(
-                                    "mhd Config\0".encode_utf16()
-                                        .chain(std::iter::once(0))
-                                        .collect::<Vec<u16>>()
-                                        .as_ptr(),
-                                ),
-                                MB_YESNO | MB_ICONWARNING,
-                            );
-                            if ans == IDYES {
-                                DestroyWindow(hwnd).ok();
-                            }
-                        } else {
-                            DestroyWindow(hwnd).ok();
-                        }
+                    IDC_CLOSE => {
+                        DestroyWindow(hwnd).ok();
                     }
                     _ => {}
                 }
                 return LRESULT(0);
             }
+
+            // ── theme bookmark ─────────────────────────────────────
+            // Add new control message handling here.
+
             LRESULT(0)
         }
+
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
 
-            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ConfigEditorState;
+            let state_ptr =
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
             let theme = if !state_ptr.is_null() {
                 &(*state_ptr).theme
             } else {
@@ -482,113 +407,117 @@ unsafe extern "system" fn editor_wndproc(
             let pad = (PADDING as f32 * scale) as i32;
             let header_h = (HEADER_HEIGHT_BASE as f32 * scale) as i32;
             let footer_h = (FOOTER_HEIGHT_BASE as f32 * scale) as i32;
+            let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
+            let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;
 
             // Background
             let bg_brush = CreateSolidBrush(theme.background.to_colorref());
             let _ = FillRect(hdc, &rc, bg_brush);
             let _ = DeleteObject(bg_brush);
 
-            // Header background
-            let header_rc = RECT { left: 0, top: 0, right: w, bottom: header_h };
-            let hdr_brush = CreateSolidBrush(theme.background.to_colorref());
-            let _ = FillRect(hdc, &header_rc, hdr_brush);
-            let _ = DeleteObject(hdr_brush);
-
-            // Title
+            // Header
             let _ = SetBkMode(hdc, TRANSPARENT);
-            let title_font = create_font(-(18.0 * scale) as i32, true, "Segoe UI");
-            let old_font = SelectObject(hdc, title_font);
+            let old_font = SelectObject(
+                hdc,
+                create_font(-(18.0 * scale) as i32, true, "Segoe UI"),
+            );
             let _ = SetTextColor(hdc, theme.text.to_colorref());
 
-            let mut title_wz = to_utf16_z("mhd Config");
+            let mut title_wz = to_utf16_z("mhd Settings");
             let mut title_rc = RECT {
                 left: pad,
-                top: pad,
+                top: pad / 2,
                 right: w - pad,
-                bottom: pad + 18 + 8,
+                bottom: pad / 2 + 18 + 6,
             };
             let _ = DrawTextW(hdc, &mut title_wz, &mut title_rc, DT_LEFT | DT_SINGLELINE);
 
-            // Config path
-            let path_font = create_font(-(10.0 * scale) as i32, false, "Segoe UI");
-            let _ = SelectObject(hdc, path_font);
-            let _ = SetTextColor(hdc, theme.text_muted.to_colorref());
-
-            let path_str = if !state_ptr.is_null() {
-                format!("{}", (*state_ptr).handle.config_path.display())
-            } else {
-                String::new()
-            };
-            let mut path_wz = to_utf16_z(&path_str);
-            let mut path_rc = RECT {
-                left: pad,
-                top: title_rc.bottom + 2,
-                right: w - pad,
-                bottom: title_rc.bottom + 2 + 12 + 4,
-            };
-            let _ = DrawTextW(hdc, &mut path_wz, &mut path_rc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-            let _ = SelectObject(hdc, old_font);
-            let _ = DeleteObject(title_font);
-            let _ = DeleteObject(path_font);
-
             // Separator under header
+            let _ = SelectObject(hdc, old_font);
             let sep_brush = CreateSolidBrush(theme.border.to_colorref());
-            let sep_rc = RECT { left: pad, top: header_h - 1, right: w - pad, bottom: header_h };
+            let sep_rc = RECT {
+                left: pad,
+                top: header_h - 1,
+                right: w - pad,
+                bottom: header_h,
+            };
             let _ = FillRect(hdc, &sep_rc, sep_brush);
-
             // Separator above footer
             let footer_y = h - footer_h;
-            let sep2_rc = RECT { left: pad, top: footer_y, right: w - pad, bottom: footer_y + 1 };
+            let sep2_rc = RECT {
+                left: pad,
+                top: footer_y,
+                right: w - pad,
+                bottom: footer_y + 1,
+            };
             let _ = FillRect(hdc, &sep2_rc, sep_brush);
             let _ = DeleteObject(sep_brush);
 
-            // Status text (footer)
-            let status_font = create_font(-(11.0 * scale) as i32, false, "Segoe UI");
-            let _ = SelectObject(hdc, status_font);
-            let _ = SetTextColor(hdc, theme.text_muted.to_colorref());
+            // ── Theme row ──────────────────────────────────────────
+            let label_y = header_h + (row_h - 12) / 2;
 
-            let status_text = if !state_ptr.is_null() {
-                (*state_ptr).status_text.clone()
-            } else {
-                "Ready".into()
+            let _ = SelectObject(
+                hdc,
+                create_font(-(12.0 * scale) as i32, false, "Segoe UI"),
+            );
+            let _ = SetTextColor(hdc, theme.text.to_colorref());
+            let mut label_wz = to_utf16_z("Theme");
+            let mut label_rc = RECT {
+                left: pad,
+                top: label_y,
+                right: pad + label_w,
+                bottom: label_y + 16,
             };
-            let mut st_wz = to_utf16_z(&status_text);
+            let _ = DrawTextW(
+                hdc,
+                &mut label_wz,
+                &mut label_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+
+            // ── theme bookmark ─────────────────────────────────────
+            // Add new setting rows here – copy the pattern above.
+
+            // Status / info text in footer
+            let _ = SetTextColor(hdc, theme.text_muted.to_colorref());
+            let status_text = "Set the colour theme for mhd UI elements.";
+
+            let mut st_wz = to_utf16_z(status_text);
             let mut st_rc = RECT {
                 left: pad,
-                top: footer_y + (footer_h - 11) / 2,
+                top: footer_y + (footer_h - 12) / 2,
                 right: w - pad,
                 bottom: h,
             };
-            let _ = DrawTextW(hdc, &mut st_wz, &mut st_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
-            let _ = SelectObject(hdc, old_font);
-            let _ = DeleteObject(status_font);
+            let _ = DrawTextW(
+                hdc,
+                &mut st_wz,
+                &mut st_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
 
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
 
-        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
-            // hdc is in wparam as a HDC (pointer)
+        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
             let hdc = HDC(wparam.0 as *mut c_void);
-            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ConfigEditorState;
+            let state_ptr =
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
             if !state_ptr.is_null() {
                 let state = &mut *state_ptr;
                 let _ = SetTextColor(hdc, state.theme.text.to_colorref());
                 let _ = SetBkColor(hdc, state.theme.surface.to_colorref());
-                return LRESULT(state.surface_brush.0 as isize);
+                let brush = CreateSolidBrush(state.theme.surface.to_colorref());
+                return LRESULT(brush.0 as isize);
             }
             LRESULT(0)
         }
 
         WM_DESTROY => {
-            // Free state
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ConfigEditorState;
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
             if !ptr.is_null() {
-                let state = Box::from_raw(ptr);
-                let _ = DeleteObject(state.surface_brush);
-                let _ = DeleteObject(state.background_brush);
+                let _ = Box::from_raw(ptr);
             }
             PostQuitMessage(0);
             LRESULT(0)
@@ -598,59 +527,133 @@ unsafe extern "system" fn editor_wndproc(
     }
 }
 
-// ── Save logic ──────────────────────────────────────────────────────
+// ── Apply logic ─────────────────────────────────────────────────────
 
-fn get_edit_text(hwnd_edit: HWND) -> String {
-    let len = unsafe { GetWindowTextLengthW(hwnd_edit) } as usize;
-    if len == 0 {
-        return String::new();
-    }
-    let mut buf = vec![0u16; len + 1];
-    unsafe {
-        let _ = GetWindowTextW(hwnd_edit, &mut buf);
-    }
-    buf.truncate(len);
-    String::from_utf16_lossy(&buf)
-}
+/// Gather settings from all controls and apply them.
+fn apply_settings(state: &mut SettingsState) {
+    let combo = state.theme_combo;
 
-fn do_save(state: &mut ConfigEditorState) -> Result<(), String> {
-    let text = get_edit_text(state.edit);
-
-    // Validate TOML
-    if let Err(e) = crate::config::AppConfig::parse(&text, &state.handle.config_path) {
-        state.status_text = format!("TOML error: {e}");
-        return Err(state.status_text.clone());
+    // Get selected item index
+    let sel = unsafe { SendMessageW(combo, CB_GETCURSEL, WPARAM(0), LPARAM(0)) };
+    if sel.0 as i32 == CB_ERR {
+        return;
     }
 
-    // Write file
-    if let Err(e) = std::fs::write(&state.handle.config_path, &text) {
-        state.status_text = format!("Write error: {e}");
-        return Err(state.status_text.clone());
+    // Get text of selected item
+    let mut buf = vec![0u16; 256];
+    let len = unsafe {
+        SendMessageW(
+            combo,
+            CB_GETLBTEXT,
+            WPARAM(sel.0 as usize),
+            LPARAM(buf.as_mut_ptr() as isize),
+        )
+    };
+    if len.0 as i32 == CB_ERR || len.0 == 0 {
+        return;
+    }
+    buf.truncate(len.0 as usize);
+    let theme_name = String::from_utf16_lossy(&buf);
+
+    // Map display name → config file stem
+    let config_name = if theme_name == "built-in dark" {
+        String::new()
+    } else {
+        let themes_dir = crate::native_theme::themes_dir();
+        let mut found = String::new();
+        if let Ok(entries) = std::fs::read_dir(&themes_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    // Try display name match
+                    if let Ok(t) = crate::native_theme::load_theme_from_path(&path) {
+                        if t.name == theme_name {
+                            found = stem.to_string();
+                            break;
+                        }
+                    }
+                    // Fallback: stem match
+                    if stem == theme_name {
+                        found = stem.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+        if found.is_empty() {
+            theme_name.clone()
+        } else {
+            found
+        }
+    };
+
+    // Write to config.toml
+    if let Err(e) = set_config_theme(&state.handle.config_path, &config_name) {
+        eprintln!("mhd: settings error: {e}");
+        return;
     }
 
-    state.dirty = false;
-    state.status_text = "Saved".into();
-    Ok(())
-}
-
-fn do_save_and_reload(state: &mut ConfigEditorState) -> Result<(), String> {
-    do_save(state)?;
+    // Reload config (which also reloads theme)
     if let Err(e) = state.handle.reload_config() {
-        state.status_text = format!("Reload error: {e}");
-        return Err(state.status_text.clone());
+        eprintln!("mhd: settings reload error: {e}");
+        return;
     }
-    // Apply updated theme
+
+    // Update local theme
     state.theme = state.handle.theme();
-    state.status_text = "Saved and reloaded".into();
-    // Update theme brushes
-    let new_surface = unsafe { CreateSolidBrush(state.theme.surface.to_colorref()) };
-    let new_bg = unsafe { CreateSolidBrush(state.theme.background.to_colorref()) };
-    unsafe {
-        let _ = DeleteObject(state.surface_brush);
-        let _ = DeleteObject(state.background_brush);
+}
+
+/// Write/update the `theme = "..."` line in config.toml.
+fn set_config_theme(
+    config_path: &std::path::Path,
+    theme_name: &str,
+) -> Result<(), String> {
+    let content =
+        std::fs::read_to_string(config_path).map_err(|e| format!("cannot read config: {e}"))?;
+
+    let theme_line = if theme_name.is_empty() {
+        None
+    } else {
+        Some(format!("theme = \"{theme_name}\""))
+    };
+
+    let mut lines: Vec<&str> = content.lines().collect();
+    let mut found = false;
+    let mut insert_pos: Option<usize> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("theme ") || trimmed.starts_with("theme=") {
+            if let Some(ref tl) = theme_line {
+                lines[i] = tl;
+            } else {
+                lines[i] = "";
+            }
+            found = true;
+            break;
+        }
+        // Remember first non-comment line position for insertion
+        if insert_pos.is_none() && !trimmed.starts_with('#') && !trimmed.is_empty() {
+            insert_pos = Some(i);
+        }
     }
-    state.surface_brush = new_surface;
-    state.background_brush = new_bg;
+
+    if !found {
+        if let Some(ref tl) = theme_line {
+            if let Some(pos) = insert_pos {
+                lines.insert(pos, tl);
+            } else {
+                lines.push(tl);
+            }
+        }
+    }
+
+    let new_content = lines.join("\r\n");
+    std::fs::write(config_path, new_content).map_err(|e| format!("cannot write config: {e}"))?;
+
     Ok(())
 }
 
