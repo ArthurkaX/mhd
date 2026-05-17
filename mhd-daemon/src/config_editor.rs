@@ -29,7 +29,7 @@ use windows::Win32::UI::HiDpi::{
 };
 
 use crate::app::AppHandle;
-use crate::native_theme::{load_theme_from_path, NativeTheme};
+use crate::native_theme::{load_theme_from_path, NativeTheme, Argb};
 use crate::osd::{draw_rounded_rect, to_utf16_z};
 
 // ── Layout constants (96 dpi base) ─────────────────────────────────
@@ -702,6 +702,15 @@ fn is_background_like_pixel(px: u32, bg_px: u32, bg_alpha: u8) -> bool {
     rgb == bg_rgb && a <= bg_alpha
 }
 
+/// Returns true if white text has sufficient contrast on this background.
+fn contrast_text_on(bg: Argb) -> bool {
+    let r = bg.r as f32 / 255.0;
+    let g = bg.g as f32 / 255.0;
+    let b = bg.b as f32 / 255.0;
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lum < 0.5
+}
+
 fn draw_button(
     dib_dc: HDC,
     bits: *mut c_void,
@@ -721,10 +730,15 @@ fn draw_button(
         let _ = DeleteObject(btn_bg);
     }
 
-    // Button text
+    // Button text — pick contrasting colour based on accent luminance
+    let btn_text_color = if contrast_text_on(theme.accent) {
+        Argb::new(0xFF, 0xFF, 0xFF, 0xFF) // white
+    } else {
+        Argb::new(0xFF, 0x00, 0x00, 0x00) // black
+    };
     unsafe {
         let _ = SelectObject(dib_dc, font);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+        let _ = SetTextColor(dib_dc, btn_text_color.to_colorref());
     }
     let mut lbl_wz = to_utf16_z(label);
     let mut lbl_rc = RECT {
@@ -864,13 +878,14 @@ unsafe extern "system" fn combo_popup_wndproc(
             let item_h = COMBO_POPUP_ITEM_HEIGHT
                 .max((COMBO_POPUP_ITEM_HEIGHT as f32) as i32);
 
-            // Background
+            // Background — use main background colour, not surface.
+            // Surface is often transparent/light and makes text unreadable.
             let theme = if !state_ptr.is_null() {
                 &(*state_ptr).theme
             } else {
                 &NativeTheme::default()
             };
-            let bg = CreateSolidBrush(theme.surface.to_colorref());
+            let bg = CreateSolidBrush(theme.background.to_colorref());
             let _ = FillRect(hdc, &rc, bg);
             let _ = DeleteObject(bg);
 
