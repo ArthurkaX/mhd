@@ -1,6 +1,6 @@
 //! App — core orchestration for mhd.
 //!
-//! Owns config, worker, hooks, and IPC. Provides [`AppHandle`] for
+//! Owns config, worker, hooks, OSD, and IPC. Provides [`AppHandle`] for
 //! external control (tray module, IPC commands).
 
 use std::path::PathBuf;
@@ -13,6 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
 
 use crate::config::AppConfig;
+use crate::osd::OsdHandle;
 use crate::worker::{ActionSender, ActionWorker};
 
 /// Handle to a running [`App`], usable from tray or IPC.
@@ -27,6 +28,7 @@ pub struct AppHandle {
     /// IPC/tray post WM_QUIT to this thread on shutdown.
     pub(crate) hook_thread_id: Arc<AtomicU32>,
     pub(crate) quiet: bool,
+    osd: OsdHandle,
 }
 
 impl AppHandle {
@@ -42,7 +44,7 @@ impl AppHandle {
         let content = std::fs::read_to_string(&self.config_path)
             .map_err(|e| format!("cannot read config: {e}"))?;
         let new_config = AppConfig::parse(&content, &self.config_path)?;
-        
+
         let bindings_count = new_config.active_bindings().len();
         let mut config = self.config.lock().unwrap();
         *config = new_config;
@@ -64,7 +66,6 @@ impl AppHandle {
                 let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
             }
         }
-        crate::ui::shutdown();
     }
 }
 
@@ -79,6 +80,7 @@ pub struct App {
     hook_thread_id: Arc<AtomicU32>,
     quiet: bool,
     tx: ActionSender,
+    osd: OsdHandle,
 }
 
 impl App {
@@ -86,7 +88,7 @@ impl App {
     ///
     /// Returns an error if the config is missing, unparseable, or has no
     /// active bindings.
-    pub fn new(config_path: PathBuf, quiet: bool) -> Result<Self, String> {
+    pub fn new(config_path: PathBuf, quiet: bool, osd: OsdHandle) -> Result<Self, String> {
         let content = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("cannot read config: {e}"))?;
         let app_config = AppConfig::parse(&content, &config_path)?;
@@ -95,7 +97,7 @@ impl App {
             return Err(format!("config empty: {}", config_path.display()));
         }
 
-        let (worker, tx) = ActionWorker::new(quiet);
+        let (worker, tx) = ActionWorker::new(quiet, osd.clone());
         // Worker thread runs until the channel closes (when `tx` is dropped).
         let _worker_handle = worker.spawn();
 
@@ -117,6 +119,7 @@ impl App {
             hook_thread_id,
             quiet,
             tx,
+            osd,
         })
     }
 
@@ -132,6 +135,7 @@ impl App {
             config_path: self.config_path.clone(),
             hook_thread_id: self.hook_thread_id.clone(),
             quiet: self.quiet,
+            osd: self.osd.clone(),
         }
     }
 

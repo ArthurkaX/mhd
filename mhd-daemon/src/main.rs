@@ -1,4 +1,4 @@
-//! mhd â€” hotkey daemon with DDC/CI brightness control.
+//! mhd — hotkey daemon with DDC/CI brightness control.
 //!
 //! Single binary: tray + daemon core by default, headless via --daemon.
 
@@ -12,8 +12,7 @@ mod hook;
 mod tray;
 mod trigger;
 mod worker;
-mod ui;
-mod theme;
+mod osd;
 
 use std::env;
 use std::path::PathBuf;
@@ -115,10 +114,6 @@ fn main() -> ExitCode {
 
     for arg in args.iter().skip(1) {
         match arg.as_str() {
-            "--ui-server" => {
-                crate::ui::run_ui_server();
-                return ExitCode::SUCCESS;
-            }
             "--quiet" => quiet = true,
             "--daemon" | "--no-tray" => no_tray = true,
             "--help" | "-h" => {
@@ -150,8 +145,11 @@ fn main() -> ExitCode {
         }
     }
 
+    // Start native OSD subsystem
+    let osd_handle = osd::start_osd();
+
     // Create the app core
-    let app = match app::App::new(config_path.clone(), quiet) {
+    let app = match app::App::new(config_path.clone(), quiet, osd_handle.clone()) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("mhd: {e}");
@@ -188,18 +186,21 @@ fn main() -> ExitCode {
         // Run the tray on the main thread (blocks until quit)
         tray::run(handle);
 
-        // Tray exited â€“ make sure hooks stop too
+        // Tray exited – make sure hooks stop too
         let _ = hook_handle.join();
         if !quiet {
             println!("mhd: stopped");
         }
     }
 
+    // Shutdown OSD
+    osd_handle.shutdown();
+
     ExitCode::SUCCESS
 }
 
 fn print_help() {
-    eprintln!("mhd â€” hotkey daemon with DDC/CI brightness control");
+    eprintln!("mhd — hotkey daemon with DDC/CI brightness control");
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  mhd.exe               Run with system tray (default)");

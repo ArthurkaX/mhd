@@ -2,6 +2,7 @@ use std::sync::mpsc;
 
 use crate::action::Action;
 use crate::monitor;
+use crate::osd::OsdHandle;
 use crate::trigger::{KeyCombo, PhysicalKey};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
@@ -21,15 +22,16 @@ pub enum ActionMessage {
 pub struct ActionWorker {
     quiet: bool,
     rx: mpsc::Receiver<ActionMessage>,
+    osd: OsdHandle,
 }
 
 /// Handle to send actions to the worker.
 pub type ActionSender = mpsc::Sender<ActionMessage>;
 
 impl ActionWorker {
-    pub fn new(quiet: bool) -> (Self, ActionSender) {
+    pub fn new(quiet: bool, osd: OsdHandle) -> (Self, ActionSender) {
         let (tx, rx) = mpsc::channel();
-        let worker = ActionWorker { quiet, rx };
+        let worker = ActionWorker { quiet, rx, osd };
         (worker, tx)
     }
 
@@ -78,7 +80,7 @@ impl ActionWorker {
                     if !self.quiet {
                         println!("mhd: triggered: {}", action.describe());
                     }
-                    execute_action(&action);
+                    execute_action(&action, &self.osd);
                 }
                 ActionMessage::SwitchScheme(_scheme) => {
                     // Handled in hook callback directly
@@ -92,12 +94,12 @@ impl ActionWorker {
     }
 }
 
-fn execute_action(action: &Action) {
+fn execute_action(action: &Action, osd: &OsdHandle) {
     match action {
         Action::ReplaceKey { keys } => send_replace_key(keys),
         Action::RunPs { command } => run_powershell(command),
         Action::SwitchScheme { .. } => {
-            // ?????????????? ? ?????? ?????
+            // Handled in hook callback
         }
         Action::SetBrightness { relative, value } => {
             let res = if *relative {
@@ -109,7 +111,7 @@ fn execute_action(action: &Action) {
             match res {
                 Ok(_) => {
                     if let Ok((new_val, name)) = monitor::get_brightness() {
-                        crate::ui::show_brightness(new_val, name);
+                        osd.show_brightness(new_val, name);
                     }
                 }
                 Err(e) => eprintln!("mhd: brightness error: {e}"),
@@ -127,7 +129,7 @@ fn execute_action(action: &Action) {
             }
         }
         Action::Quit => {
-            // ?????????????? ????? PostQuitMessage ?? ????????? ?????? ????
+            // Handled in hook callback via PostQuitMessage
         }
     }
 }
@@ -160,7 +162,6 @@ fn send_replace_key(keys: &KeyCombo) {
         }
         None => {
             // Modifier-only combo (e.g., alt+shift): press and release modifiers
-            // The modifiers are already being pressed above, we just need to release them below.
         }
     }
 
