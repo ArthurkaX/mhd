@@ -675,15 +675,30 @@ fn fix_gdi_alpha(bits: *mut c_void, width: i32, height: i32, background: crate::
                 continue;
             }
 
-            // Do not force opaque alpha on the original glass background.
-            if *px == bg_px || a != 0 {
+            // Preserve the original glass background (including anti-aliased
+            // rounded corners). Everything else is foreground UI drawn by GDI
+            // and should be fully opaque.
+            if is_background_like_pixel(*px, bg_px, background.a) {
                 continue;
             }
 
-            // GDI-drawn pixel: keep RGB, make it visible in the layered window.
             *px = 0xff00_0000 | rgb;
         }
     }
+}
+
+fn is_background_like_pixel(px: u32, bg_px: u32, bg_alpha: u8) -> bool {
+    if px == bg_px {
+        return true;
+    }
+
+    let a = ((px >> 24) & 0xff) as u8;
+    let rgb = px & 0x00ff_ffff;
+    let bg_rgb = bg_px & 0x00ff_ffff;
+
+    // Common glass case: black background. Anti-aliased corners have the
+    // same RGB but lower alpha; keep them translucent.
+    rgb == bg_rgb && a <= bg_alpha
 }
 
 fn draw_button(
@@ -753,44 +768,14 @@ unsafe extern "system" fn settings_wndproc(
             let state = &*state_ptr;
             let lay = &state.layout;
 
-            // Header → drag
+            // Header → drag, but only outside control rows.
             if pt.y < lay.header_h {
                 return LRESULT(HTCAPTION as isize);
             }
 
-            // Theme combo hit area
-            let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32);
-            if pt.y >= lay.combo_y && pt.y < lay.combo_y + combo_h {
-                if pt.x >= lay.combo_x && pt.x < lay.combo_x + lay.combo_w {
-                    // Check if arrow area
-                    if pt.x >= lay.arrow_x {
-                        return LRESULT(HT_THEME_ARROW);
-                    }
-                    return LRESULT(HT_THEME_COMBO);
-                }
-            }
-
-            // Apply button
-            if pt.x >= lay.apply_x
-                && pt.x < lay.apply_x + lay.btn_w
-                && pt.y >= lay.btn_y
-                && pt.y < lay.btn_y + lay.btn_h
-            {
-                return LRESULT(HT_BTN_APPLY);
-            }
-
-            // Close button
-            if pt.x >= lay.close_x
-                && pt.x < lay.close_x + lay.btn_w
-                && pt.y >= lay.btn_y
-                && pt.y < lay.btn_y + lay.btn_h
-            {
-                return LRESULT(HT_BTN_CLOSE);
-            }
-
-            // Everything else is normal client area. Returning custom hit-test
-            // values here turns clicks into WM_NCLBUTTONDOWN and our
-            // WM_LBUTTONDOWN handler never receives them.
+            // Everything else is normal client area. Do NOT return custom
+            // HT_* values here: Windows then sends WM_NCLBUTTONDOWN instead
+            // of WM_LBUTTONDOWN, so our controls never receive clicks.
             LRESULT(HTCLIENT as isize)
         }
 

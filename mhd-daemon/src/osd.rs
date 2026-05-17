@@ -478,6 +478,11 @@ fn paint_osd(
         let _ = DeleteObject(hfont_small);
     }
 
+    // GDI often writes RGB into a 32-bit DIB without a valid alpha channel.
+    // Keep the rounded background translucent, but make foreground UI
+    // (text/progress bar) fully opaque.
+    fix_gdi_alpha(bits, width, height, theme.background);
+
     // ---- UpdateLayeredWindow ----
     let blend = BLENDFUNCTION {
         BlendOp: AC_SRC_OVER as u8,
@@ -518,6 +523,36 @@ fn paint_osd(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+fn fix_gdi_alpha(bits: *mut std::ffi::c_void, width: i32, height: i32, background: crate::native_theme::Argb) {
+    if bits.is_null() || width <= 0 || height <= 0 {
+        return;
+    }
+
+    let bg_px = background.to_premultiplied_argb_pixel();
+    unsafe {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
+        for px in pixels.iter_mut() {
+            if *px == 0 {
+                continue;
+            }
+            if is_background_like_pixel(*px, bg_px, background.a) {
+                continue;
+            }
+            *px = 0xff00_0000 | (*px & 0x00ff_ffff);
+        }
+    }
+}
+
+fn is_background_like_pixel(px: u32, bg_px: u32, bg_alpha: u8) -> bool {
+    if px == bg_px {
+        return true;
+    }
+    let a = ((px >> 24) & 0xff) as u8;
+    let rgb = px & 0x00ff_ffff;
+    let bg_rgb = bg_px & 0x00ff_ffff;
+    rgb == bg_rgb && a <= bg_alpha
+}
 
 /// Fill a 32-bit ARGB pixel buffer with a rounded rectangle.
 /// Corner edges are anti‑aliased over a 1‑pixel falloff for smoothness.
