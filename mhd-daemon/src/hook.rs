@@ -337,21 +337,21 @@ unsafe extern "system" fn mouse_hook_proc(
                     return LRESULT(1);
                 }
             }
-            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-                // Skip injected wheel events to avoid loops with our own SendInput
-                if ms_struct.flags & 0x01 != 0 {
-                    // LLMHF_INJECTED
-                    return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
-                }
+            WM_MOUSEWHEEL => {
                 let delta = wheel_delta(w_param);
-                let key = match (msg_type, delta) {
-                    (WM_MOUSEWHEEL, d) if d > 0 => PhysicalKey::WheelUp,
-                    (WM_MOUSEWHEEL, _) => PhysicalKey::WheelDown,
-                    (WM_MOUSEHWHEEL, d) if d > 0 => PhysicalKey::WheelRight,
-                    (WM_MOUSEHWHEEL, _) => PhysicalKey::WheelLeft,
-                    _ => unreachable!(), // only reached for WM_MOUSEWHEEL / WM_MOUSEHWHEEL
-                };
+                let key = if delta > 0 { PhysicalKey::WheelUp } else { PhysicalKey::WheelDown };
                 let modifiers = get_pressed_modifiers();
+                eprintln!("mhd: dbg wheel msg={} delta={} mods={:02x} dir={:?}", msg_type, delta, modifiers.0, key);
+                let trigger = Trigger { modifiers, key };
+                if dispatch_trigger(state, trigger) {
+                    return LRESULT(1);
+                }
+            }
+            WM_MOUSEHWHEEL => {
+                let delta = wheel_delta(w_param);
+                let key = if delta > 0 { PhysicalKey::WheelRight } else { PhysicalKey::WheelLeft };
+                let modifiers = get_pressed_modifiers();
+                eprintln!("mhd: dbg hwheel msg={} delta={} mods={:02x} dir={:?}", msg_type, delta, modifiers.0, key);
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);
