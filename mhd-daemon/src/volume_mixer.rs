@@ -40,11 +40,11 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow, KillTimer,
-    MsgWaitForMultipleObjects, PeekMessageW, RegisterClassW, SetTimer, ShowWindow,
-    TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, PM_REMOVE, QS_ALLINPUT,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow,
+    GetWindowRect, KillTimer, MsgWaitForMultipleObjects, PeekMessageW, RegisterClassW, SetTimer,
+    ShowWindow, TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, PM_REMOVE, QS_ALLINPUT,
     SW_HIDE, SW_SHOWNA, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_QUIT, WM_TIMER, WS_EX_LAYERED,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_TIMER, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WNDCLASSW, MSG,
 };
 use windows::core::Interface;
@@ -266,6 +266,24 @@ fn mixer_thread(handle: MixerHandle) {
                                 WM_LBUTTONUP => {
                                     if dragging_row.take().is_some() {
                                         let _ = ReleaseCapture();
+                                        continue;
+                                    }
+                                }
+                                WM_MOUSEWHEEL => {
+                                    let pt = screen_point_to_client(hwnd, point_from_lparam(msg.lParam));
+                                    if let Some(row) = hit_test_volume_row(
+                                        &state,
+                                        pt.0,
+                                        pt.1,
+                                        mixer_w,
+                                        scale,
+                                    ) {
+                                        let delta = wheel_delta_from_wparam(msg.wParam);
+                                        let step = (delta as f32 / 120.0) * 0.02;
+                                        let current = state.sessions[row].volume;
+                                        set_row_volume(&mut state, row, current + step);
+                                        paint_mixer(hwnd, &state, &work, mixer_w, scale);
+                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
                                         continue;
                                     }
                                 }
@@ -703,6 +721,15 @@ fn point_from_lparam(lparam: LPARAM) -> (i32, i32) {
     (x, y)
 }
 
+fn screen_point_to_client(hwnd: HWND, point: (i32, i32)) -> (i32, i32) {
+    let mut rc = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rc) }.is_ok() {
+        (point.0 - rc.left, point.1 - rc.top)
+    } else {
+        point
+    }
+}
+
 fn hit_test_volume_bar(
     state: &MixerState,
     x: i32,
@@ -710,35 +737,55 @@ fn hit_test_volume_bar(
     width: i32,
     scale: f32,
 ) -> Option<(usize, f32)> {
+    let (bar_x, bar_max_w) = volume_bar_bounds(width, scale);
+    if x < bar_x || x > bar_x + bar_max_w {
+        return None;
+    }
+    hit_test_volume_row(state, x, y, width, scale)
+        .map(|row| (row, volume_from_x(x, width, scale)))
+}
+
+fn hit_test_volume_row(
+    state: &MixerState,
+    x: i32,
+    y: i32,
+    width: i32,
+    scale: f32,
+) -> Option<usize> {
     let pad = (PAD_BASE as f32 * scale) as i32;
     let font_h_abs = (14.0 * scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
     let sep_y = pad + font_h_abs + 8;
 
-    let label_w = (120.0 * scale) as i32;
-    let bar_x = pad + label_w + pad;
-    let bar_max_w = width - bar_x - pad - 50 - pad;
-
-    if x < bar_x || x > bar_x + bar_max_w {
+    if x < pad || x > width - pad {
         return None;
     }
 
     for i in 0..state.sessions.len() {
         let row_y = sep_y + 8 + (i as i32) * row_h;
         if y >= row_y && y < row_y + row_h {
-            return Some((i, volume_from_x(x, width, scale)));
+            return Some(i);
         }
     }
 
     None
 }
 
+fn wheel_delta_from_wparam(wparam: WPARAM) -> i16 {
+    ((wparam.0 >> 16) & 0xffff) as i16
+}
+
 fn volume_from_x(x: i32, width: i32, scale: f32) -> f32 {
+    let (bar_x, bar_max_w) = volume_bar_bounds(width, scale);
+    ((x - bar_x) as f32 / bar_max_w as f32).clamp(0.0, 1.0)
+}
+
+fn volume_bar_bounds(width: i32, scale: f32) -> (i32, i32) {
     let pad = (PAD_BASE as f32 * scale) as i32;
     let label_w = (120.0 * scale) as i32;
     let bar_x = pad + label_w + pad;
     let bar_max_w = width - bar_x - pad - 50 - pad;
-    ((x - bar_x) as f32 / bar_max_w as f32).clamp(0.0, 1.0)
+    (bar_x, bar_max_w)
 }
 
 fn set_row_volume(state: &mut MixerState, row: usize, volume: f32) {
