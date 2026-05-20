@@ -1,39 +1,46 @@
 # mhd — Mouse & Hotkey Daemon for Windows
 
 **mhd** is a lightweight background daemon that remaps keys, mouse buttons,
-and keyboard shortcuts using low‑level Windows hooks. No drivers, no kernel
+and keyboard shortcuts using low-level Windows hooks. No drivers, no kernel
 components — just one portable `mhd.exe`.
 
 ---
 
 ## Architecture
 
-```
+```text
 mhd.exe (single binary)
 ├── Tray thread
 │   ├── System tray icon + context menu
 │   ├── About dialog (native layered window)
-│   └── Config editor (native dark popup)
+│   ├── Config editor (native themed window)
+│   └── Volume Mixer launcher
 ├── Hook thread (WH_KEYBOARD_LL / WH_MOUSE_LL)
-├── Worker thread (DDC/CI, PowerShell)
-└── OSD thread (brightness overlay, native layered window)
+├── Worker thread (action dispatch: keys, PowerShell, DDC/CI, mixer)
+├── OSD thread (brightness overlay, native layered window)
+└── Volume Mixer thread (Core Audio + interactive layered window)
 ```
 
-All components live in one process with **0% CPU at idle** (blocking message
-loops everywhere). The UI is pure Win32 — no `egui`, no `winit`, no OpenGL.
+All components live in one process with **0% CPU at idle**. Threads use blocking
+Win32 message/event waits (`GetMessageW`, `MsgWaitForMultipleObjects`, events),
+not polling. The UI is pure Win32/GDI layered windows — no `egui`, no `winit`,
+no OpenGL.
 
 ---
 
 ## Features
 
-- **Key remapping** — replace any key or shortcut with another (e.g. `CapsLock` → `Alt+Shift`).
-- **Mouse button bindings** — bind side buttons (XButton1/XButton2) to any action.
-- **DDC/CI Brightness** — adjust monitor brightness with a native OSD overlay.
-- **Run PowerShell** — execute arbitrary scripts on a hotkey.
-- **Low‑level hooks** — `WH_KEYBOARD_LL` / `WH_MOUSE_LL`, sub‑millisecond response.
-- **0 % CPU idle** — blocking message loops, zero polling in all threads.
-- **Native themes** — load JSON colour themes from `%USERPROFILE%\.config\mhd\themes\`.
-- **Styled settings panel** — native UI with theme selector, hover effects, and full DPI scaling.
+- **Key remapping** — replace any key or shortcut with another via `SendInput`.
+- **Mouse button bindings** — bind side buttons (`mouseButton4`/`mouseButton5`) to actions.
+- **DDC/CI brightness and VCP** — adjust monitor brightness or arbitrary VCP codes.
+- **Brightness OSD** — native themed overlay for brightness changes.
+- **Interactive Volume Mixer** — master volume + per-app audio sessions via Core Audio.
+- **Run PowerShell** — execute arbitrary scripts/commands on a hotkey.
+- **Low-level hooks** — `WH_KEYBOARD_LL` / `WH_MOUSE_LL` with lock-free hot path.
+- **Config schemes** — switch between named binding schemes at runtime.
+- **Native themes** — JSON colour themes from `%USERPROFILE%\.config\mhd\themes\`.
+- **Styled settings panel** — native UI with theme selector, hover effects, DPI scaling.
+- **System tray menu** — reload config, edit config, open volume mixer, about, quit.
 - **Portable & tiny** — single binary, no installer, no runtime.
 
 ---
@@ -41,12 +48,15 @@ loops everywhere). The UI is pure Win32 — no `egui`, no `winit`, no OpenGL.
 ## Quick Start
 
 ### 1. Build
+
 ```powershell
 cargo build --release
 ```
+
 Requires Rust 1.85+.
 
 ### 2. Run
+
 ```powershell
 .\mhd.exe              # tray + daemon (default)
 .\mhd.exe --daemon     # headless, no tray
@@ -54,14 +64,52 @@ Requires Rust 1.85+.
 ```
 
 ### 3. Configure
+
 On first run, `mhd` creates a default config at:
-```
+
+```text
 %USERPROFILE%\.config\mhd\config.toml
 ```
-Uncomment the bindings you want to enable, then restart mhd or
-select **Reload Config** from the tray menu.
 
-Use the **Edit Config** tray menu item to open the styled settings panel.
+You can override the config path with:
+
+```powershell
+$env:MHD_CONFIG = "C:\path\to\config.toml"
+```
+
+Uncomment or add bindings, then restart mhd or select **Reload Config** from the
+tray menu. Use **Edit Config** from the tray to open the native settings panel.
+
+---
+
+## Volume Mixer
+
+Open it via the tray menu (**Volume Mixer**) or bind the action:
+
+```toml
+[[binding]]
+trigger = "ctrl+alt+numpad_star"
+action = "show_volume_mixer"
+```
+
+The mixer shows:
+
+- `Master Volume` (default render endpoint)
+- active per-application audio sessions
+
+Controls:
+
+- click a volume bar — set volume
+- drag a volume bar — adjust continuously
+- hover a row + mouse wheel — adjust by small steps
+- drag the header — move the mixer window
+- `Esc` — close
+
+Auto-hide behaviour:
+
+- on show: long timeout (`12s`)
+- while mouse is over the window: timeout disabled
+- after mouse leaves: short timeout (`2s`)
 
 ---
 
@@ -69,7 +117,7 @@ Use the **Edit Config** tray menu item to open the styled settings panel.
 
 mhd loads JSON colour themes from:
 
-```
+```text
 %USERPROFILE%\.config\mhd\themes
 ```
 
@@ -79,17 +127,21 @@ Set the active theme in `config.toml`:
 theme = "glass_dark"
 ```
 
-The file must be `%USERPROFILE%\.config\mhd\themes\glass_dark.json`.
+The file must be:
+
+```text
+%USERPROFILE%\.config\mhd\themes\glass_dark.json
+```
 
 ### Supported colour keys
 
 | Key | Used for |
 |-----|----------|
-| `background` | OSD / About / editor background |
+| `background` | OSD / About / editor / mixer background |
 | `surface` | Edit control background |
 | `border` | Separator lines |
 | `text` | Primary text |
-| `text.muted` | Labels, version, hint, status |
+| `text.muted` | Labels, version, hints, status, secondary text |
 | `element.active` | Accent / progress bar fill |
 | `element.selected` | Selection highlight |
 | `element.hover` | Hover state |
@@ -100,12 +152,19 @@ All keys are optional — missing values fall back to the built-in dark theme.
 
 ## Actions
 
-| Action | Description |
-|--------|-------------|
-| `replace_key` | Suppress trigger, send different keys via `SendInput` |
-| `set_brightness` | Adjust DDC/CI brightness (±5, or absolute value like 50) |
-| `run_ps` | Run a PowerShell command |
-| `quit` | Gracefully shut down mhd |
+| Action | Fields | Description |
+|--------|--------|-------------|
+| `replace_key` | `keys` | Suppress trigger and send different keys via `SendInput` |
+| `set_brightness` | `value` | Adjust DDC/CI brightness (`+5`, `-5`, or absolute `50`) |
+| `vcp` | `code`, `value` | Set or adjust arbitrary DDC/CI VCP code |
+| `run_ps` | `command` | Run a PowerShell command |
+| `switch_scheme` | `target_scheme` | Switch active binding scheme |
+| `show_volume_mixer` | — | Show the interactive Volume Mixer overlay |
+| `quit` | — | Gracefully shut down mhd |
+
+The config editor exposes the common actions (`replace_key`, `run_ps`,
+`set_brightness`, `show_volume_mixer`, `quit`). Advanced actions such as `vcp`
+and `switch_scheme` can be edited directly in TOML.
 
 ### Example bindings
 
@@ -131,28 +190,75 @@ value = "+5"
 trigger = "ctrl+alt+numpad_subtract"
 action = "set_brightness"
 value = "-5"
+
+# Show Volume Mixer
+[[binding]]
+trigger = "ctrl+alt+numpad_star"
+action = "show_volume_mixer"
+
+# Open Windows Terminal
+[[binding]]
+trigger = "ctrl+alt+t"
+action = "run_ps"
+command = "Start-Process wt"
+
+# Set monitor input to HDMI 1 (0x60 is Input Select, 17 is HDMI 1 on many monitors)
+[[binding]]
+trigger = "ctrl+alt+f1"
+action = "vcp"
+code = "0x60"
+value = "17"
+```
+
+### Schemes
+
+Bindings belong to the `default` scheme unless `scheme` is specified.
+
+```toml
+active_scheme = "default"
+
+[[binding]]
+scheme = "gaming"
+trigger = "mouseButton4"
+action = "replace_key"
+keys = "ctrl"
+
+[[binding]]
+trigger = "ctrl+alt+g"
+action = "switch_scheme"
+target_scheme = "gaming"
 ```
 
 ---
 
 ## Project Structure
 
-```
+```text
 mhd/
-└── mhd-daemon/src/
-    ├── main.rs           — CLI entry, startup orchestration
-    ├── app.rs            — App lifecycle (run hooks, reload config)
-    ├── hook.rs           — WH_KEYBOARD_LL / WH_MOUSE_LL hooks
-    ├── tray.rs           — System tray icon + context menu
-    ├── osd.rs            — Native Win32 layered OSD (brightness bar)
-    ├── about.rs          — Styled native About dialog
-    ├── config_editor.rs  — Styled native settings panel
-    ├── native_theme.rs   — JSON theme loader + colour helpers
-    ├── monitor.rs        — DDC/CI via dxva2.dll, EDID monitor name
-    ├── trigger.rs        — Hotkey parsing
-    ├── worker.rs         — Action execution thread
-    ├── action.rs         — Action definitions and dispatch
-    └── config.rs         — TOML config loading
+├── Cargo.toml                    — workspace
+└── mhd-daemon/
+    ├── Cargo.toml                — binary crate (`mhd`)
+    └── src/
+        ├── main.rs               — CLI entry, startup orchestration
+        ├── app.rs                — App lifecycle and DaemonControl
+        ├── platform.rs           — Win32 helper layer (keys/events)
+        ├── action.rs             — Action definitions + action registry
+        ├── worker.rs             — Action execution thread
+        ├── hook.rs               — WH_KEYBOARD_LL / WH_MOUSE_LL hooks
+        ├── trigger.rs            — Hotkey/mouse trigger parsing
+        ├── tray.rs               — System tray icon + context menu
+        ├── volume_mixer.rs       — Core Audio interactive mixer overlay
+        ├── monitor.rs            — DDC/CI via dxva2.dll, EDID monitor name
+        ├── native_theme.rs       — JSON theme loader + colour helpers
+        ├── about.rs              — Styled native About dialog
+        ├── config_editor.rs      — Styled native settings panel
+        ├── config/
+        │   ├── mod.rs            — Validated config model
+        │   ├── raw.rs            — TOML-deserialised raw config
+        │   └── path.rs           — Config path + example config
+        └── osd/
+            ├── mod.rs            — Brightness OSD thread/window
+            └── painter.rs        — GDI/DIB drawing helpers
 ```
 
 ---
@@ -161,9 +267,11 @@ mhd/
 
 | Thread | Role |
 |--------|------|
-| **Tray** | System tray icon, context menu, About dialog, config editor |
-| **Hook** | Low‑level keyboard/mouse hooks, blocking `GetMessageW` |
-| **Worker** | DDC/CI calls and PowerShell execution (non‑blocking) |
-| **OSD** | Layered overlay window, `MsgWaitForMultipleObjects`, auto‑hide |
+| **Tray** | Tray icon, context menu, About dialog, config editor |
+| **Hook** | Low-level keyboard/mouse hooks, blocking `GetMessageW`; lock-free state lookup in callbacks |
+| **Worker** | Key send, scheme switch, DDC/CI calls, PowerShell, mixer show requests |
+| **OSD** | Brightness layered overlay, `MsgWaitForMultipleObjects`, auto-hide |
+| **Volume Mixer** | Core Audio enumeration, interactive layered overlay, hover/drag/wheel input |
 
-All message loops use blocking wait APIs — **0 % CPU at idle**.
+The low-level hook hot path avoids mutex locking so desktop switches or UI stalls
+do not block Windows low-level hook callbacks.
