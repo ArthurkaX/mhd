@@ -36,8 +36,8 @@ use crate::trigger::{KeyCombo, Modifiers, PhysicalKey, keys_to_string};
 
 // ── Layout constants (96 dpi base) ─────────────────────────────────
 
-const WIN_WIDTH_BASE: i32 = 480;
-const WIN_HEIGHT_BASE: i32 = 380;
+const WIN_WIDTH_BASE: i32 = 750;
+const WIN_HEIGHT_BASE: i32 = 600;
 const PADDING: i32 = 24;
 const HEADER_HEIGHT_BASE: i32 = 64;
 const FOOTER_HEIGHT_BASE: i32 = 52;
@@ -95,6 +95,20 @@ struct UIBinding {
     is_recording_param: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverTarget {
+    None,
+    ThemeCombo,
+    ApplyBtn,
+    CloseBtn,
+    AddBtn,
+    RowTrigger(usize),
+    RowKind(usize),
+    RowParam(usize),
+    RowDelete(usize),
+    Scrollbar,
+}
+
 unsafe impl Send for Layout {}
 unsafe impl Sync for Layout {}
 
@@ -149,6 +163,21 @@ struct SettingsState {
     edit_control: Option<HWND>,
     /// Index of binding being edited inline
     edit_idx: Option<usize>,
+
+    /// Hovered interactive target
+    hovered_target: HoverTarget,
+    /// Scroll dragging state
+    is_dragging_scroll: bool,
+    /// Scroll drag starting mouse Y position
+    scroll_drag_start_y: i32,
+    /// Scroll drag starting scroll offset
+    scroll_drag_start_offset: i32,
+    /// Action kind popup window (when open)
+    kind_popup: Option<HWND>,
+    /// Which binding row index the kind popup is open for
+    kind_popup_idx: Option<usize>,
+    /// Currently hovered index in the kind popup
+    kind_hover_sel: Option<usize>,
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -185,6 +214,20 @@ pub fn show_config_editor(handle: AppHandle) {
     };
     unsafe {
         RegisterClassW(&popup_wc);
+    }
+
+    // Action kind popup class
+    let kind_popup_cls = to_utf16_z("mhd_kind_popup_cls");
+    let kind_wc = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(kind_popup_wndproc),
+        hInstance: hinstance,
+        lpszClassName: PCWSTR::from_raw(kind_popup_cls.as_ptr()),
+        hbrBackground: HBRUSH::default(),
+        ..Default::default()
+    };
+    unsafe {
+        RegisterClassW(&kind_wc);
     }
 
     let theme = handle.theme();
@@ -247,6 +290,13 @@ pub fn show_config_editor(handle: AppHandle) {
         recording_info: None,
         edit_control: None,
         edit_idx: None,
+        hovered_target: HoverTarget::None,
+        is_dragging_scroll: false,
+        scroll_drag_start_y: 0,
+        scroll_drag_start_offset: 0,
+        kind_popup: None,
+        kind_popup_idx: None,
+        kind_hover_sel: None,
     }));
     unsafe {
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
@@ -319,7 +369,7 @@ fn compute_layout(scale: f32) -> Layout {
 
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
 
-    let list_y = header_h + row_h + pad / 2;
+    let list_y = header_h + row_h + pad / 2 + (20.0 * scale) as i32;
     let list_h = (win_h - footer_h) - list_y - pad / 2;
 
     Layout {
@@ -551,50 +601,28 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     }
 
     // ── Combo box surface ──────────────────────────────────────────
-    // Draw the background of the combo box
-    let combo_surface = theme.surface;
-    let combo_bg = combo_surface.to_premultiplied_argb_pixel();
-
-    // Draw combo background rect
-    unsafe {
-        let pixels =
-            std::slice::from_raw_parts_mut(bits as *mut u32, (lay.win_w * lay.win_h) as usize);
-        for y in lay.combo_y
-            ..lay.combo_y + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32)
-        {
-            for x in lay.combo_x..lay.combo_x + lay.combo_w {
-                let idx = (y * lay.win_w + x) as usize;
-                if idx < pixels.len() {
-                    // Blend combo bg over window bg
-                    let a = (combo_surface.a as u32) as u32;
-                    if a == 255 {
-                        pixels[idx] = combo_bg;
-                    } else if a > 0 {
-                        let bg = pixels[idx];
-                        let ba = (bg >> 24) & 0xFF;
-                        let br = (bg >> 16) & 0xFF;
-                        let bg_ = (bg >> 8) & 0xFF;
-                        let bb = bg & 0xFF;
-
-                        let ca = combo_surface.a as u32;
-                        let cr = combo_surface.r as u32;
-                        let cg = combo_surface.g as u32;
-                        let cb_ = combo_surface.b as u32;
-
-                        let out_a = ba + (ca * (255 - ba)) / 255;
-                        let out_r = (br * (255 - ca) + cr * ca) / 255;
-                        let out_g = (bg_ * (255 - ca) + cg * ca) / 255;
-                        let out_b = (bb * (255 - ca) + cb_ * ca) / 255;
-
-                        pixels[idx] = (out_a.min(255) << 24)
-                            | (out_r.min(255) << 16)
-                            | (out_g.min(255) << 8)
-                            | out_b.min(255);
-                    }
-                }
-            }
-        }
+    let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32);
+    let combo_rc = RECT {
+        left: lay.combo_x,
+        top: lay.combo_y,
+        right: lay.combo_x + lay.combo_w,
+        bottom: lay.combo_y + combo_h,
+    };
+    let is_combo_hovered = state.hovered_target == HoverTarget::ThemeCombo;
+    let mut combo_color = theme.surface;
+    if is_combo_hovered {
+        combo_color = theme.hover.blend_over(combo_color);
     }
+    let combo_radius = (4.0 * lay.scale) as i32;
+    draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, combo_rc, combo_radius, combo_color);
+
+    // Draw subtle border for combo box
+    let combo_border_color = if is_combo_hovered {
+        theme.text
+    } else {
+        theme.border
+    };
+    draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, combo_rc, combo_radius, 1, combo_border_color);
 
     // ── Combo text + arrow ─────────────────────────────────────────
     unsafe {
@@ -614,7 +642,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         left: text_x,
         top: lay.combo_y,
         right: lay.arrow_x - 4,
-        bottom: lay.combo_y + 24,
+        bottom: lay.combo_y + combo_h,
     };
     unsafe {
         let _ = DrawTextW(
@@ -625,33 +653,21 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // Arrow ▼
-    let arrow_brush = unsafe { CreateSolidBrush(theme.text_muted.to_colorref()) };
+    // Arrow ▼ (drawn as simple text icon directly over combo box)
+    let arrow_color = if is_combo_hovered {
+        theme.text
+    } else {
+        theme.text_muted
+    };
     unsafe {
-        let _ = FillRect(
-            dib_dc,
-            &RECT {
-                left: lay.arrow_x,
-                top: lay.combo_y,
-                right: lay.arrow_x + lay.arrow_w,
-                bottom: lay.combo_y
-                    + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32),
-            },
-            arrow_brush,
-        );
-        let _ = DeleteObject(arrow_brush);
-    }
-
-    // Draw arrow character on arrow background
-    unsafe {
-        let _ = SetTextColor(dib_dc, theme.background.to_colorref());
+        let _ = SetTextColor(dib_dc, arrow_color.to_colorref());
     }
     let mut arrow_wz = to_utf16_z("▼");
     let mut arrow_rc = RECT {
         left: lay.arrow_x,
         top: lay.combo_y,
         right: lay.arrow_x + lay.arrow_w,
-        bottom: lay.combo_y + 24,
+        bottom: lay.combo_y + combo_h,
     };
     unsafe {
         let _ = DrawTextW(
@@ -664,10 +680,12 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
 
     // ── Buttons ────────────────────────────────────────────────────
     // Apply
+    let is_apply_hovered = state.hovered_target == HoverTarget::ApplyBtn;
     draw_button(
         dib_dc,
         bits,
         lay.win_w,
+        lay.win_h,
         lay.apply_x,
         lay.btn_y,
         lay.btn_w,
@@ -675,13 +693,16 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         "Apply",
         theme,
         body_font,
+        is_apply_hovered,
     );
 
     // Close
+    let is_close_hovered = state.hovered_target == HoverTarget::CloseBtn;
     draw_button(
         dib_dc,
         bits,
         lay.win_w,
+        lay.win_h,
         lay.close_x,
         lay.btn_y,
         lay.btn_w,
@@ -689,7 +710,70 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         "Close",
         theme,
         body_font,
+        is_close_hovered,
     );
+
+    // ── Table Headers ──────────────────────────────────────────────
+    unsafe {
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
+    let table_header_y = lay.list_y - (20.0 * lay.scale) as i32;
+    let trig_w = (120.0 * lay.scale) as i32;
+    let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
+    let kind_w = (100.0 * lay.scale) as i32;
+    let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
+
+    // Trigger header
+    let mut trig_header_wz = to_utf16_z("TRIGGER");
+    let mut trig_header_rc = RECT {
+        left: lay.pad + 6,
+        top: table_header_y,
+        right: lay.pad + trig_w,
+        bottom: table_header_y + (16.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut trig_header_wz,
+            &mut trig_header_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // Action header
+    let mut action_header_wz = to_utf16_z("ACTION");
+    let mut action_header_rc = RECT {
+        left: kind_x + 6,
+        top: table_header_y,
+        right: kind_x + kind_w,
+        bottom: table_header_y + (16.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut action_header_wz,
+            &mut action_header_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // Parameter header
+    let mut param_header_wz = to_utf16_z("PARAMETER");
+    let mut param_header_rc = RECT {
+        left: param_x + 6,
+        top: table_header_y,
+        right: lay.win_w - lay.pad - (32.0 * lay.scale) as i32,
+        bottom: table_header_y + (16.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut param_header_wz,
+            &mut param_header_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     // ── Bindings List ──────────────────────────────────────────────
     unsafe {
@@ -714,10 +798,12 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
 
     // "Add New" button
     if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
+        let is_add_hovered = state.hovered_target == HoverTarget::AddBtn;
         draw_button(
             dib_dc,
             bits,
             lay.win_w,
+            lay.win_h,
             lay.pad,
             row_y + (lay.row_h - lay.btn_h) / 2,
             (80.0 * lay.scale) as i32,
@@ -725,6 +811,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             "+ Add",
             theme,
             small_font,
+            is_add_hovered,
         );
     }
 
@@ -732,6 +819,43 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let rgn = CreateRectRgn(0, 0, lay.win_w, lay.win_h);
         SelectClipRgn(dib_dc, rgn);
         let _ = DeleteObject(rgn);
+    }
+
+    // ── Scrollbar ──────────────────────────────────────────────────
+    let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+    if content_h > lay.list_h {
+        let scroll_w = (6.0 * lay.scale) as i32;
+        let scroll_x = lay.win_w - lay.pad + (lay.pad - scroll_w) / 2;
+
+        // Draw track
+        let track_rect = RECT {
+            left: scroll_x,
+            top: lay.list_y,
+            right: scroll_x + scroll_w,
+            bottom: lay.list_y + lay.list_h,
+        };
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, track_rect, scroll_w / 2, theme.border);
+
+        // Draw thumb
+        let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
+        let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
+        let max_scroll = content_h - lay.list_h;
+        let thumb_y = lay.list_y + ((state.scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
+
+        let is_thumb_active = state.hovered_target == HoverTarget::Scrollbar || state.is_dragging_scroll;
+        let thumb_color = if is_thumb_active {
+            theme.accent
+        } else {
+            theme.text_muted
+        };
+
+        let thumb_rect = RECT {
+            left: scroll_x,
+            top: thumb_y,
+            right: scroll_x + scroll_w,
+            bottom: thumb_y + thumb_h,
+        };
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, thumb_rect, scroll_w / 2, thumb_color);
     }
 
     // ── Footer status text ─────────────────────────────────────────
@@ -821,7 +945,7 @@ fn fix_gdi_alpha(
     unsafe {
         let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
         for px in pixels.iter_mut() {
-            let _a = (*px >> 24) & 0xff;
+            let a = (*px >> 24) & 0xff;
             let rgb = *px & 0x00ff_ffff;
 
             // Do not touch transparent outside corners.
@@ -830,13 +954,203 @@ fn fix_gdi_alpha(
             }
 
             // Preserve the original glass background (including anti-aliased
-            // rounded corners). Everything else is foreground UI drawn by GDI
-            // and should be fully opaque.
+            // rounded corners).
             if is_background_like_pixel(*px, bg_px, background.a) {
                 continue;
             }
 
-            *px = 0xff00_0000 | rgb;
+            // Only make pixels fully opaque if they were drawn by standard GDI
+            // functions (which write 0 to the alpha channel).
+            // Our custom drawing helpers (like rounded buttons and scrollbars)
+            // write correct alpha values which we must preserve.
+            if a == 0 {
+                *px = 0xff00_0000 | rgb;
+            }
+        }
+    }
+}
+
+fn blend_pixels_premultiplied(original: u32, overlay: Argb, opacity: f32) -> u32 {
+    let overlay_a = (overlay.a as f32 * opacity) as u32;
+    if overlay_a == 0 {
+        return original;
+    }
+
+    let dest_a = (original >> 24) & 0xFF;
+    let dest_r = (original >> 16) & 0xFF;
+    let dest_g = (original >> 8) & 0xFF;
+    let dest_b = original & 0xFF;
+
+    let src_r = overlay.r as u32;
+    let src_g = overlay.g as u32;
+    let src_b = overlay.b as u32;
+
+    let out_a = overlay_a + (dest_a * (255 - overlay_a) + 127) / 255;
+    let out_r = (src_r * overlay_a + dest_r * (255 - overlay_a) + 127) / 255;
+    let out_g = (src_g * overlay_a + dest_g * (255 - overlay_a) + 127) / 255;
+    let out_b = (src_b * overlay_a + dest_b * (255 - overlay_a) + 127) / 255;
+
+    (out_a.min(255) << 24)
+        | (out_r.min(255) << 16)
+        | (out_g.min(255) << 8)
+        | out_b.min(255)
+}
+
+fn draw_rounded_rect_in_buffer(
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
+    rect: RECT,
+    r: i32,
+    color: Argb,
+) {
+    if bits.is_null() || win_w <= 0 || win_h <= 0 {
+        return;
+    }
+    let pixels = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
+
+    let x1 = rect.left.clamp(0, win_w);
+    let x2 = rect.right.clamp(0, win_w);
+    let y1 = rect.top.clamp(0, win_h);
+    let y2 = rect.bottom.clamp(0, win_h);
+
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+
+    let cr = r.min(w / 2).min(h / 2);
+
+    let tl_cx = rect.left + cr;
+    let tl_cy = rect.top + cr;
+    let tr_cx = rect.right - cr - 1;
+    let tr_cy = rect.top + cr;
+    let bl_cx = rect.left + cr;
+    let bl_cy = rect.bottom - cr - 1;
+    let br_cx = rect.right - cr - 1;
+    let br_cy = rect.bottom - cr - 1;
+
+    for y in y1..y2 {
+        for x in x1..x2 {
+            let (is_corner, cx, cy) = if x < rect.left + cr && y < rect.top + cr {
+                (true, tl_cx, tl_cy)
+            } else if x > tr_cx && y < rect.top + cr {
+                (true, tr_cx, tr_cy)
+            } else if x < rect.left + cr && y > bl_cy {
+                (true, bl_cx, bl_cy)
+            } else if x > br_cx && y > br_cy {
+                (true, br_cx, br_cy)
+            } else {
+                (false, 0, 0)
+            };
+
+            let idx = (y * win_w + x) as usize;
+            if idx >= pixels.len() {
+                continue;
+            }
+
+            if is_corner {
+                let dx = (x - cx) as f32;
+                let dy = (y - cy) as f32;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let falloff = 1.0 - (dist - cr as f32).clamp(0.0, 1.0);
+                if falloff <= 0.0 {
+                    // outside corner
+                } else {
+                    let original = pixels[idx];
+                    pixels[idx] = blend_pixels_premultiplied(original, color, falloff);
+                }
+            } else {
+                let original = pixels[idx];
+                pixels[idx] = blend_pixels_premultiplied(original, color, 1.0);
+            }
+        }
+    }
+}
+
+fn draw_rounded_border_in_buffer(
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
+    rect: RECT,
+    r: i32,
+    border_width: i32,
+    color: Argb,
+) {
+    if bits.is_null() || win_w <= 0 || win_h <= 0 {
+        return;
+    }
+    let pixels = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
+
+    let x1 = rect.left.clamp(0, win_w);
+    let x2 = rect.right.clamp(0, win_w);
+    let y1 = rect.top.clamp(0, win_h);
+    let y2 = rect.bottom.clamp(0, win_h);
+
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+
+    let cr = r.min(w / 2).min(h / 2);
+
+    let tl_cx = rect.left + cr;
+    let tl_cy = rect.top + cr;
+    let tr_cx = rect.right - cr - 1;
+    let tr_cy = rect.top + cr;
+    let bl_cx = rect.left + cr;
+    let bl_cy = rect.bottom - cr - 1;
+    let br_cx = rect.right - cr - 1;
+    let br_cy = rect.bottom - cr - 1;
+
+    let bw = border_width as f32;
+
+    for y in y1..y2 {
+        for x in x1..x2 {
+            let (is_corner, cx, cy) = if x < rect.left + cr && y < rect.top + cr {
+                (true, tl_cx, tl_cy)
+            } else if x > tr_cx && y < rect.top + cr {
+                (true, tr_cx, tr_cy)
+            } else if x < rect.left + cr && y > bl_cy {
+                (true, bl_cx, bl_cy)
+            } else if x > br_cx && y > br_cy {
+                (true, br_cx, br_cy)
+            } else {
+                (false, 0, 0)
+            };
+
+            let idx = (y * win_w + x) as usize;
+            if idx >= pixels.len() {
+                continue;
+            }
+
+            let mut opacity = 0.0;
+
+            if is_corner {
+                let dx = (x - cx) as f32;
+                let dy = (y - cy) as f32;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let dist_from_outer = cr as f32 - dist;
+                let dist_from_inner = dist - (cr as f32 - bw);
+                let edge_opacity = dist_from_outer.clamp(0.0, 1.0).min(dist_from_inner.clamp(0.0, 1.0));
+                opacity = edge_opacity;
+            } else {
+                let dl = (x - rect.left) as f32;
+                let dr = (rect.right - 1 - x) as f32;
+                let dt = (y - rect.top) as f32;
+                let db = (rect.bottom - 1 - y) as f32;
+                let min_dist = dl.min(dr).min(dt).min(db);
+                if min_dist < bw {
+                    opacity = 1.0 - (bw - 1.0 - min_dist).clamp(0.0, 1.0);
+                }
+            }
+
+            if opacity > 0.0 {
+                let original = pixels[idx];
+                pixels[idx] = blend_pixels_premultiplied(original, color, opacity);
+            }
         }
     }
 }
@@ -866,8 +1180,9 @@ fn contrast_text_on(bg: Argb) -> bool {
 
 fn draw_button(
     dib_dc: HDC,
-    _bits: *mut c_void,
-    _win_w: i32,
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
     x: i32,
     y: i32,
     w: i32,
@@ -875,25 +1190,31 @@ fn draw_button(
     label: &str,
     theme: &NativeTheme,
     font: HFONT,
+    is_hovered: bool,
 ) {
-    // Button background (accent colour, opaque)
-    unsafe {
-        let btn_bg = CreateSolidBrush(theme.accent.to_colorref());
-        let _ = FillRect(
-            dib_dc,
-            &RECT {
-                left: x,
-                top: y,
-                right: x + w,
-                bottom: y + h,
-            },
-            btn_bg,
-        );
-        let _ = DeleteObject(btn_bg);
+    let rect = RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    };
+
+    // Button background: accent color, lightened if hovered
+    let mut btn_color = theme.accent;
+    if is_hovered {
+        btn_color = theme.hover.blend_over(btn_color);
     }
 
+    // Radius scaled based on DPI width
+    let radius = (5.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, btn_color);
+
+    // Draw subtle border around the button
+    let border_color = theme.border;
+    draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+
     // Button text — pick contrasting colour based on accent luminance
-    let btn_text_color = if contrast_text_on(theme.accent) {
+    let btn_text_color = if contrast_text_on(btn_color) {
         Argb::new(0xFF, 0xFF, 0xFF, 0xFF) // white
     } else {
         Argb::new(0xFF, 0x00, 0x00, 0x00) // black
@@ -972,6 +1293,42 @@ unsafe extern "system" fn settings_wndproc(
 
                 let combo_h = (COMBO_HIT_HEIGHT as f32 * lay.scale) as i32;
 
+                // Scrollbar click / drag start
+                let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                if content_h > lay.list_h {
+                    let scroll_w = (6.0 * lay.scale) as i32;
+                    let scroll_x = lay.win_w - lay.pad + (lay.pad - scroll_w) / 2;
+                    let scroll_left = scroll_x - 4;
+                    let scroll_right = scroll_x + scroll_w + 4;
+                    if x >= scroll_left && x < scroll_right && y >= lay.list_y && y < lay.list_y + lay.list_h {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
+                        let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
+                        let max_scroll = content_h - lay.list_h;
+                        let thumb_y = lay.list_y + ((state.scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
+
+                        if y >= thumb_y && y < thumb_y + thumb_h {
+                            state.is_dragging_scroll = true;
+                            state.scroll_drag_start_y = y;
+                            state.scroll_drag_start_offset = state.scroll_y;
+                            let _ = SetCapture(hwnd);
+                        } else {
+                            let track_click_y = y - lay.list_y - thumb_h / 2;
+                            let pct = track_click_y as f32 / (lay.list_h - thumb_h) as f32;
+                            state.scroll_y = (pct * max_scroll as f32) as i32;
+                            state.scroll_y = state.scroll_y.clamp(0, max_scroll);
+                            
+                            state.is_dragging_scroll = true;
+                            state.scroll_drag_start_y = y;
+                            state.scroll_drag_start_offset = state.scroll_y;
+                            let _ = SetCapture(hwnd);
+                            paint_settings(hwnd, state_ptr, &lay);
+                        }
+                        return LRESULT(0);
+                    }
+                }
+
                 // Theme combo click
                 if y >= lay.combo_y
                     && y < lay.combo_y + combo_h
@@ -1000,6 +1357,8 @@ unsafe extern "system" fn settings_wndproc(
                     }
 
                     if !clicked && y >= row_y && y < row_y + lay.row_h {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
                         state.bindings.push(UIBinding {
                             trigger: "none".to_string(),
                             kind: UIActionKind::ReplaceKey,
@@ -1010,6 +1369,7 @@ unsafe extern "system" fn settings_wndproc(
                         paint_settings(hwnd, state_ptr, &lay);
                         return LRESULT(0);
                     }
+                    return LRESULT(0);
                 }
 
                 // Apply button
@@ -1018,6 +1378,8 @@ unsafe extern "system" fn settings_wndproc(
                     && y >= lay.btn_y
                     && y < lay.btn_y + lay.btn_h
                 {
+                    close_combo_popup(state);
+                    close_kind_popup(state);
                     apply_settings(state);
                     paint_settings(hwnd, state_ptr, &state.layout);
                     return LRESULT(0);
@@ -1033,6 +1395,154 @@ unsafe extern "system" fn settings_wndproc(
                     return LRESULT(0);
                 }
 
+                close_combo_popup(state);
+                close_kind_popup(state);
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.is_dragging_scroll {
+                        state.is_dragging_scroll = false;
+                        let _ = ReleaseCapture();
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let lay = state.layout;
+
+                    if state.is_dragging_scroll {
+                        let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                        let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
+                        let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
+                        let max_scroll = content_h - lay.list_h;
+                        let thumb_travel = lay.list_h - thumb_h;
+                        if thumb_travel > 0 {
+                            let dy = y - state.scroll_drag_start_y;
+                            let scroll_delta = (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
+                            state.scroll_y = (state.scroll_drag_start_offset + scroll_delta).clamp(0, max_scroll);
+                            paint_settings(hwnd, state_ptr, &lay);
+                        }
+                    } else {
+                        let mut target = HoverTarget::None;
+
+                        let combo_h = (COMBO_HIT_HEIGHT as f32 * lay.scale) as i32;
+
+                        // Theme combo
+                        if y >= lay.combo_y
+                            && y < lay.combo_y + combo_h
+                            && x >= lay.combo_x
+                            && x < lay.combo_x + lay.combo_w
+                        {
+                            target = HoverTarget::ThemeCombo;
+                        }
+                        // Apply button
+                        else if x >= lay.apply_x
+                            && x < lay.apply_x + lay.btn_w
+                            && y >= lay.btn_y
+                            && y < lay.btn_y + lay.btn_h
+                        {
+                            target = HoverTarget::ApplyBtn;
+                        }
+                        // Close button
+                        else if x >= lay.close_x
+                            && x < lay.close_x + lay.btn_w
+                            && y >= lay.btn_y
+                            && y < lay.btn_y + lay.btn_h
+                        {
+                            target = HoverTarget::CloseBtn;
+                        }
+                        // Bindings list area
+                        else if y >= lay.list_y && y < lay.list_y + lay.list_h {
+                            let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                            let mut hit_scroll_track = false;
+
+                            if content_h > lay.list_h {
+                                let scroll_w = (6.0 * lay.scale) as i32;
+                                let scroll_x = lay.win_w - lay.pad + (lay.pad - scroll_w) / 2;
+                                let scroll_left = scroll_x - 4;
+                                let scroll_right = scroll_x + scroll_w + 4;
+                                if x >= scroll_left && x < scroll_right {
+                                    target = HoverTarget::Scrollbar;
+                                    hit_scroll_track = true;
+                                }
+                            }
+
+                            if !hit_scroll_track {
+                                let mut row_y = lay.list_y - state.scroll_y;
+                                let mut found = false;
+
+                                for i in 0..state.bindings.len() {
+                                    if y >= row_y && y < row_y + lay.row_h {
+                                        let trig_w = (120.0 * lay.scale) as i32;
+                                        let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
+                                        let kind_w = (100.0 * lay.scale) as i32;
+                                        let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
+                                        let param_w = lay.win_w - lay.pad - (32.0 * lay.scale) as i32 - param_x;
+                                        let del_w = (24.0 * lay.scale) as i32;
+
+                                        if x >= lay.pad && x < lay.pad + trig_w {
+                                            target = HoverTarget::RowTrigger(i);
+                                        } else if x >= kind_x && x < kind_x + kind_w {
+                                            target = HoverTarget::RowKind(i);
+                                        } else if x >= param_x && x < param_x + param_w {
+                                            target = HoverTarget::RowParam(i);
+                                        } else if x >= lay.win_w - lay.pad - del_w && x < lay.win_w - lay.pad {
+                                            target = HoverTarget::RowDelete(i);
+                                        }
+                                        found = true;
+                                        break;
+                                    }
+                                    row_y += lay.row_h;
+                                }
+
+                                // Add button
+                                if !found && y >= row_y && y < row_y + lay.row_h {
+                                    let add_w = (80.0 * lay.scale) as i32;
+                                    if x >= lay.pad && x < lay.pad + add_w {
+                                        target = HoverTarget::AddBtn;
+                                    }
+                                }
+                            }
+                        }
+
+                        if state.hovered_target != target {
+                            state.hovered_target = target;
+                            paint_settings(hwnd, state_ptr, &lay);
+
+                            let mut tme = TRACKMOUSEEVENT {
+                                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                                dwFlags: TME_LEAVE,
+                                hwndTrack: hwnd,
+                                dwHoverTime: 0,
+                            };
+                            let _ = TrackMouseEvent(&mut tme);
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSELEAVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.hovered_target != HoverTarget::None {
+                        state.hovered_target = HoverTarget::None;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                }
                 LRESULT(0)
             }
 
@@ -1102,9 +1612,192 @@ unsafe extern "system" fn settings_wndproc(
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !ptr.is_null() {
                     close_combo_popup(&mut *ptr);
+                    close_kind_popup(&mut *ptr);
                     let _ = Box::from_raw(ptr);
                 }
                 PostQuitMessage(0);
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+unsafe extern "system" fn kind_popup_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let w = rc.right - rc.left;
+                let h = rc.bottom - rc.top;
+
+                let (theme, scale) = if !state_ptr.is_null() {
+                    (&(*state_ptr).theme, (*state_ptr).layout.scale)
+                } else {
+                    (&NativeTheme::default(), 1.0)
+                };
+
+                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * scale) as i32;
+
+                let bg = CreateSolidBrush(theme.background.to_colorref());
+                let _ = FillRect(hdc, &rc, bg);
+                let _ = DeleteObject(bg);
+
+                // Border
+                let border_brush = CreateSolidBrush(theme.border.to_colorref());
+                let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: w, bottom: 1 }, border_brush);
+                let _ = FillRect(hdc, &RECT { left: 0, top: h - 1, right: w, bottom: h }, border_brush);
+                let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: 1, bottom: h }, border_brush);
+                let _ = FillRect(hdc, &RECT { left: w - 1, top: 0, right: w, bottom: h }, border_brush);
+                let _ = DeleteObject(border_brush);
+
+                if !state_ptr.is_null() {
+                    let state = &*state_ptr;
+                    let _ = SetBkMode(hdc, TRANSPARENT);
+                    let font_h = -(12.0 * state.layout.scale) as i32;
+                    let font = create_font(font_h, false, "Segoe UI");
+                    let old_font = SelectObject(hdc, font);
+
+                    let kinds = UIActionKind::all();
+                    let cur_kind = state.kind_popup_idx.and_then(|idx| state.bindings.get(idx)).map(|b| b.kind);
+
+                    for (i, kind) in kinds.iter().enumerate() {
+                        let item_y = (i as i32) * item_h;
+                        let item_rc = RECT {
+                            left: 2,
+                            top: item_y,
+                            right: w - 2,
+                            bottom: item_y + item_h,
+                        };
+
+                        let highlight = if cur_kind == Some(*kind) {
+                            Some(theme.selected)
+                        } else if state.kind_hover_sel == Some(i) {
+                            Some(theme.hover)
+                        } else {
+                            None
+                        };
+
+                        if let Some(c) = highlight {
+                            let blended = c.blend_over(theme.background);
+                            let sel_brush = CreateSolidBrush(blended.to_colorref());
+                            let _ = FillRect(hdc, &item_rc, sel_brush);
+                            let _ = DeleteObject(sel_brush);
+                        }
+
+                        let _ = SetTextColor(hdc, theme.text.to_colorref());
+                        let name = kind.to_str();
+                        let mut wz = to_utf16_z(name);
+                        let _ = DrawTextW(
+                            hdc,
+                            &mut wz,
+                            &mut RECT {
+                                left: 8,
+                                top: item_y,
+                                right: w - 8,
+                                bottom: item_y + item_h,
+                            },
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                        );
+                    }
+
+                    let _ = SelectObject(hdc, old_font);
+                    let _ = DeleteObject(font);
+                }
+
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
+                    let inner_y = if y > 0 { y - 1 } else { 0 };
+                    let idx = (inner_y / item_h) as usize;
+
+                    let kinds_len = UIActionKind::all().len();
+                    let new_hover = if idx < kinds_len {
+                        Some(idx)
+                    } else {
+                        None
+                    };
+
+                    if state.kind_hover_sel != new_hover {
+                        state.kind_hover_sel = new_hover;
+                        let _ = InvalidateRect(hwnd, None, false);
+
+                        let mut tme = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: hwnd,
+                            dwHoverTime: 0,
+                        };
+                        let _ = TrackMouseEvent(&mut tme);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSELEAVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.kind_hover_sel.is_some() {
+                        state.kind_hover_sel = None;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_LBUTTONDOWN => {
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
+                    let inner_y = if y > 0 { y - 1 } else { 0 };
+                    let idx = inner_y / item_h;
+                    let kinds = UIActionKind::all();
+                    if idx >= 0 && (idx as usize) < kinds.len() {
+                        if let Some(row_idx) = state.kind_popup_idx {
+                            let new_kind = kinds[idx as usize];
+                            if state.bindings[row_idx].kind != new_kind {
+                                state.bindings[row_idx].kind = new_kind;
+                                state.bindings[row_idx].param = String::new();
+                            }
+                        }
+                        close_kind_popup(state);
+                        paint_settings(state.hwnd, state_ptr, &state.layout);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_ACTIVATE => {
+                if loword(wparam.0 as u32) == 0 {
+                    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                    if !state_ptr.is_null() {
+                        close_kind_popup(&mut *state_ptr);
+                    }
+                }
                 LRESULT(0)
             }
 
@@ -1341,6 +2034,7 @@ fn loword(dw: u32) -> u16 {
 }
 
 fn toggle_combo_popup(state: &mut SettingsState) {
+    close_kind_popup(state);
     if state.combo_open.load(Ordering::SeqCst) {
         close_combo_popup(state);
     } else {
@@ -1421,10 +2115,90 @@ fn close_combo_popup(state: &mut SettingsState) {
     state.combo_open.store(false, Ordering::SeqCst);
 }
 
+fn open_kind_popup(state: &mut SettingsState, idx: usize, row_y: i32) {
+    if state.kind_popup.is_some() {
+        let is_same_row = state.kind_popup_idx == Some(idx);
+        close_kind_popup(state);
+        if is_same_row {
+            return;
+        }
+    }
+
+    close_combo_popup(state);
+
+    let parent = state.hwnd;
+    let lay = state.layout;
+    let state_ptr = state as *mut SettingsState;
+
+    // Position kind popup below the RowKind button.
+    let trig_w = (120.0 * lay.scale) as i32;
+    let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
+    let kind_w = (100.0 * lay.scale) as i32;
+    let btn_y_in_row = row_y + (lay.row_h - lay.btn_h) / 2;
+
+    let mut pt = POINT {
+        x: kind_x,
+        y: btn_y_in_row,
+    };
+    unsafe {
+        let _ = ClientToScreen(parent, &mut pt);
+    }
+
+    let popup_w = kind_w;
+    let item_h = COMBO_POPUP_ITEM_HEIGHT.max((COMBO_POPUP_ITEM_HEIGHT as f32 * lay.scale) as i32);
+    let kinds = UIActionKind::all();
+    let popup_h = (kinds.len() as i32) * item_h + 2;
+
+    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
+    let hinstance: HINSTANCE = hinst.into();
+    let cls_name = to_utf16_z("mhd_kind_popup_cls");
+
+    let popup = unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            PCWSTR::from_raw(cls_name.as_ptr()),
+            PCWSTR::null(),
+            WS_POPUP,
+            pt.x,
+            pt.y + lay.btn_h,
+            popup_w,
+            popup_h,
+            parent,
+            HMENU::default(),
+            hinstance,
+            None,
+        )
+    };
+
+    let Ok(popup) = popup else { return };
+
+    unsafe {
+        let _ = SetWindowLongPtrW(popup, GWLP_USERDATA, state_ptr as isize);
+    }
+
+    state.kind_popup = Some(popup);
+    state.kind_popup_idx = Some(idx);
+    state.kind_hover_sel = None;
+
+    unsafe {
+        let _ = ShowWindow(popup, SW_SHOWNA);
+    }
+}
+
+fn close_kind_popup(state: &mut SettingsState) {
+    if let Some(popup) = state.kind_popup.take() {
+        unsafe {
+            DestroyWindow(popup).ok();
+        }
+    }
+    state.kind_popup_idx = None;
+    state.kind_hover_sel = None;
+}
+
 fn draw_binding_row(
     hdc: HDC,
     bits: *mut c_void,
-    _idx: usize,
+    idx: usize,
     binding: &UIBinding,
     y: i32,
     state: &SettingsState,
@@ -1453,10 +2227,12 @@ fn draw_binding_row(
     } else {
         &binding.trigger
     };
+    let is_trig_hovered = state.hovered_target == HoverTarget::RowTrigger(idx);
     draw_button(
         hdc,
         bits,
         lay.win_w,
+        lay.win_h,
         trig_rc.left,
         trig_rc.top,
         trig_w,
@@ -1464,23 +2240,73 @@ fn draw_binding_row(
         trig_text,
         theme,
         small_font,
+        is_trig_hovered,
     );
 
-    // 2. Action kind button
+    // 2. Action kind button (drawn as a custom drop-down button chevron combo)
     let kind_x = trig_rc.right + (8.0 * lay.scale) as i32;
     let kind_w = (100.0 * lay.scale) as i32;
-    draw_button(
-        hdc,
-        bits,
-        lay.win_w,
-        kind_x,
-        trig_rc.top,
-        kind_w,
-        lay.btn_h,
-        binding.kind.to_str(),
-        theme,
-        small_font,
-    );
+    let is_kind_hovered = state.hovered_target == HoverTarget::RowKind(idx);
+
+    let kind_rect = RECT {
+        left: kind_x,
+        top: trig_rc.top,
+        right: kind_x + kind_w,
+        bottom: trig_rc.bottom,
+    };
+
+    let mut kind_btn_color = theme.accent;
+    if is_kind_hovered {
+        kind_btn_color = theme.hover.blend_over(kind_btn_color);
+    }
+    let radius = (5.0 * (lay.win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
+    draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, kind_rect, radius, kind_btn_color);
+    draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, kind_rect, radius, 1, theme.border);
+
+    let kind_text_color = if contrast_text_on(kind_btn_color) {
+        Argb::new(0xFF, 0xFF, 0xFF, 0xFF) // white
+    } else {
+        Argb::new(0xFF, 0x00, 0x00, 0x00) // black
+    };
+
+    unsafe {
+        let _ = SelectObject(hdc, small_font);
+        let _ = SetTextColor(hdc, kind_text_color.to_colorref());
+    }
+
+    // Left-aligned label text
+    let mut kind_wz = to_utf16_z(binding.kind.to_str());
+    let mut kind_text_rc = RECT {
+        left: kind_x + 6,
+        top: trig_rc.top,
+        right: kind_x + kind_w - 18,
+        bottom: trig_rc.bottom,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            hdc,
+            &mut kind_wz,
+            &mut kind_text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+    }
+
+    // Arrow ▼ on the right side of the action kind button
+    let mut kind_arrow_wz = to_utf16_z("▼");
+    let mut kind_arrow_rc = RECT {
+        left: kind_x + kind_w - 16,
+        top: trig_rc.top,
+        right: kind_x + kind_w,
+        bottom: trig_rc.bottom,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            hdc,
+            &mut kind_arrow_wz,
+            &mut kind_arrow_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     // 3. Param area
     let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
@@ -1493,15 +2319,35 @@ fn draw_binding_row(
     };
 
     let param_bg = theme.surface.blend_over(theme.background);
-    let brush = unsafe { CreateSolidBrush(param_bg.to_colorref()) };
-    unsafe {
-        let _ = FillRect(hdc, &param_rc, brush);
-        let _ = DeleteObject(brush);
+    let is_param_hovered = state.hovered_target == HoverTarget::RowParam(idx);
+    let is_recording_param = binding.is_recording_param;
+    let is_editing_param = state.edit_idx == Some(idx) && state.edit_control.is_some();
 
+    // Use lighter surface color when hovered
+    let mut current_bg = param_bg;
+    if is_param_hovered {
+        current_bg = theme.hover.blend_over(current_bg);
+    }
+
+    let param_radius = (4.0 * lay.scale) as i32;
+    draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, current_bg);
+
+    // Dynamic borders: accent when editing/recording, text when hovered, border when idle
+    let border_color = if is_recording_param || is_editing_param {
+        theme.accent
+    } else if is_param_hovered {
+        theme.text
+    } else {
+        theme.border
+    };
+    draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, 1, border_color);
+
+    // Draw text inside param area
+    unsafe {
         let _ = SetTextColor(hdc, theme.text.to_colorref());
         let mut wz = to_utf16_z(&binding.param);
         let mut text_rc = RECT {
-            left: param_rc.left + 4,
+            left: param_rc.left + 6,
             ..param_rc
         };
         let _ = DrawTextW(
@@ -1520,10 +2366,12 @@ fn draw_binding_row(
         right: row_rc.right,
         bottom: y + (lay.row_h - del_w) / 2 + del_w,
     };
+    let is_del_hovered = state.hovered_target == HoverTarget::RowDelete(idx);
     draw_button(
         hdc,
         bits,
         lay.win_w,
+        lay.win_h,
         del_rc.left,
         del_rc.top,
         del_w,
@@ -1531,6 +2379,7 @@ fn draw_binding_row(
         "X",
         theme,
         small_font,
+        is_del_hovered,
     );
 }
 
@@ -1544,6 +2393,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
+        close_kind_popup(state);
         // Toggle recording trigger
         let is_recording = !state.bindings[idx].is_recording_trigger;
 
@@ -1574,14 +2424,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
-        // Cycle kinds for now
-        let kinds = UIActionKind::all();
-        let cur_idx = kinds
-            .iter()
-            .position(|&k| k == state.bindings[idx].kind)
-            .unwrap_or(0);
-        state.bindings[idx].kind = kinds[(cur_idx + 1) % kinds.len()];
-        paint_settings(state.hwnd, state as *mut SettingsState, &lay);
+        open_kind_popup(state, idx, row_y);
         return;
     }
 
@@ -1593,6 +2436,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
+        close_kind_popup(state);
         if state.bindings[idx].kind == UIActionKind::ReplaceKey {
             let is_recording = !state.bindings[idx].is_recording_param;
             for b in state.bindings.iter_mut() {
@@ -1629,6 +2473,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         && y >= row_y + (lay.row_h - del_w) / 2
         && y < row_y + (lay.row_h + del_w) / 2
     {
+        close_kind_popup(state);
         state.bindings.remove(idx);
         paint_settings(state.hwnd, state as *mut SettingsState, &lay);
         return;
