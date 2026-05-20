@@ -57,11 +57,17 @@ impl AppConfig {
                 .clone()
                 .unwrap_or_else(|| "default".to_string());
 
-            // Parse trigger
-            let parsed_trigger = parse_trigger(&raw_b.trigger)?;
+            // Parse trigger — skip invalid triggers with a warning
+            let parsed_trigger = match parse_trigger(&raw_b.trigger) {
+                Ok(pt) => pt,
+                Err(e) => {
+                    eprintln!("mhd: warning — skipping binding '{}': {e}", raw_b.trigger);
+                    continue;
+                }
+            };
 
-            // Validate and create action
-            let action = crate::action::Action::from_raw(
+            // Validate and create action — skip invalid actions with a warning
+            let action = match crate::action::Action::from_raw(
                 &raw_b.action,
                 crate::action::ActionRawFields {
                     keys: raw_b.keys.as_deref(),
@@ -70,7 +76,13 @@ impl AppConfig {
                     value: raw_b.value.as_deref(),
                     code: raw_b.code.as_deref(),
                 },
-            )?;
+            ) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("mhd: warning — skipping binding '{}': {e}", raw_b.trigger);
+                    continue;
+                }
+            };
 
             bindings.push(Binding {
                 trigger: parsed_trigger.trigger,
