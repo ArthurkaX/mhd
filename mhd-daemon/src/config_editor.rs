@@ -409,8 +409,8 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
             let action_name = match &b.action {
                 Action::ReplaceKey { .. } => "replace_key",
                 Action::RunPs { .. } => "run_ps",
-                Action::BrightnessUp => "brightness_up",
-                Action::BrightnessDown => "brightness_down",
+                Action::BrightnessUp { .. } => "brightness_up",
+                Action::BrightnessDown { .. } => "brightness_down",
                 Action::SetBrightness { relative: true, value: v } if *v > 0 => "brightness_up",
                 Action::SetBrightness { .. } => "brightness_down",
                 Action::ShowVolumeMixer => "show_volume_mixer",
@@ -440,6 +440,9 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
                     } else {
                         format!("{}", value)
                     }
+                }
+                Action::BrightnessUp { value } | Action::BrightnessDown { value } => {
+                    value.to_string()
                 }
                 _ => String::new(),
             };
@@ -2086,7 +2089,13 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
             if selected < EDITOR_ACTION_INDICES.len() {
                 if state.bindings[idx].kind_idx != selected {
                     state.bindings[idx].kind_idx = selected;
-                    state.bindings[idx].param = String::new();
+                    // Set default param 5 for parameterised brightness actions
+                    let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[selected]];
+                    state.bindings[idx].param = if desc.param_key.is_some() {
+                        "5".to_string()
+                    } else {
+                        String::new()
+                    };
                 }
                 paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
             }

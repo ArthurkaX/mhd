@@ -7,10 +7,10 @@ pub enum Action {
     RunPs { command: String },
     SwitchScheme { target_scheme: String },
     SetBrightness { relative: bool, value: i32 },
-    /// Increase monitor brightness by a fixed step.
-    BrightnessUp,
-    /// Decrease monitor brightness by a fixed step.
-    BrightnessDown,
+    /// Increase monitor brightness by a configurable step.
+    BrightnessUp { value: u32 },
+    /// Decrease monitor brightness by a configurable step.
+    BrightnessDown { value: u32 },
     Vcp { code: u8, relative: bool, value: i32 },
     ShowVolumeMixer,
     /// Increase system volume by one step (VK_VOLUME_UP).
@@ -76,8 +76,24 @@ impl Action {
                     .ok_or_else(|| "vcp action requires 'value' field".to_string())?;
                 Self::new_vcp(code, value)
             }
-            "brightness_up" => Ok(Action::BrightnessUp),
-            "brightness_down" => Ok(Action::BrightnessDown),
+            "brightness_up" => {
+                let value = fields.value
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(5);
+                if value == 0 {
+                    return Err("brightness_up value must be > 0".to_string());
+                }
+                Ok(Action::BrightnessUp { value })
+            }
+            "brightness_down" => {
+                let value = fields.value
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(5);
+                if value == 0 {
+                    return Err("brightness_down value must be > 0".to_string());
+                }
+                Ok(Action::BrightnessDown { value })
+            }
             "show_volume_mixer" => Ok(Action::ShowVolumeMixer),
             "media_volume_up" => Ok(Action::MediaVolumeUp),
             "media_volume_down" => Ok(Action::MediaVolumeDown),
@@ -211,8 +227,8 @@ impl Action {
                     format!("vcp: 0x{:02X} = {}", code, value)
                 }
             }
-            Action::BrightnessUp => "brightness_up".to_string(),
-            Action::BrightnessDown => "brightness_down".to_string(),
+            Action::BrightnessUp { value } => format!("brightness_up: +{}", value),
+            Action::BrightnessDown { value } => format!("brightness_down: -{}", value),
             Action::ShowVolumeMixer => "show_volume_mixer".to_string(),
             Action::MediaVolumeUp => "media_volume_up".to_string(),
             Action::MediaVolumeDown => "media_volume_down".to_string(),
@@ -263,13 +279,13 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "brightness_up",
         label: "Brightness Up",
         category: "Display",
-        param_key: None,
+        param_key: Some("value"),
     },
     ActionDescriptor {
         name: "brightness_down",
         label: "Brightness Down",
         category: "Display",
-        param_key: None,
+        param_key: Some("value"),
     },
     ActionDescriptor {
         name: "show_volume_mixer",

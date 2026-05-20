@@ -26,9 +26,6 @@ pub struct RawConfig {
     pub active_scheme: Option<String>,
     #[serde(default)]
     pub theme: Option<String>,
-    /// Brightness adjustment step for `brightness_up` / `brightness_down`.
-    #[serde(default)]
-    pub brightness_step: Option<u32>,
     /// Volume adjustment step for `media_volume_up` / `media_volume_down`.
     #[serde(default)]
     pub volume_step: Option<u32>,

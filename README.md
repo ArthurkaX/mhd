@@ -156,8 +156,7 @@ All keys are optional — missing values fall back to the built-in dark theme.
 |-----|---------|-------------|
 | `active_scheme` | `"default"` | Startup binding scheme |
 | `theme` | — | Active colour theme name (from `themes/` dir) |
-| `brightness_step` | `1` | Step size for `brightness_up` / `brightness_down` |
-| `volume_step` | `1` | Step size for `media_volume_up` / `media_volume_down` |
+| `volume_step` | `1` | Step size for `media_volume_up` / `media_volume_down` (each step sends one VK press) |
 
 ---
 
@@ -167,8 +166,8 @@ All keys are optional — missing values fall back to the built-in dark theme.
 |--------|--------|-------------|
 | `replace_key` | `keys` | Suppress trigger and send different keys via `SendInput` |
 | `set_brightness` | `value` | Adjust DDC/CI brightness (`+5`, `-5`, or absolute `50`) — *backward compat* |
-| `brightness_up` | — | Increase monitor brightness by a fixed step |
-| `brightness_down` | — | Decrease monitor brightness by a fixed step |
+| `brightness_up` | `value` | Increase monitor brightness (default `5`, configurable step) |
+| `brightness_down` | `value` | Decrease monitor brightness (default `5`, configurable step) |
 | `vcp` | `code`, `value` | Set or adjust arbitrary DDC/CI VCP code |
 | `run_ps` | `command` | Run a PowerShell command |
 | `switch_scheme` | `target_scheme` | Switch active binding scheme |
@@ -200,14 +199,16 @@ trigger = "capslock"
 action = "replace_key"
 keys = "alt+shift"
 
-# Brightness up / down
+# Brightness up / down (step defaults to 5, can be changed)
 [[binding]]
 trigger = "ctrl+alt+numpad_add"
 action = "brightness_up"
+value = "5"
 
 [[binding]]
 trigger = "ctrl+alt+numpad_subtract"
 action = "brightness_down"
+value = "5"
 
 # Show Volume Mixer
 [[binding]]

@@ -96,10 +96,10 @@ impl ActionWorker {
 }
 
 fn execute_action(action: &Action, handle: &AppHandle) {
-    // Read configurable steps (defaults to 1)
-    let (bstep, vstep) = {
+    // Read volume step from config (brightness uses per-action value)
+    let vstep = {
         let cfg = handle.config.lock().unwrap();
-        (cfg.brightness_step(), cfg.volume_step())
+        cfg.volume_step()
     };
     match action {
         Action::ReplaceKey { keys } => platform::send_keys(keys),
@@ -107,15 +107,15 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ShowVolumeMixer => {
             volume_mixer::show();
         }
-        Action::BrightnessUp => {
-            if monitor::adjust_brightness(bstep as i32).is_ok() {
+        Action::BrightnessUp { value } => {
+            if monitor::adjust_brightness(*value as i32).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
             }
         }
-        Action::BrightnessDown => {
-            if monitor::adjust_brightness(-(bstep as i32)).is_ok() {
+        Action::BrightnessDown { value } => {
+            if monitor::adjust_brightness(-(*value as i32)).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
