@@ -1,0 +1,8 @@
+USE mhd-daemon;
+
+-- Run mhd in background and capture output for a few seconds
+-- Then scroll the mouse wheel while holding Ctrl+Alt
+-- to see if the wheel events are detected
+
+-- Actually let me just check if the debug eprint is there
+select 'check the code';

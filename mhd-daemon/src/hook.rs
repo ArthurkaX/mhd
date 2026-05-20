@@ -276,10 +276,10 @@ unsafe extern "system" fn keyboard_hook_proc(
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
 }
 
-/// Return the wheel delta from WM_MOUSEWHEEL / WM_MOUSEHWHEEL wParam.
-fn wheel_delta(wparam: WPARAM) -> i32 {
-    // HIWORD of wParam contains the delta (positive = up/right, negative = down/left)
-    ((wparam.0 >> 16) & 0xFFFF) as i16 as i32
+/// Return the wheel delta from MSLLHOOKSTRUCT.mouseData.
+/// For WM_MOUSEWHEEL / WM_MOUSEHWHEEL the high-order word contains the delta.
+fn wheel_delta(mouse_data: u32) -> i32 {
+    ((mouse_data >> 16) & 0xFFFF) as i16 as i32
 }
 
 /// Mouse low-level hook callback.
@@ -338,20 +338,19 @@ unsafe extern "system" fn mouse_hook_proc(
                 }
             }
             WM_MOUSEWHEEL => {
-                let delta = wheel_delta(w_param);
+                // Delta is in MSLLHOOKSTRUCT.mouseData, NOT in wParam (for LL hooks)
+                let delta = wheel_delta(ms_struct.mouseData);
                 let key = if delta > 0 { PhysicalKey::WheelUp } else { PhysicalKey::WheelDown };
                 let modifiers = get_pressed_modifiers();
-                eprintln!("mhd: dbg wheel msg={} delta={} mods={:02x} dir={:?} flags={}", msg_type, delta, modifiers.0, key, ms_struct.flags);
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);
                 }
             }
             WM_MOUSEHWHEEL => {
-                let delta = wheel_delta(w_param);
+                let delta = wheel_delta(ms_struct.mouseData);
                 let key = if delta > 0 { PhysicalKey::WheelRight } else { PhysicalKey::WheelLeft };
                 let modifiers = get_pressed_modifiers();
-                eprintln!("mhd: dbg hwheel msg={} delta={} mods={:02x} dir={:?} flags={}", msg_type, delta, modifiers.0, key, ms_struct.flags);
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);
