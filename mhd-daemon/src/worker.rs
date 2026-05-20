@@ -155,7 +155,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::MediaStop => platform::send_media_key(0xB2),
         Action::MediaLastTrack => platform::send_media_key(0xB1),
         Action::MediaNextTrack => platform::send_media_key(0xB0),
-        Action::ToggleTopmost => toggle_topmost_with_indicator(handle),
+        Action::ToggleTopmost => toggle_topmost_pin(),
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}
@@ -172,27 +172,53 @@ fn run_powershell(command: &str) {
     }
 }
 
-fn toggle_topmost_with_indicator(handle: &AppHandle) {
+fn toggle_topmost_pin() {
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_NOTOPMOST,
-        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
+        GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, SetWindowPos, SetWindowTextW,
+        GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
     };
+
+    const PIN_MARKER: &str = " \u{1F4CC}"; // space + pin emoji
 
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd == HWND::default() {
             return;
         }
+
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let is_topmost = (ex_style as u32 & WS_EX_TOPMOST.0) != 0;
 
         if is_topmost {
+            // Unpin: remove marker from title
             let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            handle.pin_indicator.unpin_window(hwnd);
+
+            let mut buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut buf);
+            if len > 0 {
+                let title = String::from_utf16_lossy(&buf[..len as usize]);
+                if let Some(pos) = title.rfind(PIN_MARKER) {
+                    let new_title = title[..pos].to_string();
+                    let wide: Vec<u16> = new_title.encode_utf16().chain(std::iter::once(0)).collect();
+                    let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(wide.as_ptr()));
+                }
+            }
         } else {
+            // Pin: append marker to title
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            handle.pin_indicator.pin_window(hwnd);
+
+            let mut buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut buf);
+            if len > 0 {
+                let title = String::from_utf16_lossy(&buf[..len as usize]);
+                if !title.contains(PIN_MARKER) {
+                    let new_title = format!("{}{}", title, PIN_MARKER);
+                    let wide: Vec<u16> = new_title.encode_utf16().chain(std::iter::once(0)).collect();
+                    let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(wide.as_ptr()));
+                }
+            }
         }
     }
 }

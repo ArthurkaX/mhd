@@ -12,7 +12,6 @@ mod config;
 mod hook;
 mod tray;
 mod trigger;
-mod pin_indicator;
 mod volume_mixer;
 mod worker;
 mod osd;

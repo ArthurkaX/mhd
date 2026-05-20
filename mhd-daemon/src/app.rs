@@ -53,7 +53,6 @@ pub struct AppHandle {
     pub(crate) quiet: bool,
     pub(crate) theme: Arc<Mutex<NativeTheme>>,
     pub(crate) osd: OsdHandle,
-    pub(crate) pin_indicator: crate::pin_indicator::PinIndicatorHandle,
 }
 
 impl DaemonControl for AppHandle {
@@ -164,7 +163,7 @@ pub struct App {
     tx: ActionSender,
     osd: OsdHandle,
     theme: Arc<Mutex<NativeTheme>>,
-    pin_indicator: crate::pin_indicator::PinIndicatorHandle,
+
 }
 
 impl App {
@@ -188,8 +187,6 @@ impl App {
         let config = Arc::new(Mutex::new(app_config));
         let theme = Arc::new(Mutex::new(native_theme));
 
-        let pin_indicator = crate::pin_indicator::spawn();
-
         let handle = AppHandle {
             running: running.clone(),
             config: config.clone(),
@@ -198,7 +195,6 @@ impl App {
             quiet,
             osd: osd.clone(),
             theme: theme.clone(),
-            pin_indicator: pin_indicator.clone(),
         };
 
         let (worker, tx) = ActionWorker::new(handle);
@@ -222,7 +218,6 @@ impl App {
             tx,
             osd,
             theme,
-            pin_indicator,
         })
     }
 
@@ -240,7 +235,6 @@ impl App {
             quiet: self.quiet,
             osd: self.osd.clone(),
             theme: self.theme.clone(),
-            pin_indicator: self.pin_indicator.clone(),
         }
     }
 
