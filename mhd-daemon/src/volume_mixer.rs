@@ -202,6 +202,10 @@ fn mixer_thread(handle: MixerHandle) {
             MsgWaitForMultipleObjects(Some(&wait_handles), false, INFINITE, QS_ALLINPUT)
         };
 
+        // WAIT_OBJECT_0 + nhandles = messages available (same constant
+        // as OSD's MSG_ARRIVED = WAIT_EVENT(1) for 1 handle).
+        const MSG_ARRIVED: WAIT_EVENT = WAIT_EVENT(1);
+
         match res {
             WAIT_OBJECT_0 => {
                 refresh_sessions(&mut state);
@@ -212,7 +216,7 @@ fn mixer_thread(handle: MixerHandle) {
                     let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
                 }
             }
-            msg if msg == WAIT_EVENT(0) => {
+            MSG_ARRIVED => {
                 let mut msg = MSG::default();
                 unsafe {
                     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -232,14 +236,18 @@ fn mixer_thread(handle: MixerHandle) {
                     }
                 }
             }
-            _ => break,
+            _ => {
+                // Unknown return — continue loop, don't crash the thread
+                continue;
+            }
         }
     }
 
+    // Unreachable in practice — the thread lives until process exit.
+    // Cleanup is handled by the OS. Keep this for correctness.
+    #[allow(unreachable_code)]
     unsafe {
         let _ = DestroyWindow(hwnd);
-    }
-    unsafe {
         CoUninitialize();
     }
 }

@@ -2520,6 +2520,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         } else if state.bindings[idx].kind == UIActionKind::RunPs
             || state.bindings[idx].kind == UIActionKind::SetBrightness
         {
+            // No inline param editing for ShowVolumeMixer (like Quit)
             let rc = RECT {
                 left: param_x,
                 top: row_y + (lay.row_h - lay.btn_h) / 2,
