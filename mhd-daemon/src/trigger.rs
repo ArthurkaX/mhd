@@ -24,11 +24,15 @@ impl Modifiers {
     }
 }
 
-/// A non-modifier key or mouse button.
+/// A non-modifier key, mouse button, or wheel direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalKey {
     Keyboard(u8),    // Windows virtual key code
-    MouseButton(u8), // 1 = XBUTTON1, 2 = XBUTTON2
+    MouseButton(u8), // 1 = XBUTTON1, 2 = XBUTTON2, 3 = MBUTTON (middle)
+    WheelUp,
+    WheelDown,
+    WheelLeft,
+    WheelRight,
 }
 
 /// A trigger: modifiers + one non-modifier key/button.
@@ -135,12 +139,29 @@ fn parse_modifier(s: &str) -> Option<u8> {
 
 fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
     // Mouse buttons — conventional names
-    // MouseButton4 = XBUTTON1, MouseButton5 = XBUTTON2
+    // mousebutton3 = middle, mousebutton4 = XBUTTON1, mousebutton5 = XBUTTON2
+    if s == "mousebutton3" {
+        return Ok(Some(PhysicalKey::MouseButton(3)));
+    }
     if s == "mousebutton4" {
         return Ok(Some(PhysicalKey::MouseButton(1)));
     }
     if s == "mousebutton5" {
         return Ok(Some(PhysicalKey::MouseButton(2)));
+    }
+
+    // Wheel / tilt events
+    if s == "wheel_up" {
+        return Ok(Some(PhysicalKey::WheelUp));
+    }
+    if s == "wheel_down" {
+        return Ok(Some(PhysicalKey::WheelDown));
+    }
+    if s == "wheel_left" {
+        return Ok(Some(PhysicalKey::WheelLeft));
+    }
+    if s == "wheel_right" {
+        return Ok(Some(PhysicalKey::WheelRight));
     }
 
     // Letters a-z
@@ -279,8 +300,18 @@ pub fn keys_to_string(keys: &KeyCombo) -> String {
                 parts.push(vk_to_name(vk));
             }
             PhysicalKey::MouseButton(n) => {
-                parts.push(format!("mousebutton{}", n + 3));
+                let name = match n {
+                    1 => "mousebutton4",
+                    2 => "mousebutton5",
+                    3 => "mousebutton3",
+                    _ => "mousebutton?",
+                };
+                parts.push(name.to_string());
             }
+            PhysicalKey::WheelUp => parts.push("wheel_up".to_string()),
+            PhysicalKey::WheelDown => parts.push("wheel_down".to_string()),
+            PhysicalKey::WheelLeft => parts.push("wheel_left".to_string()),
+            PhysicalKey::WheelRight => parts.push("wheel_right".to_string()),
         }
     }
     parts.join("+")

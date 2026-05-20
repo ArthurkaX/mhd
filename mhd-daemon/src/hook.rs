@@ -5,8 +5,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
-    WM_XBUTTONUP,
+    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEWHEEL, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::action::Action;
@@ -172,6 +172,20 @@ fn dispatch_trigger(state: &HookState, trigger: Trigger) -> bool {
                 data |= (btn as usize) << 16;
                 state.swallowed_mouse.lock().unwrap().insert(btn);
             }
+            PhysicalKey::WheelUp
+            | PhysicalKey::WheelDown
+            | PhysicalKey::WheelLeft
+            | PhysicalKey::WheelRight => {
+                data |= 2 << 8; // type 2 = wheel
+                let dir: u8 = match trigger.key {
+                    PhysicalKey::WheelUp => 0,
+                    PhysicalKey::WheelDown => 1,
+                    PhysicalKey::WheelLeft => 2,
+                    PhysicalKey::WheelRight => 3,
+                    _ => unreachable!(),
+                };
+                data |= (dir as usize) << 16;
+            }
         }
         unsafe {
             let _ = PostMessageW(
@@ -200,13 +214,16 @@ fn dispatch_trigger(state: &HookState, trigger: Trigger) -> bool {
             }
         }
 
-        // Mark as swallowed
+        // Mark as swallowed (wheel events are one-shot, no separate up)
         match trigger.key {
             PhysicalKey::Keyboard(vk) => {
                 state.swallowed_keys.lock().unwrap().insert(vk as u32);
             }
             PhysicalKey::MouseButton(btn) => {
                 state.swallowed_mouse.lock().unwrap().insert(btn);
+            }
+            PhysicalKey::WheelUp | PhysicalKey::WheelDown | PhysicalKey::WheelLeft | PhysicalKey::WheelRight => {
+                // No separate up — already swallowed by returning LRESULT(1)
             }
         }
         return true;
@@ -259,6 +276,12 @@ unsafe extern "system" fn keyboard_hook_proc(
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
 }
 
+/// Return the wheel delta from WM_MOUSEWHEEL / WM_MOUSEHWHEEL wParam.
+fn wheel_delta(wparam: WPARAM) -> i32 {
+    // HIWORD of wParam contains the delta (positive = up/right, negative = down/left)
+    ((wparam.0 >> 16) & 0xFFFF) as i16 as i32
+}
+
 /// Mouse low-level hook callback.
 #[allow(unused_unsafe)]
 unsafe extern "system" fn mouse_hook_proc(
@@ -275,32 +298,66 @@ unsafe extern "system" fn mouse_hook_proc(
         let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         let msg_type = w_param.0 as u32;
 
-        if msg_type == WM_XBUTTONDOWN {
-            let xbutton = (ms_struct.mouseData >> 16) as u8;
-
-            if xbutton == 1 || xbutton == 2 {
+        match msg_type {
+            WM_XBUTTONDOWN => {
+                let xbutton = (ms_struct.mouseData >> 16) as u8;
+                if xbutton == 1 || xbutton == 2 {
+                    let modifiers = get_pressed_modifiers();
+                    let trigger = Trigger {
+                        modifiers,
+                        key: PhysicalKey::MouseButton(xbutton),
+                    };
+                    if dispatch_trigger(state, trigger) {
+                        return LRESULT(1);
+                    }
+                }
+            }
+            WM_XBUTTONUP => {
+                let xbutton = (ms_struct.mouseData >> 16) as u8;
+                if (xbutton == 1 || xbutton == 2)
+                    && state.swallowed_mouse.lock().unwrap().take(&xbutton).is_some()
+                {
+                    return LRESULT(1);
+                }
+            }
+            WM_MBUTTONDOWN => {
+                // Middle button
                 let modifiers = get_pressed_modifiers();
                 let trigger = Trigger {
                     modifiers,
-                    key: PhysicalKey::MouseButton(xbutton),
+                    key: PhysicalKey::MouseButton(3),
                 };
-
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);
                 }
             }
-        } else if msg_type == WM_XBUTTONUP {
-            let xbutton = (ms_struct.mouseData >> 16) as u8;
-            if (xbutton == 1 || xbutton == 2)
-                && state
-                    .swallowed_mouse
-                    .lock()
-                    .unwrap()
-                    .take(&xbutton)
-                    .is_some()
-            {
-                return LRESULT(1); // Swallow the button-up too
+            WM_MBUTTONUP => {
+                let btn = 3u8;
+                if state.swallowed_mouse.lock().unwrap().take(&btn).is_some() {
+                    return LRESULT(1);
+                }
             }
+            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+                // Skip injected wheel events to avoid loops with our own SendInput
+                if ms_struct.flags & 0x01 != 0 {
+                    // LLMHF_INJECTED
+                    return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+                }
+                let delta = wheel_delta(w_param);
+                let key = match (msg_type, delta) {
+                    (WM_MOUSEWHEEL, d) if d > 0 => PhysicalKey::WheelUp,
+                    (WM_MOUSEWHEEL, _) => PhysicalKey::WheelDown,
+                    (WM_MOUSEHWHEEL, d) if d > 0 => PhysicalKey::WheelRight,
+                    (WM_MOUSEHWHEEL, _) => PhysicalKey::WheelLeft,
+                    _ => unreachable!(), // only reached for WM_MOUSEWHEEL / WM_MOUSEHWHEEL
+                };
+                let modifiers = get_pressed_modifiers();
+                let trigger = Trigger { modifiers, key };
+                if dispatch_trigger(state, trigger) {
+                    return LRESULT(1);
+                }
+            }
+            _ => {}
         }
     }
 

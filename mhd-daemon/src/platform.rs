@@ -62,8 +62,12 @@ pub fn send_keys(keys: &KeyCombo) {
             push_key_event(&mut inputs, vk as u16, false);
             push_key_event(&mut inputs, vk as u16, true);
         }
-        Some(PhysicalKey::MouseButton(_)) => {
-            eprintln!("mhd: warning: replace_key with mouse button not supported");
+        Some(PhysicalKey::MouseButton(_))
+        | Some(PhysicalKey::WheelUp)
+        | Some(PhysicalKey::WheelDown)
+        | Some(PhysicalKey::WheelLeft)
+        | Some(PhysicalKey::WheelRight) => {
+            eprintln!("mhd: warning: replace_key with mouse/wheel not supported");
         }
         None => {
             // Modifier-only combo (e.g., alt+shift): press and release modifiers
