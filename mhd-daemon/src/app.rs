@@ -29,6 +29,7 @@ pub trait DaemonControl: Send + Sync {
     fn switch_scheme(&self, name: &str) -> bool;
     fn lookup_trigger(&self, trigger: &Trigger) -> Option<Action>;
     fn quiet(&self) -> bool;
+    #[allow(dead_code)]
     fn config_path(&self) -> &std::path::Path;
 }
 

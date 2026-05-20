@@ -1226,7 +1226,6 @@ fn contrast_text_on(bg: Argb) -> bool {
 enum ButtonStyle {
     Primary,
     Secondary,
-    Ghost,
     DangerGhost,
     TriggerPlate,
 }
@@ -1273,15 +1272,6 @@ fn draw_button(
                 bg = theme.hover.blend_over(bg);
             }
             (bg, theme.text, theme.border)
-        }
-        ButtonStyle::Ghost => {
-            let mut bg = Argb::new(0, 0, 0, 0);
-            let mut fg = theme.text_muted;
-            if is_hovered {
-                bg = theme.hover.blend_over(bg);
-                fg = theme.text;
-            }
-            (bg, fg, Argb::new(0, 0, 0, 0))
         }
         ButtonStyle::DangerGhost => {
             let mut bg = Argb::new(0, 0, 0, 0);

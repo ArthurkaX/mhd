@@ -36,7 +36,6 @@ const CMD_QUIT: usize = 5;
 // ── State ──────────────────────────────────────────────────────────────
 
 struct TrayState {
-    nid: NOTIFYICONDATAW,
     app: AppHandle,
 }
 
@@ -301,7 +300,6 @@ pub fn run(app: AppHandle) {
     }
 
     let _ = STATE.set(Box::new(TrayState {
-        nid: NOTIFYICONDATAW::default(),
         app,
     }));
 
