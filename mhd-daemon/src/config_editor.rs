@@ -1230,6 +1230,29 @@ enum ButtonStyle {
     TriggerPlate,
 }
 
+/// Fill a rectangle with fully transparent pixels (alpha=0).
+/// Used when an inline EDIT child window is active — the layered window
+/// composites the child control only where the parent bitmap has zero alpha.
+fn clear_rect_in_buffer(bits: *mut c_void, win_w: i32, win_h: i32, rect: RECT) {
+    if bits.is_null() || win_w <= 0 || win_h <= 0 {
+        return;
+    }
+    let pixels = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
+    let x1 = rect.left.clamp(0, win_w);
+    let x2 = rect.right.clamp(0, win_w);
+    let y1 = rect.top.clamp(0, win_h);
+    let y2 = rect.bottom.clamp(0, win_h);
+    for y in y1..y2 {
+        let row_start = (y * win_w) as usize;
+        for x in x1..x2 {
+            let idx = row_start + x as usize;
+            if idx < pixels.len() {
+                pixels[idx] = 0; // ARGB: fully transparent
+            }
+        }
+    }
+}
+
 /// Draw a rounded button or interactive plate on the DIB.
 fn draw_button(
     dib_dc: HDC,
@@ -2241,13 +2264,36 @@ fn draw_binding_row(
     let is_recording_param = binding.is_recording_param;
     let is_editing_param = state.edit_idx == Some(idx) && state.edit_control.is_some();
 
-    let mut current_bg = param_bg;
-    if is_param_hovered {
-        current_bg = theme.hover.blend_over(current_bg);
-    }
+    if is_editing_param {
+        // When an inline EDIT child window is active, make the param area
+        // transparent (alpha=0) so the child control's text is visible.
+        // The layered window (UpdateLayeredWindow) composites the child
+        // only where the parent bitmaps pixels have zero alpha.
+        clear_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc);
+    } else {
+        let mut current_bg = param_bg;
+        if is_param_hovered {
+            current_bg = theme.hover.blend_over(current_bg);
+        }
 
-    let param_radius = (4.0 * lay.scale) as i32;
-    draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, current_bg);
+        let param_radius = (4.0 * lay.scale) as i32;
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, current_bg);
+
+        unsafe {
+            let _ = SetTextColor(hdc, theme.text.to_colorref());
+            let mut wz = to_utf16_z(&binding.param);
+            let mut text_rc = RECT {
+                left: param_rc.left + 8,
+                ..param_rc
+            };
+            let _ = DrawTextW(
+                hdc,
+                &mut wz,
+                &mut text_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
+    }
 
     let border_color = if is_recording_param || is_editing_param {
         theme.accent
@@ -2256,22 +2302,8 @@ fn draw_binding_row(
     } else {
         theme.border
     };
+    let param_radius = (4.0 * lay.scale) as i32;
     draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, 1, border_color);
-
-    unsafe {
-        let _ = SetTextColor(hdc, theme.text.to_colorref());
-        let mut wz = to_utf16_z(&binding.param);
-        let mut text_rc = RECT {
-            left: param_rc.left + 8,
-            ..param_rc
-        };
-        let _ = DrawTextW(
-            hdc,
-            &mut wz,
-            &mut text_rc,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-        );
-    }
 
     // 4. Delete button (DangerGhost style)
     let del_rc = RECT {
