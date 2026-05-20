@@ -341,7 +341,7 @@ unsafe extern "system" fn mouse_hook_proc(
                 let delta = wheel_delta(w_param);
                 let key = if delta > 0 { PhysicalKey::WheelUp } else { PhysicalKey::WheelDown };
                 let modifiers = get_pressed_modifiers();
-                eprintln!("mhd: dbg wheel msg={} delta={} mods={:02x} dir={:?}", msg_type, delta, modifiers.0, key);
+                eprintln!("mhd: dbg wheel msg={} delta={} mods={:02x} dir={:?} flags={}", msg_type, delta, modifiers.0, key, ms_struct.flags);
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);
@@ -351,7 +351,7 @@ unsafe extern "system" fn mouse_hook_proc(
                 let delta = wheel_delta(w_param);
                 let key = if delta > 0 { PhysicalKey::WheelRight } else { PhysicalKey::WheelLeft };
                 let modifiers = get_pressed_modifiers();
-                eprintln!("mhd: dbg hwheel msg={} delta={} mods={:02x} dir={:?}", msg_type, delta, modifiers.0, key);
+                eprintln!("mhd: dbg hwheel msg={} delta={} mods={:02x} dir={:?} flags={}", msg_type, delta, modifiers.0, key, ms_struct.flags);
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);

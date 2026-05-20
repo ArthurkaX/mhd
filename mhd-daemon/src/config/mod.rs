@@ -91,15 +91,15 @@ impl AppConfig {
                 }
         }
 
-        // Check for duplicate triggers within same scheme
+        // Warn about duplicate triggers within same scheme (non-fatal)
         let mut seen_triggers: HashMap<(String, crate::trigger::Trigger), ()> = HashMap::new();
         for binding in &bindings {
             let key = (binding.scheme.clone(), binding.trigger);
             if seen_triggers.contains_key(&key) {
-                return Err(format!(
-                    "duplicate trigger '{}' in scheme '{}'",
+                eprintln!(
+                    "mhd: warning — duplicate trigger '{}' in scheme '{}', last wins",
                     binding.trigger_name, binding.scheme
-                ));
+                );
             }
             seen_triggers.insert(key, ());
         }
@@ -124,7 +124,14 @@ impl AppConfig {
         let mut map = HashMap::new();
         for (i, binding) in bindings.iter().enumerate() {
             if binding.scheme == active_scheme {
-                map.insert(binding.trigger, i);
+                if map.contains_key(&binding.trigger) {
+                    eprintln!(
+                        "mhd: warning — duplicate trigger '{}' in scheme '{}', ignoring",
+                        binding.trigger_name, active_scheme
+                    );
+                } else {
+                    map.insert(binding.trigger, i);
+                }
             }
         }
         map

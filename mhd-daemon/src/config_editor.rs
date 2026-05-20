@@ -2521,6 +2521,17 @@ fn save_config(
     bindings: &[UIBinding],
     handle: &AppHandle,
 ) -> Result<(), String> {
+    // Validate no duplicate triggers within same scheme
+    {
+        let mut seen = std::collections::HashSet::new();
+        for b in bindings {
+            let lower = b.trigger.trim().to_lowercase();
+            if !seen.insert(lower.clone()) {
+                return Err(format!("Duplicate trigger '{}' — each trigger must be unique within the active scheme", b.trigger));
+            }
+        }
+    }
+
     let content = std::fs::read_to_string(path).unwrap_or_default();
     let mut toml_val: toml::Value = if content.trim().is_empty() {
         toml::Value::Table(toml::value::Table::new())
