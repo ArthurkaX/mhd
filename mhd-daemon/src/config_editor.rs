@@ -64,16 +64,17 @@ const EM_SETSEL: u32 = 0x00B1;
 const EDITOR_ACTION_INDICES: &[usize] = &[
     0,  // replace_key
     1,  // run_ps
-    2,  // set_brightness
-    3,  // show_volume_mixer
-    4,  // media_volume_up
-    5,  // media_volume_down
-    6,  // media_mute
-    7,  // media_play_pause
-    8,  // media_stop
-    9,  // media_last_track
-    10, // media_next_track
-    11, // quit
+    2,  // brightness_up
+    3,  // brightness_down
+    4,  // show_volume_mixer
+    5,  // media_volume_up
+    6,  // media_volume_down
+    7,  // media_mute
+    8,  // media_play_pause
+    9,  // media_stop
+    10, // media_last_track
+    11, // media_next_track
+    12, // quit
 ];
 
 #[derive(Debug, Clone)]
@@ -408,7 +409,10 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
             let action_name = match &b.action {
                 Action::ReplaceKey { .. } => "replace_key",
                 Action::RunPs { .. } => "run_ps",
-                Action::SetBrightness { .. } => "set_brightness",
+                Action::BrightnessUp => "brightness_up",
+                Action::BrightnessDown => "brightness_down",
+                Action::SetBrightness { relative: true, value: v } if *v > 0 => "brightness_up",
+                Action::SetBrightness { .. } => "brightness_down",
                 Action::ShowVolumeMixer => "show_volume_mixer",
                 Action::MediaVolumeUp => "media_volume_up",
                 Action::MediaVolumeDown => "media_volume_down",

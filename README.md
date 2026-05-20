@@ -155,7 +155,9 @@ All keys are optional — missing values fall back to the built-in dark theme.
 | Action | Fields | Description |
 |--------|--------|-------------|
 | `replace_key` | `keys` | Suppress trigger and send different keys via `SendInput` |
-| `set_brightness` | `value` | Adjust DDC/CI brightness (`+5`, `-5`, or absolute `50`) |
+| `set_brightness` | `value` | Adjust DDC/CI brightness (`+5`, `-5`, or absolute `50`) — *backward compat* |
+| `brightness_up` | — | Increase monitor brightness by a fixed step |
+| `brightness_down` | — | Decrease monitor brightness by a fixed step |
 | `vcp` | `code`, `value` | Set or adjust arbitrary DDC/CI VCP code |
 | `run_ps` | `command` | Run a PowerShell command |
 | `switch_scheme` | `target_scheme` | Switch active binding scheme |
@@ -190,13 +192,11 @@ keys = "alt+shift"
 # Brightness up / down
 [[binding]]
 trigger = "ctrl+alt+numpad_add"
-action = "set_brightness"
-value = "+5"
+action = "brightness_up"
 
 [[binding]]
 trigger = "ctrl+alt+numpad_subtract"
-action = "set_brightness"
-value = "-5"
+action = "brightness_down"
 
 # Show Volume Mixer
 [[binding]]

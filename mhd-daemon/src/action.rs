@@ -7,6 +7,10 @@ pub enum Action {
     RunPs { command: String },
     SwitchScheme { target_scheme: String },
     SetBrightness { relative: bool, value: i32 },
+    /// Increase monitor brightness by a fixed step.
+    BrightnessUp,
+    /// Decrease monitor brightness by a fixed step.
+    BrightnessDown,
     Vcp { code: u8, relative: bool, value: i32 },
     ShowVolumeMixer,
     /// Increase system volume by one step (VK_VOLUME_UP).
@@ -72,6 +76,8 @@ impl Action {
                     .ok_or_else(|| "vcp action requires 'value' field".to_string())?;
                 Self::new_vcp(code, value)
             }
+            "brightness_up" => Ok(Action::BrightnessUp),
+            "brightness_down" => Ok(Action::BrightnessDown),
             "show_volume_mixer" => Ok(Action::ShowVolumeMixer),
             "media_volume_up" => Ok(Action::MediaVolumeUp),
             "media_volume_down" => Ok(Action::MediaVolumeDown),
@@ -205,6 +211,8 @@ impl Action {
                     format!("vcp: 0x{:02X} = {}", code, value)
                 }
             }
+            Action::BrightnessUp => "brightness_up".to_string(),
+            Action::BrightnessDown => "brightness_down".to_string(),
             Action::ShowVolumeMixer => "show_volume_mixer".to_string(),
             Action::MediaVolumeUp => "media_volume_up".to_string(),
             Action::MediaVolumeDown => "media_volume_down".to_string(),
@@ -252,10 +260,16 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_key: Some("command"),
     },
     ActionDescriptor {
-        name: "set_brightness",
-        label: "Brightness",
+        name: "brightness_up",
+        label: "Brightness Up",
         category: "Display",
-        param_key: Some("value"),
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "brightness_down",
+        label: "Brightness Down",
+        category: "Display",
+        param_key: None,
     },
     ActionDescriptor {
         name: "show_volume_mixer",

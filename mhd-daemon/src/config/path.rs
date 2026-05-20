@@ -62,8 +62,12 @@ action = "quit"
 # Increase monitor brightness via DDC/CI.
 # [[binding]]
 # trigger = "ctrl+alt+numpad_add"
-# action = "set_brightness"
-# value = "+5"
+# action = "brightness_up"
+
+# Decrease monitor brightness via DDC/CI.
+# [[binding]]
+# trigger = "ctrl+alt+numpad_subtract"
+# action = "brightness_down"
 
 # Set monitor input to HDMI 1 (0x60 is Input Select, 17 is HDMI 1 on some monitors).
 # [[binding]]
@@ -71,12 +75,6 @@ action = "quit"
 # action = "vcp"
 # code = "0x60"
 # value = "17"
-
-# Decrease monitor brightness via DDC/CI.
-# [[binding]]
-# trigger = "ctrl+alt+numpad_subtract"
-# action = "set_brightness"
-# value = "-5"
 
 # Open Windows Terminal.
 # [[binding]]

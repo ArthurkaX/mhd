@@ -102,6 +102,20 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ShowVolumeMixer => {
             volume_mixer::show();
         }
+        Action::BrightnessUp => {
+            if monitor::adjust_brightness(5).is_ok() {
+                if let Ok((new_val, name)) = monitor::get_brightness() {
+                    handle.osd.show_brightness(new_val, name);
+                }
+            }
+        }
+        Action::BrightnessDown => {
+            if monitor::adjust_brightness(-5).is_ok() {
+                if let Ok((new_val, name)) = monitor::get_brightness() {
+                    handle.osd.show_brightness(new_val, name);
+                }
+            }
+        }
         Action::SetBrightness { relative, value } => {
             let res = if *relative {
                 monitor::adjust_brightness(*value)
