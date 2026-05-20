@@ -1660,8 +1660,17 @@ unsafe extern "system" fn settings_wndproc(
 
                 let key = if key_type == 0 {
                     PhysicalKey::Keyboard(key_val as u8)
-                } else {
+                } else if key_type == 1 {
                     PhysicalKey::MouseButton(key_val as u8)
+                } else {
+                    // key_type 2 = wheel / tilt
+                    match key_val {
+                        0 => PhysicalKey::WheelUp,
+                        1 => PhysicalKey::WheelDown,
+                        2 => PhysicalKey::WheelLeft,
+                        3 => PhysicalKey::WheelRight,
+                        _ => return LRESULT(0),
+                    }
                 };
 
                 let trigger_str = keys_to_string(&KeyCombo {

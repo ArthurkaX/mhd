@@ -129,6 +129,7 @@ struct MixerState {
     endpoint_volume: Option<IAudioEndpointVolume>,
     theme: NativeTheme,
     window_pos: Option<POINT>,
+    visible: bool,
 }
 
 // ── Thread entry point ─────────────────────────────────────────────────
@@ -204,6 +205,7 @@ fn mixer_thread(handle: MixerHandle) {
         endpoint_volume: None,
         theme: NativeTheme::default(),
         window_pos: None,
+        visible: false,
     };
 
     let work = monitor_work_rect();
@@ -223,15 +225,29 @@ fn mixer_thread(handle: MixerHandle) {
 
         match res {
             WAIT_OBJECT_0 => {
-                dragging_row = None;
-                dragging_window = None;
-                mouse_tracked = false;
-                refresh_sessions(&mut state);
-                state.theme = MIXER_THEME.lock().unwrap().clone();
-                paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_SHOWNA);
-                    let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                if state.visible {
+                    // Toggle off — hide the mixer
+                    dragging_row = None;
+                    dragging_window = None;
+                    mouse_tracked = false;
+                    let _ = unsafe { ReleaseCapture() };
+                    state.visible = false;
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                        let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                    }
+                } else {
+                    dragging_row = None;
+                    dragging_window = None;
+                    mouse_tracked = false;
+                    refresh_sessions(&mut state);
+                    state.theme = MIXER_THEME.lock().unwrap().clone();
+                    paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
+                    state.visible = true;
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOWNA);
+                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                    }
                 }
             }
             MSG_ARRIVED => {
@@ -242,6 +258,7 @@ fn mixer_thread(handle: MixerHandle) {
                             break;
                         }
                         if msg.message == WM_KEYDOWN && msg.wParam.0 as u32 == 0x1B {
+                            state.visible = false;
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                         }
@@ -250,6 +267,7 @@ fn mixer_thread(handle: MixerHandle) {
                             dragging_window = None;
                             mouse_tracked = false;
                             let _ = ReleaseCapture();
+                            state.visible = false;
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                         }
