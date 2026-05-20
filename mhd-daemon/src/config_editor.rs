@@ -120,21 +120,37 @@ struct Layout {
     pad: i32,
     header_h: i32,
     footer_h: i32,
+
+    // Sections
+    appearance_y: i32,
+    shortcuts_y: i32,
+
+    // Appearance controls
     label_w: i32,
     combo_x: i32,
     combo_w: i32,
     combo_y: i32,
     arrow_x: i32,
     arrow_w: i32,
+
+    // Table columns
+    trig_w: i32,
+    kind_w: i32,
+    del_w: i32,
+
+    // Bindings list
+    list_y: i32,
+    list_h: i32,
+    row_h: i32,
+
+    // Footer buttons
     btn_h: i32,
     btn_w: i32,
     btn_y: i32,
     apply_x: i32,
     close_x: i32,
+
     radius: i32,
-    list_y: i32,
-    list_h: i32,
-    row_h: i32,
 }
 
 struct SettingsState {
@@ -355,22 +371,29 @@ fn compute_layout(scale: f32) -> Layout {
     let header_h = (HEADER_HEIGHT_BASE as f32 * scale) as i32;
     let footer_h = (FOOTER_HEIGHT_BASE as f32 * scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
-    let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;
     let btn_h = (BTN_HEIGHT_BASE as f32 * scale) as i32;
     let btn_w = (BTN_WIDTH_BASE as f32 * scale) as i32;
     let win_w = (WIN_WIDTH_BASE as f32 * scale) as i32;
     let win_h = (WIN_HEIGHT_BASE as f32 * scale) as i32;
+
+    let appearance_y = header_h + pad / 2;
+    let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;
     let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * scale) as i32);
     let combo_x = pad + label_w + 8;
-    let combo_w = win_w - pad * 2 - label_w - 8;
-    let combo_y = header_h + (row_h - combo_h) / 2;
+    let combo_w = (COMBO_POPUP_WIDTH as f32 * scale) as i32;
+    let combo_y = appearance_y + (30.0 * scale) as i32;
+
+    let shortcuts_y = combo_y + combo_h + pad;
+    let list_y = shortcuts_y + (48.0 * scale) as i32;
+    let list_h = (win_h - footer_h) - list_y - pad / 2;
+
+    let trig_w = (140.0 * scale) as i32;
+    let kind_w = (120.0 * scale) as i32;
+    let del_w = (28.0 * scale) as i32;
 
     let btn_y = win_h - footer_h + (footer_h - btn_h) / 2;
 
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
-
-    let list_y = header_h + row_h + pad / 2 + (20.0 * scale) as i32;
-    let list_h = (win_h - footer_h) - list_y - pad / 2;
 
     Layout {
         scale,
@@ -379,17 +402,22 @@ fn compute_layout(scale: f32) -> Layout {
         pad,
         header_h,
         footer_h,
+        appearance_y,
+        shortcuts_y,
         label_w,
         combo_x,
         combo_w,
         combo_y,
         arrow_x: combo_x + combo_w - combo_h,
         arrow_w: combo_h,
+        trig_w,
+        kind_w,
+        del_w,
         btn_h,
         btn_w,
         btn_y,
-        apply_x: win_w - pad * 2 - btn_w * 2,
-        close_x: win_w - pad - btn_w,
+        apply_x: win_w - pad - btn_w,
+        close_x: win_w - pad - btn_w * 2 - (8.0 * scale) as i32,
         radius,
         list_y,
         list_h,
@@ -544,9 +572,6 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     }
 
     // Separator line under header
-    unsafe {
-        let _ = SelectObject(dib_dc, old_font);
-    }
     let sep_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
     unsafe {
         let _ = FillRect(
@@ -559,30 +584,27 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             },
             sep_brush,
         );
-        let _ = DeleteObject(sep_brush);
     }
 
-    // Separator above footer
-    let footer_y = lay.win_h - lay.footer_h;
-    let sep2_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
+    // ── Appearance Section ─────────────────────────────────────────
     unsafe {
-        let _ = FillRect(
-            dib_dc,
-            &RECT {
-                left: lay.pad,
-                top: footer_y,
-                right: lay.win_w - lay.pad,
-                bottom: footer_y + 1,
-            },
-            sep2_brush,
-        );
-        let _ = DeleteObject(sep2_brush);
+        let _ = SelectObject(dib_dc, title_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let mut app_wz = to_utf16_z("Appearance");
+    let mut app_rc = RECT {
+        left: lay.pad,
+        top: lay.appearance_y,
+        right: lay.win_w - lay.pad,
+        bottom: lay.appearance_y + (24.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut app_wz, &mut app_rc, DT_LEFT | DT_SINGLELINE);
     }
 
-    // ── "Theme" label ──────────────────────────────────────────────
+    // Theme label
     unsafe {
         let _ = SelectObject(dib_dc, body_font);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
     }
     let mut label_wz = to_utf16_z("Theme");
     let mut label_rc = RECT {
@@ -624,12 +646,6 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     };
     draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, combo_rc, combo_radius, 1, combo_border_color);
 
-    // ── Combo text + arrow ─────────────────────────────────────────
-    unsafe {
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
-        let _ = SelectObject(dib_dc, body_font);
-    }
-
     // Selected theme name
     let sel_name = state
         .theme_names
@@ -653,7 +669,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // Arrow ▼ (drawn as simple text icon directly over combo box)
+    // Arrow ▼
     let arrow_color = if is_combo_hovered {
         theme.text
     } else {
@@ -678,58 +694,53 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // ── Buttons ────────────────────────────────────────────────────
-    // Apply
-    let is_apply_hovered = state.hovered_target == HoverTarget::ApplyBtn;
-    draw_button(
-        dib_dc,
-        bits,
-        lay.win_w,
-        lay.win_h,
-        lay.apply_x,
-        lay.btn_y,
-        lay.btn_w,
-        lay.btn_h,
-        "Apply",
-        theme,
-        body_font,
-        is_apply_hovered,
-    );
+    // Help text next to theme selector
+    unsafe {
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
+    let mut theme_help_wz = to_utf16_z("Set the colour theme for mhd UI elements.");
+    let mut theme_help_rc = RECT {
+        left: lay.combo_x + lay.combo_w + lay.pad,
+        top: lay.combo_y,
+        right: lay.win_w - lay.pad,
+        bottom: lay.combo_y + combo_h,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut theme_help_wz, &mut theme_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
 
-    // Close
-    let is_close_hovered = state.hovered_target == HoverTarget::CloseBtn;
-    draw_button(
-        dib_dc,
-        bits,
-        lay.win_w,
-        lay.win_h,
-        lay.close_x,
-        lay.btn_y,
-        lay.btn_w,
-        lay.btn_h,
-        "Close",
-        theme,
-        body_font,
-        is_close_hovered,
-    );
+    // ── Shortcuts Section ──────────────────────────────────────────
+    unsafe {
+        let _ = SelectObject(dib_dc, title_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let mut short_wz = to_utf16_z("Shortcuts");
+    let mut short_rc = RECT {
+        left: lay.pad,
+        top: lay.shortcuts_y,
+        right: lay.win_w - lay.pad,
+        bottom: lay.shortcuts_y + (24.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut short_wz, &mut short_rc, DT_LEFT | DT_SINGLELINE);
+    }
 
     // ── Table Headers ──────────────────────────────────────────────
     unsafe {
         let _ = SelectObject(dib_dc, small_font);
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
-    let table_header_y = lay.list_y - (20.0 * lay.scale) as i32;
-    let trig_w = (120.0 * lay.scale) as i32;
-    let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
-    let kind_w = (100.0 * lay.scale) as i32;
-    let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
+    let table_header_y = lay.list_y - (24.0 * lay.scale) as i32;
+    let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
+    let param_x = kind_x + lay.kind_w + (8.0 * lay.scale) as i32;
 
     // Trigger header
     let mut trig_header_wz = to_utf16_z("TRIGGER");
     let mut trig_header_rc = RECT {
         left: lay.pad + 6,
         top: table_header_y,
-        right: lay.pad + trig_w,
+        right: lay.pad + lay.trig_w,
         bottom: table_header_y + (16.0 * lay.scale) as i32,
     };
     unsafe {
@@ -746,7 +757,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     let mut action_header_rc = RECT {
         left: kind_x + 6,
         top: table_header_y,
-        right: kind_x + kind_w,
+        right: kind_x + lay.kind_w,
         bottom: table_header_y + (16.0 * lay.scale) as i32,
     };
     unsafe {
@@ -763,7 +774,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     let mut param_header_rc = RECT {
         left: param_x + 6,
         top: table_header_y,
-        right: lay.win_w - lay.pad - (32.0 * lay.scale) as i32,
+        right: lay.win_w - lay.pad - lay.del_w,
         bottom: table_header_y + (16.0 * lay.scale) as i32,
     };
     unsafe {
@@ -812,6 +823,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             theme,
             small_font,
             is_add_hovered,
+            ButtonStyle::Secondary,
         );
     }
 
@@ -820,6 +832,59 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         SelectClipRgn(dib_dc, rgn);
         let _ = DeleteObject(rgn);
     }
+
+    // Separator above footer
+    let footer_y = lay.win_h - lay.footer_h;
+    unsafe {
+        let _ = FillRect(
+            dib_dc,
+            &RECT {
+                left: lay.pad,
+                top: footer_y,
+                right: lay.win_w - lay.pad,
+                bottom: footer_y + 1,
+            },
+            sep_brush,
+        );
+        let _ = DeleteObject(sep_brush);
+    }
+
+    // ── Buttons ────────────────────────────────────────────────────
+    // Apply
+    let is_apply_hovered = state.hovered_target == HoverTarget::ApplyBtn;
+    draw_button(
+        dib_dc,
+        bits,
+        lay.win_w,
+        lay.win_h,
+        lay.apply_x,
+        lay.btn_y,
+        lay.btn_w,
+        lay.btn_h,
+        "Apply",
+        theme,
+        body_font,
+        is_apply_hovered,
+        ButtonStyle::Primary,
+    );
+
+    // Close
+    let is_close_hovered = state.hovered_target == HoverTarget::CloseBtn;
+    draw_button(
+        dib_dc,
+        bits,
+        lay.win_w,
+        lay.win_h,
+        lay.close_x,
+        lay.btn_y,
+        lay.btn_w,
+        lay.btn_h,
+        "Close",
+        theme,
+        body_font,
+        is_close_hovered,
+        ButtonStyle::Secondary,
+    );
 
     // ── Scrollbar ──────────────────────────────────────────────────
     let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
@@ -856,27 +921,6 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             bottom: thumb_y + thumb_h,
         };
         draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, thumb_rect, scroll_w / 2, thumb_color);
-    }
-
-    // ── Footer status text ─────────────────────────────────────────
-    unsafe {
-        let _ = SelectObject(dib_dc, small_font);
-        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
-    }
-    let mut status_wz = to_utf16_z("Set the colour theme for mhd UI elements.");
-    let mut status_rc = RECT {
-        left: lay.pad,
-        top: footer_y + (lay.footer_h - 12) / 2,
-        right: lay.win_w - lay.pad,
-        bottom: lay.win_h,
-    };
-    unsafe {
-        let _ = DrawTextW(
-            dib_dc,
-            &mut status_wz,
-            &mut status_rc,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-        );
     }
 
     // ── Cleanup GDI objects ────────────────────────────────────────
@@ -1178,6 +1222,16 @@ fn contrast_text_on(bg: Argb) -> bool {
     lum < 0.5
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonStyle {
+    Primary,
+    Secondary,
+    Ghost,
+    DangerGhost,
+    TriggerPlate,
+}
+
+/// Draw a rounded button or interactive plate on the DIB.
 fn draw_button(
     dib_dc: HDC,
     bits: *mut c_void,
@@ -1191,6 +1245,7 @@ fn draw_button(
     theme: &NativeTheme,
     font: HFONT,
     is_hovered: bool,
+    style: ButtonStyle,
 ) {
     let rect = RECT {
         left: x,
@@ -1199,29 +1254,66 @@ fn draw_button(
         bottom: y + h,
     };
 
-    // Button background: accent color, lightened if hovered
-    let mut btn_color = theme.accent;
-    if is_hovered {
-        btn_color = theme.hover.blend_over(btn_color);
-    }
+    let (btn_color, text_color, border_color) = match style {
+        ButtonStyle::Primary => {
+            let mut bg = theme.accent;
+            if is_hovered {
+                bg = theme.hover.blend_over(bg);
+            }
+            let fg = if contrast_text_on(bg) {
+                Argb::new(255, 255, 255, 255)
+            } else {
+                Argb::new(255, 0, 0, 0)
+            };
+            (bg, fg, theme.border)
+        }
+        ButtonStyle::Secondary => {
+            let mut bg = theme.surface;
+            if is_hovered {
+                bg = theme.hover.blend_over(bg);
+            }
+            (bg, theme.text, theme.border)
+        }
+        ButtonStyle::Ghost => {
+            let mut bg = Argb::new(0, 0, 0, 0);
+            let mut fg = theme.text_muted;
+            if is_hovered {
+                bg = theme.hover.blend_over(bg);
+                fg = theme.text;
+            }
+            (bg, fg, Argb::new(0, 0, 0, 0))
+        }
+        ButtonStyle::DangerGhost => {
+            let mut bg = Argb::new(0, 0, 0, 0);
+            let mut fg = theme.text_muted;
+            if is_hovered {
+                bg = Argb::new(40, 255, 0, 0);
+                fg = Argb::new(255, 255, 80, 80);
+            }
+            (bg, fg, Argb::new(0, 0, 0, 0))
+        }
+        ButtonStyle::TriggerPlate => {
+            let mut bg = theme.surface.blend_over(theme.background);
+            let mut border = theme.border;
+            if is_hovered {
+                bg = theme.hover.blend_over(bg);
+                border = theme.text;
+            }
+            (bg, theme.text, border)
+        }
+    };
 
     // Radius scaled based on DPI width
     let radius = (5.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
     draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, btn_color);
 
-    // Draw subtle border around the button
-    let border_color = theme.border;
-    draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+    if border_color.a > 0 {
+        draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+    }
 
-    // Button text — pick contrasting colour based on accent luminance
-    let btn_text_color = if contrast_text_on(btn_color) {
-        Argb::new(0xFF, 0xFF, 0xFF, 0xFF) // white
-    } else {
-        Argb::new(0xFF, 0x00, 0x00, 0x00) // black
-    };
     unsafe {
         let _ = SelectObject(dib_dc, font);
-        let _ = SetTextColor(dib_dc, btn_text_color.to_colorref());
+        let _ = SetTextColor(dib_dc, text_color.to_colorref());
     }
     let mut lbl_wz = to_utf16_z(label);
     let mut lbl_rc = RECT {
@@ -1485,20 +1577,17 @@ unsafe extern "system" fn settings_wndproc(
 
                                 for i in 0..state.bindings.len() {
                                     if y >= row_y && y < row_y + lay.row_h {
-                                        let trig_w = (120.0 * lay.scale) as i32;
-                                        let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
-                                        let kind_w = (100.0 * lay.scale) as i32;
-                                        let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
-                                        let param_w = lay.win_w - lay.pad - (32.0 * lay.scale) as i32 - param_x;
-                                        let del_w = (24.0 * lay.scale) as i32;
+                                        let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
+                                        let param_x = kind_x + lay.kind_w + (8.0 * lay.scale) as i32;
+                                        let param_w = lay.win_w - lay.pad - lay.del_w - (8.0 * lay.scale) as i32 - param_x;
 
-                                        if x >= lay.pad && x < lay.pad + trig_w {
+                                        if x >= lay.pad && x < lay.pad + lay.trig_w {
                                             target = HoverTarget::RowTrigger(i);
-                                        } else if x >= kind_x && x < kind_x + kind_w {
+                                        } else if x >= kind_x && x < kind_x + lay.kind_w {
                                             target = HoverTarget::RowKind(i);
                                         } else if x >= param_x && x < param_x + param_w {
                                             target = HoverTarget::RowParam(i);
-                                        } else if x >= lay.win_w - lay.pad - del_w && x < lay.win_w - lay.pad {
+                                        } else if x >= lay.win_w - lay.pad - lay.del_w && x < lay.win_w - lay.pad {
                                             target = HoverTarget::RowDelete(i);
                                         }
                                         found = true;
@@ -2214,13 +2303,12 @@ fn draw_binding_row(
         bottom: y + lay.row_h,
     };
 
-    // 1. Trigger button
-    let trig_w = (120.0 * lay.scale) as i32;
+    // 1. Trigger button (Plate style)
     let trig_rc = RECT {
         left: row_rc.left,
         top: y + (lay.row_h - lay.btn_h) / 2,
-        right: row_rc.left + trig_w,
-        bottom: y + (lay.row_h - lay.btn_h) / 2 + lay.btn_h,
+        right: row_rc.left + lay.trig_w,
+        bottom: y + (lay.row_h + lay.btn_h) / 2,
     };
     let trig_text = if binding.is_recording_trigger {
         "..."
@@ -2235,51 +2323,44 @@ fn draw_binding_row(
         lay.win_h,
         trig_rc.left,
         trig_rc.top,
-        trig_w,
+        lay.trig_w,
         lay.btn_h,
         trig_text,
         theme,
         small_font,
         is_trig_hovered,
+        ButtonStyle::TriggerPlate,
     );
 
-    // 2. Action kind button (drawn as a custom drop-down button chevron combo)
+    // 2. Action kind button
     let kind_x = trig_rc.right + (8.0 * lay.scale) as i32;
-    let kind_w = (100.0 * lay.scale) as i32;
     let is_kind_hovered = state.hovered_target == HoverTarget::RowKind(idx);
-
     let kind_rect = RECT {
         left: kind_x,
         top: trig_rc.top,
-        right: kind_x + kind_w,
+        right: kind_x + lay.kind_w,
         bottom: trig_rc.bottom,
     };
 
-    let mut kind_btn_color = theme.accent;
+    let mut kind_btn_color = theme.surface;
     if is_kind_hovered {
         kind_btn_color = theme.hover.blend_over(kind_btn_color);
     }
-    let radius = (5.0 * (lay.win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
+    let radius = (4.0 * lay.scale) as i32;
     draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, kind_rect, radius, kind_btn_color);
-    draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, kind_rect, radius, 1, theme.border);
-
-    let kind_text_color = if contrast_text_on(kind_btn_color) {
-        Argb::new(0xFF, 0xFF, 0xFF, 0xFF) // white
-    } else {
-        Argb::new(0xFF, 0x00, 0x00, 0x00) // black
-    };
+    draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, kind_rect, radius, 1, if is_kind_hovered { theme.text } else { theme.border });
 
     unsafe {
         let _ = SelectObject(hdc, small_font);
-        let _ = SetTextColor(hdc, kind_text_color.to_colorref());
+        let _ = SetTextColor(hdc, theme.text.to_colorref());
     }
 
     // Left-aligned label text
     let mut kind_wz = to_utf16_z(binding.kind.to_str());
     let mut kind_text_rc = RECT {
-        left: kind_x + 6,
+        left: kind_x + 8,
         top: trig_rc.top,
-        right: kind_x + kind_w - 18,
+        right: kind_x + lay.kind_w - 18,
         bottom: trig_rc.bottom,
     };
     unsafe {
@@ -2291,12 +2372,12 @@ fn draw_binding_row(
         );
     }
 
-    // Arrow ▼ on the right side of the action kind button
+    // Arrow ▼
     let mut kind_arrow_wz = to_utf16_z("▼");
     let mut kind_arrow_rc = RECT {
-        left: kind_x + kind_w - 16,
+        left: kind_x + lay.kind_w - 16,
         top: trig_rc.top,
-        right: kind_x + kind_w,
+        right: kind_x + lay.kind_w,
         bottom: trig_rc.bottom,
     };
     unsafe {
@@ -2309,8 +2390,8 @@ fn draw_binding_row(
     }
 
     // 3. Param area
-    let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
-    let param_w = row_rc.right - param_x - (32.0 * lay.scale) as i32;
+    let param_x = kind_rect.right + (8.0 * lay.scale) as i32;
+    let param_w = row_rc.right - param_x - lay.del_w - (8.0 * lay.scale) as i32;
     let param_rc = RECT {
         left: param_x,
         top: trig_rc.top,
@@ -2323,7 +2404,6 @@ fn draw_binding_row(
     let is_recording_param = binding.is_recording_param;
     let is_editing_param = state.edit_idx == Some(idx) && state.edit_control.is_some();
 
-    // Use lighter surface color when hovered
     let mut current_bg = param_bg;
     if is_param_hovered {
         current_bg = theme.hover.blend_over(current_bg);
@@ -2332,7 +2412,6 @@ fn draw_binding_row(
     let param_radius = (4.0 * lay.scale) as i32;
     draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, current_bg);
 
-    // Dynamic borders: accent when editing/recording, text when hovered, border when idle
     let border_color = if is_recording_param || is_editing_param {
         theme.accent
     } else if is_param_hovered {
@@ -2342,29 +2421,27 @@ fn draw_binding_row(
     };
     draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, 1, border_color);
 
-    // Draw text inside param area
     unsafe {
         let _ = SetTextColor(hdc, theme.text.to_colorref());
         let mut wz = to_utf16_z(&binding.param);
         let mut text_rc = RECT {
-            left: param_rc.left + 6,
+            left: param_rc.left + 8,
             ..param_rc
         };
         let _ = DrawTextW(
             hdc,
             &mut wz,
             &mut text_rc,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
     }
 
-    // 4. Delete button
-    let del_w = (24.0 * lay.scale) as i32;
+    // 4. Delete button (DangerGhost style)
     let del_rc = RECT {
-        left: row_rc.right - del_w,
-        top: y + (lay.row_h - del_w) / 2,
+        left: row_rc.right - lay.del_w,
+        top: y + (lay.row_h - lay.del_w) / 2,
         right: row_rc.right,
-        bottom: y + (lay.row_h - del_w) / 2 + del_w,
+        bottom: y + (lay.row_h + lay.del_w) / 2,
     };
     let is_del_hovered = state.hovered_target == HoverTarget::RowDelete(idx);
     draw_button(
@@ -2374,12 +2451,13 @@ fn draw_binding_row(
         lay.win_h,
         del_rc.left,
         del_rc.top,
-        del_w,
-        del_w,
+        lay.del_w,
+        lay.del_w,
         "X",
         theme,
         small_font,
         is_del_hovered,
+        ButtonStyle::DangerGhost,
     );
 }
 
@@ -2387,9 +2465,8 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     let lay = state.layout;
 
     // 1. Trigger button
-    let trig_w = (120.0 * lay.scale) as i32;
     if x >= lay.pad
-        && x < lay.pad + trig_w
+        && x < lay.pad + lay.trig_w
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
@@ -2417,10 +2494,9 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     }
 
     // 2. Kind button
-    let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
-    let kind_w = (100.0 * lay.scale) as i32;
+    let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
     if x >= kind_x
-        && x < kind_x + kind_w
+        && x < kind_x + lay.kind_w
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
@@ -2429,8 +2505,8 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     }
 
     // 2b. Param
-    let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
-    let param_w = lay.win_w - lay.pad - (32.0 * lay.scale) as i32 - param_x;
+    let param_x = kind_x + lay.kind_w + (8.0 * lay.scale) as i32;
+    let param_w = lay.win_w - lay.pad - lay.del_w - (8.0 * lay.scale) as i32 - param_x;
     if x >= param_x
         && x < param_x + param_w
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
@@ -2467,11 +2543,10 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     }
 
     // 3. Delete button
-    let del_w = (24.0 * lay.scale) as i32;
-    if x >= lay.win_w - lay.pad - del_w
+    if x >= lay.win_w - lay.pad - lay.del_w
         && x < lay.win_w - lay.pad
-        && y >= row_y + (lay.row_h - del_w) / 2
-        && y < row_y + (lay.row_h + del_w) / 2
+        && y >= row_y + (lay.row_h - lay.del_w) / 2
+        && y < row_y + (lay.row_h + lay.del_w) / 2
     {
         close_kind_popup(state);
         state.bindings.remove(idx);
