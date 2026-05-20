@@ -155,7 +155,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::MediaStop => platform::send_media_key(0xB2),
         Action::MediaLastTrack => platform::send_media_key(0xB1),
         Action::MediaNextTrack => platform::send_media_key(0xB0),
-        Action::ToggleTopmost => toggle_topmost_active_window(),
+        Action::ToggleTopmost => toggle_topmost_with_indicator(handle),
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}
@@ -172,7 +172,7 @@ fn run_powershell(command: &str) {
     }
 }
 
-fn toggle_topmost_active_window() {
+fn toggle_topmost_with_indicator(handle: &AppHandle) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_NOTOPMOST,
@@ -189,8 +189,10 @@ fn toggle_topmost_active_window() {
 
         if is_topmost {
             let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            handle.pin_indicator.unpin_window(hwnd);
         } else {
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            handle.pin_indicator.pin_window(hwnd);
         }
     }
 }
