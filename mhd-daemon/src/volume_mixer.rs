@@ -38,13 +38,14 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow, KillTimer,
     MsgWaitForMultipleObjects, PeekMessageW, RegisterClassW, SetTimer, ShowWindow,
     TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, PM_REMOVE, QS_ALLINPUT,
-    SW_HIDE, SW_SHOWNA, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_KEYDOWN, WM_QUIT,
-    WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WNDCLASSW, MSG,
+    SW_HIDE, SW_SHOWNA, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_QUIT, WM_TIMER, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WNDCLASSW, MSG,
 };
 use windows::core::Interface;
 
@@ -195,6 +196,7 @@ fn mixer_thread(handle: MixerHandle) {
     };
 
     let work = monitor_work_rect();
+    let mut dragging_row: Option<usize> = None;
 
     loop {
         let wait_handles = [handle.event];
@@ -231,6 +233,46 @@ fn mixer_thread(handle: MixerHandle) {
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                         }
+
+                        if msg.hwnd == hwnd {
+                            match msg.message {
+                                WM_LBUTTONDOWN => {
+                                    let (x, y) = point_from_lparam(msg.lParam);
+                                    if let Some((row, volume)) = hit_test_volume_bar(
+                                        &state,
+                                        x,
+                                        y,
+                                        mixer_w,
+                                        scale,
+                                    ) {
+                                        dragging_row = Some(row);
+                                        let _ = SetCapture(hwnd);
+                                        set_row_volume(&mut state, row, volume);
+                                        paint_mixer(hwnd, &state, &work, mixer_w, scale);
+                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                                        continue;
+                                    }
+                                }
+                                WM_MOUSEMOVE => {
+                                    if let Some(row) = dragging_row {
+                                        let (x, _) = point_from_lparam(msg.lParam);
+                                        let volume = volume_from_x(x, mixer_w, scale);
+                                        set_row_volume(&mut state, row, volume);
+                                        paint_mixer(hwnd, &state, &work, mixer_w, scale);
+                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                                        continue;
+                                    }
+                                }
+                                WM_LBUTTONUP => {
+                                    if dragging_row.take().is_some() {
+                                        let _ = ReleaseCapture();
+                                        continue;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }
@@ -650,6 +692,75 @@ fn paint_mixer(
         let _ = DeleteObject(dib);
         let _ = DeleteDC(dib_dc);
         let _ = ReleaseDC(None, screen_dc);
+    }
+}
+
+// ── Interaction ────────────────────────────────────────────────────────
+
+fn point_from_lparam(lparam: LPARAM) -> (i32, i32) {
+    let x = (lparam.0 & 0xffff) as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+    (x, y)
+}
+
+fn hit_test_volume_bar(
+    state: &MixerState,
+    x: i32,
+    y: i32,
+    width: i32,
+    scale: f32,
+) -> Option<(usize, f32)> {
+    let pad = (PAD_BASE as f32 * scale) as i32;
+    let font_h_abs = (14.0 * scale) as i32;
+    let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
+    let sep_y = pad + font_h_abs + 8;
+
+    let label_w = (120.0 * scale) as i32;
+    let bar_x = pad + label_w + pad;
+    let bar_max_w = width - bar_x - pad - 50 - pad;
+
+    if x < bar_x || x > bar_x + bar_max_w {
+        return None;
+    }
+
+    for i in 0..state.sessions.len() {
+        let row_y = sep_y + 8 + (i as i32) * row_h;
+        if y >= row_y && y < row_y + row_h {
+            return Some((i, volume_from_x(x, width, scale)));
+        }
+    }
+
+    None
+}
+
+fn volume_from_x(x: i32, width: i32, scale: f32) -> f32 {
+    let pad = (PAD_BASE as f32 * scale) as i32;
+    let label_w = (120.0 * scale) as i32;
+    let bar_x = pad + label_w + pad;
+    let bar_max_w = width - bar_x - pad - 50 - pad;
+    ((x - bar_x) as f32 / bar_max_w as f32).clamp(0.0, 1.0)
+}
+
+fn set_row_volume(state: &mut MixerState, row: usize, volume: f32) {
+    let volume = volume.clamp(0.0, 1.0);
+
+    if row == 0 {
+        if let Some(endpoint) = state.endpoint_volume.as_ref() {
+            unsafe {
+                let _ = endpoint.SetMasterVolumeLevelScalar(volume, std::ptr::null());
+                let _ = endpoint.SetMute(false, std::ptr::null());
+            }
+        }
+    } else if let Some(Some(control)) = state.volume_controls.get(row) {
+        unsafe {
+            let _ = control.SetMasterVolume(volume, std::ptr::null());
+            let _ = control.SetMute(false, std::ptr::null());
+        }
+    }
+
+    if let Some(session) = state.sessions.get_mut(row) {
+        session.volume = volume;
+        session.muted = false;
     }
 }
 
