@@ -2027,19 +2027,17 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
             }
         }
 
-        let mut cmd_id = ID_ACTION_BASE;
-
         for &cat in &categories {
             let sub = CreatePopupMenu();
             let Ok(sub) = sub else { continue };
             if sub == HMENU::default() {
                 continue;
             }
-            for &gi in EDITOR_ACTION_INDICES {
+            for (editor_idx, &gi) in EDITOR_ACTION_INDICES.iter().enumerate() {
                 if ALL_ACTIONS[gi].category == cat {
+                    let cmd = ID_ACTION_BASE + editor_idx;
                     let label = to_utf16_z(ALL_ACTIONS[gi].label);
-                    let _ = AppendMenuW(sub, MF_STRING, cmd_id, PCWSTR::from_raw(label.as_ptr()));
-                    cmd_id += 1;
+                    let _ = AppendMenuW(sub, MF_STRING, cmd, PCWSTR::from_raw(label.as_ptr()));
                 }
             }
 
@@ -2079,7 +2077,7 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
         // Clean up menus
         let _ = DestroyMenu(main_menu);
 
-        if chosen >= ID_ACTION_BASE && chosen < cmd_id {
+        if chosen >= ID_ACTION_BASE {
             let selected = chosen - ID_ACTION_BASE;
             if selected < EDITOR_ACTION_INDICES.len() {
                 if state.bindings[idx].kind_idx != selected {
