@@ -155,6 +155,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::MediaStop => platform::send_media_key(0xB2),
         Action::MediaLastTrack => platform::send_media_key(0xB1),
         Action::MediaNextTrack => platform::send_media_key(0xB0),
+        Action::ToggleTopmost => toggle_topmost_active_window(),
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}
@@ -168,5 +169,28 @@ fn run_powershell(command: &str) {
 
     if let Err(e) = result {
         eprintln!("mhd: failed to run powershell: {e}");
+    }
+}
+
+fn toggle_topmost_active_window() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_NOTOPMOST,
+        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd == HWND::default() {
+            return;
+        }
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let is_topmost = (ex_style as u32 & WS_EX_TOPMOST.0) != 0;
+
+        if is_topmost {
+            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        } else {
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        }
     }
 }

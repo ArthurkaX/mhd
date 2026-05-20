@@ -179,6 +179,7 @@ All keys are optional — missing values fall back to the built-in dark theme.
 | `media_stop` | — | Stop media playback |
 | `media_last_track` | — | Go to previous track |
 | `media_next_track` | — | Go to next track |
+| `toggle_topmost` | — | Toggle always‑on‑top for the currently focused window |
 | `quit` | — | Gracefully shut down mhd |
 
 The config editor exposes actions grouped by category (General, Display, Media,

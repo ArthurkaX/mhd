@@ -27,6 +27,8 @@ pub enum Action {
     MediaLastTrack,
     /// Go to next track (VK_MEDIA_NEXT_TRACK).
     MediaNextTrack,
+    /// Toggle always‑on‑top for the currently focused window.
+    ToggleTopmost,
     Quit,
 }
 
@@ -101,6 +103,7 @@ impl Action {
             "media_play_pause" => Ok(Action::MediaPlayPause),
             "media_stop" => Ok(Action::MediaStop),
             "media_last_track" => Ok(Action::MediaLastTrack),
+            "toggle_topmost" => Ok(Action::ToggleTopmost),
             "media_next_track" => Ok(Action::MediaNextTrack),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
@@ -236,6 +239,7 @@ impl Action {
             Action::MediaPlayPause => "media_play_pause".to_string(),
             Action::MediaStop => "media_stop".to_string(),
             Action::MediaLastTrack => "media_last_track".to_string(),
+            Action::ToggleTopmost => "toggle_topmost".to_string(),
             Action::MediaNextTrack => "media_next_track".to_string(),
             Action::Quit => "quit".to_string(),
         }
@@ -333,6 +337,12 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "media_next_track",
         label: "Next Track",
         category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "toggle_topmost",
+        label: "Toggle Always On Top",
+        category: "General",
         param_key: None,
     },
     ActionDescriptor {

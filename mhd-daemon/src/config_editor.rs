@@ -74,7 +74,8 @@ const EDITOR_ACTION_INDICES: &[usize] = &[
     9,  // media_stop
     10, // media_last_track
     11, // media_next_track
-    12, // quit
+    12, // toggle_topmost
+    13, // quit
 ];
 
 #[derive(Debug, Clone)]
@@ -420,6 +421,7 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
                 Action::MediaPlayPause => "media_play_pause",
                 Action::MediaStop => "media_stop",
                 Action::MediaLastTrack => "media_last_track",
+                Action::ToggleTopmost => "toggle_topmost",
                 Action::MediaNextTrack => "media_next_track",
                 _ => "quit",
             };
