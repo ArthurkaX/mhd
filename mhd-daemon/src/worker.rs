@@ -1,37 +1,31 @@
 use std::sync::mpsc;
 
 use crate::action::Action;
+use crate::app::{AppHandle, DaemonControl};
 use crate::monitor;
-use crate::osd::OsdHandle;
-use crate::trigger::{KeyCombo, PhysicalKey};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
-};
+use crate::platform;
 
 /// Messages sent from hook callbacks to the worker thread.
 #[derive(Debug)]
 pub enum ActionMessage {
     Execute(Action),
-    #[allow(dead_code)]
     SwitchScheme(String),
-    #[allow(dead_code)]
     Quit,
 }
 
 /// The action worker runs on a dedicated thread and executes actions.
 pub struct ActionWorker {
-    quiet: bool,
+    handle: AppHandle,
     rx: mpsc::Receiver<ActionMessage>,
-    osd: OsdHandle,
 }
 
 /// Handle to send actions to the worker.
 pub type ActionSender = mpsc::Sender<ActionMessage>;
 
 impl ActionWorker {
-    pub fn new(quiet: bool, osd: OsdHandle) -> (Self, ActionSender) {
+    pub fn new(handle: AppHandle) -> (Self, ActionSender) {
         let (tx, rx) = mpsc::channel();
-        let worker = ActionWorker { quiet, rx, osd };
+        let worker = ActionWorker { handle, rx };
         (worker, tx)
     }
 
@@ -77,16 +71,22 @@ impl ActionWorker {
 
             match action_to_execute {
                 ActionMessage::Execute(action) => {
-                    if !self.quiet {
+                    if !self.handle.quiet() {
                         println!("mhd: triggered: {}", action.describe());
                     }
-                    execute_action(&action, &self.osd);
+                    execute_action(&action, &self.handle);
                 }
-                ActionMessage::SwitchScheme(_scheme) => {
-                    // Handled in hook callback directly
+                ActionMessage::SwitchScheme(scheme) => {
+                    if self.handle.switch_scheme(&scheme) && !self.handle.quiet() {
+                        println!("mhd: switched to scheme: {}", self.handle.active_scheme());
+                    }
                 }
                 ActionMessage::Quit => {
-                    // Quit is handled via PostQuitMessage in the hook callback
+                    if !self.handle.quiet() {
+                        println!("mhd: quit");
+                    }
+                    self.handle.shutdown();
+                    crate::hook::signal_tray_to_quit();
                     break;
                 }
             }
@@ -94,13 +94,10 @@ impl ActionWorker {
     }
 }
 
-fn execute_action(action: &Action, osd: &OsdHandle) {
+fn execute_action(action: &Action, handle: &AppHandle) {
     match action {
-        Action::ReplaceKey { keys } => send_replace_key(keys),
+        Action::ReplaceKey { keys } => platform::send_keys(keys),
         Action::RunPs { command } => run_powershell(command),
-        Action::SwitchScheme { .. } => {
-            // Handled in hook callback
-        }
         Action::SetBrightness { relative, value } => {
             let res = if *relative {
                 monitor::adjust_brightness(*value)
@@ -111,7 +108,7 @@ fn execute_action(action: &Action, osd: &OsdHandle) {
             match res {
                 Ok(_) => {
                     if let Ok((new_val, name)) = monitor::get_brightness() {
-                        osd.show_brightness(new_val, name);
+                        handle.osd.show_brightness(new_val, name);
                     }
                 }
                 Err(e) => eprintln!("mhd: brightness error: {e}"),
@@ -128,82 +125,10 @@ fn execute_action(action: &Action, osd: &OsdHandle) {
                 }
             }
         }
-        Action::Quit => {
-            // Handled in hook callback via PostQuitMessage
-        }
+        // SwitchScheme and Quit are dispatched via dedicated ActionMessage
+        // variants, never wrapped in ActionMessage::Execute.
+        Action::SwitchScheme { .. } | Action::Quit => {}
     }
-}
-
-fn send_replace_key(keys: &KeyCombo) {
-    let mut inputs: Vec<INPUT> = Vec::new();
-
-    // Press modifiers
-    if keys.modifiers.alt() {
-        push_key_event(&mut inputs, 0x12, false);
-    }
-    if keys.modifiers.ctrl() {
-        push_key_event(&mut inputs, 0x11, false);
-    }
-    if keys.modifiers.shift() {
-        push_key_event(&mut inputs, 0x10, false);
-    }
-    if keys.modifiers.win() {
-        push_key_event(&mut inputs, 0x5B, false);
-    }
-
-    // Press and release the main key (if present)
-    match keys.key {
-        Some(PhysicalKey::Keyboard(vk)) => {
-            push_key_event(&mut inputs, vk as u16, false);
-            push_key_event(&mut inputs, vk as u16, true);
-        }
-        Some(PhysicalKey::MouseButton(_)) => {
-            eprintln!("mhd: warning: replace_key with mouse button not supported");
-        }
-        None => {
-            // Modifier-only combo (e.g., alt+shift): press and release modifiers
-        }
-    }
-
-    // Release modifiers in reverse order
-    if keys.modifiers.win() {
-        push_key_event(&mut inputs, 0x5B, true);
-    }
-    if keys.modifiers.shift() {
-        push_key_event(&mut inputs, 0x10, true);
-    }
-    if keys.modifiers.ctrl() {
-        push_key_event(&mut inputs, 0x11, true);
-    }
-    if keys.modifiers.alt() {
-        push_key_event(&mut inputs, 0x12, true);
-    }
-
-    if !inputs.is_empty() {
-        unsafe {
-            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-        }
-    }
-}
-
-fn push_key_event(inputs: &mut Vec<INPUT>, vk: u16, up: bool) {
-    let flags = if up {
-        KEYEVENTF_KEYUP
-    } else {
-        KEYBD_EVENT_FLAGS(0)
-    };
-
-    let ki = KEYBDINPUT {
-        wVk: VIRTUAL_KEY(vk),
-        wScan: 0,
-        dwFlags: flags,
-        time: 0,
-        dwExtraInfo: 0,
-    };
-    inputs.push(INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 { ki },
-    });
 }
 
 fn run_powershell(command: &str) {

@@ -12,10 +12,25 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
 
+use crate::action::Action;
 use crate::config::AppConfig;
 use crate::native_theme::NativeTheme;
 use crate::osd::OsdHandle;
+use crate::trigger::Trigger;
 use crate::worker::{ActionSender, ActionWorker};
+
+/// Interface for controlling the daemon and accessing its state.
+pub trait DaemonControl: Send + Sync {
+    fn shutdown(&self);
+    fn reload_config(&self) -> Result<(), String>;
+    fn status(&self) -> bool;
+    fn theme(&self) -> NativeTheme;
+    fn active_scheme(&self) -> String;
+    fn switch_scheme(&self, name: &str) -> bool;
+    fn lookup_trigger(&self, trigger: &Trigger) -> Option<Action>;
+    fn quiet(&self) -> bool;
+    fn config_path(&self) -> &std::path::Path;
+}
 
 /// Wrapper to make HWND Send+Sync safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,34 +51,26 @@ pub struct AppHandle {
     pub(crate) hook_thread_id: Arc<AtomicU32>,
     pub(crate) quiet: bool,
     pub(crate) theme: Arc<Mutex<NativeTheme>>,
-    pub(crate) recording_window: Arc<Mutex<Option<SendHwnd>>>,
-    osd: OsdHandle,
+    pub(crate) osd: OsdHandle,
 }
 
-impl AppHandle {
-    /// Get the current theme.
-    pub fn theme(&self) -> NativeTheme {
+impl DaemonControl for AppHandle {
+    fn theme(&self) -> NativeTheme {
         self.theme.lock().unwrap().clone()
     }
 
-    /// Check whether the daemon core is still running.
-    pub fn status(&self) -> bool {
+    fn status(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Re-read the config file and rebuild the trigger map.
-    ///
-    /// The hook callbacks will see the new config on the next trigger.
-    pub fn reload_config(&self) -> Result<(), String> {
+    fn reload_config(&self) -> Result<(), String> {
         let content = std::fs::read_to_string(&self.config_path)
             .map_err(|e| format!("cannot read config: {e}"))?;
         let new_config = AppConfig::parse(&content, &self.config_path)?;
 
         let new_theme = crate::native_theme::load_theme(new_config.theme.as_deref());
-
         let bindings_count = new_config.active_bindings().len();
 
-        // Update theme first, then config
         {
             let mut theme = self.theme.lock().unwrap();
             *theme = new_theme;
@@ -73,7 +80,6 @@ impl AppHandle {
             *config = new_config;
         }
 
-        // Push theme to OSD
         self.osd.set_theme(self.theme());
 
         if !self.quiet {
@@ -82,11 +88,7 @@ impl AppHandle {
         Ok(())
     }
 
-    /// Signal the daemon core to shut down gracefully.
-    ///
-    /// Posts `WM_QUIT` to the hook message loop thread and sets the
-    /// running flag to `false`.
-    pub fn shutdown(&self) {
+    fn shutdown(&self) {
         self.running.store(false, Ordering::SeqCst);
         let tid = self.hook_thread_id.load(Ordering::SeqCst);
         if tid != 0 {
@@ -94,6 +96,56 @@ impl AppHandle {
                 let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
             }
         }
+    }
+
+    fn switch_scheme(&self, name: &str) -> bool {
+        let mut config = self.config.lock().unwrap();
+        if config.switch_scheme(name) {
+            let new_theme = crate::native_theme::load_theme(config.theme.as_deref());
+            {
+                let mut theme = self.theme.lock().unwrap();
+                *theme = new_theme;
+            }
+            self.osd.set_theme(self.theme());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn active_scheme(&self) -> String {
+        self.config.lock().unwrap().active_scheme().to_string()
+    }
+
+    fn lookup_trigger(&self, trigger: &Trigger) -> Option<Action> {
+        let config = self.config.lock().unwrap();
+        config.lookup_trigger(trigger).map(|b| b.action.clone())
+    }
+
+    fn quiet(&self) -> bool {
+        self.quiet
+    }
+
+    fn config_path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+}
+
+impl AppHandle {
+    pub fn theme(&self) -> NativeTheme {
+        DaemonControl::theme(self)
+    }
+    pub fn status(&self) -> bool {
+        DaemonControl::status(self)
+    }
+    pub fn reload_config(&self) -> Result<(), String> {
+        DaemonControl::reload_config(self)
+    }
+    pub fn shutdown(&self) {
+        DaemonControl::shutdown(self)
+    }
+    pub fn switch_scheme(&self, name: &str) -> bool {
+        DaemonControl::switch_scheme(self, name)
     }
 }
 
@@ -110,7 +162,6 @@ pub struct App {
     tx: ActionSender,
     osd: OsdHandle,
     theme: Arc<Mutex<NativeTheme>>,
-    recording_window: Arc<Mutex<Option<SendHwnd>>>,
 }
 
 impl App {
@@ -129,31 +180,42 @@ impl App {
 
         let native_theme = crate::native_theme::load_theme(app_config.theme.as_deref());
 
-        let (worker, tx) = ActionWorker::new(quiet, osd.clone());
-        // Worker thread runs until the channel closes (when `tx` is dropped).
-        let _worker_handle = worker.spawn();
-
         let running = Arc::new(AtomicBool::new(true));
         let hook_thread_id = Arc::new(AtomicU32::new(0));
+        let config = Arc::new(Mutex::new(app_config));
+        let theme = Arc::new(Mutex::new(native_theme));
+
+        let handle = AppHandle {
+            running: running.clone(),
+            config: config.clone(),
+            config_path: config_path.clone(),
+            hook_thread_id: hook_thread_id.clone(),
+            quiet,
+            osd: osd.clone(),
+            theme: theme.clone(),
+        };
+
+        let (worker, tx) = ActionWorker::new(handle);
+        // Worker thread runs until the channel closes (when `tx` is dropped).
+        let _worker_handle = worker.spawn();
 
         if !quiet {
             println!("mhd: loaded config: {}", config_path.display());
             println!(
                 "mhd: loaded bindings: {}",
-                app_config.active_bindings().len()
+                config.lock().unwrap().active_bindings().len()
             );
         }
 
         Ok(App {
-            config: Arc::new(Mutex::new(app_config)),
+            config,
             config_path,
             running,
             hook_thread_id,
             quiet,
             tx,
             osd,
-            theme: Arc::new(Mutex::new(native_theme)),
-            recording_window: Arc::new(Mutex::new(None)),
+            theme,
         })
     }
 
@@ -171,7 +233,6 @@ impl App {
             quiet: self.quiet,
             osd: self.osd.clone(),
             theme: self.theme.clone(),
-            recording_window: self.recording_window.clone(),
         }
     }
 

@@ -28,7 +28,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
-use crate::app::{AppHandle, SendHwnd};
+use crate::app::AppHandle;
 use crate::hook::WM_BINDING_CAPTURED;
 use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
 use crate::osd::{draw_rounded_rect, to_utf16_z};
@@ -1690,7 +1690,7 @@ unsafe extern "system" fn settings_wndproc(
                             state.bindings[idx].param = trigger_str;
                             state.bindings[idx].is_recording_param = false;
                         }
-                        *state.handle.recording_window.lock().unwrap() = None;
+                        crate::hook::set_recording_window(None);
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                 }
@@ -2483,10 +2483,10 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         if is_recording {
             state.bindings[idx].is_recording_trigger = true;
             state.recording_info = Some((idx, true));
-            *state.handle.recording_window.lock().unwrap() = Some(SendHwnd(state.hwnd));
+            crate::hook::set_recording_window(Some(state.hwnd));
         } else {
             state.recording_info = None;
-            *state.handle.recording_window.lock().unwrap() = None;
+            crate::hook::set_recording_window(None);
         }
 
         paint_settings(state.hwnd, state as *mut SettingsState, &lay);
@@ -2522,10 +2522,10 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
             if is_recording {
                 state.bindings[idx].is_recording_param = true;
                 state.recording_info = Some((idx, false));
-                *state.handle.recording_window.lock().unwrap() = Some(SendHwnd(state.hwnd));
+                crate::hook::set_recording_window(Some(state.hwnd));
             } else {
                 state.recording_info = None;
-                *state.handle.recording_window.lock().unwrap() = None;
+                crate::hook::set_recording_window(None);
             }
         } else if state.bindings[idx].kind == UIActionKind::RunPs
             || state.bindings[idx].kind == UIActionKind::SetBrightness

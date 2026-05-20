@@ -92,6 +92,11 @@ fn first_physical_monitor(dxva2: &Dxva2, hmon: HMONITOR) -> Result<(PhysicalMoni
         if !(dxva2.get_physical)(hmon, count, monitors.as_mut_ptr()).as_bool() {
             return Err("cannot get physical monitors".to_string());
         }
+        
+        if count == 0 {
+             return Err("no physical monitors found after call".to_string());
+        }
+
         monitors.set_len(count as usize);
 
         let handle = monitors[0].handle;

@@ -1,40 +1,12 @@
-﻿use std::collections::{HashMap, HashSet};
-use std::path::Path;
+pub mod path;
+pub mod raw;
 
-use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::action::Action;
 use crate::trigger::parse_trigger;
-
-/// Raw TOML binding entry.
-#[derive(Debug, Deserialize)]
-struct RawBinding {
-    trigger: String,
-    action: String,
-    #[serde(default)]
-    scheme: Option<String>,
-    #[serde(default)]
-    keys: Option<String>,
-    #[serde(default)]
-    command: Option<String>,
-    #[serde(default)]
-    target_scheme: Option<String>,
-    #[serde(default)]
-    value: Option<String>,
-    #[serde(default)]
-    code: Option<String>,
-}
-
-/// Top-level TOML config structure.
-#[derive(Debug, Deserialize)]
-struct RawConfig {
-    #[serde(default)]
-    active_scheme: Option<String>,
-    #[serde(default)]
-    theme: Option<String>,
-    #[serde(default)]
-    binding: Vec<RawBinding>,
-}
+use self::raw::RawConfig;
 
 /// A validated binding.
 #[derive(Debug, Clone)]
@@ -87,49 +59,16 @@ impl AppConfig {
             let parsed_trigger = parse_trigger(&raw_b.trigger)?;
 
             // Validate and create action
-            let action = match raw_b.action.as_str() {
-                "replace_key" => {
-                    let keys = raw_b
-                        .keys
-                        .as_ref()
-                        .ok_or_else(|| "replace_key action requires 'keys' field".to_string())?;
-                    Action::new_replace_key(keys)?
-                }
-                "run_ps" => {
-                    let command = raw_b
-                        .command
-                        .as_ref()
-                        .ok_or_else(|| "run_ps action requires 'command' field".to_string())?;
-                    Action::new_run_ps(command)?
-                }
-                "switch_scheme" => {
-                    let target = raw_b.target_scheme.as_ref().ok_or_else(|| {
-                        "switch_scheme action requires 'target_scheme' field".to_string()
-                    })?;
-                    Action::new_switch_scheme(target)?
-                }
-                "set_brightness" => {
-                    let value = raw_b.value.as_ref().ok_or_else(|| {
-                        "set_brightness action requires 'value' field".to_string()
-                    })?;
-                    Action::new_set_brightness(value)?
-                }
-                "vcp" => {
-                    let code = raw_b
-                        .code
-                        .as_ref()
-                        .ok_or_else(|| "vcp action requires 'code' field".to_string())?;
-                    let value = raw_b
-                        .value
-                        .as_ref()
-                        .ok_or_else(|| "vcp action requires 'value' field".to_string())?;
-                    Action::new_vcp(code, value)?
-                }
-                "quit" => Action::Quit,
-                other => {
-                    return Err(format!("unknown action: {other}"));
-                }
-            };
+            let action = crate::action::Action::from_raw(
+                &raw_b.action,
+                crate::action::ActionRawFields {
+                    keys: raw_b.keys.as_deref(),
+                    command: raw_b.command.as_deref(),
+                    target_scheme: raw_b.target_scheme.as_deref(),
+                    value: raw_b.value.as_deref(),
+                    code: raw_b.code.as_deref(),
+                },
+            )?;
 
             bindings.push(Binding {
                 trigger: parsed_trigger.trigger,

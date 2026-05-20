@@ -1,0 +1,31 @@
+use serde::Deserialize;
+
+/// Raw TOML binding entry.
+#[derive(Debug, Deserialize)]
+pub struct RawBinding {
+    pub trigger: String,
+    pub action: String,
+    #[serde(default)]
+    pub scheme: Option<String>,
+    #[serde(default)]
+    pub keys: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub target_scheme: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+/// Top-level TOML config structure.
+#[derive(Debug, Deserialize)]
+pub struct RawConfig {
+    #[serde(default)]
+    pub active_scheme: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
+    #[serde(default)]
+    pub binding: Vec<RawBinding>,
+}

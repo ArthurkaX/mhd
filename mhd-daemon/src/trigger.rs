@@ -258,32 +258,6 @@ pub fn is_modifier_vk(vk: u32) -> bool {
     )
 }
 
-/// Get currently pressed modifier keys.
-pub fn get_pressed_modifiers() -> Modifiers {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
-    };
-
-    let mut mods = 0u8;
-    unsafe {
-        if (GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0 {
-            mods |= MOD_ALT;
-        }
-        if (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 {
-            mods |= MOD_CTRL;
-        }
-        if (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 {
-            mods |= MOD_SHIFT;
-        }
-        if (GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000) != 0
-            || (GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000) != 0
-        {
-            mods |= MOD_WIN;
-        }
-    }
-    Modifiers(mods)
-}
-
 /// Convert a KeyCombo back to a string like "alt+shift+a".
 pub fn keys_to_string(keys: &KeyCombo) -> String {
     let mut parts = Vec::new();
@@ -302,7 +276,7 @@ pub fn keys_to_string(keys: &KeyCombo) -> String {
     if let Some(key) = keys.key {
         match key {
             PhysicalKey::Keyboard(vk) => {
-                parts.push(vk_to_string(vk));
+                parts.push(vk_to_name(vk));
             }
             PhysicalKey::MouseButton(n) => {
                 parts.push(format!("mousebutton{}", n + 3));
@@ -312,7 +286,7 @@ pub fn keys_to_string(keys: &KeyCombo) -> String {
     parts.join("+")
 }
 
-fn vk_to_string(vk: u8) -> String {
+pub fn vk_to_name(vk: u8) -> String {
     match vk {
         0x30..=0x39 => (vk as char).to_string().to_lowercase(),
         0x41..=0x5A => (vk as char).to_string().to_lowercase(),
@@ -405,8 +379,8 @@ mod tests {
     }
 
     #[test]
-    fn test_vk_to_string_modifiers() {
-        assert_eq!(vk_to_string(0xA0), "lshift");
-        assert_eq!(vk_to_string(0x5B), "lwin");
+    fn test_vk_to_name_modifiers() {
+        assert_eq!(vk_to_name(0xA0), "lshift");
+        assert_eq!(vk_to_name(0x5B), "lwin");
     }
 }

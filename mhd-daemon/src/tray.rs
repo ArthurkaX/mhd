@@ -5,8 +5,7 @@
 
 use std::env;
 use std::path::PathBuf;
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use windows::core::PCWSTR;
@@ -41,14 +40,13 @@ struct TrayState {
     app: AppHandle,
 }
 
-// Leaked raw pointer — safe because:
-// - Set once in WM_CREATE, never replaced.
-// - Freed in WM_DESTROY.
-// - WM_RBUTTONUP and WM_COMMAND only read from it while the window lives.
-static STATE: AtomicPtr<TrayState> = AtomicPtr::new(ptr::null_mut());
+unsafe impl Send for TrayState {}
+unsafe impl Sync for TrayState {}
 
-unsafe fn state_ref<'a>() -> Option<&'a TrayState> {
-    unsafe { STATE.load(Ordering::SeqCst).as_ref() }
+static STATE: OnceLock<Box<TrayState>> = OnceLock::new();
+
+fn state_ref() -> Option<&'static TrayState> {
+    STATE.get().map(|b| b.as_ref())
 }
 
 // ── Icon loading ───────────────────────────────────────────────────────
@@ -187,44 +185,28 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
-            // Extract TrayState pointer from CreateWindowExW's lpParam.
-            // In WM_CREATE, lparam points at CREATESTRUCT which has
-            // lpCreateParams as its first field (offset 0).
-            #[repr(C)]
-            struct CreateStruct {
-                lp_create_params: *mut TrayState,
-            }
-            let cs = unsafe { &*(lparam.0 as *const CreateStruct) };
-            let state_ptr = cs.lp_create_params;
+            if let Some(state) = STATE.get() {
+                let mut nid = NOTIFYICONDATAW::default();
+                nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+                nid.hWnd = hwnd;
+                nid.uID = 1;
+                nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+                nid.uCallbackMessage = WM_TRAYICON;
+                nid.hIcon = load_tray_icon();
 
-            // Safety: we haven't stored it yet, no concurrent access.
-            let state = unsafe { &*state_ptr };
+                let tip = if state.app.status() {
+                    "mhd — running\0"
+                } else {
+                    "mhd — stopped\0"
+                };
+                let wt: Vec<u16> = tip.encode_utf16().collect();
+                let mut ta = [0u16; 128];
+                let len = wt.len().min(127);
+                ta[..len].copy_from_slice(&wt[..len]);
+                nid.szTip = ta;
 
-            let mut nid = NOTIFYICONDATAW::default();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            nid.uCallbackMessage = WM_TRAYICON;
-            nid.hIcon = load_tray_icon();
-
-            let tip = if state.app.status() {
-                "mhd — running\0"
-            } else {
-                "mhd — stopped\0"
-            };
-            let wt: Vec<u16> = tip.encode_utf16().collect();
-            let mut ta = [0u16; 128];
-            let len = wt.len().min(127);
-            ta[..len].copy_from_slice(&wt[..len]);
-            nid.szTip = ta;
-
-            unsafe {
-                // Store nid back into the leaked struct
-                let ptr = STATE.load(Ordering::SeqCst);
-                if !ptr.is_null() {
-                    (*ptr).nid = nid;
-                    let _ = Shell_NotifyIconW(NIM_ADD, &(*ptr).nid as *const _ as *mut _);
+                unsafe {
+                    let _ = Shell_NotifyIconW(NIM_ADD, &nid as *const _ as *mut _);
                 }
             }
 
@@ -240,7 +222,7 @@ unsafe extern "system" fn wnd_proc(
 
         WM_COMMAND => {
             let cmd = wparam.0;
-            if let Some(state) = unsafe { state_ref() } {
+            if let Some(state) = state_ref() {
                 match cmd {
                     CMD_EDIT_CONFIG => {
                         crate::config_editor::show_config_editor(state.app.clone());
@@ -258,7 +240,9 @@ unsafe extern "system" fn wnd_proc(
                         // Sleep a tiny bit to let the hook thread process WM_QUIT,
                         // then post our own quit to exit the tray message loop.
                         std::thread::sleep(Duration::from_millis(200));
-                        unsafe { PostQuitMessage(0) };
+                        unsafe {
+                            PostQuitMessage(0)
+                        };
                     }
                     _ => {}
                 }
@@ -267,14 +251,16 @@ unsafe extern "system" fn wnd_proc(
         }
 
         WM_DESTROY => {
-            let state_ptr = STATE.swap(ptr::null_mut(), Ordering::SeqCst);
-            if !state_ptr.is_null() {
-                let state = unsafe { Box::from_raw(state_ptr) };
-                unsafe {
-                    let _ = Shell_NotifyIconW(NIM_DELETE, &state.nid as *const _ as *mut _);
-                }
+            unsafe {
+                let mut nid = NOTIFYICONDATAW::default();
+                nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+                nid.hWnd = hwnd;
+                nid.uID = 1;
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid as *const _ as *mut _);
             }
-            unsafe { PostQuitMessage(0) };
+            unsafe {
+                PostQuitMessage(0)
+            };
             LRESULT(0)
         }
 
@@ -284,9 +270,6 @@ unsafe extern "system" fn wnd_proc(
 
 // ── Entry point ────────────────────────────────────────────────────────
 
-/// Run the tray UI in the current thread. Blocks until the window is destroyed.
-///
-/// The `app` handle gives the tray direct access to the daemon core.
 pub fn run(app: AppHandle) {
     let class: Vec<u16> = "mhdTrayClass\0".encode_utf16().collect();
     let title: Vec<u16> = "mhd-tray\0".encode_utf16().collect();
@@ -296,10 +279,11 @@ pub fn run(app: AppHandle) {
         if let Ok(h) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        )
-            && h != HWND::default() {
+        ) {
+            if h != HWND::default() {
                 return;
             }
+        }
     }
 
     let hinst = unsafe { GetModuleHandleW(PCWSTR::null()).unwrap_or_default() };
@@ -316,12 +300,10 @@ pub fn run(app: AppHandle) {
         return;
     }
 
-    // Create the leaked state before the window so we can pass it via lpParam
-    let tray_state = Box::into_raw(Box::new(TrayState {
+    let _ = STATE.set(Box::new(TrayState {
         nid: NOTIFYICONDATAW::default(),
         app,
     }));
-    STATE.store(tray_state, Ordering::SeqCst);
 
     let hwnd = unsafe {
         CreateWindowExW(
@@ -336,23 +318,14 @@ pub fn run(app: AppHandle) {
             HWND::default(),
             None,
             hinst,
-            Some(tray_state as *const _ as *mut _),
+            None,
         )
     };
 
     let Ok(hwnd) = hwnd else {
-        // Clean up leaked state
-        let ptr = STATE.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !ptr.is_null() {
-            let _ = unsafe { Box::from_raw(ptr) };
-        }
         return;
     };
     if hwnd == HWND::default() {
-        let ptr = STATE.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !ptr.is_null() {
-            let _ = unsafe { Box::from_raw(ptr) };
-        }
         return;
     }
 
