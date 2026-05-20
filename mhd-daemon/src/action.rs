@@ -9,6 +9,20 @@ pub enum Action {
     SetBrightness { relative: bool, value: i32 },
     Vcp { code: u8, relative: bool, value: i32 },
     ShowVolumeMixer,
+    /// Increase system volume by one step (VK_VOLUME_UP).
+    MediaVolumeUp,
+    /// Decrease system volume by one step (VK_VOLUME_DOWN).
+    MediaVolumeDown,
+    /// Toggle system mute (VK_VOLUME_MUTE).
+    MediaMute,
+    /// Play or pause media (VK_MEDIA_PLAY_PAUSE).
+    MediaPlayPause,
+    /// Stop media playback (VK_MEDIA_STOP).
+    MediaStop,
+    /// Go to previous track (VK_MEDIA_PREV_TRACK).
+    MediaLastTrack,
+    /// Go to next track (VK_MEDIA_NEXT_TRACK).
+    MediaNextTrack,
     Quit,
 }
 
@@ -59,6 +73,13 @@ impl Action {
                 Self::new_vcp(code, value)
             }
             "show_volume_mixer" => Ok(Action::ShowVolumeMixer),
+            "media_volume_up" => Ok(Action::MediaVolumeUp),
+            "media_volume_down" => Ok(Action::MediaVolumeDown),
+            "media_mute" => Ok(Action::MediaMute),
+            "media_play_pause" => Ok(Action::MediaPlayPause),
+            "media_stop" => Ok(Action::MediaStop),
+            "media_last_track" => Ok(Action::MediaLastTrack),
+            "media_next_track" => Ok(Action::MediaNextTrack),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
         }
@@ -185,6 +206,13 @@ impl Action {
                 }
             }
             Action::ShowVolumeMixer => "show_volume_mixer".to_string(),
+            Action::MediaVolumeUp => "media_volume_up".to_string(),
+            Action::MediaVolumeDown => "media_volume_down".to_string(),
+            Action::MediaMute => "media_mute".to_string(),
+            Action::MediaPlayPause => "media_play_pause".to_string(),
+            Action::MediaStop => "media_stop".to_string(),
+            Action::MediaLastTrack => "media_last_track".to_string(),
+            Action::MediaNextTrack => "media_next_track".to_string(),
             Action::Quit => "quit".to_string(),
         }
     }
@@ -199,6 +227,8 @@ pub struct ActionDescriptor {
     pub name: &'static str,
     /// Human-readable label (e.g. "Replace Key").
     pub label: &'static str,
+    /// Category grouping name (e.g. "Media", "Display", "System").
+    pub category: &'static str,
     /// TOML parameter key (e.g. "keys"), or `None` for parameterless actions.
     pub param_key: Option<&'static str>,
 }
@@ -212,26 +242,79 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "replace_key",
         label: "Replace Key",
+        category: "General",
         param_key: Some("keys"),
     },
     ActionDescriptor {
         name: "run_ps",
         label: "PowerShell",
+        category: "General",
         param_key: Some("command"),
     },
     ActionDescriptor {
         name: "set_brightness",
         label: "Brightness",
+        category: "Display",
         param_key: Some("value"),
     },
     ActionDescriptor {
         name: "show_volume_mixer",
         label: "Volume Mixer",
+        category: "General",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_volume_up",
+        label: "Volume Up",
+        category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_volume_down",
+        label: "Volume Down",
+        category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_mute",
+        label: "Mute",
+        category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_play_pause",
+        label: "Play/Pause",
+        category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_stop",
+        label: "Stop",
+        category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_last_track",
+        label: "Last Track",
+        category: "Media",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "media_next_track",
+        label: "Next Track",
+        category: "Media",
         param_key: None,
     },
     ActionDescriptor {
         name: "quit",
         label: "Quit",
+        category: "System",
         param_key: None,
     },
 ];
+
+/// Find the index of an action descriptor by its TOML name.
+/// Returns `None` if not found.
+pub fn find_action_index(name: &str) -> Option<usize> {
+    ALL_ACTIONS.iter().position(|d| d.name == name)
+}

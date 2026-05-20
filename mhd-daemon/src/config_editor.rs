@@ -59,46 +59,28 @@ const EM_SETSEL: u32 = 0x00B1;
 
 // ── State ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UIActionKind {
-    ReplaceKey,
-    RunPs,
-    SetBrightness,
-    ShowVolumeMixer,
-    Quit,
-}
-
-impl UIActionKind {
-    /// Index into [`ALL_ACTIONS`] (single source of truth).
-    fn idx(self) -> usize {
-        match self {
-            UIActionKind::ReplaceKey => 0,
-            UIActionKind::RunPs => 1,
-            UIActionKind::SetBrightness => 2,
-            UIActionKind::ShowVolumeMixer => 3,
-            UIActionKind::Quit => 4,
-        }
-    }
-
-    fn to_str(&self) -> &'static str {
-        ALL_ACTIONS[self.idx()].label
-    }
-
-    fn all() -> Vec<UIActionKind> {
-        vec![
-            UIActionKind::ReplaceKey,
-            UIActionKind::RunPs,
-            UIActionKind::SetBrightness,
-            UIActionKind::ShowVolumeMixer,
-            UIActionKind::Quit,
-        ]
-    }
-}
+/// Indices into [`ALL_ACTIONS`] for actions exposed in the config editor.
+/// Add new editor‑exposed actions here (by their position in `ALL_ACTIONS`).
+const EDITOR_ACTION_INDICES: &[usize] = &[
+    0,  // replace_key
+    1,  // run_ps
+    2,  // set_brightness
+    3,  // show_volume_mixer
+    4,  // media_volume_up
+    5,  // media_volume_down
+    6,  // media_mute
+    7,  // media_play_pause
+    8,  // media_stop
+    9,  // media_last_track
+    10, // media_next_track
+    11, // quit
+];
 
 #[derive(Debug, Clone)]
 struct UIBinding {
     trigger: String,
-    kind: UIActionKind,
+    /// Index into [`EDITOR_ACTION_INDICES`].
+    kind_idx: usize,
     param: String,
     is_recording_trigger: bool,
     is_recording_param: bool,
@@ -197,12 +179,7 @@ struct SettingsState {
     scroll_drag_start_y: i32,
     /// Scroll drag starting scroll offset
     scroll_drag_start_offset: i32,
-    /// Action kind popup window (when open)
-    kind_popup: Option<HWND>,
-    /// Which binding row index the kind popup is open for
-    kind_popup_idx: Option<usize>,
-    /// Currently hovered index in the kind popup
-    kind_hover_sel: Option<usize>,
+    // (kind_popup replaced by HMENU cascading menu)
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -239,20 +216,6 @@ pub fn show_config_editor(handle: AppHandle) {
     };
     unsafe {
         RegisterClassW(&popup_wc);
-    }
-
-    // Action kind popup class
-    let kind_popup_cls = to_utf16_z("mhd_kind_popup_cls");
-    let kind_wc = WNDCLASSW {
-        style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(kind_popup_wndproc),
-        hInstance: hinstance,
-        lpszClassName: PCWSTR::from_raw(kind_popup_cls.as_ptr()),
-        hbrBackground: HBRUSH::default(),
-        ..Default::default()
-    };
-    unsafe {
-        RegisterClassW(&kind_wc);
     }
 
     let theme = handle.theme();
@@ -319,9 +282,7 @@ pub fn show_config_editor(handle: AppHandle) {
         is_dragging_scroll: false,
         scroll_drag_start_y: 0,
         scroll_drag_start_offset: 0,
-        kind_popup: None,
-        kind_popup_idx: None,
-        kind_hover_sel: None,
+
     }));
     unsafe {
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
@@ -435,7 +396,7 @@ fn compute_layout(scale: f32) -> Layout {
 }
 
 fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
-    use crate::action::Action;
+    use crate::action::{Action, find_action_index};
     use crate::trigger::keys_to_string;
 
     let config = handle.config.lock().unwrap();
@@ -443,25 +404,45 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
         .active_bindings()
         .iter()
         .map(|b| {
-            let (kind, param) = match &b.action {
-                Action::ReplaceKey { keys } => (UIActionKind::ReplaceKey, keys_to_string(keys)),
-                Action::RunPs { command } => (UIActionKind::RunPs, command.clone()),
+            // Map Action variant → index in EDITOR_ACTION_INDICES
+            let action_name = match &b.action {
+                Action::ReplaceKey { .. } => "replace_key",
+                Action::RunPs { .. } => "run_ps",
+                Action::SetBrightness { .. } => "set_brightness",
+                Action::ShowVolumeMixer => "show_volume_mixer",
+                Action::MediaVolumeUp => "media_volume_up",
+                Action::MediaVolumeDown => "media_volume_down",
+                Action::MediaMute => "media_mute",
+                Action::MediaPlayPause => "media_play_pause",
+                Action::MediaStop => "media_stop",
+                Action::MediaLastTrack => "media_last_track",
+                Action::MediaNextTrack => "media_next_track",
+                _ => "quit",
+            };
+            let global_idx = find_action_index(action_name).unwrap_or(11);
+            let kind_idx = EDITOR_ACTION_INDICES
+                .iter()
+                .position(|&i| i == global_idx)
+                .unwrap_or_else(|| {
+                    EDITOR_ACTION_INDICES.len() - 1 // fallback to Quit
+                });
+
+            let param = match &b.action {
+                Action::ReplaceKey { keys } => keys_to_string(keys),
+                Action::RunPs { command } => command.clone(),
                 Action::SetBrightness { relative, value } => {
-                    let s = if *relative {
+                    if *relative {
                         format!("{:+}", value)
                     } else {
                         format!("{}", value)
-                    };
-                    (UIActionKind::SetBrightness, s)
+                    }
                 }
-                Action::ShowVolumeMixer => (UIActionKind::ShowVolumeMixer, String::new()),
-                Action::Quit => (UIActionKind::Quit, String::new()),
-                _ => (UIActionKind::Quit, "Unsupported".to_string()),
+                _ => String::new(),
             };
 
             UIBinding {
                 trigger: b.trigger_name.clone(),
-                kind,
+                kind_idx,
                 param,
                 is_recording_trigger: false,
                 is_recording_param: false,
@@ -1453,7 +1434,7 @@ unsafe extern "system" fn settings_wndproc(
                         close_kind_popup(state);
                         state.bindings.push(UIBinding {
                             trigger: "none".to_string(),
-                            kind: UIActionKind::ReplaceKey,
+                            kind_idx: 0, // ReplaceKey
                             param: "".to_string(),
                             is_recording_trigger: false,
                             is_recording_param: false,
@@ -1713,187 +1694,7 @@ unsafe extern "system" fn settings_wndproc(
     }
 }
 
-unsafe extern "system" fn kind_popup_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    unsafe {
-        match msg {
-            WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
 
-                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-
-                let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let w = rc.right - rc.left;
-                let h = rc.bottom - rc.top;
-
-                let (theme, scale) = if !state_ptr.is_null() {
-                    (&(*state_ptr).theme, (*state_ptr).layout.scale)
-                } else {
-                    (&NativeTheme::default(), 1.0)
-                };
-
-                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * scale) as i32;
-
-                let bg = CreateSolidBrush(theme.background.to_colorref());
-                let _ = FillRect(hdc, &rc, bg);
-                let _ = DeleteObject(bg);
-
-                // Border
-                let border_brush = CreateSolidBrush(theme.border.to_colorref());
-                let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: w, bottom: 1 }, border_brush);
-                let _ = FillRect(hdc, &RECT { left: 0, top: h - 1, right: w, bottom: h }, border_brush);
-                let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: 1, bottom: h }, border_brush);
-                let _ = FillRect(hdc, &RECT { left: w - 1, top: 0, right: w, bottom: h }, border_brush);
-                let _ = DeleteObject(border_brush);
-
-                if !state_ptr.is_null() {
-                    let state = &*state_ptr;
-                    let _ = SetBkMode(hdc, TRANSPARENT);
-                    let font_h = -(12.0 * state.layout.scale) as i32;
-                    let font = create_font(font_h, false, "Segoe UI");
-                    let old_font = SelectObject(hdc, font);
-
-                    let kinds = UIActionKind::all();
-                    let cur_kind = state.kind_popup_idx.and_then(|idx| state.bindings.get(idx)).map(|b| b.kind);
-
-                    for (i, kind) in kinds.iter().enumerate() {
-                        let item_y = (i as i32) * item_h;
-                        let item_rc = RECT {
-                            left: 2,
-                            top: item_y,
-                            right: w - 2,
-                            bottom: item_y + item_h,
-                        };
-
-                        let highlight = if cur_kind == Some(*kind) {
-                            Some(theme.selected)
-                        } else if state.kind_hover_sel == Some(i) {
-                            Some(theme.hover)
-                        } else {
-                            None
-                        };
-
-                        if let Some(c) = highlight {
-                            let blended = c.blend_over(theme.background);
-                            let sel_brush = CreateSolidBrush(blended.to_colorref());
-                            let _ = FillRect(hdc, &item_rc, sel_brush);
-                            let _ = DeleteObject(sel_brush);
-                        }
-
-                        let _ = SetTextColor(hdc, theme.text.to_colorref());
-                        let name = kind.to_str();
-                        let mut wz = to_utf16_z(name);
-                        let _ = DrawTextW(
-                            hdc,
-                            &mut wz,
-                            &mut RECT {
-                                left: 8,
-                                top: item_y,
-                                right: w - 8,
-                                bottom: item_y + item_h,
-                            },
-                            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                        );
-                    }
-
-                    let _ = SelectObject(hdc, old_font);
-                    let _ = DeleteObject(font);
-                }
-
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
-
-            WM_MOUSEMOVE => {
-                let y = ((lparam.0 >> 16) as i16) as i32;
-                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-
-                if !state_ptr.is_null() {
-                    let state = &mut *state_ptr;
-                    let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
-                    let inner_y = if y > 0 { y - 1 } else { 0 };
-                    let idx = (inner_y / item_h) as usize;
-
-                    let kinds_len = UIActionKind::all().len();
-                    let new_hover = if idx < kinds_len {
-                        Some(idx)
-                    } else {
-                        None
-                    };
-
-                    if state.kind_hover_sel != new_hover {
-                        state.kind_hover_sel = new_hover;
-                        let _ = InvalidateRect(hwnd, None, false);
-
-                        let mut tme = TRACKMOUSEEVENT {
-                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                            dwFlags: TME_LEAVE,
-                            hwndTrack: hwnd,
-                            dwHoverTime: 0,
-                        };
-                        let _ = TrackMouseEvent(&mut tme);
-                    }
-                }
-                LRESULT(0)
-            }
-
-            WM_MOUSELEAVE => {
-                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-                if !state_ptr.is_null() {
-                    let state = &mut *state_ptr;
-                    if state.kind_hover_sel.is_some() {
-                        state.kind_hover_sel = None;
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
-                }
-                LRESULT(0)
-            }
-
-            WM_LBUTTONDOWN => {
-                let y = ((lparam.0 >> 16) as i16) as i32;
-                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-
-                if !state_ptr.is_null() {
-                    let state = &mut *state_ptr;
-                    let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
-                    let inner_y = if y > 0 { y - 1 } else { 0 };
-                    let idx = inner_y / item_h;
-                    let kinds = UIActionKind::all();
-                    if idx >= 0 && (idx as usize) < kinds.len() {
-                        if let Some(row_idx) = state.kind_popup_idx {
-                            let new_kind = kinds[idx as usize];
-                            if state.bindings[row_idx].kind != new_kind {
-                                state.bindings[row_idx].kind = new_kind;
-                                state.bindings[row_idx].param = String::new();
-                            }
-                        }
-                        close_kind_popup(state);
-                        paint_settings(state.hwnd, state_ptr, &state.layout);
-                    }
-                }
-                LRESULT(0)
-            }
-
-            WM_ACTIVATE => {
-                if loword(wparam.0 as u32) == 0 {
-                    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-                    if !state_ptr.is_null() {
-                        close_kind_popup(&mut *state_ptr);
-                    }
-                }
-                LRESULT(0)
-            }
-
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
-    }
-}
 
 // ── Combo popup ─────────────────────────────────────────────────────
 
@@ -2204,84 +2005,97 @@ fn close_combo_popup(state: &mut SettingsState) {
     state.combo_open.store(false, Ordering::SeqCst);
 }
 
-fn open_kind_popup(state: &mut SettingsState, idx: usize, row_y: i32) {
-    if state.kind_popup.is_some() {
-        let is_same_row = state.kind_popup_idx == Some(idx);
-        close_kind_popup(state);
-        if is_same_row {
+fn open_kind_menu(state: &mut SettingsState, idx: usize) {
+    use crate::action::ALL_ACTIONS;
+
+    const ID_ACTION_BASE: usize = 1000;
+
+    unsafe {
+        // Build a main popup menu with submenus grouped by category.
+        let main_menu = CreatePopupMenu();
+        let Ok(main_menu) = main_menu else { return };
+        if main_menu == HMENU::default() {
             return;
         }
-    }
 
-    close_combo_popup(state);
+        // Collect unique categories in display order.
+        let mut categories: Vec<&str> = Vec::new();
+        for &gi in EDITOR_ACTION_INDICES {
+            let cat = ALL_ACTIONS[gi].category;
+            if !categories.contains(&cat) {
+                categories.push(cat);
+            }
+        }
 
-    let parent = state.hwnd;
-    let lay = state.layout;
-    let state_ptr = state as *mut SettingsState;
+        let mut cmd_id = ID_ACTION_BASE;
 
-    // Position kind popup below the RowKind button.
-    let trig_w = (120.0 * lay.scale) as i32;
-    let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
-    let kind_w = (100.0 * lay.scale) as i32;
-    let btn_y_in_row = row_y + (lay.row_h - lay.btn_h) / 2;
+        for &cat in &categories {
+            let sub = CreatePopupMenu();
+            let Ok(sub) = sub else { continue };
+            if sub == HMENU::default() {
+                continue;
+            }
+            for &gi in EDITOR_ACTION_INDICES {
+                if ALL_ACTIONS[gi].category == cat {
+                    let label = to_utf16_z(ALL_ACTIONS[gi].label);
+                    let _ = AppendMenuW(sub, MF_STRING, cmd_id, PCWSTR::from_raw(label.as_ptr()));
+                    cmd_id += 1;
+                }
+            }
 
-    let mut pt = POINT {
-        x: kind_x,
-        y: btn_y_in_row,
-    };
-    unsafe {
-        let _ = ClientToScreen(parent, &mut pt);
-    }
+            let cat_label = to_utf16_z(cat);
+            let _ = AppendMenuW(
+                main_menu,
+                MF_POPUP | MF_STRING,
+                sub.0 as usize,
+                PCWSTR::from_raw(cat_label.as_ptr()),
+            );
+        }
 
-    let popup_w = kind_w;
-    let item_h = COMBO_POPUP_ITEM_HEIGHT.max((COMBO_POPUP_ITEM_HEIGHT as f32 * lay.scale) as i32);
-    let kinds = UIActionKind::all();
-    let popup_h = (kinds.len() as i32) * item_h + 2;
+        // Position the menu at the kind button
+        let lay = state.layout;
+        let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
+        let btn_y_in_row = state.layout.list_y - state.scroll_y + (idx as i32) * lay.row_h
+            + (lay.row_h - lay.btn_h) / 2;
+        let mut pt = POINT {
+            x: kind_x,
+            y: btn_y_in_row,
+        };
+        let _ = ClientToScreen(state.hwnd, &mut pt);
 
-    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
-    let hinstance: HINSTANCE = hinst.into();
-    let cls_name = to_utf16_z("mhd_kind_popup_cls");
-
-    let popup = unsafe {
-        CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            PCWSTR::from_raw(cls_name.as_ptr()),
-            PCWSTR::null(),
-            WS_POPUP,
+        // TrackPopupMenu blocks until dismissed. With TPM_RETURNCMD the
+        // return value (i32) is the command ID of the selected item, or 0.
+        let chosen = TrackPopupMenu(
+            main_menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN,
             pt.x,
-            pt.y + lay.btn_h,
-            popup_w,
-            popup_h,
-            parent,
-            HMENU::default(),
-            hinstance,
+            pt.y,
+            0,
+            state.hwnd,
             None,
-        )
-    };
+        );
+        let chosen = chosen.0 as usize;
 
-    let Ok(popup) = popup else { return };
+        // Clean up menus
+        let _ = DestroyMenu(main_menu);
 
-    unsafe {
-        let _ = SetWindowLongPtrW(popup, GWLP_USERDATA, state_ptr as isize);
-    }
-
-    state.kind_popup = Some(popup);
-    state.kind_popup_idx = Some(idx);
-    state.kind_hover_sel = None;
-
-    unsafe {
-        let _ = ShowWindow(popup, SW_SHOWNA);
+        if chosen >= ID_ACTION_BASE && chosen < cmd_id {
+            let selected = chosen - ID_ACTION_BASE;
+            if selected < EDITOR_ACTION_INDICES.len() {
+                if state.bindings[idx].kind_idx != selected {
+                    state.bindings[idx].kind_idx = selected;
+                    state.bindings[idx].param = String::new();
+                }
+                paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
+            }
+        }
     }
 }
 
 fn close_kind_popup(state: &mut SettingsState) {
-    if let Some(popup) = state.kind_popup.take() {
-        unsafe {
-            DestroyWindow(popup).ok();
-        }
-    }
-    state.kind_popup_idx = None;
-    state.kind_hover_sel = None;
+    // No-op: native HMENU is self-dismissing.
+    // Kept for compatibility with existing cleanup calls.
+    let _ = state;
 }
 
 fn draw_binding_row(
@@ -2356,7 +2170,8 @@ fn draw_binding_row(
     }
 
     // Left-aligned label text
-    let mut kind_wz = to_utf16_z(binding.kind.to_str());
+    let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[binding.kind_idx]];
+    let mut kind_wz = to_utf16_z(desc.label);
     let mut kind_text_rc = RECT {
         left: kind_x + 8,
         top: trig_rc.top,
@@ -2493,14 +2308,15 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         return;
     }
 
-    // 2. Kind button
+    // 2. Kind button → open cascading HMENU
     let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
     if x >= kind_x
         && x < kind_x + lay.kind_w
         && y >= row_y + (lay.row_h - lay.btn_h) / 2
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
-        open_kind_popup(state, idx, row_y);
+        close_combo_popup(state);
+        open_kind_menu(state, idx);
         return;
     }
 
@@ -2513,7 +2329,11 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
         close_kind_popup(state);
-        if state.bindings[idx].kind == UIActionKind::ReplaceKey {
+        let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[state.bindings[idx].kind_idx]];
+        let is_replace_key = desc.name == "replace_key";
+        let has_params = desc.param_key.is_some();
+
+        if is_replace_key {
             let is_recording = !state.bindings[idx].is_recording_param;
             for b in state.bindings.iter_mut() {
                 b.is_recording_trigger = false;
@@ -2527,10 +2347,8 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
                 state.recording_info = None;
                 crate::hook::set_recording_window(None);
             }
-        } else if state.bindings[idx].kind == UIActionKind::RunPs
-            || state.bindings[idx].kind == UIActionKind::SetBrightness
-        {
-            // No inline param editing for ShowVolumeMixer (like Quit)
+        } else if has_params {
+            // Inline editing for parameterised actions (run_ps, set_brightness, etc.)
             let rc = RECT {
                 left: param_x,
                 top: row_y + (lay.row_h - lay.btn_h) / 2,
@@ -2713,7 +2531,7 @@ fn save_config(
                 toml::Value::String(b.trigger.clone()),
             );
 
-            let desc = ALL_ACTIONS[b.kind.idx()];
+            let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[b.kind_idx]];
 
             map.insert(
                 "action".to_string(),

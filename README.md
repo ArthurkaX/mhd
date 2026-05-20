@@ -160,11 +160,18 @@ All keys are optional — missing values fall back to the built-in dark theme.
 | `run_ps` | `command` | Run a PowerShell command |
 | `switch_scheme` | `target_scheme` | Switch active binding scheme |
 | `show_volume_mixer` | — | Show the interactive Volume Mixer overlay |
+| `media_volume_up` | — | Increase system volume by one step |
+| `media_volume_down` | — | Decrease system volume by one step |
+| `media_mute` | — | Toggle system mute |
+| `media_play_pause` | — | Play or pause current media |
+| `media_stop` | — | Stop media playback |
+| `media_last_track` | — | Go to previous track |
+| `media_next_track` | — | Go to next track |
 | `quit` | — | Gracefully shut down mhd |
 
-The config editor exposes the common actions (`replace_key`, `run_ps`,
-`set_brightness`, `show_volume_mixer`, `quit`). Advanced actions such as `vcp`
-and `switch_scheme` can be edited directly in TOML.
+The config editor exposes actions grouped by category (General, Display, Media,
+System) in a cascading menu. Advanced actions such as `vcp` and `switch_scheme`
+can be edited directly in TOML.
 
 ### Example bindings
 

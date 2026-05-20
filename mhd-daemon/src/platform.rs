@@ -91,6 +91,16 @@ pub fn send_keys(keys: &KeyCombo) {
     }
 }
 
+/// Send a single media key via `SendInput` (e.g. VK_VOLUME_UP, VK_MEDIA_PLAY_PAUSE).
+pub fn send_media_key(vk: u16) {
+    let mut inputs = Vec::new();
+    push_key_event(&mut inputs, vk, false);
+    push_key_event(&mut inputs, vk, true);
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
 fn push_key_event(inputs: &mut Vec<INPUT>, vk: u16, up: bool) {
     let flags = if up {
         KEYEVENTF_KEYUP

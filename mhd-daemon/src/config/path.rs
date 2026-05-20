@@ -83,4 +83,41 @@ action = "quit"
 # trigger = "ctrl+alt+t"
 # action = "run_ps"
 # command = "Start-Process wt"
+
+# ── Media keys ────────────────────────────────────────────────────
+
+# Volume Up.
+# [[binding]]
+# trigger = "ctrl+alt+numpad_add"
+# action = "media_volume_up"
+
+# Volume Down.
+# [[binding]]
+# trigger = "ctrl+alt+numpad_subtract"
+# action = "media_volume_down"
+
+# Mute toggle.
+# [[binding]]
+# trigger = "ctrl+alt+m"
+# action = "media_mute"
+
+# Play / Pause.
+# [[binding]]
+# trigger = "ctrl+alt+numpad_multiply"
+# action = "media_play_pause"
+
+# Stop.
+# [[binding]]
+# trigger = "ctrl+alt+numpad_divide"
+# action = "media_stop"
+
+# Previous track.
+# [[binding]]
+# trigger = "ctrl+alt+numpad7"
+# action = "media_last_track"
+
+# Next track.
+# [[binding]]
+# trigger = "ctrl+alt+numpad9"
+# action = "media_next_track"
 "#;

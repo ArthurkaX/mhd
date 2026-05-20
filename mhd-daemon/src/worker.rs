@@ -129,6 +129,13 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 }
             }
         }
+        Action::MediaVolumeUp => platform::send_media_key(0xAF),
+        Action::MediaVolumeDown => platform::send_media_key(0xAE),
+        Action::MediaMute => platform::send_media_key(0xAD),
+        Action::MediaPlayPause => platform::send_media_key(0xB3),
+        Action::MediaStop => platform::send_media_key(0xB2),
+        Action::MediaLastTrack => platform::send_media_key(0xB1),
+        Action::MediaNextTrack => platform::send_media_key(0xB0),
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}
