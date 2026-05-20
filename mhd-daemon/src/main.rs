@@ -83,6 +83,8 @@ fn main() -> ExitCode {
 
     // Push initial theme to OSD
     osd_handle.set_theme(handle.theme());
+    // Push initial theme to volume mixer
+    volume_mixer::set_theme(handle.theme());
 
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.

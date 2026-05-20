@@ -24,12 +24,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::app::AppHandle;
+use crate::volume_mixer;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
 const CMD_STATUS: usize = 1;
 const CMD_EDIT_CONFIG: usize = 2;
 const CMD_RELOAD: usize = 3;
+const CMD_VOLUME_MIXER: usize = 6;
 const CMD_ABOUT: usize = 4;
 const CMD_QUIT: usize = 5;
 
@@ -139,10 +141,19 @@ fn show_menu(hwnd: HWND) {
             PCWSTR::from_raw(reload.as_ptr()),
         );
 
-        let about: Vec<u16> = "About\0".encode_utf16().collect();
+        let volume_mixer: Vec<u16> = "Volume Mixer\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
             3,
+            MF_BYPOSITION | MF_STRING,
+            CMD_VOLUME_MIXER,
+            PCWSTR::from_raw(volume_mixer.as_ptr()),
+        );
+
+        let about: Vec<u16> = "About\0".encode_utf16().collect();
+        let _ = InsertMenuW(
+            menu,
+            4,
             MF_BYPOSITION | MF_STRING,
             CMD_ABOUT,
             PCWSTR::from_raw(about.as_ptr()),
@@ -151,7 +162,7 @@ fn show_menu(hwnd: HWND) {
         let quit: Vec<u16> = "Quit mhd\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            4,
+            5,
             MF_BYPOSITION | MF_STRING,
             CMD_QUIT,
             PCWSTR::from_raw(quit.as_ptr()),
@@ -230,6 +241,10 @@ unsafe extern "system" fn wnd_proc(
                         if let Err(e) = state.app.reload_config() {
                             eprintln!("mhd: reload error: {e}");
                         }
+                    }
+                    CMD_VOLUME_MIXER => {
+                        volume_mixer::set_theme(state.app.theme());
+                        volume_mixer::show();
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());
