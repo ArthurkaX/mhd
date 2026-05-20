@@ -28,6 +28,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
+use crate::action::ALL_ACTIONS;
 use crate::app::AppHandle;
 use crate::hook::WM_BINDING_CAPTURED;
 use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
@@ -63,17 +64,24 @@ enum UIActionKind {
     ReplaceKey,
     RunPs,
     SetBrightness,
+    ShowVolumeMixer,
     Quit,
 }
 
 impl UIActionKind {
-    fn to_str(&self) -> &'static str {
+    /// Index into [`ALL_ACTIONS`] (single source of truth).
+    fn idx(self) -> usize {
         match self {
-            UIActionKind::ReplaceKey => "Replace Key",
-            UIActionKind::RunPs => "PowerShell",
-            UIActionKind::SetBrightness => "Brightness",
-            UIActionKind::Quit => "Quit",
+            UIActionKind::ReplaceKey => 0,
+            UIActionKind::RunPs => 1,
+            UIActionKind::SetBrightness => 2,
+            UIActionKind::ShowVolumeMixer => 3,
+            UIActionKind::Quit => 4,
         }
+    }
+
+    fn to_str(&self) -> &'static str {
+        ALL_ACTIONS[self.idx()].label
     }
 
     fn all() -> Vec<UIActionKind> {
@@ -81,6 +89,7 @@ impl UIActionKind {
             UIActionKind::ReplaceKey,
             UIActionKind::RunPs,
             UIActionKind::SetBrightness,
+            UIActionKind::ShowVolumeMixer,
             UIActionKind::Quit,
         ]
     }
@@ -445,6 +454,7 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
                     };
                     (UIActionKind::SetBrightness, s)
                 }
+                Action::ShowVolumeMixer => (UIActionKind::ShowVolumeMixer, String::new()),
                 Action::Quit => (UIActionKind::Quit, String::new()),
                 _ => (UIActionKind::Quit, "Unsupported".to_string()),
             };
@@ -2703,18 +2713,13 @@ fn save_config(
                 toml::Value::String(b.trigger.clone()),
             );
 
-            let (action, param_key) = match b.kind {
-                UIActionKind::ReplaceKey => ("replace_key", "keys"),
-                UIActionKind::RunPs => ("run_ps", "command"),
-                UIActionKind::SetBrightness => ("set_brightness", "value"),
-                UIActionKind::Quit => ("quit", ""),
-            };
+            let desc = ALL_ACTIONS[b.kind.idx()];
 
             map.insert(
                 "action".to_string(),
-                toml::Value::String(action.to_string()),
+                toml::Value::String(desc.name.to_string()),
             );
-            if !param_key.is_empty() {
+            if let Some(param_key) = desc.param_key {
                 map.insert(param_key.to_string(), toml::Value::String(b.param.clone()));
             }
 

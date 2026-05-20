@@ -189,3 +189,49 @@ impl Action {
         }
     }
 }
+
+// ── Action registry (single source of truth for editor integration) ──
+
+/// Metadata for an action variant.
+#[derive(Debug, Clone, Copy)]
+pub struct ActionDescriptor {
+    /// TOML action name (e.g. "replace_key").
+    pub name: &'static str,
+    /// Human-readable label (e.g. "Replace Key").
+    pub label: &'static str,
+    /// TOML parameter key (e.g. "keys"), or `None` for parameterless actions.
+    pub param_key: Option<&'static str>,
+}
+
+/// All action variants known to the system.
+///
+/// This is the **single source of truth** used by the config editor
+/// for listing available actions and serialising them to TOML.
+/// When adding a new action variant, add its descriptor here.
+pub const ALL_ACTIONS: &[ActionDescriptor] = &[
+    ActionDescriptor {
+        name: "replace_key",
+        label: "Replace Key",
+        param_key: Some("keys"),
+    },
+    ActionDescriptor {
+        name: "run_ps",
+        label: "PowerShell",
+        param_key: Some("command"),
+    },
+    ActionDescriptor {
+        name: "set_brightness",
+        label: "Brightness",
+        param_key: Some("value"),
+    },
+    ActionDescriptor {
+        name: "show_volume_mixer",
+        label: "Volume Mixer",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "quit",
+        label: "Quit",
+        param_key: None,
+    },
+];
