@@ -175,12 +175,17 @@ fn run_powershell(command: &str) {
 fn toggle_topmost_pin() {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, SetWindowPos, SetWindowTextW,
         GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
     };
 
-    const PIN_MARKER: &str = " \u{1F4CC}"; // space + pin emoji
+    // Use ASCII marker that renders in ANY font on any Windows version
+    const PIN_MARKER: &str = " [Pin]";
+    // DWM colour for the border — accent blue/green
+    const PIN_BORDER_COLOR: u32 = 0x00FFAA44; // ABGR: orange-ish
+    const RESET_COLOR: u32 = 0xFFFFFFFE;      // DWMWA_COLOR_DEFAULT / NONE
 
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -192,9 +197,10 @@ fn toggle_topmost_pin() {
         let is_topmost = (ex_style as u32 & WS_EX_TOPMOST.0) != 0;
 
         if is_topmost {
-            // Unpin: remove marker from title
+            // ── Unpin ────────────────────────────────────────────
             let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
+            // Restore original title (strip marker)
             let mut buf = [0u16; 512];
             let len = GetWindowTextW(hwnd, &mut buf);
             if len > 0 {
@@ -205,10 +211,15 @@ fn toggle_topmost_pin() {
                     let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(wide.as_ptr()));
                 }
             }
+
+            // Reset DWM border / caption colour to default
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &RESET_COLOR as *const _ as *const _, 4);
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &RESET_COLOR as *const _ as *const _, 4);
         } else {
-            // Pin: append marker to title
+            // ── Pin ──────────────────────────────────────────────
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
+            // Append marker to title
             let mut buf = [0u16; 512];
             let len = GetWindowTextW(hwnd, &mut buf);
             if len > 0 {
@@ -219,6 +230,11 @@ fn toggle_topmost_pin() {
                     let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(wide.as_ptr()));
                 }
             }
+
+            // Set DWM border colour (accent tint) — works on Win10 20H1+
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &PIN_BORDER_COLOR as *const _ as *const _, 4);
+            // Also tint the caption area slightly
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &PIN_BORDER_COLOR as *const _ as *const _, 4);
         }
     }
 }
