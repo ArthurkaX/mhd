@@ -157,12 +157,14 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
     }
 
     // Function keys f1-f24
-    if s.starts_with('f') && s.len() <= 3
+    if s.starts_with('f')
+        && s.len() <= 3
         && let Ok(n) = s[1..].parse::<u8>()
-            && (1..=24).contains(&n) {
-                let vk = 0x70u8 + (n - 1); // VK_F1 = 0x70
-                return Ok(Some(PhysicalKey::Keyboard(vk)));
-            }
+        && (1..=24).contains(&n)
+    {
+        let vk = 0x70u8 + (n - 1); // VK_F1 = 0x70
+        return Ok(Some(PhysicalKey::Keyboard(vk)));
+    }
 
     // Named keys
     let vk = match s {
@@ -262,4 +264,86 @@ pub fn get_pressed_modifiers() -> Modifiers {
         }
     }
     Modifiers(mods)
+}
+
+/// Convert a KeyCombo back to a string like "alt+shift+a".
+pub fn keys_to_string(keys: &KeyCombo) -> String {
+    let mut parts = Vec::new();
+    if keys.modifiers.ctrl() {
+        parts.push("ctrl".to_string());
+    }
+    if keys.modifiers.alt() {
+        parts.push("alt".to_string());
+    }
+    if keys.modifiers.shift() {
+        parts.push("shift".to_string());
+    }
+    if keys.modifiers.win() {
+        parts.push("win".to_string());
+    }
+    if let Some(key) = keys.key {
+        match key {
+            PhysicalKey::Keyboard(vk) => {
+                parts.push(vk_to_string(vk));
+            }
+            PhysicalKey::MouseButton(n) => {
+                parts.push(format!("mousebutton{}", n + 3));
+            }
+        }
+    }
+    parts.join("+")
+}
+
+fn vk_to_string(vk: u8) -> String {
+    match vk {
+        0x30..=0x39 => (vk as char).to_string().to_lowercase(),
+        0x41..=0x5A => (vk as char).to_string().to_lowercase(),
+        0x70..=0x87 => format!("f{}", vk - 0x70 + 1),
+        0x60..=0x69 => format!("numpad{}", vk - 0x60),
+        0x14 => "capslock".into(),
+        0x20 => "space".into(),
+        0x09 => "tab".into(),
+        0x0D => "enter".into(),
+        0x1B => "esc".into(),
+        0x08 => "backspace".into(),
+        0x2E => "delete".into(),
+        0x2D => "insert".into(),
+        0x24 => "home".into(),
+        0x23 => "end".into(),
+        0x21 => "pageup".into(),
+        0x22 => "pagedown".into(),
+        0x25 => "left".into(),
+        0x27 => "right".into(),
+        0x26 => "up".into(),
+        0x28 => "down".into(),
+        0x5D => "contextmenu".into(),
+        0x91 => "scrolllock".into(),
+        0x90 => "numlock".into(),
+        0x2C => "printscreen".into(),
+        0xBD => "minus".into(),
+        0xBB => "equal".into(),
+        0xBC => "comma".into(),
+        0xBE => "period".into(),
+        0xBF => "slash".into(),
+        0xBA => "semicolon".into(),
+        0xDE => "quote".into(),
+        0xDC => "backslash".into(),
+        0xDB => "lbracket".into(),
+        0xDD => "rbracket".into(),
+        0xC0 => "backquote".into(),
+        0x6A => "numpad_star".into(),
+        0x6B => "numpad_plus".into(),
+        0x6D => "numpad_minus".into(),
+        0x6F => "numpad_slash".into(),
+        0x6C => "numpadenter".into(),
+        0x6E => "numpad_dot".into(),
+        0xAD => "volume_mute".into(),
+        0xAE => "volume_down".into(),
+        0xAF => "volume_up".into(),
+        0xB0 => "media_next".into(),
+        0xB1 => "media_prev".into(),
+        0xB2 => "media_stop".into(),
+        0xB3 => "media_play_pause".into(),
+        _ => format!("0x{:02x}", vk),
+    }
 }

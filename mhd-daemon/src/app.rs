@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
@@ -16,6 +16,12 @@ use crate::config::AppConfig;
 use crate::native_theme::NativeTheme;
 use crate::osd::OsdHandle;
 use crate::worker::{ActionSender, ActionWorker};
+
+/// Wrapper to make HWND Send+Sync safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendHwnd(pub HWND);
+unsafe impl Send for SendHwnd {}
+unsafe impl Sync for SendHwnd {}
 
 /// Handle to a running [`App`], usable from tray or IPC.
 ///
@@ -30,6 +36,7 @@ pub struct AppHandle {
     pub(crate) hook_thread_id: Arc<AtomicU32>,
     pub(crate) quiet: bool,
     pub(crate) theme: Arc<Mutex<NativeTheme>>,
+    pub(crate) recording_window: Arc<Mutex<Option<SendHwnd>>>,
     osd: OsdHandle,
 }
 
@@ -103,6 +110,7 @@ pub struct App {
     tx: ActionSender,
     osd: OsdHandle,
     theme: Arc<Mutex<NativeTheme>>,
+    recording_window: Arc<Mutex<Option<SendHwnd>>>,
 }
 
 impl App {
@@ -145,6 +153,7 @@ impl App {
             tx,
             osd,
             theme: Arc::new(Mutex::new(native_theme)),
+            recording_window: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -162,6 +171,7 @@ impl App {
             quiet: self.quiet,
             osd: self.osd.clone(),
             theme: self.theme.clone(),
+            recording_window: self.recording_window.clone(),
         }
     }
 

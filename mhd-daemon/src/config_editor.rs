@@ -13,25 +13,26 @@
 //! • Buttons are hit‑tested rectangles drawn on the DIB.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::Win32::UI::HiDpi::{
-    GetDpiForWindow, SetProcessDpiAwarenessContext,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-};
+use windows::core::PCWSTR;
 
-use crate::app::AppHandle;
-use crate::native_theme::{load_theme_from_path, NativeTheme, Argb};
+use crate::app::{AppHandle, SendHwnd};
+use crate::hook::WM_BINDING_CAPTURED;
+use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
 use crate::osd::{draw_rounded_rect, to_utf16_z};
+use crate::trigger::{KeyCombo, Modifiers, PhysicalKey, keys_to_string};
 
 // ── Layout constants (96 dpi base) ─────────────────────────────────
 
@@ -53,8 +54,46 @@ const COMBO_POPUP_WIDTH: i32 = 260;
 const COMBO_POPUP_ITEM_HEIGHT: i32 = 24;
 const COMBO_POPUP_MAX_VISIBLE: i32 = 8;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const EM_SETSEL: u32 = 0x00B1;
 
 // ── State ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UIActionKind {
+    ReplaceKey,
+    RunPs,
+    SetBrightness,
+    Quit,
+}
+
+impl UIActionKind {
+    fn to_str(&self) -> &'static str {
+        match self {
+            UIActionKind::ReplaceKey => "Replace Key",
+            UIActionKind::RunPs => "PowerShell",
+            UIActionKind::SetBrightness => "Brightness",
+            UIActionKind::Quit => "Quit",
+        }
+    }
+
+    fn all() -> Vec<UIActionKind> {
+        vec![
+            UIActionKind::ReplaceKey,
+            UIActionKind::RunPs,
+            UIActionKind::SetBrightness,
+            UIActionKind::Quit,
+        ]
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UIBinding {
+    trigger: String,
+    kind: UIActionKind,
+    param: String,
+    is_recording_trigger: bool,
+    is_recording_param: bool,
+}
 
 unsafe impl Send for Layout {}
 unsafe impl Sync for Layout {}
@@ -79,6 +118,9 @@ struct Layout {
     apply_x: i32,
     close_x: i32,
     radius: i32,
+    list_y: i32,
+    list_h: i32,
+    row_h: i32,
 }
 
 struct SettingsState {
@@ -96,6 +138,17 @@ struct SettingsState {
     combo_popup: Option<HWND>,
     /// Whether the combo popup is open
     combo_open: Arc<AtomicBool>,
+
+    /// List of bindings being edited
+    bindings: Vec<UIBinding>,
+    /// Vertical scroll offset in pixels
+    scroll_y: i32,
+    /// Currently recording (binding_idx, is_trigger)
+    recording_info: Option<(usize, bool)>,
+    /// Active inline edit control
+    edit_control: Option<HWND>,
+    /// Index of binding being edited inline
+    edit_idx: Option<usize>,
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -130,7 +183,9 @@ pub fn show_config_editor(handle: AppHandle) {
         hbrBackground: HBRUSH::default(),
         ..Default::default()
     };
-    unsafe { RegisterClassW(&popup_wc); }
+    unsafe {
+        RegisterClassW(&popup_wc);
+    }
 
     let theme = handle.theme();
 
@@ -175,6 +230,8 @@ pub fn show_config_editor(handle: AppHandle) {
 
     let combo_open = Arc::new(AtomicBool::new(false));
 
+    let bindings = load_ui_bindings(&handle);
+
     let state = Box::into_raw(Box::new(SettingsState {
         handle: handle.clone(),
         theme: theme.clone(),
@@ -185,6 +242,11 @@ pub fn show_config_editor(handle: AppHandle) {
         hover_sel: None,
         combo_popup: None,
         combo_open,
+        bindings,
+        scroll_y: 0,
+        recording_info: None,
+        edit_control: None,
+        edit_idx: None,
     }));
     unsafe {
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
@@ -257,6 +319,9 @@ fn compute_layout(scale: f32) -> Layout {
 
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
 
+    let list_y = header_h + row_h + pad / 2;
+    let list_h = (win_h - footer_h) - list_y - pad / 2;
+
     Layout {
         scale,
         win_w,
@@ -276,7 +341,45 @@ fn compute_layout(scale: f32) -> Layout {
         apply_x: win_w - pad * 2 - btn_w * 2,
         close_x: win_w - pad - btn_w,
         radius,
+        list_y,
+        list_h,
+        row_h,
     }
+}
+
+fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
+    use crate::action::Action;
+    use crate::trigger::keys_to_string;
+
+    let config = handle.config.lock().unwrap();
+    config
+        .active_bindings()
+        .iter()
+        .map(|b| {
+            let (kind, param) = match &b.action {
+                Action::ReplaceKey { keys } => (UIActionKind::ReplaceKey, keys_to_string(keys)),
+                Action::RunPs { command } => (UIActionKind::RunPs, command.clone()),
+                Action::SetBrightness { relative, value } => {
+                    let s = if *relative {
+                        format!("{:+}", value)
+                    } else {
+                        format!("{}", value)
+                    };
+                    (UIActionKind::SetBrightness, s)
+                }
+                Action::Quit => (UIActionKind::Quit, String::new()),
+                _ => (UIActionKind::Quit, "Unsupported".to_string()),
+            };
+
+            UIBinding {
+                trigger: b.trigger_name.clone(),
+                kind,
+                param,
+                is_recording_trigger: false,
+                is_recording_param: false,
+            }
+        })
+        .collect()
 }
 
 // ── Theme list ──────────────────────────────────────────────────────
@@ -382,7 +485,12 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         bottom: lay.pad / 2 + 18 + 6,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut title_wz, &mut title_rc, DT_LEFT | DT_SINGLELINE);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut title_wz,
+            &mut title_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
     }
 
     // Separator line under header
@@ -451,7 +559,9 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     unsafe {
         let pixels =
             std::slice::from_raw_parts_mut(bits as *mut u32, (lay.win_w * lay.win_h) as usize);
-        for y in lay.combo_y..lay.combo_y + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32) {
+        for y in lay.combo_y
+            ..lay.combo_y + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32)
+        {
             for x in lay.combo_x..lay.combo_x + lay.combo_w {
                 let idx = (y * lay.win_w + x) as usize;
                 if idx < pixels.len() {
@@ -524,7 +634,8 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
                 left: lay.arrow_x,
                 top: lay.combo_y,
                 right: lay.arrow_x + lay.arrow_w,
-                bottom: lay.combo_y + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32),
+                bottom: lay.combo_y
+                    + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32),
             },
             arrow_brush,
         );
@@ -579,6 +690,49 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         theme,
         body_font,
     );
+
+    // ── Bindings List ──────────────────────────────────────────────
+    unsafe {
+        let _ = IntersectClipRect(
+            dib_dc,
+            lay.pad,
+            lay.list_y,
+            lay.win_w - lay.pad,
+            lay.list_y + lay.list_h,
+        );
+    }
+
+    let mut row_y = lay.list_y - state.scroll_y;
+    for (i, b) in state.bindings.iter().enumerate() {
+        if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
+            draw_binding_row(
+                dib_dc, bits, i, b, row_y, state, theme, body_font, small_font,
+            );
+        }
+        row_y += lay.row_h;
+    }
+
+    // "Add New" button
+    if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
+        draw_button(
+            dib_dc,
+            bits,
+            lay.win_w,
+            lay.pad,
+            row_y + (lay.row_h - lay.btn_h) / 2,
+            (80.0 * lay.scale) as i32,
+            lay.btn_h,
+            "+ Add",
+            theme,
+            small_font,
+        );
+    }
+
+    unsafe {
+        let rgn = CreateRectRgn(0, 0, lay.win_w, lay.win_h);
+        SelectClipRgn(dib_dc, rgn);
+        let _ = DeleteObject(rgn);
+    }
 
     // ── Footer status text ─────────────────────────────────────────
     unsafe {
@@ -653,7 +807,12 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
 }
 
 /// Draw a rectangular button on the DIB.
-fn fix_gdi_alpha(bits: *mut c_void, width: i32, height: i32, background: crate::native_theme::Argb) {
+fn fix_gdi_alpha(
+    bits: *mut c_void,
+    width: i32,
+    height: i32,
+    background: crate::native_theme::Argb,
+) {
     if bits.is_null() || width <= 0 || height <= 0 {
         return;
     }
@@ -720,7 +879,16 @@ fn draw_button(
     // Button background (accent colour, opaque)
     unsafe {
         let btn_bg = CreateSolidBrush(theme.accent.to_colorref());
-        let _ = FillRect(dib_dc, &RECT { left: x, top: y, right: x + w, bottom: y + h }, btn_bg);
+        let _ = FillRect(
+            dib_dc,
+            &RECT {
+                left: x,
+                top: y,
+                right: x + w,
+                bottom: y + h,
+            },
+            btn_bg,
+        );
         let _ = DeleteObject(btn_bg);
     }
 
@@ -758,95 +926,192 @@ unsafe extern "system" fn settings_wndproc(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LRESULT { unsafe {
-    match msg {
-        WM_CREATE => LRESULT(0),
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_CREATE => LRESULT(0),
 
-        WM_NCHITTEST => {
-            // Get cursor position in client coordinates
-            let screen_x = (lparam.0 as i16) as i32;
-            let screen_y = ((lparam.0 >> 16) as i16) as i32;
-            let mut pt = POINT { x: screen_x, y: screen_y };
-            let _ = ScreenToClient(hwnd, &mut pt);
+            WM_NCHITTEST => {
+                // Get cursor position in client coordinates
+                let screen_x = (lparam.0 as i16) as i32;
+                let screen_y = ((lparam.0 >> 16) as i16) as i32;
+                let mut pt = POINT {
+                    x: screen_x,
+                    y: screen_y,
+                };
+                let _ = ScreenToClient(hwnd, &mut pt);
 
-            let state_ptr =
-                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-            if state_ptr.is_null() {
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if state_ptr.is_null() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                let state = &*state_ptr;
+                let lay = &state.layout;
+
+                // Header → drag, but only outside control rows.
+                if pt.y < lay.header_h {
+                    return LRESULT(HTCAPTION as isize);
+                }
+
+                // Everything else is normal client area. Do NOT return custom
+                // HT_* values here: Windows then sends WM_NCLBUTTONDOWN instead
+                // of WM_LBUTTONDOWN, so our controls never receive clicks.
+                LRESULT(HTCLIENT as isize)
             }
-            let state = &*state_ptr;
-            let lay = &state.layout;
 
-            // Header → drag, but only outside control rows.
-            if pt.y < lay.header_h {
-                return LRESULT(HTCAPTION as isize);
+            WM_LBUTTONDOWN => {
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if state_ptr.is_null() {
+                    return LRESULT(0);
+                }
+                let state = &mut *state_ptr;
+                let lay = state.layout;
+
+                let combo_h = (COMBO_HIT_HEIGHT as f32 * lay.scale) as i32;
+
+                // Theme combo click
+                if y >= lay.combo_y
+                    && y < lay.combo_y + combo_h
+                    && x >= lay.combo_x
+                    && x < lay.combo_x + lay.combo_w
+                {
+                    toggle_combo_popup(state);
+                    return LRESULT(0);
+                }
+
+                // ── Bindings list interaction ────────────────────────
+                if y >= lay.list_y && y < lay.list_y + lay.list_h {
+                    // Close any active edit if clicking elsewhere
+                    finish_inline_edit(state);
+
+                    let mut row_y = lay.list_y - state.scroll_y;
+                    let mut clicked = false;
+
+                    for i in 0..state.bindings.len() {
+                        if y >= row_y && y < row_y + lay.row_h {
+                            handle_list_click(state, i, x, y, row_y);
+                            clicked = true;
+                            break;
+                        }
+                        row_y += lay.row_h;
+                    }
+
+                    if !clicked && y >= row_y && y < row_y + lay.row_h {
+                        state.bindings.push(UIBinding {
+                            trigger: "none".to_string(),
+                            kind: UIActionKind::ReplaceKey,
+                            param: "".to_string(),
+                            is_recording_trigger: false,
+                            is_recording_param: false,
+                        });
+                        paint_settings(hwnd, state_ptr, &lay);
+                        return LRESULT(0);
+                    }
+                }
+
+                // Apply button
+                if x >= lay.apply_x
+                    && x < lay.apply_x + lay.btn_w
+                    && y >= lay.btn_y
+                    && y < lay.btn_y + lay.btn_h
+                {
+                    apply_settings(state);
+                    paint_settings(hwnd, state_ptr, &state.layout);
+                    return LRESULT(0);
+                }
+
+                // Close button
+                if x >= lay.close_x
+                    && x < lay.close_x + lay.btn_w
+                    && y >= lay.btn_y
+                    && y < lay.btn_y + lay.btn_h
+                {
+                    DestroyWindow(hwnd).ok();
+                    return LRESULT(0);
+                }
+
+                LRESULT(0)
             }
 
-            // Everything else is normal client area. Do NOT return custom
-            // HT_* values here: Windows then sends WM_NCLBUTTONDOWN instead
-            // of WM_LBUTTONDOWN, so our controls never receive clicks.
-            LRESULT(HTCLIENT as isize)
+            WM_COMMAND => {
+                let code = (wparam.0 as u32 >> 16) as u16;
+                if code == EN_KILLFOCUS as u16 {
+                    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                    if !state_ptr.is_null() {
+                        let state = &mut *state_ptr;
+                        finish_inline_edit(state);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSEWHEEL => {
+                let delta = (wparam.0 as i32 >> 16) as i16;
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let lay = state.layout;
+                    let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                    let max_scroll = (content_h - lay.list_h).max(0);
+                    state.scroll_y =
+                        (state.scroll_y - (delta as i32 / 120) * 40).clamp(0, max_scroll);
+                    paint_settings(hwnd, state_ptr, &lay);
+                }
+                LRESULT(0)
+            }
+
+            WM_BINDING_CAPTURED => {
+                let data = lparam.0 as usize;
+                let mods = Modifiers((data & 0xFF) as u8);
+                let key_type = (data >> 8) & 0xFF;
+                let key_val = (data >> 16) & 0xFF;
+
+                let key = if key_type == 0 {
+                    PhysicalKey::Keyboard(key_val as u8)
+                } else {
+                    PhysicalKey::MouseButton(key_val as u8)
+                };
+
+                let trigger_str = keys_to_string(&KeyCombo {
+                    modifiers: mods,
+                    key: Some(key),
+                });
+
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if let Some((idx, is_trigger)) = state.recording_info.take() {
+                        if is_trigger {
+                            state.bindings[idx].trigger = trigger_str;
+                            state.bindings[idx].is_recording_trigger = false;
+                        } else {
+                            state.bindings[idx].param = trigger_str;
+                            state.bindings[idx].is_recording_param = false;
+                        }
+                        *state.handle.recording_window.lock().unwrap() = None;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_DESTROY => {
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !ptr.is_null() {
+                    close_combo_popup(&mut *ptr);
+                    let _ = Box::from_raw(ptr);
+                }
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
-
-        WM_LBUTTONDOWN => {
-            let x = (lparam.0 as i16) as i32;
-            let y = ((lparam.0 >> 16) as i16) as i32;
-
-            let state_ptr =
-                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-            if state_ptr.is_null() {
-                return LRESULT(0);
-            }
-            let state = &mut *state_ptr;
-            let lay = state.layout;
-
-            let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32);
-
-            // Theme combo click
-            if y >= lay.combo_y && y < lay.combo_y + combo_h && x >= lay.combo_x
-                && x < lay.combo_x + lay.combo_w
-            {
-                toggle_combo_popup(state);
-                return LRESULT(0);
-            }
-
-            // Apply button
-            if x >= lay.apply_x
-                && x < lay.apply_x + lay.btn_w
-                && y >= lay.btn_y
-                && y < lay.btn_y + lay.btn_h
-            {
-                apply_settings(state);
-                paint_settings(hwnd, state_ptr, &state.layout);
-                return LRESULT(0);
-            }
-
-            // Close button
-            if x >= lay.close_x
-                && x < lay.close_x + lay.btn_w
-                && y >= lay.btn_y
-                && y < lay.btn_y + lay.btn_h
-            {
-                DestroyWindow(hwnd).ok();
-                return LRESULT(0);
-            }
-
-            LRESULT(0)
-        }
-
-        WM_DESTROY => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-            if !ptr.is_null() {
-                close_combo_popup(&mut *ptr);
-                let _ = Box::from_raw(ptr);
-            }
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-}}
+}
 
 // ── Combo popup ─────────────────────────────────────────────────────
 
@@ -855,184 +1120,221 @@ unsafe extern "system" fn combo_popup_wndproc(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LRESULT { unsafe {
-    match msg {
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
 
-            // State pointer stored in the popup itself by open_combo_popup.
-            let state_ptr =
-                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                // State pointer stored in the popup itself by open_combo_popup.
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
 
-            let mut rc = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rc);
-            let w = rc.right - rc.left;
-            let h = rc.bottom - rc.top;
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let w = rc.right - rc.left;
+                let h = rc.bottom - rc.top;
 
-            let (theme, scale) = if !state_ptr.is_null() {
-                (&(*state_ptr).theme, (*state_ptr).layout.scale)
-            } else {
-                (&NativeTheme::default(), 1.0)
-            };
+                let (theme, scale) = if !state_ptr.is_null() {
+                    (&(*state_ptr).theme, (*state_ptr).layout.scale)
+                } else {
+                    (&NativeTheme::default(), 1.0)
+                };
 
-            let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * scale) as i32;
+                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * scale) as i32;
 
-            // Background — use main background colour, not surface.
-            // Surface is often transparent/light and makes text unreadable.
-            let bg = CreateSolidBrush(theme.background.to_colorref());
-            let _ = FillRect(hdc, &rc, bg);
-            let _ = DeleteObject(bg);
+                // Background — use main background colour, not surface.
+                // Surface is often transparent/light and makes text unreadable.
+                let bg = CreateSolidBrush(theme.background.to_colorref());
+                let _ = FillRect(hdc, &rc, bg);
+                let _ = DeleteObject(bg);
 
-            // Border
-            let border_brush = CreateSolidBrush(theme.border.to_colorref());
-            let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: w, bottom: 1 }, border_brush);
-            let _ = FillRect(hdc, &RECT { left: 0, top: h - 1, right: w, bottom: h }, border_brush);
-            let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: 1, bottom: h }, border_brush);
-            let _ = FillRect(hdc, &RECT { left: w - 1, top: 0, right: w, bottom: h }, border_brush);
-            let _ = DeleteObject(border_brush);
+                // Border
+                let border_brush = CreateSolidBrush(theme.border.to_colorref());
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: w,
+                        bottom: 1,
+                    },
+                    border_brush,
+                );
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: h - 1,
+                        right: w,
+                        bottom: h,
+                    },
+                    border_brush,
+                );
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: 1,
+                        bottom: h,
+                    },
+                    border_brush,
+                );
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: w - 1,
+                        top: 0,
+                        right: w,
+                        bottom: h,
+                    },
+                    border_brush,
+                );
+                let _ = DeleteObject(border_brush);
 
-            // Draw each item
-            if !state_ptr.is_null() {
-                let state = &*state_ptr;
-                let _ = SetBkMode(hdc, TRANSPARENT);
-                let font_h = -(12.0 * state.layout.scale) as i32;
-                let font = create_font(font_h, false, "Segoe UI");
-                let old_font = SelectObject(hdc, font);
+                // Draw each item
+                if !state_ptr.is_null() {
+                    let state = &*state_ptr;
+                    let _ = SetBkMode(hdc, TRANSPARENT);
+                    let font_h = -(12.0 * state.layout.scale) as i32;
+                    let font = create_font(font_h, false, "Segoe UI");
+                    let old_font = SelectObject(hdc, font);
 
-                for i in 0..state.theme_names.len().min(COMBO_POPUP_MAX_VISIBLE as usize) {
-                    let item_y = (i as i32) * item_h;
-                    let item_rc = RECT {
-                        left: 2,
-                        top: item_y,
-                        right: w - 2,
-                        bottom: item_y + item_h,
-                    };
+                    for i in 0..state
+                        .theme_names
+                        .len()
+                        .min(COMBO_POPUP_MAX_VISIBLE as usize)
+                    {
+                        let item_y = (i as i32) * item_h;
+                        let item_rc = RECT {
+                            left: 2,
+                            top: item_y,
+                            right: w - 2,
+                            bottom: item_y + item_h,
+                        };
 
-                    // Hover/selected highlight
-                    let highlight = if i == state.theme_sel {
-                        Some(theme.selected)
-                    } else if state.hover_sel == Some(i) {
-                        Some(theme.hover)
+                        // Hover/selected highlight
+                        let highlight = if i == state.theme_sel {
+                            Some(theme.selected)
+                        } else if state.hover_sel == Some(i) {
+                            Some(theme.hover)
+                        } else {
+                            None
+                        };
+
+                        if let Some(c) = highlight {
+                            let blended = c.blend_over(theme.background);
+                            let sel_brush = CreateSolidBrush(blended.to_colorref());
+                            let _ = FillRect(hdc, &item_rc, sel_brush);
+                            let _ = DeleteObject(sel_brush);
+                        }
+
+                        let _ = SetTextColor(hdc, theme.text.to_colorref());
+                        if let Some(name) = state.theme_names.get(i) {
+                            let mut wz = to_utf16_z(name);
+                            let _ = DrawTextW(
+                                hdc,
+                                &mut wz,
+                                &mut RECT {
+                                    left: 8,
+                                    top: item_y,
+                                    right: w - 8,
+                                    bottom: item_y + item_h,
+                                },
+                                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                            );
+                        }
+                    }
+
+                    let _ = SelectObject(hdc, old_font);
+                    let _ = DeleteObject(font);
+                }
+
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
+                    // y includes 1px top border
+                    let inner_y = if y > 0 { y - 1 } else { 0 };
+                    let idx = (inner_y / item_h) as usize;
+
+                    let new_hover = if idx < state.theme_names.len() {
+                        Some(idx)
                     } else {
                         None
                     };
 
-                    if let Some(c) = highlight {
-                        let blended = c.blend_over(theme.background);
-                        let sel_brush = CreateSolidBrush(blended.to_colorref());
-                        let _ = FillRect(hdc, &item_rc, sel_brush);
-                        let _ = DeleteObject(sel_brush);
-                    }
+                    if state.hover_sel != new_hover {
+                        state.hover_sel = new_hover;
+                        let _ = InvalidateRect(hwnd, None, false);
 
-                    let _ = SetTextColor(hdc, theme.text.to_colorref());
-                    if let Some(name) = state.theme_names.get(i) {
-                        let mut wz = to_utf16_z(name);
-                        let _ = DrawTextW(
-                            hdc,
-                            &mut wz,
-                            &mut RECT {
-                                left: 8,
-                                top: item_y,
-                                right: w - 8,
-                                bottom: item_y + item_h,
-                            },
-                            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                        );
+                        let mut tme = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: hwnd,
+                            dwHoverTime: 0,
+                        };
+                        let _ = TrackMouseEvent(&mut tme);
                     }
                 }
-
-                let _ = SelectObject(hdc, old_font);
-                let _ = DeleteObject(font);
+                LRESULT(0)
             }
 
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
-        }
-
-        WM_MOUSEMOVE => {
-            let y = ((lparam.0 >> 16) as i16) as i32;
-            let state_ptr =
-                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-
-            if !state_ptr.is_null() {
-                let state = &mut *state_ptr;
-                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
-                // y includes 1px top border
-                let inner_y = if y > 0 { y - 1 } else { 0 };
-                let idx = (inner_y / item_h) as usize;
-
-                let new_hover = if idx < state.theme_names.len() {
-                    Some(idx)
-                } else {
-                    None
-                };
-
-                if state.hover_sel != new_hover {
-                    state.hover_sel = new_hover;
-                    let _ = InvalidateRect(hwnd, None, false);
-
-                    let mut tme = TRACKMOUSEEVENT {
-                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                        dwFlags: TME_LEAVE,
-                        hwndTrack: hwnd,
-                        dwHoverTime: 0,
-                    };
-                    let _ = TrackMouseEvent(&mut tme);
-                }
-            }
-            LRESULT(0)
-        }
-
-        WM_MOUSELEAVE => {
-            let state_ptr =
-                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-            if !state_ptr.is_null() {
-                let state = &mut *state_ptr;
-                if state.hover_sel.is_some() {
-                    state.hover_sel = None;
-                    let _ = InvalidateRect(hwnd, None, false);
-                }
-            }
-            LRESULT(0)
-        }
-
-        WM_LBUTTONDOWN => {
-            let y = ((lparam.0 >> 16) as i16) as i32;
-            let state_ptr =
-                GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-
-            if !state_ptr.is_null() {
-                let state = &mut *state_ptr;
-                let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
-                // y includes 1px top border
-                let inner_y = if y > 0 { y - 1 } else { 0 };
-                let idx = inner_y / item_h;
-                if idx >= 0 && (idx as usize) < state.theme_names.len() {
-                    state.theme_sel = idx as usize;
-                    apply_settings(state);
-                    close_combo_popup(state);
-                    paint_settings(state.hwnd, state_ptr, &state.layout);
-                }
-            }
-            LRESULT(0)
-        }
-
-        WM_ACTIVATE => {
-            // If losing activation, close popup
-            if loword(wparam.0 as u32) == 0 {
-                let state_ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+            WM_MOUSELEAVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
-                    close_combo_popup(&mut *state_ptr);
+                    let state = &mut *state_ptr;
+                    if state.hover_sel.is_some() {
+                        state.hover_sel = None;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
                 }
+                LRESULT(0)
             }
-            LRESULT(0)
-        }
 
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            WM_LBUTTONDOWN => {
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
+                    // y includes 1px top border
+                    let inner_y = if y > 0 { y - 1 } else { 0 };
+                    let idx = inner_y / item_h;
+                    if idx >= 0 && (idx as usize) < state.theme_names.len() {
+                        state.theme_sel = idx as usize;
+                        apply_settings(state);
+                        close_combo_popup(state);
+                        paint_settings(state.hwnd, state_ptr, &state.layout);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_ACTIVATE => {
+                // If losing activation, close popup
+                if loword(wparam.0 as u32) == 0 {
+                    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                    if !state_ptr.is_null() {
+                        close_combo_popup(&mut *state_ptr);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
-}}
+}
 
 fn loword(dw: u32) -> u16 {
     (dw & 0xffff) as u16
@@ -1056,12 +1358,20 @@ fn open_combo_popup(state: &mut SettingsState) {
     let state_ptr = state as *mut SettingsState;
 
     // Compute position below the combo box
-    let mut combo_pt = POINT { x: lay.combo_x, y: lay.combo_y };
-    unsafe { let _ = ClientToScreen(parent, &mut combo_pt); }
+    let mut combo_pt = POINT {
+        x: lay.combo_x,
+        y: lay.combo_y,
+    };
+    unsafe {
+        let _ = ClientToScreen(parent, &mut combo_pt);
+    }
 
     let popup_w = COMBO_POPUP_WIDTH.max((COMBO_POPUP_WIDTH as f32 * lay.scale) as i32);
     let item_h = COMBO_POPUP_ITEM_HEIGHT.max((COMBO_POPUP_ITEM_HEIGHT as f32 * lay.scale) as i32);
-    let count = state.theme_names.len().min(COMBO_POPUP_MAX_VISIBLE as usize);
+    let count = state
+        .theme_names
+        .len()
+        .min(COMBO_POPUP_MAX_VISIBLE as usize);
     let popup_h = (count as i32) * item_h + 2;
 
     let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
@@ -1104,9 +1414,281 @@ fn open_combo_popup(state: &mut SettingsState) {
 
 fn close_combo_popup(state: &mut SettingsState) {
     if let Some(popup) = state.combo_popup.take() {
-        unsafe { DestroyWindow(popup).ok(); }
+        unsafe {
+            DestroyWindow(popup).ok();
+        }
     }
     state.combo_open.store(false, Ordering::SeqCst);
+}
+
+fn draw_binding_row(
+    hdc: HDC,
+    bits: *mut c_void,
+    _idx: usize,
+    binding: &UIBinding,
+    y: i32,
+    state: &SettingsState,
+    theme: &NativeTheme,
+    _font: HFONT,
+    small_font: HFONT,
+) {
+    let lay = &state.layout;
+    let row_rc = RECT {
+        left: lay.pad,
+        top: y,
+        right: lay.win_w - lay.pad,
+        bottom: y + lay.row_h,
+    };
+
+    // 1. Trigger button
+    let trig_w = (120.0 * lay.scale) as i32;
+    let trig_rc = RECT {
+        left: row_rc.left,
+        top: y + (lay.row_h - lay.btn_h) / 2,
+        right: row_rc.left + trig_w,
+        bottom: y + (lay.row_h - lay.btn_h) / 2 + lay.btn_h,
+    };
+    let trig_text = if binding.is_recording_trigger {
+        "..."
+    } else {
+        &binding.trigger
+    };
+    draw_button(
+        hdc,
+        bits,
+        lay.win_w,
+        trig_rc.left,
+        trig_rc.top,
+        trig_w,
+        lay.btn_h,
+        trig_text,
+        theme,
+        small_font,
+    );
+
+    // 2. Action kind button
+    let kind_x = trig_rc.right + (8.0 * lay.scale) as i32;
+    let kind_w = (100.0 * lay.scale) as i32;
+    draw_button(
+        hdc,
+        bits,
+        lay.win_w,
+        kind_x,
+        trig_rc.top,
+        kind_w,
+        lay.btn_h,
+        binding.kind.to_str(),
+        theme,
+        small_font,
+    );
+
+    // 3. Param area
+    let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
+    let param_w = row_rc.right - param_x - (32.0 * lay.scale) as i32;
+    let param_rc = RECT {
+        left: param_x,
+        top: trig_rc.top,
+        right: param_x + param_w,
+        bottom: trig_rc.bottom,
+    };
+
+    let param_bg = theme.surface.blend_over(theme.background);
+    let brush = unsafe { CreateSolidBrush(param_bg.to_colorref()) };
+    unsafe {
+        let _ = FillRect(hdc, &param_rc, brush);
+        let _ = DeleteObject(brush);
+
+        let _ = SetTextColor(hdc, theme.text.to_colorref());
+        let mut wz = to_utf16_z(&binding.param);
+        let mut text_rc = RECT {
+            left: param_rc.left + 4,
+            ..param_rc
+        };
+        let _ = DrawTextW(
+            hdc,
+            &mut wz,
+            &mut text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // 4. Delete button
+    let del_w = (24.0 * lay.scale) as i32;
+    let del_rc = RECT {
+        left: row_rc.right - del_w,
+        top: y + (lay.row_h - del_w) / 2,
+        right: row_rc.right,
+        bottom: y + (lay.row_h - del_w) / 2 + del_w,
+    };
+    draw_button(
+        hdc,
+        bits,
+        lay.win_w,
+        del_rc.left,
+        del_rc.top,
+        del_w,
+        del_w,
+        "X",
+        theme,
+        small_font,
+    );
+}
+
+fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_y: i32) {
+    let lay = state.layout;
+
+    // 1. Trigger button
+    let trig_w = (120.0 * lay.scale) as i32;
+    if x >= lay.pad
+        && x < lay.pad + trig_w
+        && y >= row_y + (lay.row_h - lay.btn_h) / 2
+        && y < row_y + (lay.row_h + lay.btn_h) / 2
+    {
+        // Toggle recording trigger
+        let is_recording = !state.bindings[idx].is_recording_trigger;
+
+        // Turn off all recording
+        for b in state.bindings.iter_mut() {
+            b.is_recording_trigger = false;
+            b.is_recording_param = false;
+        }
+
+        if is_recording {
+            state.bindings[idx].is_recording_trigger = true;
+            state.recording_info = Some((idx, true));
+            *state.handle.recording_window.lock().unwrap() = Some(SendHwnd(state.hwnd));
+        } else {
+            state.recording_info = None;
+            *state.handle.recording_window.lock().unwrap() = None;
+        }
+
+        paint_settings(state.hwnd, state as *mut SettingsState, &lay);
+        return;
+    }
+
+    // 2. Kind button
+    let kind_x = lay.pad + trig_w + (8.0 * lay.scale) as i32;
+    let kind_w = (100.0 * lay.scale) as i32;
+    if x >= kind_x
+        && x < kind_x + kind_w
+        && y >= row_y + (lay.row_h - lay.btn_h) / 2
+        && y < row_y + (lay.row_h + lay.btn_h) / 2
+    {
+        // Cycle kinds for now
+        let kinds = UIActionKind::all();
+        let cur_idx = kinds
+            .iter()
+            .position(|&k| k == state.bindings[idx].kind)
+            .unwrap_or(0);
+        state.bindings[idx].kind = kinds[(cur_idx + 1) % kinds.len()];
+        paint_settings(state.hwnd, state as *mut SettingsState, &lay);
+        return;
+    }
+
+    // 2b. Param
+    let param_x = kind_x + kind_w + (8.0 * lay.scale) as i32;
+    let param_w = lay.win_w - lay.pad - (32.0 * lay.scale) as i32 - param_x;
+    if x >= param_x
+        && x < param_x + param_w
+        && y >= row_y + (lay.row_h - lay.btn_h) / 2
+        && y < row_y + (lay.row_h + lay.btn_h) / 2
+    {
+        if state.bindings[idx].kind == UIActionKind::ReplaceKey {
+            let is_recording = !state.bindings[idx].is_recording_param;
+            for b in state.bindings.iter_mut() {
+                b.is_recording_trigger = false;
+                b.is_recording_param = false;
+            }
+            if is_recording {
+                state.bindings[idx].is_recording_param = true;
+                state.recording_info = Some((idx, false));
+                *state.handle.recording_window.lock().unwrap() = Some(SendHwnd(state.hwnd));
+            } else {
+                state.recording_info = None;
+                *state.handle.recording_window.lock().unwrap() = None;
+            }
+        } else if state.bindings[idx].kind == UIActionKind::RunPs
+            || state.bindings[idx].kind == UIActionKind::SetBrightness
+        {
+            let rc = RECT {
+                left: param_x,
+                top: row_y + (lay.row_h - lay.btn_h) / 2,
+                right: param_x + param_w,
+                bottom: row_y + (lay.row_h + lay.btn_h) / 2,
+            };
+            spawn_inline_edit(state, idx, rc);
+        }
+        paint_settings(state.hwnd, state as *mut SettingsState, &lay);
+        return;
+    }
+
+    // 3. Delete button
+    let del_w = (24.0 * lay.scale) as i32;
+    if x >= lay.win_w - lay.pad - del_w
+        && x < lay.win_w - lay.pad
+        && y >= row_y + (lay.row_h - del_w) / 2
+        && y < row_y + (lay.row_h + del_w) / 2
+    {
+        state.bindings.remove(idx);
+        paint_settings(state.hwnd, state as *mut SettingsState, &lay);
+        return;
+    }
+}
+
+fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
+    if let Some(old) = state.edit_control.take() {
+        unsafe {
+            let _ = DestroyWindow(old);
+        }
+    }
+
+    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
+    let cls = to_utf16_z("EDIT");
+    let text = to_utf16_z(&state.bindings[idx].param);
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            Default::default(),
+            PCWSTR::from_raw(cls.as_ptr()),
+            PCWSTR::from_raw(text.as_ptr()),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            rc.left,
+            rc.top,
+            rc.right - rc.left,
+            rc.bottom - rc.top,
+            state.hwnd,
+            HMENU::default(),
+            hinst,
+            None,
+        )
+    };
+
+    if let Ok(h) = hwnd {
+        unsafe {
+            let _ = SetFocus(h);
+            let _ = SendMessageW(h, EM_SETSEL, WPARAM(0), LPARAM(-1));
+        }
+        state.edit_control = Some(h);
+        state.edit_idx = Some(idx);
+    }
+}
+
+fn finish_inline_edit(state: &mut SettingsState) {
+    if let Some(h) = state.edit_control.take() {
+        if let Some(idx) = state.edit_idx.take() {
+            let mut buf = [0u16; 512];
+            let len = unsafe { GetWindowTextW(h, &mut buf) };
+            if len > 0 {
+                state.bindings[idx].param = String::from_utf16_lossy(&buf[..len as usize]);
+            } else {
+                state.bindings[idx].param = "".to_string();
+            }
+        }
+        unsafe {
+            let _ = DestroyWindow(h);
+        }
+        paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
+    }
 }
 
 // ── Apply logic ─────────────────────────────────────────────────────
@@ -1152,7 +1734,12 @@ fn apply_settings(state: &mut SettingsState) {
     };
 
     // Write to config.toml
-    if let Err(e) = set_config_theme(&state.handle.config_path, &config_name) {
+    if let Err(e) = save_config(
+        &state.handle.config_path,
+        &config_name,
+        &state.bindings,
+        &state.handle,
+    ) {
         eprintln!("mhd: settings error: {e}");
         return;
     }
@@ -1167,48 +1754,66 @@ fn apply_settings(state: &mut SettingsState) {
     state.theme = state.handle.theme();
 }
 
-fn set_config_theme(config_path: &std::path::Path, theme_name: &str) -> Result<(), String> {
-    let content =
-        std::fs::read_to_string(config_path).map_err(|e| format!("cannot read config: {e}"))?;
-
-    let theme_line = if theme_name.is_empty() {
-        None
+fn save_config(
+    path: &std::path::Path,
+    theme: &str,
+    bindings: &[UIBinding],
+    handle: &AppHandle,
+) -> Result<(), String> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let mut toml_val: toml::Value = if content.trim().is_empty() {
+        toml::Value::Table(toml::value::Table::new())
     } else {
-        Some(format!("theme = \"{theme_name}\""))
+        toml::from_str(&content).map_err(|e| e.to_string())?
     };
 
-    let mut lines: Vec<&str> = content.lines().collect();
-    let mut found = false;
-    let mut insert_pos: Option<usize> = None;
+    let active_scheme = handle.config.lock().unwrap().active_scheme().to_string();
 
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("theme ") || trimmed.starts_with("theme=") {
-            if let Some(ref tl) = theme_line {
-                lines[i] = tl;
-            } else {
-                lines[i] = "";
+    if let Some(table) = toml_val.as_table_mut() {
+        // Update theme
+        if theme.is_empty() {
+            table.remove("theme");
+        } else {
+            table.insert("theme".to_string(), toml::Value::String(theme.to_string()));
+        }
+
+        // Update active_scheme
+        table.insert(
+            "active_scheme".to_string(),
+            toml::Value::String(active_scheme),
+        );
+
+        // Update bindings
+        let mut new_bindings = Vec::new();
+        for b in bindings {
+            let mut map = toml::value::Table::new();
+            map.insert(
+                "trigger".to_string(),
+                toml::Value::String(b.trigger.clone()),
+            );
+
+            let (action, param_key) = match b.kind {
+                UIActionKind::ReplaceKey => ("replace_key", "keys"),
+                UIActionKind::RunPs => ("run_ps", "command"),
+                UIActionKind::SetBrightness => ("set_brightness", "value"),
+                UIActionKind::Quit => ("quit", ""),
+            };
+
+            map.insert(
+                "action".to_string(),
+                toml::Value::String(action.to_string()),
+            );
+            if !param_key.is_empty() {
+                map.insert(param_key.to_string(), toml::Value::String(b.param.clone()));
             }
-            found = true;
-            break;
+
+            new_bindings.push(toml::Value::Table(map));
         }
-        if insert_pos.is_none() && !trimmed.starts_with('#') && !trimmed.is_empty() {
-            insert_pos = Some(i);
-        }
+        table.insert("binding".to_string(), toml::Value::Array(new_bindings));
     }
 
-    if !found {
-        if let Some(ref tl) = theme_line {
-            if let Some(pos) = insert_pos {
-                lines.insert(pos, tl);
-            } else {
-                lines.push(tl);
-            }
-        }
-    }
-
-    let new_content = lines.join("\r\n");
-    std::fs::write(config_path, new_content).map_err(|e| format!("cannot write config: {e}"))?;
+    let new_content = toml::to_string_pretty(&toml_val).map_err(|e| e.to_string())?;
+    std::fs::write(path, new_content).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1218,9 +1823,18 @@ fn create_font(h: i32, bold: bool, family: &str) -> HFONT {
     let name = to_utf16_z(family);
     unsafe {
         CreateFontW(
-            h, 0, 0, 0,
-            if bold { FW_BOLD.0 as i32 } else { FW_NORMAL.0 as i32 },
-            0, 0, 0,
+            h,
+            0,
+            0,
+            0,
+            if bold {
+                FW_BOLD.0 as i32
+            } else {
+                FW_NORMAL.0 as i32
+            },
+            0,
+            0,
+            0,
             DEFAULT_CHARSET.0 as u32,
             OUT_DEFAULT_PRECIS.0 as u32,
             CLIP_DEFAULT_PRECIS.0 as u32,

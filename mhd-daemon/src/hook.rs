@@ -3,16 +3,18 @@ use std::sync::{LazyLock, Mutex};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
-    MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
+    MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
 };
 
 use crate::action::Action;
 use crate::app::AppHandle;
-use crate::trigger::{get_pressed_modifiers, is_modifier_vk, PhysicalKey, Trigger};
+use crate::trigger::{PhysicalKey, Trigger, get_pressed_modifiers, is_modifier_vk};
 use crate::worker::{ActionMessage, ActionSender};
+
+pub const WM_BINDING_CAPTURED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 100;
 
 /// Global hook state, accessible from hook callbacks.
 struct HookState {
@@ -39,10 +41,7 @@ static KB_HOOK: LazyLock<Mutex<Option<SendHook>>> = LazyLock::new(|| Mutex::new(
 static MOUSE_HOOK: LazyLock<Mutex<Option<SendHook>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Entry point used by `app.rs`. Accepts a shared config so reloads are visible.
-pub fn run_with_config(
-    handle: AppHandle,
-    tx: ActionSender,
-) -> Result<(), String> {
+pub fn run_with_config(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
     run_impl(handle, tx)
 }
 
@@ -141,15 +140,15 @@ fn signal_tray_to_quit() {
     let class: Vec<u16> = "mhdTrayClass\0".encode_utf16().collect();
     let title: Vec<u16> = "mhd-tray\0".encode_utf16().collect();
     unsafe {
-        use windows::core::PCWSTR;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+        use windows::core::PCWSTR;
         if let Ok(hwnd) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        )
-            && hwnd != HWND::default() {
-                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
+        ) && hwnd != HWND::default()
+        {
+            let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
     }
 }
 
@@ -181,6 +180,25 @@ unsafe extern "system" fn keyboard_hook_proc(
 
         if is_key_down && !is_modifier_vk(vk) {
             let modifiers = get_pressed_modifiers();
+
+            // Check if recording
+            if let Some(target_hwnd) = *state.handle.recording_window.lock().unwrap() {
+                use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+                let mut data = modifiers.0 as usize;
+                data |= 0 << 8; // type 0 = keyboard
+                data |= (vk as usize) << 16;
+                unsafe {
+                    let _ = PostMessageW(
+                        target_hwnd.0,
+                        WM_BINDING_CAPTURED,
+                        WPARAM(0),
+                        LPARAM(data as isize),
+                    );
+                }
+                state.swallowed_keys.lock().unwrap().insert(vk);
+                return LRESULT(1);
+            }
+
             let trigger = Trigger {
                 modifiers,
                 key: PhysicalKey::Keyboard(vk as u8),
@@ -199,10 +217,9 @@ unsafe extern "system" fn keyboard_hook_proc(
                     Action::SwitchScheme { target_scheme } => {
                         let target = target_scheme.clone();
                         let mut config = state.handle.config.lock().unwrap();
-                        if config.switch_scheme(&target)
-                            && !state.handle.quiet {
-                                println!("mhd: switched to scheme: {}", config.active_scheme());
-                            }
+                        if config.switch_scheme(&target) && !state.handle.quiet {
+                            println!("mhd: switched to scheme: {}", config.active_scheme());
+                        }
                     }
                     Action::Quit => {
                         if !state.handle.quiet {
@@ -218,10 +235,9 @@ unsafe extern "system" fn keyboard_hook_proc(
                 state.swallowed_keys.lock().unwrap().insert(vk);
                 return LRESULT(1); // Swallow the event
             }
-        } else if is_key_up
-            && state.swallowed_keys.lock().unwrap().take(&vk).is_some() {
-                return LRESULT(1); // Swallow the key-up too
-            }
+        } else if is_key_up && state.swallowed_keys.lock().unwrap().take(&vk).is_some() {
+            return LRESULT(1); // Swallow the key-up too
+        }
     }
 
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
@@ -248,6 +264,25 @@ unsafe extern "system" fn mouse_hook_proc(
 
             if xbutton == 1 || xbutton == 2 {
                 let modifiers = get_pressed_modifiers();
+
+                // Check if recording
+                if let Some(target_hwnd) = *state.handle.recording_window.lock().unwrap() {
+                    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+                    let mut data = modifiers.0 as usize;
+                    data |= 1 << 8; // type 1 = mouse
+                    data |= (xbutton as usize) << 16;
+                    unsafe {
+                        let _ = PostMessageW(
+                            target_hwnd.0,
+                            WM_BINDING_CAPTURED,
+                            WPARAM(0),
+                            LPARAM(data as isize),
+                        );
+                    }
+                    state.swallowed_mouse.lock().unwrap().insert(xbutton);
+                    return LRESULT(1);
+                }
+
                 let trigger = Trigger {
                     modifiers,
                     key: PhysicalKey::MouseButton(xbutton),
@@ -265,10 +300,9 @@ unsafe extern "system" fn mouse_hook_proc(
                         Action::SwitchScheme { target_scheme } => {
                             let target = target_scheme.clone();
                             let mut config = state.handle.config.lock().unwrap();
-                            if config.switch_scheme(&target)
-                                && !state.handle.quiet {
-                                    println!("mhd: switched to scheme: {}", config.active_scheme());
-                                }
+                            if config.switch_scheme(&target) && !state.handle.quiet {
+                                println!("mhd: switched to scheme: {}", config.active_scheme());
+                            }
                         }
                         Action::Quit => {
                             if !state.handle.quiet {
@@ -294,9 +328,9 @@ unsafe extern "system" fn mouse_hook_proc(
                     .unwrap()
                     .take(&xbutton)
                     .is_some()
-                {
-                    return LRESULT(1); // Swallow the button-up too
-                }
+            {
+                return LRESULT(1); // Swallow the button-up too
+            }
         }
     }
 
