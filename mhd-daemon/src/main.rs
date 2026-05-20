@@ -12,6 +12,7 @@ mod config;
 mod hook;
 mod tray;
 mod trigger;
+mod volume_mixer;
 mod worker;
 mod osd;
 mod about;

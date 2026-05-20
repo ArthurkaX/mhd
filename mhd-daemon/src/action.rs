@@ -8,6 +8,7 @@ pub enum Action {
     SwitchScheme { target_scheme: String },
     SetBrightness { relative: bool, value: i32 },
     Vcp { code: u8, relative: bool, value: i32 },
+    ShowVolumeMixer,
     Quit,
 }
 
@@ -57,6 +58,7 @@ impl Action {
                     .ok_or_else(|| "vcp action requires 'value' field".to_string())?;
                 Self::new_vcp(code, value)
             }
+            "show_volume_mixer" => Ok(Action::ShowVolumeMixer),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
         }
@@ -182,6 +184,7 @@ impl Action {
                     format!("vcp: 0x{:02X} = {}", code, value)
                 }
             }
+            Action::ShowVolumeMixer => "show_volume_mixer".to_string(),
             Action::Quit => "quit".to_string(),
         }
     }
