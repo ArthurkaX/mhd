@@ -38,14 +38,19 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow,
-    GetWindowRect, KillTimer, MsgWaitForMultipleObjects, PeekMessageW, RegisterClassW, SetTimer,
-    ShowWindow, TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, PM_REMOVE, QS_ALLINPUT,
-    SW_HIDE, SW_SHOWNA, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_TIMER, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WNDCLASSW, MSG,
+    GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
+    RegisterClassW, SetCursor, SetTimer, ShowWindow, TranslateMessage, UpdateLayeredWindow,
+    CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR,
+    WM_TIMER,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WNDCLASSW, MSG,
 };
 use windows::core::Interface;
 
@@ -63,8 +68,11 @@ const HEADER_HEIGHT_BASE: i32 = 44;
 const PAD_BASE: i32 = 16;
 const BAR_HEIGHT_BASE: i32 = 8;
 const HIDE_TIMEOUT_MS: u32 = 12000;
+const LEAVE_HIDE_TIMEOUT_MS: u32 = 2000;
 const HIDE_TIMER_ID: usize = 2;
 const RADIUS_BASE: i32 = 14;
+const MASTER_GAP_BASE: i32 = 12;
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 // ── Global handle ──────────────────────────────────────────────────────
 
@@ -120,6 +128,7 @@ struct MixerState {
     volume_controls: Vec<Option<ISimpleAudioVolume>>,
     endpoint_volume: Option<IAudioEndpointVolume>,
     theme: NativeTheme,
+    window_pos: Option<POINT>,
 }
 
 // ── Thread entry point ─────────────────────────────────────────────────
@@ -156,6 +165,7 @@ fn mixer_thread(handle: MixerHandle) {
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(mixer_wndproc),
         hInstance: hinstance,
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW).unwrap_or_default() },
         lpszClassName: PCWSTR::from_raw(cls_name.as_ptr()),
         ..Default::default()
     };
@@ -193,10 +203,13 @@ fn mixer_thread(handle: MixerHandle) {
         volume_controls: Vec::new(),
         endpoint_volume: None,
         theme: NativeTheme::default(),
+        window_pos: None,
     };
 
     let work = monitor_work_rect();
     let mut dragging_row: Option<usize> = None;
+    let mut dragging_window: Option<(i32, i32)> = None;
+    let mut mouse_tracked = false;
 
     loop {
         let wait_handles = [handle.event];
@@ -210,9 +223,12 @@ fn mixer_thread(handle: MixerHandle) {
 
         match res {
             WAIT_OBJECT_0 => {
+                dragging_row = None;
+                dragging_window = None;
+                mouse_tracked = false;
                 refresh_sessions(&mut state);
                 state.theme = MIXER_THEME.lock().unwrap().clone();
-                paint_mixer(hwnd, &state, &work, mixer_w, scale);
+                paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_SHOWNA);
                     let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
@@ -230,6 +246,10 @@ fn mixer_thread(handle: MixerHandle) {
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                         }
                         if msg.message == WM_TIMER && msg.wParam.0 == HIDE_TIMER_ID {
+                            dragging_row = None;
+                            dragging_window = None;
+                            mouse_tracked = false;
+                            let _ = ReleaseCapture();
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                         }
@@ -246,30 +266,54 @@ fn mixer_thread(handle: MixerHandle) {
                                         scale,
                                     ) {
                                         dragging_row = Some(row);
+                                        dragging_window = None;
                                         let _ = SetCapture(hwnd);
+                                        let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                                         set_row_volume(&mut state, row, volume);
-                                        paint_mixer(hwnd, &state, &work, mixer_w, scale);
-                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                                        paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
+                                        continue;
+                                    }
+                                    if hit_test_header(y, scale) {
+                                        dragging_window = Some((x, y));
+                                        dragging_row = None;
+                                        let _ = SetCapture(hwnd);
+                                        let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                                         continue;
                                     }
                                 }
                                 WM_MOUSEMOVE => {
+                                    begin_mouse_tracking(hwnd, &mut mouse_tracked);
+                                    let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+
+                                    if let Some((grab_x, grab_y)) = dragging_window {
+                                        let (x, y) = point_from_lparam(msg.lParam);
+                                        move_mixer_window(hwnd, &mut state, x - grab_x, y - grab_y);
+                                        continue;
+                                    }
                                     if let Some(row) = dragging_row {
                                         let (x, _) = point_from_lparam(msg.lParam);
                                         let volume = volume_from_x(x, mixer_w, scale);
                                         set_row_volume(&mut state, row, volume);
-                                        paint_mixer(hwnd, &state, &work, mixer_w, scale);
-                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                                        paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
                                         continue;
                                     }
                                 }
+                                WM_MOUSELEAVE => {
+                                    mouse_tracked = false;
+                                    if dragging_row.is_none() && dragging_window.is_none() {
+                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, LEAVE_HIDE_TIMEOUT_MS, None);
+                                    }
+                                    continue;
+                                }
                                 WM_LBUTTONUP => {
-                                    if dragging_row.take().is_some() {
+                                    if dragging_row.take().is_some() || dragging_window.take().is_some() {
                                         let _ = ReleaseCapture();
                                         continue;
                                     }
                                 }
                                 WM_MOUSEWHEEL => {
+                                    begin_mouse_tracking(hwnd, &mut mouse_tracked);
+                                    let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                                     let pt = screen_point_to_client(hwnd, point_from_lparam(msg.lParam));
                                     if let Some(row) = hit_test_volume_row(
                                         &state,
@@ -282,8 +326,7 @@ fn mixer_thread(handle: MixerHandle) {
                                         let step = (delta as f32 / 120.0) * 0.02;
                                         let current = state.sessions[row].volume;
                                         set_row_volume(&mut state, row, current + step);
-                                        paint_mixer(hwnd, &state, &work, mixer_w, scale);
-                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                                        paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
                                         continue;
                                     }
                                 }
@@ -474,7 +517,7 @@ fn monitor_work_rect() -> RECT {
 
 fn paint_mixer(
     hwnd: HWND,
-    state: &MixerState,
+    state: &mut MixerState,
     work: &RECT,
     width: i32,
     scale: f32,
@@ -487,8 +530,9 @@ fn paint_mixer(
     let font_small_h = -(12.0 * scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
     let header_h = (HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let master_gap = master_gap(&state.sessions, scale);
 
-    let content_h = pad + header_h + row_count * row_h + pad;
+    let content_h = pad + header_h + row_count * row_h + master_gap + pad;
     let total_h = content_h.max((MIXER_MIN_HEIGHT_BASE as f32 * scale) as i32);
 
     unsafe {
@@ -611,12 +655,13 @@ fn paint_mixer(
     let bar_max_w = width - bar_x - pad - 50 - pad;
 
     for (i, session) in state.sessions.iter().enumerate() {
-        let row_y = sep_y + 8 + (i as i32) * row_h;
+        let row_y = row_y_for_index(sep_y, i, row_h, scale);
         let mid_y = row_y + row_h / 2;
 
         // App name
         unsafe {
-            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            let text_color = if i == 0 { theme.accent } else { theme.text };
+            let _ = SetTextColor(dib_dc, text_color.to_colorref());
         }
         let mut name_rc = RECT {
             left: pad,
@@ -672,6 +717,21 @@ fn paint_mixer(
                 DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
             );
         }
+
+        if i == 0 && state.sessions.len() > 1 {
+            let sep_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
+            let master_sep_y = row_y + row_h + master_gap / 2;
+            let sep_rc = RECT {
+                left: pad,
+                top: master_sep_y,
+                right: width - pad,
+                bottom: master_sep_y + 1,
+            };
+            unsafe {
+                let _ = FillRect(dib_dc, &sep_rc, sep_brush);
+                let _ = DeleteObject(sep_brush);
+            }
+        }
     }
 
     unsafe {
@@ -691,9 +751,10 @@ fn paint_mixer(
 
     let pt_src = POINT { x: 0, y: 0 };
     let sz = SIZE { cx: width, cy: total_h };
-    let pos_x = work.left + (work.right - work.left - width) / 2;
-    let pos_y = work.top + (work.bottom - work.top - total_h) / 2;
-    let pt_dst = POINT { x: pos_x, y: pos_y };
+    let pt_dst = *state.window_pos.get_or_insert_with(|| POINT {
+        x: work.left + (work.right - work.left - width) / 2,
+        y: work.top + (work.bottom - work.top - total_h) / 2,
+    });
 
     unsafe {
         let _ = UpdateLayeredWindow(
@@ -719,6 +780,45 @@ fn point_from_lparam(lparam: LPARAM) -> (i32, i32) {
     let x = (lparam.0 & 0xffff) as i16 as i32;
     let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
     (x, y)
+}
+
+fn begin_mouse_tracking(hwnd: HWND, tracked: &mut bool) {
+    if *tracked {
+        return;
+    }
+
+    let mut tme = TRACKMOUSEEVENT {
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+    };
+    if unsafe { TrackMouseEvent(&mut tme) }.is_ok() {
+        *tracked = true;
+    }
+}
+
+fn move_mixer_window(hwnd: HWND, state: &mut MixerState, delta_x: i32, delta_y: i32) {
+    let mut rc = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err() {
+        return;
+    }
+
+    let pos = POINT {
+        x: rc.left + delta_x,
+        y: rc.top + delta_y,
+    };
+    state.window_pos = Some(pos);
+    unsafe {
+        let _ = SetWindowPos(hwnd, None, pos.x, pos.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    }
+}
+
+fn hit_test_header(y: i32, scale: f32) -> bool {
+    let pad = (PAD_BASE as f32 * scale) as i32;
+    let font_h_abs = (14.0 * scale) as i32;
+    let sep_y = pad + font_h_abs + 8;
+    y >= 0 && y < sep_y
 }
 
 fn screen_point_to_client(hwnd: HWND, point: (i32, i32)) -> (i32, i32) {
@@ -762,7 +862,7 @@ fn hit_test_volume_row(
     }
 
     for i in 0..state.sessions.len() {
-        let row_y = sep_y + 8 + (i as i32) * row_h;
+        let row_y = row_y_for_index(sep_y, i, row_h, scale);
         if y >= row_y && y < row_y + row_h {
             return Some(i);
         }
@@ -773,6 +873,18 @@ fn hit_test_volume_row(
 
 fn wheel_delta_from_wparam(wparam: WPARAM) -> i16 {
     ((wparam.0 >> 16) & 0xffff) as i16
+}
+
+fn row_y_for_index(sep_y: i32, index: usize, row_h: i32, scale: f32) -> i32 {
+    sep_y + 8 + (index as i32) * row_h + if index > 0 { master_gap_for_scale(scale) } else { 0 }
+}
+
+fn master_gap(sessions: &[SessionInfo], scale: f32) -> i32 {
+    if sessions.len() > 1 { master_gap_for_scale(scale) } else { 0 }
+}
+
+fn master_gap_for_scale(scale: f32) -> i32 {
+    (MASTER_GAP_BASE as f32 * scale) as i32
 }
 
 fn volume_from_x(x: i32, width: i32, scale: f32) -> f32 {
@@ -819,5 +931,12 @@ extern "system" fn mixer_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_SETCURSOR {
+        if let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
+            unsafe { SetCursor(cursor) };
+            return LRESULT(1);
+        }
+    }
+
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
