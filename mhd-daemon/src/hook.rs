@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -33,9 +33,10 @@ struct SendHook(HHOOK);
 unsafe impl Send for SendHook {}
 unsafe impl Sync for SendHook {}
 
-/// Global hook state (Mutex-protected for thread safety with LazyLock).
-type HookStateBox = Option<Box<HookState>>;
-static HOOK_STATE: LazyLock<Mutex<HookStateBox>> = LazyLock::new(|| Mutex::new(None));
+/// Global hook state — set once before the message loop, never changed.
+/// Lock-free read in the hot path avoids the low-level hook timeout issue.
+static HOOK_STATE: OnceLock<&'static HookState> = OnceLock::new();
+
 /// Global keyboard hook handle.
 static KB_HOOK: LazyLock<Mutex<Option<SendHook>>> = LazyLock::new(|| Mutex::new(None));
 /// Global mouse hook handle.
@@ -58,53 +59,46 @@ pub fn run_with_config(handle: AppHandle, tx: ActionSender) -> Result<(), String
 
 fn run_impl(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
     let quiet = handle.quiet;
+
+    // Install keyboard hook first (no state needed yet — callbacks will
+    // skip via OnceLock until state is set below).
+    let kb_hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0) };
+    let kb_hook = match kb_hook {
+        Ok(h) => h,
+        Err(e) => return Err(format!("failed to install keyboard hook: {e}")),
+    };
+
+    // Install mouse hook
+    let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0) };
+    let mouse_hook = match mouse_hook {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = unsafe { UnhookWindowsHookEx(kb_hook) };
+            return Err(format!("failed to install mouse hook: {e}"));
+        }
+    };
+
+    // Store hook handles
+    {
+        let mut guard = KB_HOOK.lock().unwrap();
+        *guard = Some(SendHook(kb_hook));
+    }
+    {
+        let mut guard = MOUSE_HOOK.lock().unwrap();
+        *guard = Some(SendHook(mouse_hook));
+    }
+
+    // Now that hooks are installed, set the global state.
+    // Leak the Box so we have a &'static reference — this is safe because
+    // the state lives until cleanup (process exit or WM_QUIT).
     let state = Box::new(HookState {
         handle,
         tx,
         swallowed_keys: Mutex::new(HashSet::new()),
         swallowed_mouse: Mutex::new(HashSet::new()),
     });
-
-    // Store state globally
-    {
-        let mut guard = HOOK_STATE.lock().unwrap();
-        *guard = Some(state);
-    }
-
-    // Install keyboard hook
-    let kb_hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0) };
-    match kb_hook {
-        Ok(h) => {
-            let mut guard = KB_HOOK.lock().unwrap();
-            *guard = Some(SendHook(h));
-        }
-        Err(e) => {
-            let mut guard = HOOK_STATE.lock().unwrap();
-            *guard = None;
-            return Err(format!("failed to install keyboard hook: {e}"));
-        }
-    }
-
-    // Install mouse hook
-    let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0) };
-    match mouse_hook {
-        Ok(h) => {
-            let mut guard = MOUSE_HOOK.lock().unwrap();
-            *guard = Some(SendHook(h));
-        }
-        Err(e) => {
-            // Unhook keyboard hook
-            {
-                let mut guard = KB_HOOK.lock().unwrap();
-                if let Some(h) = guard.take() {
-                    let _ = unsafe { UnhookWindowsHookEx(h.0) };
-                }
-            }
-            let mut guard = HOOK_STATE.lock().unwrap();
-            *guard = None;
-            return Err(format!("failed to install mouse hook: {e}"));
-        }
-    }
+    let state_ref: &'static HookState = Box::leak(state);
+    let _ = HOOK_STATE.set(state_ref);
 
     if !quiet {
         println!("mhd: listening");
@@ -127,7 +121,7 @@ fn run_impl(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
 }
 
 fn cleanup() {
-    // Unhook hooks
+    // Unhook hooks — after this, no more callbacks can fire.
     {
         let mut guard = KB_HOOK.lock().unwrap();
         if let Some(h) = guard.take() {
@@ -140,11 +134,9 @@ fn cleanup() {
             let _ = unsafe { UnhookWindowsHookEx(h.0) };
         }
     }
-    // Free the state
-    {
-        let mut guard = HOOK_STATE.lock().unwrap();
-        *guard = None;
-    }
+    // OnceLock state is intentionally leaked — the process is exiting or
+    // about to exit, so cleanup is not necessary. No more callbacks can
+    // fire because the hooks are uninstalled.
 }
 
 pub(crate) fn signal_tray_to_quit() {
@@ -231,8 +223,8 @@ unsafe extern "system" fn keyboard_hook_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     if n_code >= 0 {
-        let guard = HOOK_STATE.lock().unwrap();
-        let state = match guard.as_ref() {
+        // Lock-free access — OnceLock::get() is a simple pointer read.
+        let state = match HOOK_STATE.get() {
             Some(s) => s,
             None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
         };
@@ -275,8 +267,8 @@ unsafe extern "system" fn mouse_hook_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     if n_code >= 0 {
-        let guard = HOOK_STATE.lock().unwrap();
-        let state = match guard.as_ref() {
+        // Lock-free access — OnceLock::get() is a simple pointer read.
+        let state = match HOOK_STATE.get() {
             Some(s) => s,
             None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
         };
