@@ -93,9 +93,17 @@ pub fn send_keys(keys: &KeyCombo) {
 
 /// Send a single media key via `SendInput` (e.g. VK_VOLUME_UP, VK_MEDIA_PLAY_PAUSE).
 pub fn send_media_key(vk: u16) {
-    let mut inputs = Vec::new();
-    push_key_event(&mut inputs, vk, false);
-    push_key_event(&mut inputs, vk, true);
+    send_media_key_n(vk, 1);
+}
+
+/// Send a media key `count` times (for multi‑step volume/brightness).
+pub fn send_media_key_n(vk: u16, count: u32) {
+    let count = count.max(1).min(100);
+    let mut inputs = Vec::with_capacity((count * 2) as usize);
+    for _ in 0..count {
+        push_key_event(&mut inputs, vk, false);
+        push_key_event(&mut inputs, vk, true);
+    }
     unsafe {
         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }

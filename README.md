@@ -150,6 +150,17 @@ All keys are optional — missing values fall back to the built-in dark theme.
 
 ---
 
+## Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `active_scheme` | `"default"` | Startup binding scheme |
+| `theme` | — | Active colour theme name (from `themes/` dir) |
+| `brightness_step` | `1` | Step size for `brightness_up` / `brightness_down` |
+| `volume_step` | `1` | Step size for `media_volume_up` / `media_volume_down` |
+
+---
+
 ## Actions
 
 | Action | Fields | Description |

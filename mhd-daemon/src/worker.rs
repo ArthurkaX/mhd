@@ -96,6 +96,11 @@ impl ActionWorker {
 }
 
 fn execute_action(action: &Action, handle: &AppHandle) {
+    // Read configurable steps (defaults to 1)
+    let (bstep, vstep) = {
+        let cfg = handle.config.lock().unwrap();
+        (cfg.brightness_step(), cfg.volume_step())
+    };
     match action {
         Action::ReplaceKey { keys } => platform::send_keys(keys),
         Action::RunPs { command } => run_powershell(command),
@@ -103,14 +108,14 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             volume_mixer::show();
         }
         Action::BrightnessUp => {
-            if monitor::adjust_brightness(5).is_ok() {
+            if monitor::adjust_brightness(bstep as i32).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
             }
         }
         Action::BrightnessDown => {
-            if monitor::adjust_brightness(-5).is_ok() {
+            if monitor::adjust_brightness(-(bstep as i32)).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
@@ -143,8 +148,8 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 }
             }
         }
-        Action::MediaVolumeUp => platform::send_media_key(0xAF),
-        Action::MediaVolumeDown => platform::send_media_key(0xAE),
+        Action::MediaVolumeUp => platform::send_media_key_n(0xAF, vstep),
+        Action::MediaVolumeDown => platform::send_media_key_n(0xAE, vstep),
         Action::MediaMute => platform::send_media_key(0xAD),
         Action::MediaPlayPause => platform::send_media_key(0xB3),
         Action::MediaStop => platform::send_media_key(0xB2),

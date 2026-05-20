@@ -28,6 +28,10 @@ pub struct AppConfig {
     trigger_map: HashMap<crate::trigger::Trigger, usize>,
     /// The theme name from config.
     pub theme: Option<String>,
+    /// Brightness adjustment step for `brightness_up` / `brightness_down`.
+    pub brightness_step: u32,
+    /// Volume adjustment step for `media_volume_up` / `media_volume_down`.
+    pub volume_step: u32,
 }
 
 impl AppConfig {
@@ -111,6 +115,8 @@ impl AppConfig {
             scheme_names,
             trigger_map,
             theme,
+            brightness_step: raw.brightness_step.unwrap_or(1),
+            volume_step: raw.volume_step.unwrap_or(1),
         })
     }
 
@@ -159,5 +165,15 @@ impl AppConfig {
     #[allow(dead_code)]
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
+    }
+
+    /// Brightness adjustment step.
+    pub fn brightness_step(&self) -> u32 {
+        self.brightness_step
+    }
+
+    /// Volume adjustment step.
+    pub fn volume_step(&self) -> u32 {
+        self.volume_step
     }
 }

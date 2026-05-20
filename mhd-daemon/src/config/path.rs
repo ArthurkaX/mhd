@@ -35,6 +35,13 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 #
 # Optional startup scheme. If omitted, "default" is used.
 # active_scheme = "default"
+#
+# Step size for brightness_up / brightness_down (default: 1).
+# brightness_step = 1
+#
+# Step size for media_volume_up / media_volume_down (default: 1).
+# Each step sends one VK_VOLUME_UP/DOWN key press.
+# volume_step = 1
 
 # Quit mhd (Ctrl+Alt+F12).
 [[binding]]
