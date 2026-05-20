@@ -189,6 +189,15 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
         "numlock" => 0x90,
         "printscreen" => 0x2C,
 
+        "lshift" => 0xA0,
+        "rshift" => 0xA1,
+        "lctrl" | "lcontrol" => 0xA2,
+        "rctrl" | "rcontrol" => 0xA3,
+        "lalt" | "lmenu" => 0xA4,
+        "ralt" | "rmenu" => 0xA5,
+        "lwin" => 0x5B,
+        "rwin" => 0x5C,
+
         // OEM keys
         "minus" | "oem_minus" => 0xBD,
         "equal" | "oem_equal" | "equals" => 0xBB,
@@ -229,7 +238,13 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
         "media_stop" => 0xB2,
         "media_play_pause" => 0xB3,
 
-        _ => return Err(format!("unknown key: '{}'", s)),
+        _ => {
+            if s.starts_with("0x") && let Ok(vk) = u8::from_str_radix(&s[2..], 16) {
+                vk
+            } else {
+                return Err(format!("unknown key: '{}'", s));
+            }
+        }
     };
 
     Ok(Some(PhysicalKey::Keyboard(vk)))
@@ -237,7 +252,10 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
 
 /// Check if a virtual key code is a modifier key.
 pub fn is_modifier_vk(vk: u32) -> bool {
-    matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C)
+    matches!(
+        vk,
+        0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5
+    )
 }
 
 /// Get currently pressed modifier keys.
@@ -320,6 +338,14 @@ fn vk_to_string(vk: u8) -> String {
         0x91 => "scrolllock".into(),
         0x90 => "numlock".into(),
         0x2C => "printscreen".into(),
+        0xA0 => "lshift".into(),
+        0xA1 => "rshift".into(),
+        0xA2 => "lctrl".into(),
+        0xA3 => "rctrl".into(),
+        0xA4 => "lalt".into(),
+        0xA5 => "ralt".into(),
+        0x5B => "lwin".into(),
+        0x5C => "rwin".into(),
         0xBD => "minus".into(),
         0xBB => "equal".into(),
         0xBC => "comma".into(),
@@ -345,5 +371,42 @@ fn vk_to_string(vk: u8) -> String {
         0xB2 => "media_stop".into(),
         0xB3 => "media_play_pause".into(),
         _ => format!("0x{:02x}", vk),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_modifier_vk() {
+        assert!(is_modifier_vk(0x10)); // VK_SHIFT
+        assert!(is_modifier_vk(0xA0)); // VK_LSHIFT
+        assert!(is_modifier_vk(0xA1)); // VK_RSHIFT
+        assert!(is_modifier_vk(0x5B)); // VK_LWIN
+        assert!(!is_modifier_vk(b'S' as u32));
+    }
+
+    #[test]
+    fn test_parse_trigger_win_shift_s() {
+        let pt = parse_trigger("win+shift+s").unwrap();
+        assert!(pt.trigger.modifiers.win());
+        assert!(pt.trigger.modifiers.shift());
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(b'S'));
+    }
+
+    #[test]
+    fn test_keys_to_string_win_shift_s() {
+        let keys = KeyCombo {
+            modifiers: Modifiers(MOD_WIN | MOD_SHIFT),
+            key: Some(PhysicalKey::Keyboard(b'S')),
+        };
+        assert_eq!(keys_to_string(&keys), "shift+win+s");
+    }
+
+    #[test]
+    fn test_vk_to_string_modifiers() {
+        assert_eq!(vk_to_string(0xA0), "lshift");
+        assert_eq!(vk_to_string(0x5B), "lwin");
     }
 }
