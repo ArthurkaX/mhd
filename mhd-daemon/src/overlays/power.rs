@@ -646,8 +646,18 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
     let mem = unsafe { CreateCompatibleDC(dc) };
     if mem.is_invalid() { unsafe { let _ = ReleaseDC(hwnd, dc); } return; }
 
-    let dib = make_dib(mem, w, h);
+    let (dib, bits) = make_dib(mem, w, h);
     let _ob = unsafe { SelectObject(mem, dib) };
+    unsafe {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
+        crate::osd::painter::draw_rounded_rect(
+            pixels,
+            w,
+            h,
+            (RADIUS as f32 * sc) as i32,
+            st.theme.background,
+        );
+    }
     let font = make_font(14, sc);
     let _of = unsafe { SelectObject(mem, font) };
 
@@ -655,12 +665,6 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
     let fg = st.theme.text;
     let accent = st.theme.accent;
     let dim = st.theme.text_muted;
-
-    // Transparent clear
-    fill_rect(mem, 0, 0, w, h, Argb { a: 0, r: 0, g: 0, b: 0 });
-
-    // Background
-    rr_fill(mem, 0, 0, w, h, (RADIUS as f32 * sc) as i32, bg);
 
     // ── Header ──
     tcol(mem, fg);
@@ -793,6 +797,8 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
 
+    crate::osd::painter::fix_gdi_alpha(bits, w, h, bg);
+
     // ── Blit ──
     unsafe {
         let blend = BLENDFUNCTION {
@@ -822,18 +828,25 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
     let mem = unsafe { CreateCompatibleDC(dc) };
     if mem.is_invalid() { unsafe { let _ = ReleaseDC(hwnd, dc); } return; }
 
-    let dib = make_dib(mem, w, h);
+    let (dib, bits) = make_dib(mem, w, h);
     let _ob = unsafe { SelectObject(mem, dib) };
+    let bg = Argb { a: 230, r: 30, g: 30, b: 30 };
+    unsafe {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
+        crate::osd::painter::draw_rounded_rect(
+            pixels,
+            w,
+            h,
+            (RADIUS as f32 * sc) as i32,
+            bg,
+        );
+    }
     let font = make_font(14, sc);
     let _of = unsafe { SelectObject(mem, font) };
 
-    let bg = Argb { a: 230, r: 30, g: 30, b: 30 };
     let fg = Argb { a: 255, r: 220, g: 220, b: 220 };
     let accent = Argb { a: 255, r: 255, g: 100, b: 50 };
     let dim = Argb { a: 200, r: 80, g: 80, b: 80 };
-
-    fill_rect(mem, 0, 0, w, h, Argb { a: 0, r: 0, g: 0, b: 0 });
-    rr_fill(mem, 0, 0, w, h, (RADIUS as f32 * sc) as i32, bg);
 
     let opn = match op { PowerOp::Sleep => "Sleep", PowerOp::Shutdown => "Shutdown", PowerOp::TurnOffScreen => "Screen off" };
 
@@ -861,6 +874,8 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
        &mut rct(bx, by, bx + bw, by + bh),
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
+    crate::osd::painter::fix_gdi_alpha(bits, w, h, bg);
+
     unsafe {
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8, BlendFlags: 0,
@@ -880,7 +895,7 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
 
 // ── Drawing helpers ────────────────────────────────────────────────────
 
-fn make_dib(dc: HDC, w: i32, h: i32) -> windows::Win32::Graphics::Gdi::HBITMAP {
+fn make_dib(dc: HDC, w: i32, h: i32) -> (windows::Win32::Graphics::Gdi::HBITMAP, *mut c_void) {
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -890,7 +905,8 @@ fn make_dib(dc: HDC, w: i32, h: i32) -> windows::Win32::Graphics::Gdi::HBITMAP {
         bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }; 1],
     };
     let mut bits: *mut c_void = std::ptr::null_mut();
-    unsafe { CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default() }
+    let dib = unsafe { CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default() };
+    (dib, bits)
 }
 
 fn make_font(size: i32, sc: f32) -> windows::Win32::Graphics::Gdi::HFONT {
