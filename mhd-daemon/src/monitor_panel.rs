@@ -6,7 +6,7 @@
 //! Interactive: click/drag on sliders, wheel, scrollable.
 
 use std::ffi::c_void;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 
 
 use windows::core::PCWSTR;
@@ -91,17 +91,11 @@ impl Drop for PanelThreadControl {
 }
 
 static PANEL_STATE: Mutex<Option<PanelThreadControl>> = Mutex::new(None);
-static PANEL_THEME: LazyLock<Mutex<NativeTheme>> =
-    LazyLock::new(|| Mutex::new(NativeTheme::default()));
-
-pub fn set_theme(theme: NativeTheme) {
-    *PANEL_THEME.lock().unwrap() = theme;
-}
 
 /// Show the monitor control panel overlay (non-blocking).
 /// Spawns a fresh thread each time; if a previous thread is still running
 /// it is signalled to exit before creating the new one.
-pub fn show() {
+pub fn show(theme: NativeTheme) {
     let mut guard = PANEL_STATE.lock().unwrap();
 
     // Kill any previous thread first
@@ -126,7 +120,7 @@ pub fn show() {
     std::thread::Builder::new()
         .name("mhd-monitor-panel".into())
         .spawn(move || {
-            panel_thread(show_event, show_dying);
+            panel_thread(show_event, show_dying, theme);
         })
         .ok();
 }
@@ -190,7 +184,7 @@ struct PanelState {
 
 // ── Thread entry point ──────────────────────────────────────────────────
 
-fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
+fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme: NativeTheme) {
     let event = hdl.0;
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -239,7 +233,7 @@ fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
 
     let mut state = PanelState {
         monitors: Vec::new(),
-        theme: NativeTheme::default(),
+        theme,
         window_pos: None,
         visible: false,
         scroll: ScrollState { y: 0, max: 0 },
@@ -255,7 +249,6 @@ fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
     // Show window immediately
     {
         refresh_monitors(&mut state);
-        state.theme = PANEL_THEME.lock().unwrap().clone();
         paint_panel(hwnd, &mut state, &work, panel_w, scale);
         state.visible = true;
         unsafe {

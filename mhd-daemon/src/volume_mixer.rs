@@ -6,7 +6,7 @@
 //! to close.
 
 use std::ffi::c_void;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 
 
 use windows::core::{GUID, PCWSTR};
@@ -77,13 +77,6 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 // ── Global handle ──────────────────────────────────────────────────────
 
 static MIXER_STATE: Mutex<Option<MixerThreadControl>> = Mutex::new(None);
-static MIXER_THEME: LazyLock<Mutex<NativeTheme>> =
-    LazyLock::new(|| Mutex::new(NativeTheme::default()));
-
-#[allow(dead_code)]
-pub fn set_theme(theme: NativeTheme) {
-    *MIXER_THEME.lock().unwrap() = theme;
-}
 
 /// Thread-safe wrapper around `HANDLE`.
 #[derive(Clone)]
@@ -109,7 +102,7 @@ impl Drop for MixerThreadControl {
 /// Show the volume mixer overlay (non-blocking).
 /// Spawns a fresh thread each time; if a previous thread is still running
 /// it is signalled to exit before creating the new one.
-pub fn show() {
+pub fn show(theme: NativeTheme) {
     let mut guard = MIXER_STATE.lock().unwrap();
 
     // Kill any previous thread first
@@ -134,7 +127,7 @@ pub fn show() {
     std::thread::Builder::new()
         .name("mhd-mixer".into())
         .spawn(move || {
-            mixer_thread(show_event, show_dying);
+            mixer_thread(show_event, show_dying, theme);
         })
         .ok();
 }
@@ -163,7 +156,7 @@ struct MixerState {
 
 // ── Thread entry point ─────────────────────────────────────────────────
 
-fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
+fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme: NativeTheme) {
     let event = hdl.0;
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -218,7 +211,7 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
         sessions: Vec::new(),
         volume_controls: Vec::new(),
         endpoint_volume: None,
-        theme: NativeTheme::default(),
+        theme,
         window_pos: None,
         visible: false,
     };
@@ -237,7 +230,6 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
     // Show window immediately on first run
     {
         refresh_sessions(&mut state);
-        state.theme = MIXER_THEME.lock().unwrap().clone();
         paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
         state.visible = true;
         unsafe {

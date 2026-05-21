@@ -111,10 +111,10 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         }
         Action::RunPs { command } => run_powershell(command),
         Action::ShowMonitorPanel => {
-            monitor_panel::show();
+            monitor_panel::show(handle.theme());
         }
         Action::ShowVolumeMixer => {
-            volume_mixer::show();
+            volume_mixer::show(handle.theme());
         }
         Action::BrightnessUp { value } => {
             if monitor::adjust_brightness(*value as i32).is_ok() {

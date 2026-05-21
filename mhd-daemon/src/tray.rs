@@ -254,12 +254,10 @@ unsafe extern "system" fn wnd_proc(
                         }
                     }
                     CMD_MONITOR_PANEL => {
-                        monitor_panel::set_theme(state.app.theme());
-                        monitor_panel::show();
+                        monitor_panel::show(state.app.theme());
                     }
                     CMD_VOLUME_MIXER => {
-                        volume_mixer::set_theme(state.app.theme());
-                        volume_mixer::show();
+                        volume_mixer::show(state.app.theme());
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());
