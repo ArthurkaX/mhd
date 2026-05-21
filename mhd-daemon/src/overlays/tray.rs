@@ -27,6 +27,7 @@ use crate::app::{AppHandle, DaemonControl};
 use crate::monitor_panel;
 use crate::volume_mixer;
 use crate::power;
+use crate::quickdraw;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
@@ -36,6 +37,7 @@ const CMD_RELOAD: usize = 3;
 const CMD_VOLUME_MIXER: usize = 6;
 const CMD_MONITOR_PANEL: usize = 7;
 const CMD_POWER: usize = 8;
+const CMD_QUICK_DRAW: usize = 9;
 const CMD_ABOUT: usize = 4;
 const CMD_QUIT: usize = 5;
 
@@ -172,10 +174,19 @@ fn show_menu(hwnd: HWND) {
             PCWSTR::from_raw(power_ctrl.as_ptr()),
         );
 
-        let about: Vec<u16> = "About\0".encode_utf16().collect();
+        let quick_draw: Vec<u16> = "Quick Draw\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
             6,
+            MF_BYPOSITION | MF_STRING,
+            CMD_QUICK_DRAW,
+            PCWSTR::from_raw(quick_draw.as_ptr()),
+        );
+
+        let about: Vec<u16> = "About\0".encode_utf16().collect();
+        let _ = InsertMenuW(
+            menu,
+            7,
             MF_BYPOSITION | MF_STRING,
             CMD_ABOUT,
             PCWSTR::from_raw(about.as_ptr()),
@@ -184,7 +195,7 @@ fn show_menu(hwnd: HWND) {
         let quit: Vec<u16> = "Quit mhd\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            7,
+            8,
             MF_BYPOSITION | MF_STRING,
             CMD_QUIT,
             PCWSTR::from_raw(quit.as_ptr()),
@@ -272,6 +283,9 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_POWER => {
                         power::show(state.app.theme());
+                    }
+                    CMD_QUICK_DRAW => {
+                        quickdraw::show(state.app.theme());
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());
