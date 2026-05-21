@@ -25,7 +25,7 @@ use std::process::ExitCode;
 
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-use crate::config::path::{resolve_config_path, create_example_config};
+use crate::config::path::{resolve_config_path, create_example_config, create_bundled_themes};
 
 fn main() -> ExitCode {
     // Try to attach to parent console so we can print messages if launched from a terminal.
@@ -58,6 +58,10 @@ fn main() -> ExitCode {
         match create_example_config(&config_path) {
             Ok(()) => {
                 println!("mhd: created example config: {}", config_path.display());
+                // Create bundled themes on first launch
+                if let Err(e) = create_bundled_themes() {
+                    eprintln!("mhd: warning — could not create bundled themes: {e}");
+                }
                 println!("mhd: uncomment bindings to enable them");
                 return ExitCode::SUCCESS;
             }

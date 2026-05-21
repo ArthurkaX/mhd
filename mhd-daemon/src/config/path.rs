@@ -28,6 +28,37 @@ pub fn create_example_config(path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+/// Bundled themes shipped with the binary.
+struct BundledTheme {
+    pub filename: &'static str,
+    pub content: &'static str,
+}
+
+const BUNDLED_THEMES: &[BundledTheme] = &[
+    BundledTheme { filename: "dark.json",        content: include_str!("../../../themes/dark.json") },
+    BundledTheme { filename: "light.json",       content: include_str!("../../../themes/light.json") },
+    BundledTheme { filename: "glass_dark.json",  content: include_str!("../../../themes/glass_dark.json") },
+    BundledTheme { filename: "glass_light.json", content: include_str!("../../../themes/glass_light.json") },
+    BundledTheme { filename: "one_dark.json",    content: include_str!("../../../themes/one_dark.json") },
+];
+
+/// Create the themes directory and write bundled theme files.
+/// Silently skips files that already exist.
+pub fn create_bundled_themes() -> Result<(), String> {
+    let dir = crate::native_theme::themes_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create themes directory: {e}"))?;
+
+    for theme in BUNDLED_THEMES {
+        let path = dir.join(theme.filename);
+        if path.exists() {
+            continue;
+        }
+        std::fs::write(&path, theme.content.trim_start())
+            .map_err(|e| format!("cannot write theme '{}': {e}", theme.filename))?;
+    }
+    Ok(())
+}
+
 const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Path: %USERPROFILE%\.config\mhd\config.toml
 #
