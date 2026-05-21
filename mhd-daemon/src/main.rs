@@ -29,6 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
 use crate::config::path::{resolve_config_path, create_example_config, create_bundled_themes};
+use crate::app::DaemonControl;
 
 /// Install a panic hook that writes the panic message and backtrace to
 /// `<config_dir>/crash.log` for post‑mortem analysis.

@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
-use crate::app::AppHandle;
+use crate::app::{AppHandle, DaemonControl};
 use crate::monitor_panel;
 use crate::volume_mixer;
 

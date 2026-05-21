@@ -33,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
 use crate::action::ALL_ACTIONS;
-use crate::app::AppHandle;
+use crate::app::{AppHandle, DaemonControl};
 use crate::hook::WM_BINDING_CAPTURED;
 use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
 use crate::osd::{draw_rounded_rect, to_utf16_z};

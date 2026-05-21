@@ -132,24 +132,6 @@ impl DaemonControl for AppHandle {
     }
 }
 
-impl AppHandle {
-    pub fn theme(&self) -> NativeTheme {
-        DaemonControl::theme(self)
-    }
-    pub fn status(&self) -> bool {
-        DaemonControl::status(self)
-    }
-    pub fn reload_config(&self) -> Result<(), String> {
-        DaemonControl::reload_config(self)
-    }
-    pub fn shutdown(&self) {
-        DaemonControl::shutdown(self)
-    }
-    pub fn switch_scheme(&self, name: &str) -> bool {
-        DaemonControl::switch_scheme(self, name)
-    }
-}
-
 /// The mhd application core.
 ///
 /// Create with [`App::new`], obtain an [`AppHandle`] via [`App::handle`],
