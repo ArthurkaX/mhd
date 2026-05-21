@@ -72,6 +72,7 @@ impl AppConfig {
                 crate::action::ActionRawFields {
                     keys: raw_b.keys.as_deref(),
                     command: raw_b.command.as_deref(),
+                    path: raw_b.path.as_deref(),
                     target_scheme: raw_b.target_scheme.as_deref(),
                     value: raw_b.value.as_deref(),
                     code: raw_b.code.as_deref(),

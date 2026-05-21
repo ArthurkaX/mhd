@@ -12,6 +12,8 @@ pub struct RawBinding {
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
     pub target_scheme: Option<String>,
     #[serde(default)]
     pub value: Option<String>,

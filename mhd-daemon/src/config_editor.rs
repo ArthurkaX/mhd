@@ -62,20 +62,21 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 /// Add new editor‑exposed actions here (by their position in `ALL_ACTIONS`).
 const EDITOR_ACTION_INDICES: &[usize] = &[
     0,  // replace_key
-    1,  // run_ps
-    2,  // brightness_up
-    3,  // brightness_down
-    4,  // show_monitor_panel
-    5,  // show_volume_mixer
-    6,  // media_volume_up
-    7,  // media_volume_down
-    8,  // media_mute
-    9,  // media_play_pause
-    10, // media_stop
-    11, // media_last_track
-    12, // media_next_track
-    13, // toggle_topmost
-    14, // quit
+    1,  // run_program
+    2,  // run_ps
+    3,  // brightness_up
+    4,  // brightness_down
+    5,  // show_monitor_panel
+    6,  // show_volume_mixer
+    7,  // media_volume_up
+    8,  // media_volume_down
+    9,  // media_mute
+    10, // media_play_pause
+    11, // media_stop
+    12, // media_last_track
+    13, // media_next_track
+    14, // toggle_topmost
+    15, // quit
 ];
 
 #[derive(Debug, Clone)]
@@ -420,6 +421,7 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
                 Action::BrightnessDown { .. } => "brightness_down",
                 Action::SetBrightness { relative: true, value: v } if *v > 0 => "brightness_up",
                 Action::SetBrightness { .. } => "brightness_down",
+                Action::RunProgram { .. } => "run_program",
                 Action::ShowMonitorPanel => "show_monitor_panel",
                 Action::ShowVolumeMixer => "show_volume_mixer",
                 Action::MediaVolumeUp => "media_volume_up",
@@ -2515,14 +2517,21 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
                 crate::hook::set_recording_window(None);
             }
         } else if has_params {
-            // Inline editing for parameterised actions (run_ps, set_brightness, etc.)
-            let rc = RECT {
-                left: param_x,
-                top: row_y + (lay.row_h - lay.btn_h) / 2,
-                right: param_x + param_w,
-                bottom: row_y + (lay.row_h + lay.btn_h) / 2,
-            };
-            spawn_inline_edit(state, idx, rc);
+            if desc.name == "run_program" {
+                // Open file dialog to pick .exe/.lnk/.bat
+                if let Some(path) = pick_program_file(state.hwnd) {
+                    state.bindings[idx].param = path;
+                }
+            } else {
+                // Inline editing for other parameterised actions (run_ps, brightness, etc.)
+                let rc = RECT {
+                    left: param_x,
+                    top: row_y + (lay.row_h - lay.btn_h) / 2,
+                    right: param_x + param_w,
+                    bottom: row_y + (lay.row_h + lay.btn_h) / 2,
+                };
+                spawn_inline_edit(state, idx, rc);
+            }
         }
         paint_settings(state.hwnd, state as *mut SettingsState, &lay);
         return;
@@ -2568,6 +2577,37 @@ fn cancel_inline_edit(state: &mut SettingsState) {
         state.edit_cursor = 0;
         paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
     }
+}
+
+// ── File dialog for Run Program ─────────────────────────────────────
+
+fn pick_program_file(parent: HWND) -> Option<String> {
+    use std::mem;
+    unsafe {
+        let mut ofn: windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW = mem::zeroed();
+        let mut buf = [0u16; 1024];
+        let filter: Vec<u16> = "Programs\0*.exe;*.lnk;*.bat\0All Files\0*.*\0\0"
+            .encode_utf16()
+            .collect();
+
+        ofn.lStructSize = mem::size_of::<windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW>() as u32;
+        ofn.hwndOwner = parent;
+        ofn.lpstrFilter = windows::core::PCWSTR(filter.as_ptr());
+        ofn.lpstrFile = windows::core::PWSTR(buf.as_mut_ptr());
+        ofn.nMaxFile = buf.len() as u32;
+        ofn.lpstrTitle = windows::core::w!("Select Program");
+        ofn.Flags = windows::Win32::UI::Controls::Dialogs::OFN_FILEMUSTEXIST
+            | windows::Win32::UI::Controls::Dialogs::OFN_HIDEREADONLY
+            | windows::Win32::UI::Controls::Dialogs::OFN_PATHMUSTEXIST;
+
+        if windows::Win32::UI::Controls::Dialogs::GetOpenFileNameW(&mut ofn).as_bool() {
+            let len = (0..buf.len()).find(|&i| buf[i] == 0).unwrap_or(0);
+            if len > 0 {
+                return Some(String::from_utf16_lossy(&buf[..len]));
+            }
+        }
+    }
+    None
 }
 
 // ── Apply logic ─────────────────────────────────────────────────────

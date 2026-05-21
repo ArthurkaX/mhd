@@ -5,6 +5,8 @@ use crate::trigger::{KeyCombo, parse_keys};
 pub enum Action {
     ReplaceKey { keys: KeyCombo },
     RunPs { command: String },
+    /// Launch an executable file.
+    RunProgram { path: String },
     SwitchScheme { target_scheme: String },
     SetBrightness { relative: bool, value: i32 },
     /// Increase monitor brightness by a configurable step.
@@ -37,6 +39,7 @@ pub enum Action {
 pub struct ActionRawFields<'a> {
     pub keys: Option<&'a str>,
     pub command: Option<&'a str>,
+    pub path: Option<&'a str>,
     pub target_scheme: Option<&'a str>,
     pub value: Option<&'a str>,
     pub code: Option<&'a str>,
@@ -51,6 +54,12 @@ impl Action {
                     .keys
                     .ok_or_else(|| "replace_key action requires 'keys' field".to_string())?;
                 Self::new_replace_key(keys)
+            }
+            "run_program" => {
+                let path = fields
+                    .path
+                    .ok_or_else(|| "run_program action requires 'path' field".to_string())?;
+                Self::new_run_program(path)
             }
             "run_ps" => {
                 let command = fields
@@ -119,6 +128,15 @@ impl Action {
     }
 
     /// Validate and create a run_ps action.
+    pub fn new_run_program(path: &str) -> Result<Self, String> {
+        if path.trim().is_empty() {
+            return Err("run_program path must not be empty".to_string());
+        }
+        Ok(Action::RunProgram {
+            path: path.to_string(),
+        })
+    }
+
     pub fn new_run_ps(command: &str) -> Result<Self, String> {
         if command.trim().is_empty() {
             return Err("run_ps command must not be empty".to_string());
@@ -217,6 +235,7 @@ impl Action {
                 format!("replace_key: {}", crate::trigger::keys_to_string(keys))
             }
             Action::RunPs { command } => format!("run_ps: {command}"),
+            Action::RunProgram { path } => format!("run_program: {path}"),
             Action::SwitchScheme { target_scheme } => format!("switch_scheme: {target_scheme}"),
             Action::SetBrightness { relative, value } => {
                 if *relative {
@@ -275,6 +294,12 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         label: "Replace Key",
         category: "General",
         param_key: Some("keys"),
+    },
+    ActionDescriptor {
+        name: "run_program",
+        label: "Run Program",
+        category: "General",
+        param_key: Some("path"),
     },
     ActionDescriptor {
         name: "run_ps",

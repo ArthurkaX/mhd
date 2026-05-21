@@ -104,6 +104,11 @@ fn execute_action(action: &Action, handle: &AppHandle) {
     };
     match action {
         Action::ReplaceKey { keys } => platform::send_keys(keys),
+        Action::RunProgram { path } => {
+            if let Err(e) = std::process::Command::new(path).spawn() {
+                eprintln!("mhd: failed to launch '{}': {e}", path);
+            }
+        }
         Action::RunPs { command } => run_powershell(command),
         Action::ShowMonitorPanel => {
             monitor_panel::show();
