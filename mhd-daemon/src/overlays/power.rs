@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT,
     WAIT_EVENT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, Ellipse, FillRect, GetDC, GetMonitorInfoW, InvalidateRect, MonitorFromWindow,
+    DrawTextW, FillRect, GetDC, GetMonitorInfoW, InvalidateRect, MonitorFromWindow,
     ReleaseDC, SelectObject, SetBkMode, SetTextColor,
     BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
@@ -29,7 +29,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture,
     TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetDesktopWindow,
     GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
     PostMessageW, RegisterClassW, SetTimer, ShowWindow, UpdateLayeredWindow,
     CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
@@ -220,8 +220,8 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
 
     let wa = work_area();
     let pos = POINT {
-        x: wa.right - win_w - (16.0 * sc) as i32,
-        y: wa.top + (48.0 * sc) as i32,
+        x: wa.left + (wa.right - wa.left - win_w) / 2,
+        y: wa.top + (wa.bottom - wa.top - win_h) / 2,
     };
     unsafe { let _ = SetWindowPos(hwnd, HWND::default(), pos.x, pos.y, win_w, win_h, SWP_NOZORDER); }
 
@@ -262,16 +262,20 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
             }
             WAIT_EVENT(1) => {  // messages
                 let mut msg = MSG::default();
+                let mut repaint = false;
                 unsafe {
                     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                         if msg.message == WM_QUIT { want_exit = true; break; }
                         if msg.message == CANCEL_MSG && msg.hwnd == hwnd {
                             st.pending = None;
                             destroy_cd(&mut st);
-                            paint_main(hwnd, &st, win_w, win_h, sc);
+                            repaint = true;
                             continue;
                         }
                         if msg.hwnd == hwnd {
+                            if !matches!(msg.message, WM_MOUSEMOVE | WM_MOUSELEAVE) {
+                                repaint = true;
+                            }
                             if !msg_handler(hwnd, &msg, &mut st, &mut drag, &mut mouse_tracked, &mut want_exit, sc) {
                                 want_exit = true; break;
                             }
@@ -281,10 +285,10 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
                         }
                     }
                 }
-                // Tick only when timer fires, not on every message
-                // (timer check is lightweight, but paint_main is expensive)
                 tick(&mut st, hwnd, sc);
-                paint_main(hwnd, &st, win_w, win_h, sc);
+                if repaint {
+                    paint_main(hwnd, &st, win_w, win_h, sc);
+                }
             }
             _ => break,
         }
@@ -522,18 +526,15 @@ fn msg_handler(
     }
 
     if msg.message == WM_MOUSEMOVE {
-        if let Some((sx, sy)) = *drag {
-            let cx = (msg.lParam.0 as i32) & 0xFFFF;
-            let cy = ((msg.lParam.0 as i32) >> 16) & 0xFFFF;
-            let mut r = RECT::default();
-            unsafe { let _ = GetWindowRect(hwnd, &mut r); }
-            let nx = r.left + cx - sx;
-            let ny = r.top + cy - sy;
+        if let Some((grab_x, grab_y)) = *drag {
+            let mut cursor = POINT::default();
+            unsafe { let _ = GetCursorPos(&mut cursor); }
+            let nx = cursor.x - grab_x;
+            let ny = cursor.y - grab_y;
             unsafe {
                 let _ = SetWindowPos(hwnd, HWND::default(), nx, ny, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
             }
             st.pos = POINT { x: nx, y: ny };
-            *drag = Some((cx, cy));
         }
         if !*mouse_tracked {
             let mut tm = TRACKMOUSEEVENT {
@@ -695,7 +696,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
             AwakeMode::Timed { .. } => i >= 2,
         };
         let (bc, tc) = if sel { (accent, st.theme.background) } else { (dim, fg) };
-        rr_fill(mem, bx, by, bx + bw, by + bh, (4.0 * sc) as i32, bc);
+        fill_rect(mem, bx, by, bx + bw, by + bh, bc);
         tcol(mem, tc);
         dw(mem, &mut to_utf16_z(AWAKE_NAMES[i]),
            &mut rct(bx, by, bx + bw, by + bh),
@@ -734,7 +735,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
     let albls = ["Sleep", "Shutdown", "Screen off"];
     for i in 0..3 {
         let bx = sx + i as i32 * (abw + agap);
-        rr_fill(mem, bx, aby, bx + abw, aby + abh, (6.0 * sc) as i32, dim);
+        fill_rect(mem, bx, aby, bx + abw, aby + abh, dim);
         tcol(mem, fg);
         dw(mem, &mut to_utf16_z(albls[i]),
            &mut rct(bx, aby, bx + abw, aby + abh),
@@ -763,7 +764,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
         let tsx = sx + (TMR_LABEL_W as f32 * sc) as i32;
         for bi in 0..4 {
             let bx = tsx + bi as i32 * (tbw + tgap);
-            rr_fill(mem, bx, ry, bx + tbw, ry + tbh, (3.0 * sc) as i32, dim);
+            fill_rect(mem, bx, ry, bx + tbw, ry + tbh, dim);
             tcol(mem, fg);
             dw(mem, &mut to_utf16_z(tvals[bi]),
                &mut rct(bx, ry, bx + tbw, ry + tbh),
@@ -790,7 +791,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
         let cbh = (22.0 * sc) as i32;
         let cbx = w - (PAD as f32 * sc) as i32 - cbw;
         let cby = py + (ph - cbh) / 2;
-        rr_fill(mem, cbx, cby, cbx + cbw, cby + cbh, (4.0 * sc) as i32, dim);
+        fill_rect(mem, cbx, cby, cbx + cbw, cby + cbh, dim);
         tcol(mem, fg);
         dw(mem, &mut to_utf16_z("Cancel"),
            &mut rct(cbx, cby, cbx + cbw, cby + cbh),
@@ -868,7 +869,7 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
     let bh = (28.0 * sc) as i32;
     let bx = (w - bw) / 2;
     let by = (84.0 * sc) as i32;
-    rr_fill(mem, bx, by, bx + bw, by + bh, (4.0 * sc) as i32, dim);
+    fill_rect(mem, bx, by, bx + bw, by + bh, dim);
     tcol(mem, fg);
     dw(mem, &mut to_utf16_z("Cancel"),
        &mut rct(bx, by, bx + bw, by + bh),
@@ -925,27 +926,6 @@ fn fill_rect(dc: HDC, x1: i32, y1: i32, x2: i32, y2: i32, color: Argb) {
     let br = unsafe { CreateSolidBrush(color.to_colorref()) };
     let r = RECT { left: x1, top: y1, right: x2, bottom: y2 };
     unsafe { let _ = FillRect(dc, &r, br); _ = DeleteObject(br); }
-}
-
-fn rr_fill(dc: HDC, x1: i32, y1: i32, x2: i32, y2: i32, r: i32, color: Argb) {
-    if x2 <= x1 || y2 <= y1 { return; }
-    let br = unsafe { CreateSolidBrush(color.to_colorref()) };
-    if r == 0 {
-        let rc = RECT { left: x1, top: y1, right: x2, bottom: y2 };
-        unsafe { let _ = FillRect(dc, &rc, br); _ = DeleteObject(br); } return;
-    }
-    let r2 = r.min((x2 - x1) / 2).min((y2 - y1) / 2);
-    unsafe {
-        FillRect(dc, &RECT { left: x1, top: y1 + r2, right: x2, bottom: y2 - r2 }, br);
-        FillRect(dc, &RECT { left: x1 + r2, top: y1, right: x2 - r2, bottom: y1 + r2 }, br);
-        FillRect(dc, &RECT { left: x1 + r2, top: y2 - r2, right: x2 - r2, bottom: y2 }, br);
-        let _ = SelectObject(dc, br);
-        let _ = Ellipse(dc, x1, y1, x1 + r2 * 2, y1 + r2 * 2);
-        let _ = Ellipse(dc, x2 - r2 * 2, y1, x2, y1 + r2 * 2);
-        let _ = Ellipse(dc, x1, y2 - r2 * 2, x1 + r2 * 2, y2);
-        let _ = Ellipse(dc, x2 - r2 * 2, y2 - r2 * 2, x2, y2);
-        let _ = DeleteObject(br);
-    }
 }
 
 fn tcol(dc: HDC, color: Argb) {
