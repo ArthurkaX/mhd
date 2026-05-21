@@ -1715,12 +1715,15 @@ unsafe extern "system" fn settings_wndproc(
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
                     if let Some((idx, is_trigger)) = state.recording_info.take() {
-                        if is_trigger {
-                            state.bindings[idx].trigger = trigger_str;
-                            state.bindings[idx].is_recording_trigger = false;
-                        } else {
-                            state.bindings[idx].param = trigger_str;
-                            state.bindings[idx].is_recording_param = false;
+                        // Safety: idx must be valid after deletions/shifts.
+                        if idx < state.bindings.len() {
+                            if is_trigger {
+                                state.bindings[idx].trigger = trigger_str;
+                                state.bindings[idx].is_recording_trigger = false;
+                            } else {
+                                state.bindings[idx].param = trigger_str;
+                                state.bindings[idx].is_recording_param = false;
+                            }
                         }
                         crate::hook::set_recording_window(None);
                         paint_settings(hwnd, state_ptr, &state.layout);
@@ -1818,6 +1821,7 @@ unsafe extern "system" fn settings_wndproc(
                     close_kind_popup(&mut *ptr);
                     let _ = Box::from_raw(ptr);
                 }
+                crate::hook::set_recording_window(None);
                 PostQuitMessage(0);
                 LRESULT(0)
             }
@@ -2545,6 +2549,17 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     {
         close_kind_popup(state);
         state.bindings.remove(idx);
+        // Adjust recording_info if it referenced the removed binding or shifted.
+        if let Some((ri_idx, is_trig)) = state.recording_info {
+            if ri_idx == idx {
+                // The recorded binding is gone.
+                state.recording_info = None;
+                crate::hook::set_recording_window(None);
+            } else if ri_idx > idx {
+                // Shift index down because elements before it were removed.
+                state.recording_info = Some((ri_idx - 1, is_trig));
+            }
+        }
         paint_settings(state.hwnd, state as *mut SettingsState, &lay);
         return;
     }
