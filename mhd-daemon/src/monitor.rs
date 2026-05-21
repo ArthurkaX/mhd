@@ -5,6 +5,7 @@
 //! dynamically from `dxva2.dll`.
 
 use std::mem::transmute;
+use std::sync::LazyLock;
 
 use windows::Win32::Foundation::{BOOL, HANDLE, POINT};
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST};
@@ -40,6 +41,8 @@ struct PhysicalMonitor {
 }
 
 // ── Dxva2 singleton ─────────────────────────────────────────────────────
+
+static DXVA2: LazyLock<Result<Dxva2, String>> = LazyLock::new(|| Dxva2::load());
 
 struct Dxva2 {
     get_number: GetNumberOfPhysicalMonitorsFromHMONITORFn,
@@ -105,13 +108,13 @@ pub struct PhysicalMonitorInfo {
 impl PhysicalMonitorInfo {
     /// Get the monitor's capabilities string (MCCS).
     pub fn capabilities(&self) -> Result<String, String> {
-        let dxva2 = Dxva2::load()?;
-        get_capabilities_inner(&dxva2, self.handle)
+        let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
+        get_capabilities_inner(dxva2, self.handle)
     }
 
     /// Get brightness: (current, min, max).
     pub fn get_brightness(&self) -> Result<(u32, u32, u32), String> {
-        let dxva2 = Dxva2::load()?;
+        let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
         unsafe {
             let mut min = 0u32;
             let mut cur = 0u32;
@@ -126,7 +129,7 @@ impl PhysicalMonitorInfo {
     /// Set brightness (0-100).
     #[allow(dead_code)]
     pub fn set_brightness(&self, value: u32) -> Result<(), String> {
-        let dxva2 = Dxva2::load()?;
+        let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
         unsafe {
             let v = value.min(100);
             if !(dxva2.set_brightness)(self.handle, v).as_bool() {
@@ -139,7 +142,7 @@ impl PhysicalMonitorInfo {
     /// Get a VCP feature value: returns (vcp_type, current, max).
     /// vcp_type: 0=continuous, 1=non-continuous, 2=value-only.
     pub fn get_vcp(&self, code: u8) -> Result<VcpValue, String> {
-        let dxva2 = Dxva2::load()?;
+        let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
         unsafe {
             let mut vcp_type = 0u32;
             let mut cur = 0u32;
@@ -153,7 +156,7 @@ impl PhysicalMonitorInfo {
 
     /// Set a VCP feature value.
     pub fn set_vcp(&self, code: u8, value: u32) -> Result<(), String> {
-        let dxva2 = Dxva2::load()?;
+        let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
         unsafe {
             if !(dxva2.set_vcp)(self.handle, code, value).as_bool() {
                 return Err(format!("cannot set VCP feature 0x{:02X}", code));
@@ -312,14 +315,14 @@ fn get_capabilities_inner(dxva2: &Dxva2, handle: PhysicalMonitorHandle) -> Resul
 // ── Cursor-based public API ───────────────────────────────────────────
 
 /// Get the physical monitor(s) under the mouse cursor.
-fn cursor_monitor_raw() -> Result<(Dxva2, PhysicalMonitorHandle, String), String> {
+fn cursor_monitor_raw() -> Result<(&'static Dxva2, PhysicalMonitorHandle, String), String> {
     let mut pt = POINT { x: 0, y: 0 };
     unsafe {
         let _ = GetCursorPos(&mut pt);
     }
-    let dxva2 = Dxva2::load()?;
+    let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
     let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
-    let (handle, name) = get_physical_monitors_for_hmon(&dxva2, hmon)?;
+    let (handle, name) = get_physical_monitors_for_hmon(dxva2, hmon)?;
     Ok((dxva2, handle, name))
 }
 
@@ -400,13 +403,9 @@ pub fn enumerate_cursor_monitor() -> Result<Vec<PhysicalMonitorInfo>, String> {
         let _ = GetCursorPos(&mut pt);
     }
     let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
-    let dxva2 = Dxva2::load()?;
-    match get_physical_monitors_for_hmon(&dxva2, hmon) {
-        Ok((handle, name)) => {
-            Ok(vec![PhysicalMonitorInfo { handle, name }])
-        }
-        Err(e) => Err(e),
-    }
+    let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
+    get_physical_monitors_for_hmon(dxva2, hmon)
+        .map(|(handle, name)| vec![PhysicalMonitorInfo { handle, name }])
 }
 
 // ── New: enumerate ALL physical monitors ────────────────────────────────
@@ -415,14 +414,14 @@ pub fn enumerate_cursor_monitor() -> Result<Vec<PhysicalMonitorInfo>, String> {
 /// Enumerate all physical monitors across all display monitors.
 /// Returns a list of (handle, name) for each physical monitor.
 pub fn enumerate_all_monitors() -> Result<Vec<PhysicalMonitorInfo>, String> {
-    let dxva2 = Dxva2::load()?;
+    let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
 
     // Use EnumDisplayMonitors to get all HMONITOR handles
     let hmons = enumerate_display_monitors();
 
     let mut result: Vec<PhysicalMonitorInfo> = Vec::new();
     for hmon in hmons {
-        match get_physical_monitors_for_hmon(&dxva2, hmon) {
+        match get_physical_monitors_for_hmon(dxva2, hmon) {
             Ok((handle, name)) => {
                 result.push(PhysicalMonitorInfo { handle, name });
             }
