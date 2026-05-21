@@ -39,20 +39,33 @@ pub fn get_pressed_modifiers() -> Modifiers {
 /// Presses modifiers in order (alt, ctrl, shift, win), then presses and
 /// releases the main key (if any), then releases modifiers in reverse
 /// order (win, shift, ctrl, alt).
+///
+/// For **modifier‑only** combos (no main key) the function avoids sending
+/// key‑up events for modifiers that are already physically held —
+/// otherwise the synthetic release would fight with the user's still‑held
+/// physical keys (the typical case when the trigger combo included those
+/// same modifiers).
 pub fn send_keys(keys: &KeyCombo) {
     let mut inputs: Vec<INPUT> = Vec::new();
 
-    // Press modifiers
-    if keys.modifiers.alt() {
+    // Helper: check if a VK is currently physically pressed.
+    let is_pressed = |vk: u16| -> bool {
+        unsafe { GetAsyncKeyState(vk as i32) < 0 }
+    };
+
+    let is_modifier_only = keys.key.is_none();
+
+    // Press modifiers (skip if already physically held for modifier-only combos)
+    if keys.modifiers.alt() && !(is_modifier_only && is_pressed(0x12)) {
         push_key_event(&mut inputs, 0x12, false);
     }
-    if keys.modifiers.ctrl() {
+    if keys.modifiers.ctrl() && !(is_modifier_only && is_pressed(0x11)) {
         push_key_event(&mut inputs, 0x11, false);
     }
-    if keys.modifiers.shift() {
+    if keys.modifiers.shift() && !(is_modifier_only && is_pressed(0x10)) {
         push_key_event(&mut inputs, 0x10, false);
     }
-    if keys.modifiers.win() {
+    if keys.modifiers.win() && !(is_modifier_only && is_pressed(0x5B)) {
         push_key_event(&mut inputs, 0x5B, false);
     }
 
@@ -70,22 +83,27 @@ pub fn send_keys(keys: &KeyCombo) {
             eprintln!("mhd: warning: replace_key with mouse/wheel not supported");
         }
         None => {
-            // Modifier-only combo (e.g., alt+shift): press and release modifiers
+            // Modifier-only combo (e.g., alt+shift):
+            // Do NOT release modifiers — the user's physical key‑up will
+            // take care of that.  Releasing them here would fight with
+            // physically‑held keys from the trigger combo.
         }
     }
 
-    // Release modifiers in reverse order
-    if keys.modifiers.win() {
-        push_key_event(&mut inputs, 0x5B, true);
-    }
-    if keys.modifiers.shift() {
-        push_key_event(&mut inputs, 0x10, true);
-    }
-    if keys.modifiers.ctrl() {
-        push_key_event(&mut inputs, 0x11, true);
-    }
-    if keys.modifiers.alt() {
-        push_key_event(&mut inputs, 0x12, true);
+    // Release modifiers in reverse order (only for combos that have a main key)
+    if !is_modifier_only {
+        if keys.modifiers.win() {
+            push_key_event(&mut inputs, 0x5B, true);
+        }
+        if keys.modifiers.shift() {
+            push_key_event(&mut inputs, 0x10, true);
+        }
+        if keys.modifiers.ctrl() {
+            push_key_event(&mut inputs, 0x11, true);
+        }
+        if keys.modifiers.alt() {
+            push_key_event(&mut inputs, 0x12, true);
+        }
     }
 
     if !inputs.is_empty() {
