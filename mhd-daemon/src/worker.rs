@@ -51,10 +51,8 @@ impl ActionWorker {
                 }
             };
 
-            let action_to_execute = msg;
-
             // Prevent queue buildup: drop identical pending execution messages
-            if let ActionMessage::Execute(ref act1) = action_to_execute {
+            if let ActionMessage::Execute(ref act1) = msg {
                 let desc1 = act1.describe();
                 loop {
                     match self.rx.try_recv() {
@@ -71,7 +69,7 @@ impl ActionWorker {
                 }
             }
 
-            match action_to_execute {
+            match msg {
                 ActionMessage::Execute(action) => {
                     if !self.handle.quiet() {
                         println!("mhd: triggered: {}", action.describe());

@@ -89,21 +89,11 @@ impl Action {
                 Self::new_vcp(code, value)
             }
             "brightness_up" => {
-                let value = fields.value
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .unwrap_or(5);
-                if value == 0 {
-                    return Err("brightness_up value must be > 0".to_string());
-                }
+                let value = parse_brightness_step(&fields, "brightness_up")?;
                 Ok(Action::BrightnessUp { value })
             }
             "brightness_down" => {
-                let value = fields.value
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .unwrap_or(5);
-                if value == 0 {
-                    return Err("brightness_down value must be > 0".to_string());
-                }
+                let value = parse_brightness_step(&fields, "brightness_down")?;
                 Ok(Action::BrightnessDown { value })
             }
             "show_monitor_panel" => Ok(Action::ShowMonitorPanel),
@@ -266,6 +256,19 @@ impl Action {
             Action::Quit => "quit".to_string(),
         }
     }
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────
+
+/// Parse the `value` field for brightness_up / brightness_down.
+fn parse_brightness_step(fields: &ActionRawFields, name: &str) -> Result<u32, String> {
+    let value = fields.value
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(5);
+    if value == 0 {
+        return Err(format!("{name} value must be > 0"));
+    }
+    Ok(value)
 }
 
 // ── Action registry (single source of truth for editor integration) ──
