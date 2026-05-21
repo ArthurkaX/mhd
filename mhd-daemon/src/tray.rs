@@ -295,11 +295,18 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
+// ── Window class / title constants — shared with hook.rs ───────────────
+
+/// Window class name for the tray icon window.
+pub const TRAY_CLASS: &str = "mhdTrayClass";
+/// Window title for the tray icon window.
+pub const TRAY_TITLE: &str = "mhd-tray";
+
 // ── Entry point ────────────────────────────────────────────────────────
 
 pub fn run(app: AppHandle) {
-    let class: Vec<u16> = "mhdTrayClass\0".encode_utf16().collect();
-    let title: Vec<u16> = "mhd-tray\0".encode_utf16().collect();
+    let class: Vec<u16> = format!("{}\0", TRAY_CLASS).encode_utf16().collect();
+    let title: Vec<u16> = format!("{}\0", TRAY_TITLE).encode_utf16().collect();
 
     // Check if another tray window already exists
     unsafe {

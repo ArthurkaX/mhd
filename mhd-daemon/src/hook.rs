@@ -140,8 +140,8 @@ fn cleanup() {
 }
 
 pub(crate) fn signal_tray_to_quit() {
-    let class: Vec<u16> = "mhdTrayClass\0".encode_utf16().collect();
-    let title: Vec<u16> = "mhd-tray\0".encode_utf16().collect();
+    let class: Vec<u16> = format!("{}\0", crate::tray::TRAY_CLASS).encode_utf16().collect();
+    let title: Vec<u16> = format!("{}\0", crate::tray::TRAY_TITLE).encode_utf16().collect();
     unsafe {
         use windows::core::PCWSTR;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
