@@ -147,9 +147,15 @@ impl Drop for Ctrl {
 // ── Public API ─────────────────────────────────────────────────────────
 
 /// Show (or re‑show) the Power Control overlay.
+/// The worker thread keeps running even when the window is hidden,
+/// preserving keep‑awake state and pending timer actions.
 pub fn show(theme: NativeTheme) {
     let mut g = CTRL.lock().unwrap();
-    *g = None;
+    if let Some(ref ctrl) = *g {
+        // Thread already alive — signal it to toggle visibility
+        unsafe { let _ = SetEvent(ctrl.ev.0); }
+        return;
+    }
     let ev = match unsafe { CreateEventW(None, false, false, None) } {
         Ok(e) => e,
         Err(_) => return,
@@ -244,28 +250,33 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
     }
 
     let event = hdl.0;
-    let mut want_exit = false;
+    let mut hidden = false;  // true when window is hidden but thread alive
     let mut drag: Option<(i32, i32)> = None;
     let mut mouse_tracked = false;
 
     loop {
-        if want_exit || dying.load(std::sync::atomic::Ordering::Acquire) { break; }
+        if dying.load(std::sync::atomic::Ordering::Acquire) { break; }
 
         let wait = [event];
         let res = unsafe { MsgWaitForMultipleObjects(Some(&wait), false, INFINITE, QS_ALLINPUT) };
 
         match res {
-            WAIT_OBJECT_0 => {  // show() called again → toggle off
-                want_exit = true;
-                unsafe { let _ = ReleaseCapture(); _ = ShowWindow(hwnd, SW_HIDE); _ = KillTimer(hwnd, TMR_ID); }
-                destroy_cd(&mut st);
+            WAIT_OBJECT_0 => {  // show() called again → toggle visibility
+                hidden = !hidden;
+                if hidden {
+                    unsafe { let _ = ReleaseCapture(); _ = ShowWindow(hwnd, SW_HIDE); _ = InvalidateRect(hwnd, None, false); }
+                    destroy_cd(&mut st);
+                } else {
+                    paint_main(hwnd, &st, win_w, win_h, sc);
+                    unsafe { let _ = ShowWindow(hwnd, SW_SHOWNA); }
+                }
             }
             WAIT_EVENT(1) => {  // messages
                 let mut msg = MSG::default();
                 let mut repaint = false;
                 unsafe {
                     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                        if msg.message == WM_QUIT { want_exit = true; break; }
+                        if msg.message == WM_QUIT { break; }
                         if msg.message == CANCEL_MSG && msg.hwnd == hwnd {
                             st.pending = None;
                             destroy_cd(&mut st);
@@ -276,8 +287,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
                             if !matches!(msg.message, WM_MOUSEMOVE | WM_MOUSELEAVE) {
                                 repaint = true;
                             }
-                            if !msg_handler(hwnd, &msg, &mut st, &mut drag, &mut mouse_tracked, &mut want_exit, sc) {
-                                want_exit = true; break;
+                            if !msg_handler(hwnd, &msg, &mut st, &mut drag, &mut mouse_tracked, &mut hidden, sc) {
+                                hidden = true;
+                                repaint = false;
                             }
                         }
                         if let Some(cd) = st.cd_hwnd {
@@ -286,7 +298,7 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
                     }
                 }
                 tick(&mut st, hwnd, sc);
-                if repaint {
+                if repaint && !hidden {
                     paint_main(hwnd, &st, win_w, win_h, sc);
                 }
             }
@@ -445,16 +457,18 @@ extern "system" fn cd_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
 fn msg_handler(
     hwnd: HWND, msg: &MSG, st: &mut State,
     drag: &mut Option<(i32, i32)>, mouse_tracked: &mut bool,
-    want_exit: &mut bool, sc: f32,
+    hidden: &mut bool, sc: f32,
 ) -> bool {
     if msg.message == WM_KEYDOWN && msg.wParam.0 as u32 == 0x1B {
-        *want_exit = true;
-        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = KillTimer(hwnd, TMR_ID); }
+        *hidden = true;
+        destroy_cd(st);
+        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); }
         return false;
     }
     if msg.message == WM_ACTIVATE && msg.wParam.0 as u32 == 0 {
-        *want_exit = true;
-        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = KillTimer(hwnd, TMR_ID); }
+        *hidden = true;
+        destroy_cd(st);
+        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); }
         return false;
     }
     if msg.message == WM_TIMER && msg.wParam.0 == TMR_ID {
@@ -469,8 +483,9 @@ fn msg_handler(
         if y < (HDR_H as f32 * sc) as i32 {
             let cx = (W as f32 * sc) as i32 - (PAD as f32 * sc) as i32 - (20.0 * sc) as i32;
             if x >= cx && x <= cx + (20.0 * sc) as i32 {
-                *want_exit = true;
-                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = KillTimer(hwnd, TMR_ID); }
+                *hidden = true;
+                destroy_cd(st);
+                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); }
                 return false;
             }
             *drag = Some((x, y));
@@ -536,7 +551,7 @@ fn msg_handler(
             }
             st.pos = POINT { x: nx, y: ny };
         }
-        if !*mouse_tracked {
+        if !*hidden && !*mouse_tracked {
             let mut tm = TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE, hwndTrack: hwnd, ..Default::default()
@@ -690,12 +705,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
 
     for i in 0..AW_COUNT {
         let bx = sx + i as i32 * (bw + gap);
-        let sel = match st.awake {
-            AwakeMode::Off => i == 0,
-            AwakeMode::Forever => i == 1,
-            AwakeMode::Timed { .. } => i >= 2,
-        };
-        let (bc, tc) = if sel { (accent, st.theme.background) } else { (dim, fg) };
+        let (bc, tc) = (dim, fg);  // no highlighting — user request
         fill_rect(mem, bx, by, bx + bw, by + bh, bc);
         tcol(mem, tc);
         dw(mem, &mut to_utf16_z(AWAKE_NAMES[i]),
