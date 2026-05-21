@@ -111,16 +111,19 @@ impl PanelHandle {
 enum ParamKind {
     Brightness {
         current: u32,
+        #[allow(dead_code)]
         min: u32,
         max: u32,
     },
     Contrast {
         current: u32,
+        #[allow(dead_code)]
         min: u32,
         max: u32,
     },
     AudioVolume {
         current: u32,
+        #[allow(dead_code)]
         min: u32,
         max: u32,
     },
@@ -817,7 +820,7 @@ fn paint_panel(
 
     let mut current_y = sep_y + 8 - scroll_y;
 
-    for (mi, monitor) in state.monitors.iter().enumerate() {
+    for (_mi, monitor) in state.monitors.iter().enumerate() {
         // Monitor header
         let mon_hdr_y = current_y;
         let mon_hdr_rc = RECT {
@@ -859,9 +862,9 @@ fn paint_panel(
         current_y += mon_header_h;
 
         // Parameters for this monitor
-        for (pi, param) in monitor.params.iter().enumerate() {
+        for (_pi, param) in monitor.params.iter().enumerate() {
             let row_y = current_y;
-            let row_rc = RECT {
+            let _row_rc = RECT {
                 left: pad,
                 top: row_y,
                 right: width - pad,
@@ -958,7 +961,7 @@ fn paint_panel(
 
                     // Value (clickable pill)
                     let display = param_display_value(param);
-                    let mut val_rc = RECT {
+                    let val_rc = RECT {
                         left: bar_x,
                         top: row_y + 4,
                         right: bar_x + (120.0 * scale) as i32,

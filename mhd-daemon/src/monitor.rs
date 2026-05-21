@@ -124,6 +124,7 @@ impl PhysicalMonitorInfo {
     }
 
     /// Set brightness (0-100).
+    #[allow(dead_code)]
     pub fn set_brightness(&self, value: u32) -> Result<(), String> {
         let dxva2 = Dxva2::load()?;
         unsafe {
@@ -166,6 +167,7 @@ impl PhysicalMonitorInfo {
 #[derive(Debug, Clone, Copy)]
 pub struct VcpValue {
     /// 0=continuous (NORMAL), 1=non-continuous (TABLE), 2=value-only.
+    #[allow(dead_code)]
     pub vcp_type: u32,
     pub current: u32,
     pub max: u32,
