@@ -1552,13 +1552,9 @@ unsafe extern "system" fn settings_wndproc(
                 {
                     state.autostart = !state.autostart;
                     if state.autostart {
-                        match crate::autostart::install_autostart() {
-                            Ok(true) => {}
-                            Ok(false) => {}
-                            Err(e) => {
-                                eprintln!("mhd: failed to enable autostart: {e}");
-                                state.autostart = false;
-                            }
+                        if let Err(e) = crate::autostart::install_autostart() {
+                            eprintln!("mhd: failed to enable autostart: {e}");
+                            state.autostart = false;
                         }
                     } else {
                         if let Err(e) = crate::autostart::remove_autostart() {

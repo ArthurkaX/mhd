@@ -1,102 +1,131 @@
-//! Windows autostart via Scheduled Task (run at logon with highest privileges).
+//! Windows autostart via the `HKCU\…\Run` registry key.
 //!
-//! Uses `schtasks.exe` to create/delete a task named `mHD`. The task runs
-//! at user logon with the highest available privileges (elevated), so mhd
-//! can control DDC/CI brightness without needing to be launched as admin
-//! manually.
+//! This is the standard mechanism for tray‑based applications — the app
+//! runs at user logon **with normal user privileges**, so the tray icon
+//! is visible (elevated processes cannot show tray icons in Windows).
 //!
-//! If creating the task with highest privileges fails (e.g. the user is
-//! not an administrator), it falls back to limited privileges so autostart
-//! still works — just without elevation.
+//! Registry path:
+//!   HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+//!
+//! No admin rights are required to read/write this key.
 
-use std::process::Command;
+use windows::Win32::System::Registry::*;
+use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::core::PCWSTR;
 
-/// Task name used in the Windows Task Scheduler.
-const TASK_NAME: &str = "mHD";
+/// Registry value name for the mHD autostart entry.
+const VALUE_NAME: &str = "mHD";
 
-/// Install the autostart scheduled task.
-///
-/// Returns `Ok(true)` if created with highest privileges,
-/// `Ok(false)` if created with limited privileges,
-/// `Err(msg)` on failure.
-pub fn install_autostart() -> Result<bool, String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("cannot determine exe path: {e}"))?;
-    let exe_str = exe_path.to_string_lossy();
+/// Convert a Rust string to a null‑terminated UTF‑16 vector.
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
-    // Step 1: try with highest privileges (admin)
-    let highest_result = run_schtasks(&[
-        "/create",
-        "/tn", TASK_NAME,
-        "/tr", &format!("\"{exe_str}\""),
-        "/sc", "onlogon",
-        "/rl", "highest",
-        "/f",
-    ]);
+/// Get the full path to the current executable.
+fn exe_path() -> Result<String, String> {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("cannot determine exe path: {e}"))
+}
 
-    match highest_result {
-        Ok(_) => return Ok(true),
-        Err(e) => {
-            // If access denied or elevation failed, try limited
-            let limited_result = run_schtasks(&[
-                "/create",
-                "/tn", TASK_NAME,
-                "/tr", &format!("\"{exe_str}\""),
-                "/sc", "onlogon",
-                "/rl", "limited",
-                "/f",
-            ]);
-            match limited_result {
-                Ok(_) => {
-                    eprintln!("mhd: autostart installed (limited privileges — {e})");
-                    Ok(false)
-                }
-                Err(e2) => Err(format!(
-                    "failed to create scheduled task (highest: {e}, limited: {e2})"
-                )),
-            }
+/// Install autostart by writing to `HKCU\…\Run`.
+pub fn install_autostart() -> Result<(), String> {
+    let exe_str = exe_path()?;
+    let wide_value = to_wide(&exe_str);
+    let wide_name = to_wide(VALUE_NAME);
+
+    unsafe {
+        let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+        let mut key = HKEY::default();
+
+        let ret = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR::from_raw(path.as_ptr()),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        );
+        if ret != ERROR_SUCCESS {
+            return Err(format!("RegOpenKeyExW failed: {ret:?}"));
         }
+
+        // RegSetValueExW expects lpdata as Option<&[u8]>, the slice length is byte count
+        let slice = std::slice::from_raw_parts(
+            wide_value.as_ptr().cast::<u8>(),
+            (wide_value.len() - 1) * 2,
+        );
+
+        let ret = RegSetValueExW(
+            key,
+            PCWSTR::from_raw(wide_name.as_ptr()),
+            0,
+            REG_SZ,
+            Some(slice),
+        );
+        if ret != ERROR_SUCCESS {
+            return Err(format!("RegSetValueExW failed: {ret:?}"));
+        }
+
+        Ok(())
     }
 }
 
-/// Remove the autostart scheduled task.
+/// Remove autostart by deleting the value from `HKCU\…\Run`.
 pub fn remove_autostart() -> Result<(), String> {
-    run_schtasks(&["/delete", "/tn", TASK_NAME, "/f"])
-        .map(|_| ())
-        .map_err(|e| format!("failed to remove autostart: {e}"))
+    let wide_name = to_wide(VALUE_NAME);
+
+    unsafe {
+        let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+        let mut key = HKEY::default();
+
+        let ret = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR::from_raw(path.as_ptr()),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        );
+        if ret != ERROR_SUCCESS {
+            return Err(format!("RegOpenKeyExW failed: {ret:?}"));
+        }
+
+        let ret = RegDeleteValueW(key, PCWSTR::from_raw(wide_name.as_ptr()));
+        if ret != ERROR_SUCCESS {
+            return Err(format!("RegDeleteValueW failed: {ret:?}"));
+        }
+
+        Ok(())
+    }
 }
 
-/// Check whether the autostart task exists.
+/// Check whether autostart is currently enabled (value exists).
 #[allow(dead_code)]
 pub fn is_autostart_enabled() -> bool {
-    // Query with a simple check — exit code 0 means the task exists.
-    let output = Command::new("schtasks")
-        .args(["/query", "/tn", TASK_NAME])
-        .output();
+    let wide_name = to_wide(VALUE_NAME);
 
-    match output {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    }
-}
+    unsafe {
+        let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+        let mut key = HKEY::default();
 
-/// Run `schtasks.exe` with the given arguments.
-fn run_schtasks(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("schtasks")
-        .args(args)
-        .output()
-        .map_err(|e| format!("failed to launch schtasks.exe: {e}"))?;
+        let ret = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR::from_raw(path.as_ptr()),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        );
+        if ret != ERROR_SUCCESS {
+            return false;
+        }
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let msg = if stderr.is_empty() {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        } else {
-            stderr
-        };
-        Err(msg.trim().to_string())
+        let ret = RegQueryValueExW(
+            key,
+            PCWSTR::from_raw(wide_name.as_ptr()),
+            None,  // lpreserved
+            None,  // lptype
+            None,  // lpdata
+            None,  // lpcbdata
+        );
+        ret == ERROR_SUCCESS
     }
 }
