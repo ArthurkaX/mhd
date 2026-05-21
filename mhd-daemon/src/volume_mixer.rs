@@ -6,8 +6,8 @@
 //! to close.
 
 use std::ffi::c_void;
-use std::sync::{LazyLock, Mutex, OnceLock};
-use std::thread;
+use std::sync::{Arc, LazyLock, Mutex};
+
 
 use windows::core::{GUID, PCWSTR};
 use windows::Win32::Foundation::{
@@ -76,7 +76,7 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 
 // ── Global handle ──────────────────────────────────────────────────────
 
-static MIXER_HANDLE: OnceLock<MixerHandle> = OnceLock::new();
+static MIXER_STATE: Mutex<Option<MixerThreadControl>> = Mutex::new(None);
 static MIXER_THEME: LazyLock<Mutex<NativeTheme>> =
     LazyLock::new(|| Mutex::new(NativeTheme::default()));
 
@@ -85,29 +85,58 @@ pub fn set_theme(theme: NativeTheme) {
     *MIXER_THEME.lock().unwrap() = theme;
 }
 
-/// Show the volume mixer overlay (non-blocking).
-pub fn show() {
-    let handle = MIXER_HANDLE.get_or_init(|| {
-        let (handle, thread) = start_mixer_thread();
-        drop(thread); // detach
-        handle
-    });
-    let _ = handle.signal();
-}
-
-// ── Handle ─────────────────────────────────────────────────────────────
-
+/// Thread-safe wrapper around `HANDLE`.
 #[derive(Clone)]
-struct MixerHandle {
-    event: HANDLE,
-}
-unsafe impl Send for MixerHandle {}
-unsafe impl Sync for MixerHandle {}
+struct SafeHandle(HANDLE);
+unsafe impl Send for SafeHandle {}
+unsafe impl Sync for SafeHandle {}
 
-impl MixerHandle {
-    fn signal(&self) -> Result<(), ()> {
-        unsafe { SetEvent(self.event) }.map_err(|_| ())
+/// Thread control shared between `show()` and the mixer thread.
+struct MixerThreadControl {
+    /// Auto-reset event to wake the thread.
+    event: SafeHandle,
+    /// When `true` the thread should exit at its next opportunity.
+    dying: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for MixerThreadControl {
+    fn drop(&mut self) {
+        self.dying.store(true, std::sync::atomic::Ordering::Release);
+        unsafe { let _ = SetEvent(self.event.0); }
     }
+}
+
+/// Show the volume mixer overlay (non-blocking).
+/// Spawns a fresh thread each time; if a previous thread is still running
+/// it is signalled to exit before creating the new one.
+pub fn show() {
+    let mut guard = MIXER_STATE.lock().unwrap();
+
+    // Kill any previous thread first
+    *guard = None; // Drop triggers dying=true + SetEvent
+
+    let event = match unsafe { CreateEventW(None, false, false, None) } {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let dying = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let ctrl = MixerThreadControl {
+        event: SafeHandle(event),
+        dying: dying.clone(),
+    };
+
+    let show_event = ctrl.event.clone();
+    let show_dying = ctrl.dying.clone();
+    *guard = Some(ctrl);
+    drop(guard); // release mutex before spawn
+
+    std::thread::Builder::new()
+        .name("mhd-mixer".into())
+        .spawn(move || {
+            mixer_thread(show_event, show_dying);
+        })
+        .ok();
 }
 
 // ── Session data ───────────────────────────────────────────────────────
@@ -134,22 +163,8 @@ struct MixerState {
 
 // ── Thread entry point ─────────────────────────────────────────────────
 
-fn start_mixer_thread() -> (MixerHandle, thread::JoinHandle<()>) {
-    let event = unsafe { CreateEventW(None, false, false, None).expect("CreateEventW for mixer") };
-    let handle = MixerHandle { event };
-
-    let handle_clone = handle.clone();
-    let join = thread::Builder::new()
-        .name("mhd-mixer".into())
-        .spawn(move || {
-            mixer_thread(handle_clone);
-        })
-        .expect("spawn mixer thread");
-
-    (handle, join)
-}
-
-fn mixer_thread(handle: MixerHandle) {
+fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
+    let event = hdl.0;
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
@@ -213,8 +228,31 @@ fn mixer_thread(handle: MixerHandle) {
     let mut dragging_window: Option<(i32, i32)> = None;
     let mut mouse_tracked = false;
 
+    // Check if we should die before even starting
+    if dying.load(std::sync::atomic::Ordering::Acquire) {
+        unsafe { let _ = DestroyWindow(hwnd); CoUninitialize(); }
+        return;
+    }
+
+    // Show window immediately on first run
+    {
+        refresh_sessions(&mut state);
+        state.theme = MIXER_THEME.lock().unwrap().clone();
+        paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
+        state.visible = true;
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+        }
+    }
+    let mut want_exit = false;
+
     loop {
-        let wait_handles = [handle.event];
+        if want_exit || dying.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+
+        let wait_handles = [event];
         let res = unsafe {
             MsgWaitForMultipleObjects(Some(&wait_handles), false, INFINITE, QS_ALLINPUT)
         };
@@ -225,29 +263,15 @@ fn mixer_thread(handle: MixerHandle) {
 
         match res {
             WAIT_OBJECT_0 => {
-                if state.visible {
-                    // Toggle off — hide the mixer
-                    dragging_row = None;
-                    dragging_window = None;
-                    mouse_tracked = false;
-                    let _ = unsafe { ReleaseCapture() };
-                    state.visible = false;
-                    unsafe {
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                        let _ = KillTimer(hwnd, HIDE_TIMER_ID);
-                    }
-                } else {
-                    dragging_row = None;
-                    dragging_window = None;
-                    mouse_tracked = false;
-                    refresh_sessions(&mut state);
-                    state.theme = MIXER_THEME.lock().unwrap().clone();
-                    paint_mixer(hwnd, &mut state, &work, mixer_w, scale);
-                    state.visible = true;
-                    unsafe {
-                        let _ = ShowWindow(hwnd, SW_SHOWNA);
-                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
-                    }
+                // Signal from show() — toggle off and exit
+                dragging_row = None;
+                dragging_window = None;
+                mouse_tracked = false;
+                let _ = unsafe { ReleaseCapture() };
+                want_exit = true;
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                 }
             }
             MSG_ARRIVED => {
@@ -255,21 +279,24 @@ fn mixer_thread(handle: MixerHandle) {
                 unsafe {
                     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                         if msg.message == WM_QUIT {
+                            want_exit = true;
                             break;
                         }
                         if msg.message == WM_KEYDOWN && msg.wParam.0 as u32 == 0x1B {
-                            state.visible = false;
+                            want_exit = true;
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                            break;
                         }
                         if msg.message == WM_TIMER && msg.wParam.0 == HIDE_TIMER_ID {
                             dragging_row = None;
                             dragging_window = None;
                             mouse_tracked = false;
                             let _ = ReleaseCapture();
-                            state.visible = false;
+                            want_exit = true;
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                            break;
                         }
 
                         if msg.hwnd == hwnd {
@@ -364,9 +391,7 @@ fn mixer_thread(handle: MixerHandle) {
         }
     }
 
-    // Unreachable in practice — the thread lives until process exit.
-    // Cleanup is handled by the OS. Keep this for correctness.
-    #[allow(unreachable_code)]
+    // Thread exit — clean up everything
     unsafe {
         let _ = DestroyWindow(hwnd);
         CoUninitialize();

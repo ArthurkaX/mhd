@@ -6,8 +6,8 @@
 //! Interactive: click/drag on sliders, wheel, scrollable.
 
 use std::ffi::c_void;
-use std::sync::{LazyLock, Mutex, OnceLock};
-use std::thread;
+use std::sync::{Arc, LazyLock, Mutex};
+
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
@@ -69,9 +69,28 @@ const VCP_CONTRAST: u8 = 0x12;
 const VCP_AUDIO_VOLUME: u8 = 0x62;
 const VCP_INPUT_SOURCE: u8 = 0x60;
 
-// ── Global handle ──────────────────────────────────────────────────────
+/// Thread-safe wrapper around `HANDLE`.
+#[derive(Clone)]
+struct SafeHandle(HANDLE);
+unsafe impl Send for SafeHandle {}
+unsafe impl Sync for SafeHandle {}
 
-static PANEL_HANDLE: OnceLock<PanelHandle> = OnceLock::new();
+/// Thread control shared between `show()` and the panel thread.
+struct PanelThreadControl {
+    /// Auto-reset event to wake the thread.
+    event: SafeHandle,
+    /// When `true` the thread should exit at its next opportunity.
+    dying: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for PanelThreadControl {
+    fn drop(&mut self) {
+        self.dying.store(true, std::sync::atomic::Ordering::Release);
+        unsafe { let _ = SetEvent(self.event.0); }
+    }
+}
+
+static PANEL_STATE: Mutex<Option<PanelThreadControl>> = Mutex::new(None);
 static PANEL_THEME: LazyLock<Mutex<NativeTheme>> =
     LazyLock::new(|| Mutex::new(NativeTheme::default()));
 
@@ -79,32 +98,38 @@ pub fn set_theme(theme: NativeTheme) {
     *PANEL_THEME.lock().unwrap() = theme;
 }
 
-/// Show the monitor control panel overlay (toggle).
+/// Show the monitor control panel overlay (non-blocking).
+/// Spawns a fresh thread each time; if a previous thread is still running
+/// it is signalled to exit before creating the new one.
 pub fn show() {
-    let handle = PANEL_HANDLE.get_or_init(|| {
-        let (handle, thread) = start_panel_thread();
-        drop(thread); // detach
-        handle
-    });
-    let _ = handle.signal();
+    let mut guard = PANEL_STATE.lock().unwrap();
+
+    // Kill any previous thread first
+    *guard = None; // Drop triggers dying=true + SetEvent
+
+    let event = match unsafe { CreateEventW(None, false, false, None) } {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let dying = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let ctrl = PanelThreadControl {
+        event: SafeHandle(event),
+        dying: dying.clone(),
+    };
+
+    let show_event = ctrl.event.clone();
+    let show_dying = ctrl.dying.clone();
+    *guard = Some(ctrl);
+    drop(guard);
+
+    std::thread::Builder::new()
+        .name("mhd-monitor-panel".into())
+        .spawn(move || {
+            panel_thread(show_event, show_dying);
+        })
+        .ok();
 }
-
-// ── Handle ─────────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-struct PanelHandle {
-    event: HANDLE,
-}
-unsafe impl Send for PanelHandle {}
-unsafe impl Sync for PanelHandle {}
-
-impl PanelHandle {
-    fn signal(&self) -> Result<(), ()> {
-        unsafe { SetEvent(self.event) }.map_err(|_| ())
-    }
-}
-
-// ── Feature detection ───────────────────────────────────────────────────
 
 /// A detected controllable parameter on a monitor.
 #[derive(Debug, Clone)]
@@ -165,22 +190,8 @@ struct PanelState {
 
 // ── Thread entry point ──────────────────────────────────────────────────
 
-fn start_panel_thread() -> (PanelHandle, thread::JoinHandle<()>) {
-    let event = unsafe { CreateEventW(None, false, false, None).expect("CreateEventW for panel") };
-    let handle = PanelHandle { event };
-
-    let handle_clone = handle.clone();
-    let join = thread::Builder::new()
-        .name("mhd-monitor-panel".into())
-        .spawn(move || {
-            panel_thread(handle_clone);
-        })
-        .expect("spawn monitor panel thread");
-
-    (handle, join)
-}
-
-fn panel_thread(handle: PanelHandle) {
+fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
+    let event = hdl.0;
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -239,8 +250,26 @@ fn panel_thread(handle: PanelHandle) {
     let mut dragging_window: Option<(i32, i32)> = None;
     let mut mouse_tracked = false;
 
+    let mut want_exit = false;
+
+    // Show window immediately
+    {
+        refresh_monitors(&mut state);
+        state.theme = PANEL_THEME.lock().unwrap().clone();
+        paint_panel(hwnd, &mut state, &work, panel_w, scale);
+        state.visible = true;
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+        }
+    }
+
     loop {
-        let wait_handles = [handle.event];
+        if want_exit || dying.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+
+        let wait_handles = [event];
         let res = unsafe {
             MsgWaitForMultipleObjects(Some(&wait_handles), false, INFINITE, QS_ALLINPUT)
         };
@@ -249,31 +278,16 @@ fn panel_thread(handle: PanelHandle) {
 
         match res {
             WAIT_OBJECT_0 => {
-                if state.visible {
-                    // Toggle off
-                    dragging_row = None;
-                    dragging_window = None;
-                    mouse_tracked = false;
-                    state.scroll.y = 0;
-                    let _ = unsafe { ReleaseCapture() };
-                    state.visible = false;
-                    unsafe {
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                        let _ = KillTimer(hwnd, HIDE_TIMER_ID);
-                    }
-                } else {
-                    dragging_row = None;
-                    dragging_window = None;
-                    mouse_tracked = false;
-                    state.scroll.y = 0;
-                    refresh_monitors(&mut state);
-                    state.theme = PANEL_THEME.lock().unwrap().clone();
-                    paint_panel(hwnd, &mut state, &work, panel_w, scale);
-                    state.visible = true;
-                    unsafe {
-                        let _ = ShowWindow(hwnd, SW_SHOWNA);
-                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
-                    }
+                // Signal from show() — toggle off and exit
+                dragging_row = None;
+                dragging_window = None;
+                mouse_tracked = false;
+                state.scroll.y = 0;
+                let _ = unsafe { ReleaseCapture() };
+                want_exit = true;
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    let _ = KillTimer(hwnd, HIDE_TIMER_ID);
                 }
             }
             MSG_ARRIVED => {
@@ -281,13 +295,16 @@ fn panel_thread(handle: PanelHandle) {
                 unsafe {
                     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                         if msg.message == WM_QUIT {
+                            want_exit = true;
+                            state.scroll.y = 0;
                             break;
                         }
                         if msg.message == WM_KEYDOWN && msg.wParam.0 as u32 == 0x1B {
-                            state.visible = false;
+                            want_exit = true;
                             state.scroll.y = 0;
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                            break;
                         }
                         if msg.message == WM_TIMER && msg.wParam.0 == HIDE_TIMER_ID {
                             dragging_row = None;
@@ -295,9 +312,10 @@ fn panel_thread(handle: PanelHandle) {
                             mouse_tracked = false;
                             state.scroll.y = 0;
                             let _ = ReleaseCapture();
-                            state.visible = false;
+                            want_exit = true;
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                            break;
                         }
 
                         if msg.hwnd == hwnd {
@@ -436,7 +454,7 @@ fn panel_thread(handle: PanelHandle) {
         }
     }
 
-    #[allow(unreachable_code)]
+    // Cleanup
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
