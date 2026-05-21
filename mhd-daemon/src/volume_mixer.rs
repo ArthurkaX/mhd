@@ -46,7 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
     RegisterClassW, SetCursor, SetTimer, ShowWindow, TranslateMessage, UpdateLayeredWindow,
     CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_KEYDOWN,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_ACTIVATE, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR,
     WM_TIMER,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -301,6 +301,19 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
 
                         if msg.hwnd == hwnd {
                             match msg.message {
+                                WM_ACTIVATE => {
+                                    // Window lost focus — close immediately
+                                    if msg.wParam.0 as u32 == 0 /* WA_INACTIVE */ {
+                                        dragging_row = None;
+                                        dragging_window = None;
+                                        mouse_tracked = false;
+                                        let _ = ReleaseCapture();
+                                        want_exit = true;
+                                        let _ = ShowWindow(hwnd, SW_HIDE);
+                                        let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                                        break;
+                                    }
+                                }
                                 WM_LBUTTONDOWN => {
                                     let (x, y) = point_from_lparam(msg.lParam);
                                     if let Some((row, volume)) = hit_test_volume_bar(
