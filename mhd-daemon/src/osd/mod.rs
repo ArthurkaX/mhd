@@ -89,7 +89,7 @@ pub fn start_osd() -> OsdHandle {
 
 const OSD_WIDTH_BASE: i32 = 380;
 const OSD_HEIGHT_BASE: i32 = 112;
-const HIDE_TIMEOUT_MS: u32 = 1200;
+const HIDE_TIMEOUT_MS: u32 = 2000;
 const HIDE_TIMER_ID: usize = 1;
 const MSG_ARRIVED: WAIT_EVENT = WAIT_EVENT(1);
 
