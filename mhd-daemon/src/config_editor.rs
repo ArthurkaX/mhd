@@ -55,7 +55,6 @@ const COMBO_POPUP_WIDTH: i32 = 260;
 const COMBO_POPUP_ITEM_HEIGHT: i32 = 24;
 const COMBO_POPUP_MAX_VISIBLE: i32 = 8;
 const WM_MOUSELEAVE: u32 = 0x02A3;
-const EM_SETSEL: u32 = 0x00B1;
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -169,10 +168,14 @@ struct SettingsState {
     scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)
     recording_info: Option<(usize, bool)>,
-    /// Active inline edit control
-    edit_control: Option<HWND>,
     /// Index of binding being edited inline
     edit_idx: Option<usize>,
+    /// Buffer for the inline-edited text (no HWND child control — layered window compat)
+    edit_text: String,
+    /// Cursor position within edit_text
+    edit_cursor: usize,
+    /// Previous value to restore on Escape
+    edit_old_value: String,
 
     /// Hovered interactive target
     hovered_target: HoverTarget,
@@ -279,8 +282,10 @@ pub fn show_config_editor(handle: AppHandle) {
         bindings,
         scroll_y: 0,
         recording_info: None,
-        edit_control: None,
         edit_idx: None,
+        edit_text: String::new(),
+        edit_cursor: 0,
+        edit_old_value: String::new(),
         hovered_target: HoverTarget::None,
         is_dragging_scroll: false,
         scroll_drag_start_y: 0,
@@ -1234,6 +1239,7 @@ enum ButtonStyle {
 /// Fill a rectangle with fully transparent pixels (alpha=0).
 /// Used when an inline EDIT child window is active — the layered window
 /// composites the child control only where the parent bitmap has zero alpha.
+#[allow(dead_code)]
 fn clear_rect_in_buffer(bits: *mut c_void, win_w: i32, win_h: i32, rect: RECT) {
     if bits.is_null() || win_w <= 0 || win_h <= 0 {
         return;
@@ -1718,6 +1724,88 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
                 LRESULT(0)
+            }
+
+            WM_KEYDOWN => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.edit_idx.is_some() {
+                        let vk = wparam.0 as u32;
+                        match vk {
+                            0x0D /* VK_RETURN */ => {
+                                finish_inline_edit(state);
+                            }
+                            0x1B /* VK_ESCAPE */ => {
+                                cancel_inline_edit(state);
+                            }
+                            0x08 /* VK_BACK */ => {
+                                if state.edit_cursor > 0 {
+                                    let before = state.edit_text[..state.edit_cursor].to_string();
+                                    let after = state.edit_text[state.edit_cursor..].to_string();
+                                    state.edit_text = format!("{}{}",
+                                        &before[..before.len().saturating_sub(1)],
+                                        after
+                                    );
+                                    state.edit_cursor = state.edit_cursor.saturating_sub(1);
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x2E /* VK_DELETE */ => {
+                                if state.edit_cursor < state.edit_text.len() {
+                                    let before = state.edit_text[..state.edit_cursor].to_string();
+                                    let after = state.edit_text[state.edit_cursor..].to_string();
+                                    state.edit_text = format!("{}{}", before,
+                                        &after[1..]);
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x25 /* VK_LEFT */ => {
+                                if state.edit_cursor > 0 {
+                                    state.edit_cursor -= 1;
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x27 /* VK_RIGHT */ => {
+                                if state.edit_cursor < state.edit_text.len() {
+                                    state.edit_cursor += 1;
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x24 /* VK_HOME */ => {
+                                state.edit_cursor = 0;
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x23 /* VK_END */ => {
+                                state.edit_cursor = state.edit_text.len();
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            _ => {}
+                        }
+                        return LRESULT(0);
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_CHAR => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.edit_idx.is_some() {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        // Only insert printable characters
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            let before = state.edit_text[..state.edit_cursor].to_string();
+                            let after = state.edit_text[state.edit_cursor..].to_string();
+                            state.edit_text = format!("{}{}{}", before, ch, after);
+                            state.edit_cursor += 1;
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                        return LRESULT(0);
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
 
             WM_DESTROY => {
@@ -2263,14 +2351,37 @@ fn draw_binding_row(
     let param_bg = theme.surface.blend_over(theme.background);
     let is_param_hovered = state.hovered_target == HoverTarget::RowParam(idx);
     let is_recording_param = binding.is_recording_param;
-    let is_editing_param = state.edit_idx == Some(idx) && state.edit_control.is_some();
+    let is_editing_param = state.edit_idx == Some(idx);
 
     if is_editing_param {
-        // When an inline EDIT child window is active, make the param area
-        // transparent (alpha=0) so the child control's text is visible.
-        // The layered window (UpdateLayeredWindow) composites the child
-        // only where the parent bitmaps pixels have zero alpha.
-        clear_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc);
+        // Draw the editor background
+        let param_radius = (4.0 * lay.scale) as i32;
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, param_bg);
+
+        // Draw the edit text inline (no child control — layered window compat)
+        unsafe {
+            let _ = SetTextColor(hdc, theme.text.to_colorref());
+        }
+        let display = if state.edit_cursor <= state.edit_text.len() {
+            let (before, after) = state.edit_text.split_at(state.edit_cursor);
+            // Insert cursor character
+            format!("{}|{}", before, after)
+        } else {
+            state.edit_text.clone()
+        };
+        let mut wz = to_utf16_z(&display);
+        let mut text_rc = RECT {
+            left: param_rc.left + 8,
+            ..param_rc
+        };
+        unsafe {
+            let _ = DrawTextW(
+                hdc,
+                &mut wz,
+                &mut text_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
     } else {
         let mut current_bg = param_bg;
         if is_param_hovered {
@@ -2429,58 +2540,31 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     }
 }
 
-fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
-    if let Some(old) = state.edit_control.take() {
-        unsafe {
-            let _ = DestroyWindow(old);
-        }
-    }
-
-    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
-    let cls = to_utf16_z("EDIT");
-    let text = to_utf16_z(&state.bindings[idx].param);
-
-    let hwnd = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            PCWSTR::from_raw(cls.as_ptr()),
-            PCWSTR::from_raw(text.as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            rc.left,
-            rc.top,
-            rc.right - rc.left,
-            rc.bottom - rc.top,
-            state.hwnd,
-            HMENU::default(),
-            hinst,
-            None,
-        )
-    };
-
-    if let Ok(h) = hwnd {
-        unsafe {
-            let _ = SetFocus(h);
-            let _ = SendMessageW(h, EM_SETSEL, WPARAM(0), LPARAM(-1));
-        }
-        state.edit_control = Some(h);
-        state.edit_idx = Some(idx);
-    }
+fn spawn_inline_edit(state: &mut SettingsState, idx: usize, _rc: RECT) {
+    // No child HWND — we render the text directly in paint_settings
+    // to avoid layered‑window compositing issues (UpdateLayeredWindow +
+    // child EDIT controls are invisible).  Keyboard input is handled
+    // via WM_CHAR / WM_KEYDOWN in the main window procedure.
+    state.edit_idx = Some(idx);
+    state.edit_text = state.bindings[idx].param.clone();
+    state.edit_cursor = state.bindings[idx].param.len();
+    state.edit_old_value = state.bindings[idx].param.clone();
 }
 
 fn finish_inline_edit(state: &mut SettingsState) {
-    if let Some(h) = state.edit_control.take() {
-        if let Some(idx) = state.edit_idx.take() {
-            let mut buf = [0u16; 512];
-            let len = unsafe { GetWindowTextW(h, &mut buf) };
-            if len > 0 {
-                state.bindings[idx].param = String::from_utf16_lossy(&buf[..len as usize]);
-            } else {
-                state.bindings[idx].param = "".to_string();
-            }
-        }
-        unsafe {
-            let _ = DestroyWindow(h);
-        }
+    if let Some(idx) = state.edit_idx.take() {
+        state.bindings[idx].param = std::mem::take(&mut state.edit_text);
+        state.edit_cursor = 0;
+        state.edit_old_value.clear();
+        paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
+    }
+}
+
+fn cancel_inline_edit(state: &mut SettingsState) {
+    if let Some(idx) = state.edit_idx.take() {
+        state.bindings[idx].param = std::mem::take(&mut state.edit_old_value);
+        state.edit_text.clear();
+        state.edit_cursor = 0;
         paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
     }
 }
