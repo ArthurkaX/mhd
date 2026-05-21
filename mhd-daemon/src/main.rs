@@ -22,12 +22,78 @@ mod config_editor;
 
 use std::env;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
 use crate::config::path::{resolve_config_path, create_example_config, create_bundled_themes};
 
+/// Install a panic hook that writes the panic message and backtrace to
+/// `<config_dir>/crash.log` for post‑mortem analysis.
+///
+/// The file is overwritten on each panic so you always have the *last*
+/// crash log.
+fn setup_panic_hook() {
+    // Resolve config directory once (before any potential panic)
+    let config_path = resolve_config_path();
+    let log_dir = config_path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    std::panic::set_hook(Box::new(move |info| {
+        // Timestamp
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let panic_msg = if let Some(msg) = info.payload().downcast_ref::<&str>() {
+            msg.to_string()
+        } else if let Some(msg) = info.payload().downcast_ref::<String>() {
+            msg.clone()
+        } else {
+            "(non‑string panic payload)".to_string()
+        };
+
+        let location = info.location()
+            .map(|loc| format!("{}:{}", loc.file(), loc.line()))
+            .unwrap_or_else(|| "(unknown location)".to_string());
+
+        // Capture backtrace if available (Rust 1.71+ captures by default)
+        let backtrace = std::backtrace::Backtrace::capture();
+        let bt = format!("{backtrace}");
+
+        let log_content = format!(
+            "mhd crash log (timestamp: {ts})\n\
+             ─────────────────────────────────────\n\
+             Location: {location}\n\
+             Message:  {panic_msg}\n\
+             \n\
+             Backtrace:\n\
+             {bt}\n\
+             ─────────────────────────────────────\n\
+             END\n"
+        );
+
+        // Write to crash.log in the config directory.
+        // Silently ignore write errors – we're already panicking.
+        let log_path = log_dir.join("crash.log");
+        let _ = std::fs::write(&log_path, &log_content);
+
+        // Also try to write a more unique filename with timestamp
+        let dated_path = log_dir.join(format!("crash_{ts}.log"));
+        let _ = std::fs::write(&dated_path, &log_content);
+
+        // Print to stderr in case there's a console attached
+        eprintln!("mhd PANIC — crash details written to {}", log_path.display());
+    }));
+}
+
 fn main() -> ExitCode {
+    // Install panic hook — saves panic details to the config directory
+    // so crashes can be diagnosed without a terminal.
+    setup_panic_hook();
+
     // Try to attach to parent console so we can print messages if launched from a terminal.
     unsafe { let _ = AttachConsole(ATTACH_PARENT_PROCESS); }
 
