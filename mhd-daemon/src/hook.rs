@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -21,10 +21,12 @@ pub const WM_BINDING_CAPTURED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 struct HookState {
     handle: AppHandle,
     tx: ActionSender,
-    /// Set of keyboard VKs whose key-down was swallowed; their key-up should also be swallowed.
-    swallowed_keys: Mutex<HashSet<u32>>,
-    /// Set of mouse XButton numbers whose button-down was swallowed; their button-up should also be swallowed.
-    swallowed_mouse: Mutex<HashSet<u8>>,
+    /// Lock‑free set of VK codes (0‑255) whose key‑up should be swallowed.
+    /// Index = VK; `true` = swallowed.
+    swallowed_keys: Box<[AtomicBool; 256]>,
+    /// Lock‑free flags for mouse buttons whose up should be swallowed.
+    /// Bit 0 = XBUTTON1, bit 1 = XBUTTON2, bit 2 = MBUTTON.
+    swallowed_mouse: AtomicU8,
 }
 
 /// Wrapper to make HHOOK Send+Sync safe.
@@ -94,8 +96,8 @@ fn run_impl(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
     let state = Box::new(HookState {
         handle,
         tx,
-        swallowed_keys: Mutex::new(HashSet::new()),
-        swallowed_mouse: Mutex::new(HashSet::new()),
+        swallowed_keys: Box::new([const { AtomicBool::new(false) }; 256]),
+        swallowed_mouse: AtomicU8::new(0),
     });
     let state_ref: &'static HookState = Box::leak(state);
     let _ = HOOK_STATE.set(state_ref);
@@ -165,12 +167,13 @@ fn dispatch_trigger(state: &HookState, trigger: Trigger) -> bool {
             PhysicalKey::Keyboard(vk) => {
                 data |= 0 << 8; // type 0 = keyboard
                 data |= (vk as usize) << 16;
-                state.swallowed_keys.lock().unwrap().insert(vk as u32);
+                state.swallowed_keys[vk as usize].store(true, Ordering::Release);
             }
             PhysicalKey::MouseButton(btn) => {
                 data |= 1 << 8; // type 1 = mouse
                 data |= (btn as usize) << 16;
-                state.swallowed_mouse.lock().unwrap().insert(btn);
+                let bit = mouse_btn_bit(btn);
+                state.swallowed_mouse.fetch_or(bit, Ordering::Release);
             }
             PhysicalKey::WheelUp
             | PhysicalKey::WheelDown
@@ -217,10 +220,11 @@ fn dispatch_trigger(state: &HookState, trigger: Trigger) -> bool {
         // Mark as swallowed (wheel events are one-shot, no separate up)
         match trigger.key {
             PhysicalKey::Keyboard(vk) => {
-                state.swallowed_keys.lock().unwrap().insert(vk as u32);
+                state.swallowed_keys[vk as usize].store(true, Ordering::Release);
             }
             PhysicalKey::MouseButton(btn) => {
-                state.swallowed_mouse.lock().unwrap().insert(btn);
+                let bit = mouse_btn_bit(btn);
+                state.swallowed_mouse.fetch_or(bit, Ordering::Release);
             }
             PhysicalKey::WheelUp | PhysicalKey::WheelDown | PhysicalKey::WheelLeft | PhysicalKey::WheelRight => {
                 // No separate up — already swallowed by returning LRESULT(1)
@@ -268,7 +272,7 @@ unsafe extern "system" fn keyboard_hook_proc(
             if dispatch_trigger(state, trigger) {
                 return LRESULT(1);
             }
-        } else if is_key_up && state.swallowed_keys.lock().unwrap().take(&vk).is_some() {
+        } else if is_key_up && state.swallowed_keys[vk as usize].swap(false, Ordering::Acquire) {
             return LRESULT(1); // Swallow the key-up too
         }
     }
@@ -314,10 +318,11 @@ unsafe extern "system" fn mouse_hook_proc(
             }
             WM_XBUTTONUP => {
                 let xbutton = (ms_struct.mouseData >> 16) as u8;
-                if (xbutton == 1 || xbutton == 2)
-                    && state.swallowed_mouse.lock().unwrap().take(&xbutton).is_some()
-                {
-                    return LRESULT(1);
+                if xbutton == 1 || xbutton == 2 {
+                    let bit = mouse_btn_bit(xbutton);
+                    if state.swallowed_mouse.fetch_and(!bit, Ordering::Acquire) & bit != 0 {
+                        return LRESULT(1);
+                    }
                 }
             }
             WM_MBUTTONDOWN => {
@@ -332,8 +337,8 @@ unsafe extern "system" fn mouse_hook_proc(
                 }
             }
             WM_MBUTTONUP => {
-                let btn = 3u8;
-                if state.swallowed_mouse.lock().unwrap().take(&btn).is_some() {
+                let bit = mouse_btn_bit(3);
+                if state.swallowed_mouse.fetch_and(!bit, Ordering::Acquire) & bit != 0 {
                     return LRESULT(1);
                 }
             }
@@ -361,6 +366,12 @@ unsafe extern "system" fn mouse_hook_proc(
     }
 
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+}
+
+/// Convert mouse button number to bit flag for `swallowed_mouse` AtomicU8.
+/// 1 = XBUTTON1 → bit 0, 2 = XBUTTON2 → bit 1, 3 = MBUTTON → bit 2.
+fn mouse_btn_bit(btn: u8) -> u8 {
+    1u8.checked_shl(btn.saturating_sub(1) as u32).unwrap_or(0)
 }
 
 
