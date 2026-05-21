@@ -8,6 +8,7 @@ mod action;
 mod app;
 mod platform;
 mod monitor;
+mod monitor_panel;
 mod config;
 mod hook;
 mod tray;
@@ -85,6 +86,8 @@ fn main() -> ExitCode {
     osd_handle.set_theme(handle.theme());
     // Push initial theme to volume mixer
     volume_mixer::set_theme(handle.theme());
+    // Push initial theme to monitor panel
+    monitor_panel::set_theme(handle.theme());
 
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.

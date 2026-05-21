@@ -4,6 +4,7 @@ use crate::action::Action;
 use crate::app::{AppHandle, DaemonControl};
 use crate::monitor;
 use crate::platform;
+use crate::monitor_panel;
 use crate::volume_mixer;
 
 /// Messages sent from hook callbacks to the worker thread.
@@ -104,6 +105,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
     match action {
         Action::ReplaceKey { keys } => platform::send_keys(keys),
         Action::RunPs { command } => run_powershell(command),
+        Action::ShowMonitorPanel => {
+            monitor_panel::show();
+        }
         Action::ShowVolumeMixer => {
             volume_mixer::show();
         }

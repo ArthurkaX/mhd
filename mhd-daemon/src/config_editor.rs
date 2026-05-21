@@ -66,14 +66,15 @@ const EDITOR_ACTION_INDICES: &[usize] = &[
     1,  // run_ps
     2,  // brightness_up
     3,  // brightness_down
-    4,  // show_volume_mixer
-    5,  // media_volume_up
-    6,  // media_volume_down
-    7,  // media_mute
-    8,  // media_play_pause
-    9,  // media_stop
-    10, // media_last_track
-    11, // media_next_track
+    4,  // show_monitor_panel
+    5,  // show_volume_mixer
+    6,  // media_volume_up
+    7,  // media_volume_down
+    8,  // media_mute
+    9,  // media_play_pause
+    10, // media_stop
+    11, // media_last_track
+    12, // media_next_track
     12, // toggle_topmost
     13, // quit
 ];

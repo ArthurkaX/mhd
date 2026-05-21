@@ -13,6 +13,7 @@ pub enum Action {
     BrightnessDown { value: u32 },
     Vcp { code: u8, relative: bool, value: i32 },
     ShowVolumeMixer,
+    ShowMonitorPanel,
     /// Increase system volume by one step (VK_VOLUME_UP).
     MediaVolumeUp,
     /// Decrease system volume by one step (VK_VOLUME_DOWN).
@@ -96,6 +97,7 @@ impl Action {
                 }
                 Ok(Action::BrightnessDown { value })
             }
+            "show_monitor_panel" => Ok(Action::ShowMonitorPanel),
             "show_volume_mixer" => Ok(Action::ShowVolumeMixer),
             "media_volume_up" => Ok(Action::MediaVolumeUp),
             "media_volume_down" => Ok(Action::MediaVolumeDown),
@@ -232,6 +234,7 @@ impl Action {
             }
             Action::BrightnessUp { value } => format!("brightness_up: +{}", value),
             Action::BrightnessDown { value } => format!("brightness_down: -{}", value),
+            Action::ShowMonitorPanel => "show_monitor_panel".to_string(),
             Action::ShowVolumeMixer => "show_volume_mixer".to_string(),
             Action::MediaVolumeUp => "media_volume_up".to_string(),
             Action::MediaVolumeDown => "media_volume_down".to_string(),
@@ -290,6 +293,12 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         label: "Brightness Down",
         category: "Display",
         param_key: Some("value"),
+    },
+    ActionDescriptor {
+        name: "show_monitor_panel",
+        label: "Monitor Control",
+        category: "General",
+        param_key: None,
     },
     ActionDescriptor {
         name: "show_volume_mixer",
