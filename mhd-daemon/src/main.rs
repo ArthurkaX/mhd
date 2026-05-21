@@ -20,6 +20,7 @@ mod about;
 mod native_theme;
 mod config_editor;
 mod autostart;
+mod topmost;
 
 use std::env;
 use std::process::ExitCode;

@@ -164,7 +164,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::MediaStop => platform::send_media_key(0xB2),
         Action::MediaLastTrack => platform::send_media_key(0xB1),
         Action::MediaNextTrack => platform::send_media_key(0xB0),
-        Action::ToggleTopmost => toggle_topmost_pin(),
+        Action::ToggleTopmost => crate::topmost::toggle(),
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}
@@ -181,69 +181,3 @@ fn run_powershell(command: &str) {
     }
 }
 
-fn toggle_topmost_pin() {
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, SetWindowPos, SetWindowTextW,
-        GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
-    };
-
-    // Use ASCII marker that renders in ANY font on any Windows version
-    const PIN_MARKER: &str = " [Pin]";
-    // DWM colour for the border — accent blue/green
-    const PIN_BORDER_COLOR: u32 = 0x00FFAA44; // ABGR: orange-ish
-    const RESET_COLOR: u32 = 0xFFFFFFFE;      // DWMWA_COLOR_DEFAULT / NONE
-
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd == HWND::default() {
-            return;
-        }
-
-        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let is_topmost = (ex_style as u32 & WS_EX_TOPMOST.0) != 0;
-
-        if is_topmost {
-            // ── Unpin ────────────────────────────────────────────
-            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
-            // Restore original title (strip marker)
-            let mut buf = [0u16; 512];
-            let len = GetWindowTextW(hwnd, &mut buf);
-            if len > 0 {
-                let title = String::from_utf16_lossy(&buf[..len as usize]);
-                if let Some(pos) = title.rfind(PIN_MARKER) {
-                    let new_title = title[..pos].to_string();
-                    let wide: Vec<u16> = new_title.encode_utf16().chain(std::iter::once(0)).collect();
-                    let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(wide.as_ptr()));
-                }
-            }
-
-            // Reset DWM border / caption colour to default
-            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &RESET_COLOR as *const _ as *const _, 4);
-            let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &RESET_COLOR as *const _ as *const _, 4);
-        } else {
-            // ── Pin ──────────────────────────────────────────────
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
-            // Append marker to title
-            let mut buf = [0u16; 512];
-            let len = GetWindowTextW(hwnd, &mut buf);
-            if len > 0 {
-                let title = String::from_utf16_lossy(&buf[..len as usize]);
-                if !title.contains(PIN_MARKER) {
-                    let new_title = format!("{}{}", title, PIN_MARKER);
-                    let wide: Vec<u16> = new_title.encode_utf16().chain(std::iter::once(0)).collect();
-                    let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(wide.as_ptr()));
-                }
-            }
-
-            // Set DWM border colour (accent tint) — works on Win10 20H1+
-            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &PIN_BORDER_COLOR as *const _ as *const _, 4);
-            // Also tint the caption area slightly
-            let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &PIN_BORDER_COLOR as *const _ as *const _, 4);
-        }
-    }
-}
