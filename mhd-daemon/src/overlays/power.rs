@@ -318,7 +318,7 @@ fn tick(main: HWND, st: &mut PowerState, work: &RECT, w: i32, h: i32, sc: f32) {
     }
 
     if let Some(ref p) = st.pending.clone() {
-        let remaining = (p.execute_at * 60).saturating_sub(now_secs());
+        let remaining = p.execute_at.saturating_sub(now_secs());
         if remaining <= 10 && remaining > 0 && st.countdown_hwnd.is_none() {
             let cd = create_cd(main, p.op, remaining as u32, sc);
             st.countdown_hwnd = Some(cd);
@@ -513,14 +513,14 @@ fn handle_msg(
             if let Some(op) = hit_act(x, y, sc) {
                 match op {
                     PowerOp::TurnOffScreen => exec(PowerOp::TurnOffScreen, hwnd),
-                    _ => st.pending = Some(PendingAction { op, execute_at: now_min() }),
+                    _ => st.pending = Some(PendingAction { op, execute_at: now_secs() + 10 }),
                 }
                 paint_main(hwnd, st, work, w, h, sc);
                 return true;
             }
 
             if let Some((op, mins)) = hit_timer(x, y, sc) {
-                st.pending = Some(PendingAction { op, execute_at: now_min() + mins as u64 });
+                st.pending = Some(PendingAction { op, execute_at: now_secs() + mins as u64 * 60 });
                 paint_main(hwnd, st, work, w, h, sc);
                 return true;
             }
@@ -775,7 +775,7 @@ fn paint_main(hwnd: HWND, st: &PowerState, work: &RECT, w: i32, h: i32, sc: f32)
         let py = (PENDING_Y as f32 * sc) as i32;
         let ph = (PENDING_H as f32 * sc) as i32;
         let op_txt = match p.op { PowerOp::Sleep => "Sleep", PowerOp::Shutdown => "Shutdown", PowerOp::TurnOffScreen => "Screen off" };
-        let remaining = (p.execute_at * 60).saturating_sub(now_secs());
+        let remaining = p.execute_at.saturating_sub(now_secs());
         let m = remaining / 60; let s = remaining % 60;
         let txt = if remaining > 0 { format!("⏹  {} in {}:{:02}", op_txt, m, s) } else { format!("⏹  {} executing…", op_txt) };
 
