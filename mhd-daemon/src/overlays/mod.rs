@@ -4,6 +4,7 @@ pub mod about;
 pub mod autostart;
 pub mod monitor_panel;
 pub mod power;
+pub mod quickdraw;
 pub mod topmost;
 pub mod tray;
 pub mod volume_mixer;

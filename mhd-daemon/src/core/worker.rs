@@ -118,6 +118,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::PowerActions => {
             power::show(handle.theme());
         }
+        Action::QuickDraw => {
+            crate::overlays::quickdraw::show(handle.theme());
+        }
         Action::BrightnessUp { value } => {
             if monitor::adjust_brightness(*value as i32).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {
