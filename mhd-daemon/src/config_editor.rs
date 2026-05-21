@@ -74,8 +74,8 @@ const EDITOR_ACTION_INDICES: &[usize] = &[
     10, // media_stop
     11, // media_last_track
     12, // media_next_track
-    12, // toggle_topmost
-    13, // quit
+    13, // toggle_topmost
+    14, // quit
 ];
 
 #[derive(Debug, Clone)]
@@ -420,6 +420,7 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
                 Action::BrightnessDown { .. } => "brightness_down",
                 Action::SetBrightness { relative: true, value: v } if *v > 0 => "brightness_up",
                 Action::SetBrightness { .. } => "brightness_down",
+                Action::ShowMonitorPanel => "show_monitor_panel",
                 Action::ShowVolumeMixer => "show_volume_mixer",
                 Action::MediaVolumeUp => "media_volume_up",
                 Action::MediaVolumeDown => "media_volume_down",

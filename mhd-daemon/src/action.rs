@@ -356,8 +356,8 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     },
     ActionDescriptor {
         name: "quit",
-        label: "Quit",
-        category: "System",
+        label: "Quit mhd",
+        category: "General",
         param_key: None,
     },
 ];
