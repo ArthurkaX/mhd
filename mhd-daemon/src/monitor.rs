@@ -6,10 +6,10 @@
 
 use std::mem::transmute;
 
-use windows::Win32::Foundation::{BOOL, HANDLE};
-use windows::Win32::Graphics::Gdi::{MonitorFromWindow, HMONITOR, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Foundation::{BOOL, HANDLE, POINT};
+use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::LibraryLoader::GetProcAddress;
-use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 // ── FFI types ───────────────────────────────────────────────────────────
 
@@ -309,24 +309,109 @@ fn get_capabilities_inner(dxva2: &Dxva2, handle: PhysicalMonitorHandle) -> Resul
     }
 }
 
-// ── Legacy public API (single primary monitor) ──────────────────────────
+// ── Cursor-based public API ───────────────────────────────────────────
 
-fn primary_monitor() -> HMONITOR {
+/// Get the physical monitor(s) under the mouse cursor.
+fn cursor_monitor_raw() -> Result<(Dxva2, PhysicalMonitorHandle, String), String> {
+    let mut pt = POINT { x: 0, y: 0 };
     unsafe {
-        let desktop = GetDesktopWindow();
-        MonitorFromWindow(desktop, MONITOR_DEFAULTTONEAREST)
+        let _ = GetCursorPos(&mut pt);
     }
-}
-
-fn first_physical_monitor_raw() -> Result<(Dxva2, PhysicalMonitorHandle, String), String> {
     let dxva2 = Dxva2::load()?;
-    let hmon = primary_monitor();
+    let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
     let (handle, name) = get_physical_monitors_for_hmon(&dxva2, hmon)?;
     Ok((dxva2, handle, name))
 }
 
+pub fn adjust_brightness(delta: i32) -> Result<(), String> {
+    let (dxva2, handle, _) = cursor_monitor_raw()?;
+    unsafe {
+        let mut min = 0u32;
+        let mut cur = 0u32;
+        let mut max = 0u32;
+        if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
+            return Err("cannot get brightness".to_string());
+        }
+        let new = (cur as i32 + delta).clamp(0, 100) as u32;
+        if !(dxva2.set_brightness)(handle, new).as_bool() {
+            return Err("cannot set brightness".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub fn set_brightness_absolute(value: u32) -> Result<(), String> {
+    let (dxva2, handle, _) = cursor_monitor_raw()?;
+    let v = value.min(100);
+    unsafe {
+        if !(dxva2.set_brightness)(handle, v).as_bool() {
+            return Err("cannot set brightness".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub fn get_brightness() -> Result<(u32, String), String> {
+    let (dxva2, handle, name) = cursor_monitor_raw()?;
+    unsafe {
+        let mut min = 0u32;
+        let mut cur = 0u32;
+        let mut max = 0u32;
+        if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
+            return Err("cannot get brightness".to_string());
+        }
+        Ok((cur, name))
+    }
+}
+
+pub fn set_vcp_feature(code: u8, value: u32) -> Result<(), String> {
+    let (dxva2, handle, _) = cursor_monitor_raw()?;
+    unsafe {
+        if !(dxva2.set_vcp)(handle, code, value).as_bool() {
+            return Err(format!("cannot set VCP feature 0x{:02X}", code));
+        }
+    }
+    Ok(())
+}
+
+pub fn adjust_vcp_feature(code: u8, delta: i32) -> Result<(), String> {
+    let (dxva2, handle, _) = cursor_monitor_raw()?;
+    unsafe {
+        let mut vcp_type = 0u32;
+        let mut cur = 0u32;
+        let mut max = 0u32;
+        if !(dxva2.get_vcp)(handle, code, &mut vcp_type, &mut cur, &mut max).as_bool() {
+            return Err(format!("cannot get VCP feature 0x{:02X}", code));
+        }
+        let new = (cur as i32 + delta).clamp(0, max as i32) as u32;
+        if !(dxva2.set_vcp)(handle, code, new).as_bool() {
+            return Err(format!("cannot set VCP feature 0x{:02X}", code));
+        }
+    }
+    Ok(())
+}
+
+// ── Cursor-based enumeration for monitor panel ─────────────────────────
+
+/// Enumerate physical monitors under the cursor display.
+pub fn enumerate_cursor_monitor() -> Result<Vec<PhysicalMonitorInfo>, String> {
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetCursorPos(&mut pt);
+    }
+    let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+    let dxva2 = Dxva2::load()?;
+    match get_physical_monitors_for_hmon(&dxva2, hmon) {
+        Ok((handle, name)) => {
+            Ok(vec![PhysicalMonitorInfo { handle, name }])
+        }
+        Err(e) => Err(e),
+    }
+}
+
 // ── New: enumerate ALL physical monitors ────────────────────────────────
 
+#[allow(dead_code)]
 /// Enumerate all physical monitors across all display monitors.
 /// Returns a list of (handle, name) for each physical monitor.
 pub fn enumerate_all_monitors() -> Result<Vec<PhysicalMonitorInfo>, String> {
@@ -354,6 +439,7 @@ pub fn enumerate_all_monitors() -> Result<Vec<PhysicalMonitorInfo>, String> {
     Ok(result)
 }
 
+#[allow(dead_code)]
 fn enumerate_display_monitors() -> Vec<HMONITOR> {
     let mut monitors: Vec<HMONITOR> = Vec::new();
 
@@ -411,59 +497,4 @@ fn get_physical_monitors_for_hmon(
 
 // ── Legacy API wrappers (backwards compatibility) ───────────────────────
 
-pub fn get_brightness() -> Result<(u32, String), String> {
-    let (dxva2, handle, name) = first_physical_monitor_raw()?;
-    unsafe {
-        let mut min = 0u32;
-        let mut cur = 0u32;
-        let mut max = 0u32;
-        if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
-            return Err("cannot get brightness".to_string());
-        }
-        Ok((cur, name))
-    }
-}
-
-pub fn set_brightness_absolute(value: u32) -> Result<(), String> {
-    let (dxva2, handle, _) = first_physical_monitor_raw()?;
-    let v = value.min(100);
-    unsafe {
-        if !(dxva2.set_brightness)(handle, v).as_bool() {
-            return Err("cannot set brightness".to_string());
-        }
-    }
-    Ok(())
-}
-
-pub fn adjust_brightness(delta: i32) -> Result<(), String> {
-    let (current, _) = get_brightness()?;
-    let new = (current as i32 + delta).clamp(0, 100) as u32;
-    set_brightness_absolute(new)
-}
-
-pub fn set_vcp_feature(code: u8, value: u32) -> Result<(), String> {
-    let (dxva2, handle, _) = first_physical_monitor_raw()?;
-    unsafe {
-        if !(dxva2.set_vcp)(handle, code, value).as_bool() {
-            return Err(format!("cannot set VCP feature 0x{:02X}", code));
-        }
-    }
-    Ok(())
-}
-
-pub fn adjust_vcp_feature(code: u8, delta: i32) -> Result<(), String> {
-    let (dxva2, handle, _) = first_physical_monitor_raw()?;
-    unsafe {
-        let mut vcp_type = 0u32;
-        let mut cur = 0u32;
-        let mut max = 0u32;
-        if !(dxva2.get_vcp)(handle, code, &mut vcp_type, &mut cur, &mut max).as_bool() {
-            return Err(format!("cannot get VCP feature 0x{:02X}", code));
-        }
-        let new = (cur as i32 + delta).clamp(0, max as i32) as u32;
-        if !(dxva2.set_vcp)(handle, code, new).as_bool() {
-            return Err(format!("cannot set VCP feature 0x{:02X}", code));
-        }
-    }
-    Ok(())
-}
+// ── Enumerate ALL physical monitors (for compatibility) ─────────────────

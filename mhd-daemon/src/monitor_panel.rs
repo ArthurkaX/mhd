@@ -16,7 +16,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, FillRect, GetDC, MonitorFromWindow, GetMonitorInfoW, ReleaseDC, SelectObject,
+    DrawTextW, FillRect, GetDC, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, SelectObject,
     SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CLIP_DEFAULT_PRECIS,
     DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT, DT_RIGHT,
     DT_SINGLELINE, DT_VCENTER, DT_CENTER, FF_DONTCARE, FW_NORMAL, HDC, MONITORINFO,
@@ -31,7 +31,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
     RegisterClassW, SetCursor, SetTimer, ShowWindow, TranslateMessage, UpdateLayeredWindow,
     CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
@@ -465,7 +465,7 @@ fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>) {
 fn refresh_monitors(state: &mut PanelState) {
     state.monitors.clear();
 
-    let monitors = match monitor::enumerate_all_monitors() {
+    let monitors = match monitor::enumerate_cursor_monitor() {
         Ok(m) => m,
         Err(_) => return,
     };
@@ -675,8 +675,9 @@ fn param_display_value(param: &ParamInfo) -> String {
 
 fn monitor_work_rect() -> RECT {
     unsafe {
-        let desktop = GetDesktopWindow();
-        let hmon = MonitorFromWindow(desktop, MONITOR_DEFAULTTONEAREST);
+        let mut pt = POINT { x: 0, y: 0 };
+        let _ = GetCursorPos(&mut pt);
+        let hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
