@@ -7,17 +7,14 @@
 mod core;
 mod app;
 mod monitor;
-mod monitor_panel;
 mod config;
-mod tray;
-mod volume_mixer;
+mod overlays;
 mod osd;
-mod about;
 mod config_editor;
-mod autostart;
-mod topmost;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
 pub use core::{action, hook, native_theme, platform, trigger, worker};
+// Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
+pub use overlays::{about, autostart, monitor_panel, topmost, tray, volume_mixer};
 
 use std::env;
 use std::process::ExitCode;
