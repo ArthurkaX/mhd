@@ -70,6 +70,9 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Step size for media_volume_up / media_volume_down (default: 1).
 # Each step sends one VK_VOLUME_UP/DOWN key press.
 # volume_step = 1
+#
+# Autostart mhd at user logon (via scheduled task with highest privileges).
+# autostart = true
 
 # Quit mhd (Ctrl+Alt+F12).
 [[binding]]

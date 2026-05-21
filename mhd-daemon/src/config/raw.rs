@@ -31,6 +31,9 @@ pub struct RawConfig {
     /// Volume adjustment step for `media_volume_up` / `media_volume_down`.
     #[serde(default)]
     pub volume_step: Option<u32>,
+    /// Whether to autostart mhd at user logon (via scheduled task).
+    #[serde(default)]
+    pub autostart: Option<bool>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }

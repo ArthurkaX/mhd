@@ -30,6 +30,8 @@ pub struct AppConfig {
     pub theme: Option<String>,
     /// Volume adjustment step for `media_volume_up` / `media_volume_down`.
     pub volume_step: u32,
+    /// Autostart at user logon (via scheduled task).
+    pub autostart: bool,
 }
 
 impl AppConfig {
@@ -127,6 +129,7 @@ impl AppConfig {
             trigger_map,
             theme,
             volume_step: raw.volume_step.unwrap_or(1),
+            autostart: raw.autostart.unwrap_or(false),
         })
     }
 
@@ -187,5 +190,10 @@ impl AppConfig {
     /// Volume adjustment step.
     pub fn volume_step(&self) -> u32 {
         self.volume_step
+    }
+
+    /// Whether autostart is enabled.
+    pub fn autostart(&self) -> bool {
+        self.autostart
     }
 }

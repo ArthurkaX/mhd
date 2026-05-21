@@ -19,6 +19,7 @@ mod osd;
 mod about;
 mod native_theme;
 mod config_editor;
+mod autostart;
 
 use std::env;
 use std::process::ExitCode;

@@ -97,6 +97,7 @@ struct UIBinding {
 enum HoverTarget {
     None,
     ThemeCombo,
+    AutostartToggle,
     ApplyBtn,
     CloseBtn,
     AddBtn,
@@ -128,6 +129,7 @@ struct Layout {
     combo_x: i32,
     combo_w: i32,
     combo_y: i32,
+    autostart_y: i32,
     arrow_x: i32,
     arrow_w: i32,
 
@@ -166,6 +168,9 @@ struct SettingsState {
     combo_popup: Option<HWND>,
     /// Whether the combo popup is open
     combo_open: Arc<AtomicBool>,
+
+    /// Autostart at user logon (via scheduled task)
+    autostart: bool,
 
     /// List of bindings being edited
     bindings: Vec<UIBinding>,
@@ -286,6 +291,7 @@ pub fn show_config_editor(handle: AppHandle) {
         hover_sel: None,
         combo_popup: None,
         combo_open,
+        autostart: handle.config.lock().unwrap().autostart(),
         bindings,
         scroll_y: 0,
         recording_info: None,
@@ -370,6 +376,7 @@ fn compute_layout(scale: f32) -> Layout {
     let combo_y = appearance_y + (30.0 * scale) as i32;
 
     let shortcuts_y = combo_y + combo_h + pad;
+    let autostart_y = combo_y + combo_h + (8.0 * scale) as i32;
     let list_y = shortcuts_y + (48.0 * scale) as i32;
     let list_h = (win_h - footer_h) - list_y - pad / 2;
 
@@ -390,6 +397,7 @@ fn compute_layout(scale: f32) -> Layout {
         footer_h,
         appearance_y,
         shortcuts_y,
+        autostart_y,
         label_w,
         combo_x,
         combo_w,
@@ -724,6 +732,81 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     };
     unsafe {
         let _ = DrawTextW(dib_dc, &mut theme_help_wz, &mut theme_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // ── Autostart toggle ───────────────────────────────────────────
+    unsafe {
+        let _ = SelectObject(dib_dc, body_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let mut auto_label_wz = to_utf16_z("Autostart");
+    let mut auto_label_rc = RECT {
+        left: lay.pad,
+        top: lay.autostart_y,
+        right: lay.pad + lay.label_w,
+        bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut auto_label_wz, &mut auto_label_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // Toggle switch (checkbox-like)
+    let toggle_h = (18.0 * lay.scale) as i32;
+    let toggle_w = (36.0 * lay.scale) as i32;
+    let toggle_y = lay.autostart_y + ((20.0 * lay.scale) as i32 - toggle_h) / 2;
+    let toggle_rc = RECT {
+        left: lay.combo_x,
+        top: toggle_y,
+        right: lay.combo_x + toggle_w,
+        bottom: toggle_y + toggle_h,
+    };
+    let is_auto_hovered = state.hovered_target == HoverTarget::AutostartToggle;
+    let auto_on = state.autostart;
+
+    let toggle_bg = if auto_on {
+        theme.accent
+    } else {
+        theme.surface.blend_over(theme.background)
+    };
+    let toggle_bg2 = if is_auto_hovered {
+        theme.hover.blend_over(toggle_bg)
+    } else {
+        toggle_bg
+    };
+    let toggle_radius = toggle_h / 2;
+    draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, toggle_rc, toggle_radius, toggle_bg2);
+
+    // Knob
+    let knob_margin = (2.0 * lay.scale) as i32;
+    let knob_diam = toggle_h - knob_margin * 2;
+    let knob_left = if auto_on {
+        toggle_rc.right - knob_diam - knob_margin
+    } else {
+        toggle_rc.left + knob_margin
+    };
+    let knob_color = if auto_on { theme.text } else { theme.text_muted };
+    draw_rounded_rect_in_buffer(
+        bits, lay.win_w, lay.win_h,
+        RECT { left: knob_left, top: toggle_rc.top + knob_margin, right: knob_left + knob_diam, bottom: toggle_rc.bottom - knob_margin },
+        knob_diam / 2,
+        knob_color,
+    );
+
+    // Autostart help text
+    unsafe {
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
+    let auto_status = if auto_on { "Enabled (runs at logon with highest privileges)" } else { "Start mhd automatically when you log on" };
+    let mut auto_help_wz = to_utf16_z(auto_status);
+    let mut auto_help_rc = RECT {
+        left: lay.combo_x + toggle_w + lay.pad,
+        top: lay.autostart_y,
+        right: lay.win_w - lay.pad,
+        bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut auto_help_wz, &mut auto_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     }
 
     // ── Shortcuts Section ──────────────────────────────────────────
@@ -1461,6 +1544,31 @@ unsafe extern "system" fn settings_wndproc(
                     return LRESULT(0);
                 }
 
+                // Autostart toggle click
+                if y >= lay.autostart_y
+                    && y < lay.autostart_y + (20.0 * lay.scale) as i32
+                    && x >= lay.combo_x
+                    && x < lay.combo_x + (36.0 * lay.scale) as i32
+                {
+                    state.autostart = !state.autostart;
+                    if state.autostart {
+                        match crate::autostart::install_autostart() {
+                            Ok(true) => {}
+                            Ok(false) => {}
+                            Err(e) => {
+                                eprintln!("mhd: failed to enable autostart: {e}");
+                                state.autostart = false;
+                            }
+                        }
+                    } else {
+                        if let Err(e) = crate::autostart::remove_autostart() {
+                            eprintln!("mhd: failed to disable autostart: {e}");
+                        }
+                    }
+                    paint_settings(hwnd, state_ptr, &lay);
+                    return LRESULT(0);
+                }
+
                 // ── Bindings list interaction ────────────────────────
                 if y >= lay.list_y && y < lay.list_y + lay.list_h {
                     // Close any active edit if clicking elsewhere
@@ -1568,6 +1676,14 @@ unsafe extern "system" fn settings_wndproc(
                             && x < lay.combo_x + lay.combo_w
                         {
                             target = HoverTarget::ThemeCombo;
+                        }
+                        // Autostart toggle
+                        else if y >= lay.autostart_y
+                            && y < lay.autostart_y + (20.0 * lay.scale) as i32
+                            && x >= lay.combo_x
+                            && x < lay.combo_x + (36.0 * lay.scale) as i32
+                        {
+                            target = HoverTarget::AutostartToggle;
                         }
                         // Apply button
                         else if x >= lay.apply_x
@@ -2885,6 +3001,7 @@ fn apply_settings(state: &mut SettingsState) {
         &state.handle.config_path,
         &config_name,
         &state.bindings,
+        state.autostart,
         &state.handle,
     ) {
         eprintln!("mhd: settings error: {e}");
@@ -2905,6 +3022,7 @@ fn save_config(
     path: &std::path::Path,
     theme: &str,
     bindings: &[UIBinding],
+    autostart: bool,
     handle: &AppHandle,
 ) -> Result<(), String> {
     // Validate no duplicate triggers within same scheme
@@ -2940,6 +3058,13 @@ fn save_config(
             "active_scheme".to_string(),
             toml::Value::String(active_scheme),
         );
+
+        // Update autostart
+        if autostart {
+            table.insert("autostart".to_string(), toml::Value::Boolean(true));
+        } else {
+            table.remove("autostart");
+        }
 
         // Update bindings
         let mut new_bindings = Vec::new();
