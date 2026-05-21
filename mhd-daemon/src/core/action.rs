@@ -32,6 +32,8 @@ pub enum Action {
     MediaNextTrack,
     /// Toggle always‑on‑top for the currently focused window.
     ToggleTopmost,
+    /// Show the Power Control overlay (awake/sleep/shutdown).
+    PowerActions,
     Quit,
 }
 
@@ -106,6 +108,7 @@ impl Action {
             "media_last_track" => Ok(Action::MediaLastTrack),
             "toggle_topmost" => Ok(Action::ToggleTopmost),
             "media_next_track" => Ok(Action::MediaNextTrack),
+            "power_actions" => Ok(Action::PowerActions),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
         }
@@ -252,6 +255,7 @@ impl Action {
             Action::MediaStop => "media_stop".to_string(),
             Action::MediaLastTrack => "media_last_track".to_string(),
             Action::ToggleTopmost => "toggle_topmost".to_string(),
+            Action::PowerActions => "power_actions".to_string(),
             Action::MediaNextTrack => "media_next_track".to_string(),
             Action::Quit => "quit".to_string(),
         }
@@ -379,6 +383,12 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "toggle_topmost",
         label: "Toggle Always On Top",
+        category: "General",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "power_actions",
+        label: "Power Control",
         category: "General",
         param_key: None,
     },

@@ -6,6 +6,7 @@ use crate::monitor;
 use crate::platform;
 use crate::monitor_panel;
 use crate::volume_mixer;
+use crate::power;
 
 /// Messages sent from hook callbacks to the worker thread.
 #[derive(Debug)]
@@ -113,6 +114,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         }
         Action::ShowVolumeMixer => {
             volume_mixer::show(handle.theme());
+        }
+        Action::PowerActions => {
+            power::show(handle.theme());
         }
         Action::BrightnessUp { value } => {
             if monitor::adjust_brightness(*value as i32).is_ok() {

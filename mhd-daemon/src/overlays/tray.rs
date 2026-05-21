@@ -26,6 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::app::{AppHandle, DaemonControl};
 use crate::monitor_panel;
 use crate::volume_mixer;
+use crate::power;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
@@ -34,6 +35,7 @@ const CMD_EDIT_CONFIG: usize = 2;
 const CMD_RELOAD: usize = 3;
 const CMD_VOLUME_MIXER: usize = 6;
 const CMD_MONITOR_PANEL: usize = 7;
+const CMD_POWER: usize = 8;
 const CMD_ABOUT: usize = 4;
 const CMD_QUIT: usize = 5;
 
@@ -161,10 +163,19 @@ fn show_menu(hwnd: HWND) {
             PCWSTR::from_raw(volume_mixer.as_ptr()),
         );
 
-        let about: Vec<u16> = "About\0".encode_utf16().collect();
+        let power_ctrl: Vec<u16> = "Power Control\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
             5,
+            MF_BYPOSITION | MF_STRING,
+            CMD_POWER,
+            PCWSTR::from_raw(power_ctrl.as_ptr()),
+        );
+
+        let about: Vec<u16> = "About\0".encode_utf16().collect();
+        let _ = InsertMenuW(
+            menu,
+            6,
             MF_BYPOSITION | MF_STRING,
             CMD_ABOUT,
             PCWSTR::from_raw(about.as_ptr()),
@@ -173,7 +184,7 @@ fn show_menu(hwnd: HWND) {
         let quit: Vec<u16> = "Quit mhd\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            6,
+            7,
             MF_BYPOSITION | MF_STRING,
             CMD_QUIT,
             PCWSTR::from_raw(quit.as_ptr()),
@@ -258,6 +269,9 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_VOLUME_MIXER => {
                         volume_mixer::show(state.app.theme());
+                    }
+                    CMD_POWER => {
+                        power::show(state.app.theme());
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());
