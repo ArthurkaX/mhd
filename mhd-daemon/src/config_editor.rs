@@ -20,7 +20,11 @@ use windows::Win32::Foundation::{
     COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
@@ -175,6 +179,8 @@ struct SettingsState {
     edit_text: String,
     /// Cursor position within edit_text
     edit_cursor: usize,
+    /// Start of selection for inline edit (None = no selection)
+    edit_select_start: Option<usize>,
     /// Previous value to restore on Escape
     edit_old_value: String,
 
@@ -286,6 +292,7 @@ pub fn show_config_editor(handle: AppHandle) {
         edit_idx: None,
         edit_text: String::new(),
         edit_cursor: 0,
+        edit_select_start: None,
         edit_old_value: String::new(),
         hovered_target: HoverTarget::None,
         is_dragging_scroll: false,
@@ -1738,6 +1745,16 @@ unsafe extern "system" fn settings_wndproc(
                     let state = &mut *state_ptr;
                     if state.edit_idx.is_some() {
                         let vk = wparam.0 as u32;
+                        let ctrl_down = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
+                        let shift_down = GetAsyncKeyState(VK_SHIFT.0 as i32) < 0;
+                        let is_selected = state.edit_select_start.is_some()
+                            && state.edit_select_start.unwrap() != state.edit_cursor;
+                        let (sel_start, sel_end) = if let Some(sel) = state.edit_select_start {
+                            (sel.min(state.edit_cursor), sel.max(state.edit_cursor))
+                        } else {
+                            (state.edit_cursor, state.edit_cursor)
+                        };
+
                         match vk {
                             0x0D /* VK_RETURN */ => {
                                 finish_inline_edit(state);
@@ -1745,45 +1762,167 @@ unsafe extern "system" fn settings_wndproc(
                             0x1B /* VK_ESCAPE */ => {
                                 cancel_inline_edit(state);
                             }
-                            0x08 /* VK_BACK */ => {
-                                if state.edit_cursor > 0 {
-                                    let before = state.edit_text[..state.edit_cursor].to_string();
-                                    let after = state.edit_text[state.edit_cursor..].to_string();
-                                    state.edit_text = format!("{}{}",
-                                        &before[..before.len().saturating_sub(1)],
-                                        after
-                                    );
-                                    state.edit_cursor = state.edit_cursor.saturating_sub(1);
-                                    paint_settings(hwnd, state_ptr, &state.layout);
+                            // Ctrl+A — Select All
+                            0x41 if ctrl_down => {
+                                state.edit_select_start = Some(0);
+                                state.edit_cursor = state.edit_text.len();
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            // Ctrl+C — Copy
+                            0x43 if ctrl_down => {
+                                if is_selected {
+                                    let text = &state.edit_text[sel_start..sel_end];
+                                    if OpenClipboard(hwnd).is_ok() {
+                                        let _ = EmptyClipboard();
+                                        let wide: Vec<u16> = text.encode_utf16().collect();
+                                        let size = (wide.len() + 1) * 2;
+                                        if let Ok(handle) = GlobalAlloc(GMEM_MOVEABLE, size) {
+                                            let ptr = GlobalLock(handle) as *mut u16;
+                                            if !ptr.is_null() {
+                                                std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+                                                ptr.add(wide.len()).write(0);
+                                                let _ = GlobalUnlock(handle);
+                                                let _ = SetClipboardData(13u32, windows::Win32::Foundation::HANDLE(handle.0));
+                                            }
+                                        }
+                                        let _ = CloseClipboard();
+                                    }
                                 }
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            // Ctrl+V — Paste
+                            0x56 if ctrl_down => {
+                                // Replace selection with pasted text
+                                if is_selected {
+                                    let (s, e) = (sel_start, sel_end);
+                                    state.edit_text.drain(s..e);
+                                    state.edit_cursor = s;
+                                    state.edit_select_start = None;
+                                }
+                                if let Ok(_h) = OpenClipboard(hwnd) {
+                                    if let Ok(handle) = GetClipboardData(13u32) {
+                                        let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(handle.0)) as *const u16;
+                                        if !ptr.is_null() {
+                                            let len = (0..).find(|&i| *ptr.add(i) == 0).unwrap_or(0);
+                                            if len > 0 {
+                                                let paste_str = String::from_utf16_lossy(
+                                                    std::slice::from_raw_parts(ptr, len)
+                                                );
+                                                // Only paste printable characters
+                                                let filtered: String = paste_str.chars()
+                                                    .filter(|ch| ch.is_ascii_graphic() || *ch == ' ')
+                                                    .collect();
+                                                state.edit_text.insert_str(state.edit_cursor, &filtered);
+                                                state.edit_cursor += filtered.len();
+                                            }
+                                            let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(handle.0));
+                                        }
+                                    }
+                                    let _ = CloseClipboard();
+                                }
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            // Ctrl+X — Cut
+                            0x58 if ctrl_down => {
+                                if is_selected {
+                                    let text = &state.edit_text[sel_start..sel_end];
+                                    if OpenClipboard(hwnd).is_ok() {
+                                        let _ = EmptyClipboard();
+                                        let wide: Vec<u16> = text.encode_utf16().collect();
+                                        let size = (wide.len() + 1) * 2;
+                                        if let Ok(handle) = GlobalAlloc(GMEM_MOVEABLE, size) {
+                                            let ptr = GlobalLock(handle) as *mut u16;
+                                            if !ptr.is_null() {
+                                                std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+                                                ptr.add(wide.len()).write(0);
+                                                let _ = GlobalUnlock(handle);
+                                                let _ = SetClipboardData(13u32, windows::Win32::Foundation::HANDLE(handle.0));
+                                            }
+                                        }
+                                        let _ = CloseClipboard();
+                                    }
+                                    // Then delete selection
+                                    state.edit_text.drain(sel_start..sel_end);
+                                    state.edit_cursor = sel_start;
+                                    state.edit_select_start = None;
+                                }
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x08 /* VK_BACK */ => {
+                                if is_selected {
+                                    state.edit_text.drain(sel_start..sel_end);
+                                    state.edit_cursor = sel_start;
+                                    state.edit_select_start = None;
+                                } else if state.edit_cursor > 0 {
+                                    state.edit_text.remove(state.edit_cursor - 1);
+                                    state.edit_cursor = state.edit_cursor.saturating_sub(1);
+                                }
+                                paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x2E /* VK_DELETE */ => {
-                                if state.edit_cursor < state.edit_text.len() {
-                                    let before = state.edit_text[..state.edit_cursor].to_string();
-                                    let after = state.edit_text[state.edit_cursor..].to_string();
-                                    state.edit_text = format!("{}{}", before,
-                                        &after[1..]);
-                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                if is_selected {
+                                    state.edit_text.drain(sel_start..sel_end);
+                                    state.edit_cursor = sel_start;
+                                    state.edit_select_start = None;
+                                } else if state.edit_cursor < state.edit_text.len() {
+                                    state.edit_text.remove(state.edit_cursor);
                                 }
+                                paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x25 /* VK_LEFT */ => {
-                                if state.edit_cursor > 0 {
-                                    state.edit_cursor -= 1;
-                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                if shift_down {
+                                    if state.edit_select_start.is_none() {
+                                        state.edit_select_start = Some(state.edit_cursor);
+                                    }
+                                    if state.edit_cursor > 0 {
+                                        state.edit_cursor -= 1;
+                                    }
+                                } else {
+                                    state.edit_select_start = None;
+                                    if state.edit_cursor > 0 {
+                                        state.edit_cursor -= 1;
+                                    }
                                 }
+                                paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x27 /* VK_RIGHT */ => {
-                                if state.edit_cursor < state.edit_text.len() {
-                                    state.edit_cursor += 1;
-                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                if shift_down {
+                                    if state.edit_select_start.is_none() {
+                                        state.edit_select_start = Some(state.edit_cursor);
+                                    }
+                                    if state.edit_cursor < state.edit_text.len() {
+                                        state.edit_cursor += 1;
+                                    }
+                                } else {
+                                    state.edit_select_start = None;
+                                    if state.edit_cursor < state.edit_text.len() {
+                                        state.edit_cursor += 1;
+                                    }
                                 }
+                                paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x24 /* VK_HOME */ => {
-                                state.edit_cursor = 0;
+                                if shift_down {
+                                    if state.edit_select_start.is_none() {
+                                        state.edit_select_start = Some(state.edit_cursor);
+                                    }
+                                    state.edit_cursor = 0;
+                                } else {
+                                    state.edit_select_start = None;
+                                    state.edit_cursor = 0;
+                                }
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x23 /* VK_END */ => {
-                                state.edit_cursor = state.edit_text.len();
+                                if shift_down {
+                                    if state.edit_select_start.is_none() {
+                                        state.edit_select_start = Some(state.edit_cursor);
+                                    }
+                                    state.edit_cursor = state.edit_text.len();
+                                } else {
+                                    state.edit_select_start = None;
+                                    state.edit_cursor = state.edit_text.len();
+                                }
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             _ => {}
@@ -1802,9 +1941,16 @@ unsafe extern "system" fn settings_wndproc(
                         let ch = (wparam.0 as u32) as u8 as char;
                         // Only insert printable characters
                         if ch.is_ascii_graphic() || ch == ' ' {
-                            let before = state.edit_text[..state.edit_cursor].to_string();
-                            let after = state.edit_text[state.edit_cursor..].to_string();
-                            state.edit_text = format!("{}{}{}", before, ch, after);
+                            // Delete selection if any
+                            if let Some(sel) = state.edit_select_start {
+                                if sel != state.edit_cursor {
+                                    let (s, e) = (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
+                                    state.edit_text.drain(s..e);
+                                    state.edit_cursor = s;
+                                    state.edit_select_start = None;
+                                }
+                            }
+                            state.edit_text.insert(state.edit_cursor, ch);
                             state.edit_cursor += 1;
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
@@ -2367,27 +2513,91 @@ fn draw_binding_row(
 
         // Draw the edit text inline (no child control — layered window compat)
         unsafe {
-            let _ = SetTextColor(hdc, theme.text.to_colorref());
+            let _ = SelectObject(hdc, small_font);
         }
-        let display = if state.edit_cursor <= state.edit_text.len() {
-            let (before, after) = state.edit_text.split_at(state.edit_cursor);
-            // Insert cursor character
-            format!("{}|{}", before, after)
-        } else {
-            state.edit_text.clone()
+
+        let text_x = param_rc.left + 8;
+        let text_y = param_rc.top;
+        let text_h = param_rc.bottom - param_rc.top;
+        let accent = theme.accent;
+
+        // Determine selection range
+        let sel = state.edit_select_start;
+        let (sel_start, sel_end) = match sel {
+            Some(s) if s != state.edit_cursor => (s.min(state.edit_cursor), s.max(state.edit_cursor)),
+            _ => (state.edit_cursor, state.edit_cursor),
         };
-        let mut wz = to_utf16_z(&display);
-        let mut text_rc = RECT {
-            left: param_rc.left + 8,
-            ..param_rc
-        };
-        unsafe {
-            let _ = DrawTextW(
-                hdc,
-                &mut wz,
-                &mut text_rc,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        let has_selection = sel.is_some() && sel.unwrap() != state.edit_cursor;
+
+        if has_selection {
+            let full_text = &state.edit_text;
+            let before = &full_text[..sel_start];
+            let selected = &full_text[sel_start..sel_end];
+            let after = &full_text[sel_end..];
+
+            let wz_before = to_utf16_z(before);
+            let wz_selected = to_utf16_z(selected);
+
+            let mut before_size = SIZE::default();
+            let mut selected_size = SIZE::default();
+            unsafe {
+                let _ = GetTextExtentPoint32W(hdc, &wz_before, &mut before_size);
+                let _ = GetTextExtentPoint32W(hdc, &wz_selected, &mut selected_size);
+            }
+
+            let sel_rect_left = text_x + before_size.cx;
+            let sel_rect_right = sel_rect_left + selected_size.cx;
+
+            // Draw selection background
+            draw_rounded_rect_in_buffer(
+                bits, lay.win_w, lay.win_h,
+                RECT { left: sel_rect_left, top: param_rc.top + 2, right: sel_rect_right, bottom: param_rc.bottom - 2 },
+                0, accent,
             );
+
+            // Draw before (normal color)
+            unsafe {
+                let _ = SetTextColor(hdc, theme.text.to_colorref());
+                let mut rc = RECT { left: text_x, top: text_y, right: sel_rect_left, bottom: text_y + text_h };
+                let _ = DrawTextW(hdc, &mut (before.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
+            // Draw selected (white on accent bg)
+            unsafe {
+                let _ = SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                let mut rc = RECT { left: sel_rect_left, top: text_y, right: sel_rect_right, bottom: text_y + text_h };
+                let _ = DrawTextW(hdc, &mut (selected.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
+            // Draw after (normal color)
+            unsafe {
+                let _ = SetTextColor(hdc, theme.text.to_colorref());
+                let mut rc = RECT { left: sel_rect_right, top: text_y, right: param_rc.right - 8, bottom: text_y + text_h };
+                let _ = DrawTextW(hdc, &mut (after.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
+
+            // Draw cursor at the "active" end of selection
+            let cursor_x = if state.edit_cursor == sel_end { sel_rect_right } else { sel_rect_left };
+            let buf_size = (lay.win_w * lay.win_h) as usize;
+            let cursor_color = theme.text.to_premultiplied_argb_pixel();
+            for dy in (text_h / 4)..(text_h * 3 / 4) {
+                let px = cursor_x + text_y * lay.win_w + dy * lay.win_w;
+                if px >= 0 && (px as usize) < buf_size {
+                    unsafe { *bits.add(px as usize).cast::<u32>() = cursor_color; }
+                }
+            }
+        } else {
+            // No selection — draw text with cursor
+            unsafe { let _ = SetTextColor(hdc, theme.text.to_colorref()); }
+            let display = if state.edit_cursor <= state.edit_text.len() {
+                let (before, after) = state.edit_text.split_at(state.edit_cursor);
+                format!("{}|{}", before, after)
+            } else {
+                state.edit_text.clone()
+            };
+            let mut wz = to_utf16_z(&display);
+            let mut text_rc = RECT { left: text_x, ..param_rc };
+            unsafe {
+                let _ = DrawTextW(hdc, &mut wz, &mut text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            }
         }
     } else {
         let mut current_bg = param_bg;
@@ -2573,6 +2783,7 @@ fn spawn_inline_edit(state: &mut SettingsState, idx: usize, _rc: RECT) {
     state.edit_idx = Some(idx);
     state.edit_text = state.bindings[idx].param.clone();
     state.edit_cursor = state.bindings[idx].param.len();
+    state.edit_select_start = None;
     state.edit_old_value = state.bindings[idx].param.clone();
 }
 
@@ -2580,6 +2791,7 @@ fn finish_inline_edit(state: &mut SettingsState) {
     if let Some(idx) = state.edit_idx.take() {
         state.bindings[idx].param = std::mem::take(&mut state.edit_text);
         state.edit_cursor = 0;
+        state.edit_select_start = None;
         state.edit_old_value.clear();
         paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
     }
@@ -2590,6 +2802,7 @@ fn cancel_inline_edit(state: &mut SettingsState) {
         state.bindings[idx].param = std::mem::take(&mut state.edit_old_value);
         state.edit_text.clear();
         state.edit_cursor = 0;
+        state.edit_select_start = None;
         paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
     }
 }
