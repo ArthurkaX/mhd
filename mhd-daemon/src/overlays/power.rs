@@ -45,7 +45,7 @@ use crate::native_theme::{Argb, NativeTheme};
 use crate::osd::to_utf16_z;
 
 // ── Layout (unscaled, scale = 96 DPI) ─────────────────────────────────
-const W: i32 = 340;
+const W: i32 = 380;
 const PAD: i32 = 14;
 
 // Y positions
@@ -68,18 +68,18 @@ const PEND_H: i32 = 26;
 const TOTAL_H: i32 = 234;
 
 // Awake button sizes
-const AW_BTN_W: i32 = 46;
-const AW_BTN_GAP: i32 = 4;
+const AW_BTN_W: i32 = 54;
+const AW_BTN_GAP: i32 = 5;
 const AW_COUNT: usize = 6;
 
 // Action button sizes
-const ACT_BTN_W: i32 = 100;
+const ACT_BTN_W: i32 = 110;
 const ACT_BTN_GAP: i32 = 10;
 
 // Timer buttons
 const TMR_BTN_W: i32 = 48;
 const TMR_BTN_GAP: i32 = 4;
-const TMR_LABEL_W: i32 = 52;
+const TMR_LABEL_W: i32 = 70;
 
 const RADIUS: i32 = 8;
 const WM_MOUSELEAVE: u32 = 0x02A3;
