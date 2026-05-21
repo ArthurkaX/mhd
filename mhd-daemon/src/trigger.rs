@@ -56,14 +56,14 @@ pub struct ParsedTrigger {
     pub original: String,
 }
 
-/// Parse a keys value (same syntax as trigger) for replace_key action.
-/// Unlike triggers, this allows modifier-only combinations.
-pub fn parse_keys(s: &str) -> Result<KeyCombo, String> {
+/// Internal: parse a modifier+key string into (modifiers, optional key).
+/// Used by both `parse_keys` and `parse_trigger`.
+fn parse_combo_inner(s: &str, label: &str) -> Result<(Modifiers, Option<PhysicalKey>), String> {
     let original = s.trim().to_lowercase();
     let parts: Vec<&str> = original.split('+').map(|p| p.trim()).collect();
 
     if parts.is_empty() {
-        return Err("empty keys".to_string());
+        return Err(format!("empty {}", label));
     }
 
     let mut modifiers = Modifiers(0);
@@ -73,54 +73,34 @@ pub fn parse_keys(s: &str) -> Result<KeyCombo, String> {
     for part in &parts {
         if let Some(mod_flag) = parse_modifier(part) {
             if !seen_modifiers.insert(*part) {
-                return Err(format!("duplicate modifier in keys: '{}'", part));
+                return Err(format!("duplicate modifier in {}: '{}'", label, part));
             }
             modifiers = Modifiers(modifiers.0 | mod_flag);
         } else if let Some(parsed_key) = parse_key(part)? {
             if key.is_some() {
-                return Err(format!("multiple non-modifier keys in keys: '{}'", s));
+                return Err(format!("multiple non-modifier keys in {}: '{}'", label, s));
             }
             key = Some(parsed_key);
         } else {
-            return Err(format!("unknown key: '{}'", part));
+            return Err(format!("unknown key in {}: '{}'", label, part));
         }
     }
 
+    Ok((modifiers, key))
+}
+
+/// Parse a keys value (same syntax as trigger) for replace_key action.
+/// Unlike triggers, this allows modifier-only combinations.
+pub fn parse_keys(s: &str) -> Result<KeyCombo, String> {
+    let (modifiers, key) = parse_combo_inner(s, "keys")?;
     Ok(KeyCombo { modifiers, key })
 }
 
 /// Parse a trigger string like "alt+shift+1" or "mouseButton1".
 /// A trigger MUST contain exactly one non-modifier key/button.
 pub fn parse_trigger(s: &str) -> Result<ParsedTrigger, String> {
-    let original = s.trim().to_lowercase();
-    let parts: Vec<&str> = original.split('+').map(|p| p.trim()).collect();
-
-    if parts.is_empty() {
-        return Err("empty trigger".to_string());
-    }
-
-    let mut modifiers = Modifiers(0);
-    let mut key: Option<PhysicalKey> = None;
-    let mut seen_modifiers = HashSet::new();
-
-    for part in &parts {
-        if let Some(mod_flag) = parse_modifier(part) {
-            if !seen_modifiers.insert(*part) {
-                return Err(format!("duplicate modifier in trigger: '{}'", part));
-            }
-            modifiers = Modifiers(modifiers.0 | mod_flag);
-        } else if let Some(parsed_key) = parse_key(part)? {
-            if key.is_some() {
-                return Err(format!("multiple non-modifier keys in trigger: '{}'", s));
-            }
-            key = Some(parsed_key);
-        } else {
-            return Err(format!("unknown key: '{}'", part));
-        }
-    }
-
+    let (modifiers, key) = parse_combo_inner(s, "trigger")?;
     let key = key.ok_or_else(|| format!("no non-modifier key in trigger: '{}'", s))?;
-
     Ok(ParsedTrigger {
         trigger: Trigger { modifiers, key },
         original: s.trim().to_string(),
