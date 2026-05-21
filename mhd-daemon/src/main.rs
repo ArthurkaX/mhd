@@ -4,23 +4,20 @@
 
 #![windows_subsystem = "windows"]
 
-mod action;
+mod core;
 mod app;
-mod platform;
 mod monitor;
 mod monitor_panel;
 mod config;
-mod hook;
 mod tray;
-mod trigger;
 mod volume_mixer;
-mod worker;
 mod osd;
 mod about;
-mod native_theme;
 mod config_editor;
 mod autostart;
 mod topmost;
+// Re-export core modules so existing `crate::hook::*` etc. still resolve.
+pub use core::{action, hook, native_theme, platform, trigger, worker};
 
 use std::env;
 use std::process::ExitCode;
