@@ -16,12 +16,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
 
-/// GitHub repo for sherpa-onnx.
-const SHERPA_ONNX_REPO: &str = "k2-fsa/sherpa-onnx";
-/// Fallback archive name (used if GitHub API fails).
-/// This is the v1.10.30 naming pattern (old style).
-const FALLBACK_ARCHIVE: &str = "sherpa-onnx-v1.10.30-win-x64-shared.tar.bz2";
-const FALLBACK_VERSION: &str = "v1.10.30";
+/// Known working Windows release archives.
+/// (version, archive_name, url)
+const WINDOWS_RELEASES: &[(&str, &str, &str)] = &[
+    // Latest (May 2026)
+    ("v1.13.2", "sherpa-onnx-v1.13.2-win-x64-shared-MD-Release.tar.bz2",
+     "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-win-x64-shared-MD-Release.tar.bz2"),
+    // Old naming (v1.10.x)
+    ("v1.10.30", "sherpa-onnx-v1.10.30-win-x64-shared.tar.bz2",
+     "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.10.30/sherpa-onnx-v1.10.30-win-x64-shared.tar.bz2"),
+];
 
 /// Known Parakeet models (name → HuggingFace repo).
 const PARAKEET_MODELS: &[(&str, &str)] = &[
@@ -40,23 +44,21 @@ const MODEL_FILES: &[&str] = &[
     "joiner.int8.onnx",
 ];
 
-/// Canonical transcribe directory under `~/.config/mhd/`.
+// ── Path helpers ─────────────────────────────────────────────────────
+
 fn transcribe_dir() -> Result<PathBuf, String> {
     let base = get_config_dir()?;
     Ok(base.join("transcribe"))
 }
 
-/// Path to sherpa-onnx-ws.exe.
 pub fn sherpa_onnx_path() -> Result<PathBuf, String> {
     Ok(transcribe_dir()?.join("bin").join("sherpa-onnx-ws.exe"))
 }
 
-/// Directory for model files.
 pub fn models_dir() -> Result<PathBuf, String> {
     Ok(transcribe_dir()?.join("models"))
 }
 
-/// Get `~/.config/mhd` directory, creating if needed.
 fn get_config_dir() -> Result<PathBuf, String> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -67,214 +69,133 @@ fn get_config_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Ensure `sherpa-onnx-ws.exe` exists locally.
-/// If missing, downloads from GitHub releases.
+// ── sherpa-onnx-ws download ─────────────────────────────────────────
+
 pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
     let exe_path = sherpa_onnx_path()?;
     if exe_path.exists() {
+        eprintln!("mhd: sherpa-onnx-ws found at {}", exe_path.display());
         return Ok(exe_path);
     }
 
-    // Create bin directory
     let bin_dir = exe_path.parent().unwrap();
     fs::create_dir_all(bin_dir)
         .map_err(|e| format!("cannot create bin dir: {e}"))?;
 
-    // Determine the best archive URL
-    let (version, archive_name) = get_windows_archive_info().unwrap_or_else(|_| {
-        (FALLBACK_VERSION.to_string(), FALLBACK_ARCHIVE.to_string())
-    });
+    for &(version, archive_name, url) in WINDOWS_RELEASES {
+        eprintln!("mhd: trying sherpa-onnx-ws {version} ...");
+        let archive_path = bin_dir.join(archive_name);
 
-    let url = format!(
-        "https://github.com/{SHERPA_ONNX_REPO}/releases/download/{version}/{archive_name}"
-    );
+        // Download
+        eprintln!("mhd:   downloading {archive_name} ...");
+        let status = Command::new("curl.exe")
+            .args(["-L", "-o", &archive_path.to_string_lossy(), url])
+            .status()
+            .map_err(|e| format!("cannot run curl.exe: {e}"))?;
 
-    eprintln!("mhd: downloading sherpa-onnx-ws ({version})...");
-    eprintln!("mhd: url: {url}");
+        if !status.success() {
+            eprintln!("mhd:   download failed, trying next...");
+            let _ = fs::remove_file(&archive_path);
+            continue;
+        }
 
-    let archive_path = bin_dir.join(&archive_name);
+        // Reject error pages (less than 1 MB)
+        if fs::metadata(&archive_path).ok().map(|m| m.len()).unwrap_or(0) < 1024 * 1024 {
+            eprintln!("mhd:   archive too small (probably error page), trying next...");
+            let _ = fs::remove_file(&archive_path);
+            continue;
+        }
 
-    // Download using curl.exe (available on Windows 10+)
-    let status = Command::new("curl.exe")
-        .args(["-L", "-o", &archive_path.to_string_lossy(), &url])
-        .status()
-        .map_err(|e| format!("cannot run curl.exe: {e}"))?;
+        // Extract
+        eprintln!("mhd:   extracting ...");
+        let status = Command::new("tar.exe")
+            .args(["-xf", &archive_path.to_string_lossy(), "-C", &bin_dir.to_string_lossy()])
+            .status()
+            .map_err(|e| format!("cannot run tar.exe: {e}"))?;
 
-    if !status.success() {
-        return Err(format!("curl download failed (exit: {status:?})"));
-    }
+        if !status.success() {
+            eprintln!("mhd:   extraction failed, trying next...");
+            let _ = fs::remove_file(&archive_path);
+            continue;
+        }
 
-    // Extract using tar.exe (available on Windows 10+)
-    eprintln!("mhd: extracting...");
-    let status = Command::new("tar.exe")
-        .args(["-xf", &archive_path.to_string_lossy(), "-C", &bin_dir.to_string_lossy()])
-        .status()
-        .map_err(|e| format!("cannot run tar.exe: {e}"))?;
+        let _ = fs::remove_file(&archive_path);
 
-    if !status.success() {
-        return Err(format!("tar extraction failed (exit: {status:?})"));
-    }
-
-    // Find the binary in the extracted tree
-    let found = find_and_move_exe(bin_dir, &exe_path);
-
-    // Remove archive
-    let _ = fs::remove_file(&archive_path);
-
-    if found {
-        eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
-        Ok(exe_path)
-    } else {
-        Err(format!(
-            "sherpa-onnx-ws.exe not found after extraction in {}",
-            bin_dir.display()
-        ))
-    }
-}
-
-/// Recursively search for sherpa-onnx-ws.exe in `dir`, move to `dest`.
-fn find_and_move_exe(dir: &Path, dest: &Path) -> bool {
-    // First check common paths
-    let candidates = [
-        dir.join("bin").join("sherpa-onnx-ws.exe"),
-        dir.join("sherpa-onnx-ws.exe"),
-        dir.join("build").join("bin").join("sherpa-onnx-ws.exe"),
-        dir.join("Release").join("bin").join("sherpa-onnx-ws.exe"),
-    ];
-
-    for c in &candidates {
-        if c.exists() {
-            let _ = fs::rename(c, dest);
-            // Clean up extracted dir
-            if let Some(parent) = c.parent() {
-                if let Some(grand) = parent.parent() {
-                    let _ = fs::remove_dir_all(grand);
+        // Find sherpa-onnx-ws.exe in the extracted tree.
+        // The archive extracts to a subdirectory like:
+        //   sherpa-onnx-v1.13.2-win-x64-shared-MD-Release/bin/sherpa-onnx-ws.exe
+        if let Some(extracted) = find_subdir(bin_dir, "sherpa-onnx") {
+            let candidate = extracted.join("bin").join("sherpa-onnx-ws.exe");
+            if candidate.exists() {
+                eprintln!("mhd:   found at {}", candidate.display());
+                let _ = fs::rename(&candidate, &exe_path);
+                let _ = fs::remove_dir_all(&extracted);
+                eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
+                return Ok(exe_path);
+            }
+            // Search recursively
+            let mut found = Vec::new();
+            collect_files(&extracted, &mut found);
+            for f in &found {
+                if f.ends_with("sherpa-onnx-ws.exe") {
+                    eprintln!("mhd:   found at {}", f.display());
+                    let _ = fs::rename(f, &exe_path);
+                    let _ = fs::remove_dir_all(&extracted);
+                    eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
+                    return Ok(exe_path);
                 }
             }
-            return dest.exists();
+            let _ = fs::remove_dir_all(&extracted);
         }
+
+        eprintln!("mhd:   sherpa-onnx-ws.exe not found in archive");
     }
 
-    // Fallback: walk the directory tree
+    Err("sherpa-onnx-ws.exe could not be downloaded from any known release".to_string())
+}
+
+/// Find first subdirectory starting with `prefix` inside `dir`.
+fn find_subdir(dir: &Path, prefix: &str) -> Option<PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() && path != dest.parent().unwrap() {
-                if find_and_move_exe(&path, dest) {
-                    return true;
+            if path.is_dir() {
+                if let Some(name) = path.file_name() {
+                    if name.to_string_lossy().starts_with(prefix) {
+                        return Some(path);
+                    }
                 }
             }
-        }
-    }
-    false
-}
-
-/// Determine the correct Windows release archive name.
-///
-/// Tries the GitHub API to get the latest release, then finds a suitable
-/// Windows x64 shared archive asset.
-fn get_windows_archive_info() -> Result<(String, String), String> {
-    let url = format!("https://api.github.com/repos/{SHERPA_ONNX_REPO}/releases/latest");
-    let output = Command::new("curl.exe")
-        .args(["-s", "-L", "-H", "Accept: application/json", &url])
-        .output()
-        .map_err(|e| format!("cannot run curl: {e}"))?;
-
-    if !output.status.success() {
-        return Err("GitHub API request failed".into());
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
-
-    // Extract tag_name
-    let version = extract_json_string(&body, "tag_name")
-        .ok_or_else(|| "no tag_name in response".to_string())?;
-
-    // Find a Windows x64 shared archive (non-cuda, non-debug, non-jni)
-    // Patterns in the assets list:
-    //   "sherpa-onnx-v{ver}-win-x64-shared.tar.bz2"           (old naming)
-    //   "sherpa-onnx-v{ver}-win-x64-shared-MD-Release.tar.bz2" (new naming)
-    //   "sherpa-onnx-v{ver}-win-x64-shared-MT-Release.tar.bz2"
-    //   "sherpa-onnx-v{ver}-win-x64-static-MD-Release.tar.bz2"
-    //   etc.
-    //
-    // We prefer: shared (not static), not cuda, not debug, not jni, not no-tts
-
-    let asset_names = extract_asset_names(&body);
-    let preferred = asset_names.iter().find(|name| {
-        name.contains("win-x64")
-            && name.contains("shared")
-            && !name.contains("static")
-            && !name.contains("cuda")
-            && !name.contains("Debug")
-            && !name.contains("RelWithDebInfo")
-            && !name.contains("MinSizeRel")
-            && !name.contains("jni")
-            && !name.contains("-lib")
-            && !name.contains("-no-tts")
-            && name.ends_with(".tar.bz2")
-    });
-
-    if let Some(archive_name) = preferred {
-        return Ok((version, archive_name.clone()));
-    }
-
-    // Fallback: any win-x64 shared archive
-    let fallback = asset_names.iter().find(|name| {
-        name.contains("win-x64")
-            && name.contains("shared")
-            && !name.contains("cuda")
-            && name.ends_with(".tar.bz2")
-    });
-
-    if let Some(archive_name) = fallback {
-        return Ok((version, archive_name.clone()));
-    }
-
-    Err("no suitable Windows archive found in release assets".to_string())
-}
-
-/// Extract a JSON string field by key (no serde dependency).
-fn extract_json_string(body: &str, key: &str) -> Option<String> {
-    let search = format!(r#""{key}":""#);
-    if let Some(start) = body.find(&search) {
-        let val_start = start + search.len();
-        if let Some(end) = body[val_start..].find('"') {
-            return Some(body[val_start..val_start + end].to_string());
         }
     }
     None
 }
 
-/// Extract all asset names from a GitHub releases JSON body.
-fn extract_asset_names(body: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let search = r#""name":""#;
-    let mut pos = 0;
-    while let Some(start) = body[pos..].find(search) {
-        let val_start = pos + start + search.len();
-        if let Some(end) = body[val_start..].find('"') {
-            names.push(body[val_start..val_start + end].to_string());
-            pos = val_start + end + 1;
-        } else {
-            break;
+/// Recursively collect all file paths under `dir`.
+fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files(&path, files);
+            } else {
+                files.push(path);
+            }
         }
     }
-    names
 }
 
-/// Return list of available model names.
+// ── Model helpers ────────────────────────────────────────────────────
+
 pub fn available_models() -> Vec<&'static str> {
     PARAKEET_MODELS.iter().map(|(name, _)| *name).collect()
 }
 
-/// Check if a specific model is already downloaded.
 pub fn is_model_downloaded(model_name: &str) -> Result<bool, String> {
     let model_dir = models_dir()?.join(model_name);
     if !model_dir.exists() {
         return Ok(false);
     }
-    // Check that all required files exist
     for file in MODEL_FILES {
         if !model_dir.join(file).exists() {
             return Ok(false);
@@ -283,13 +204,10 @@ pub fn is_model_downloaded(model_name: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Download a Parakeet model from HuggingFace.
-/// Reports progress via a callback (can be used for UI).
 pub fn download_model<F>(model_name: &str, progress: F) -> Result<PathBuf, String>
 where
-    F: Fn(usize, usize), // (current_file, total_files)
+    F: Fn(usize, usize),
 {
-    // Find model info
     let repo = PARAKEET_MODELS
         .iter()
         .find(|(name, _)| *name == model_name)
@@ -300,18 +218,16 @@ where
     fs::create_dir_all(&model_dir)
         .map_err(|e| format!("cannot create model dir: {e}"))?;
 
-    let total_files = MODEL_FILES.len();
-
     for (i, file) in MODEL_FILES.iter().enumerate() {
         let dest = model_dir.join(file);
         if dest.exists() {
-            progress(i, total_files);
+            progress(i, MODEL_FILES.len());
             continue;
         }
 
         let url = format!("https://huggingface.co/{repo}/resolve/main/{file}");
+        eprintln!("mhd: downloading model file {}/{}: {file}", i + 1, MODEL_FILES.len());
 
-        eprintln!("mhd: downloading model file {}/{}: {file}", i + 1, total_files);
         let status = Command::new("curl.exe")
             .args(["-L", "-o", &dest.to_string_lossy(), &url])
             .status()
@@ -320,15 +236,13 @@ where
         if !status.success() {
             return Err(format!("download failed for {file} (exit: {status:?})"));
         }
-
-        progress(i + 1, total_files);
+        progress(i + 1, MODEL_FILES.len());
     }
 
     eprintln!("mhd: model '{model_name}' ready at {}", model_dir.display());
     Ok(model_dir)
 }
 
-/// Ensure a model is downloaded. Returns the model directory path.
 pub fn ensure_model(model_name: &str) -> Result<PathBuf, String> {
     if is_model_downloaded(model_name)? {
         return Ok(models_dir()?.join(model_name));
@@ -336,10 +250,6 @@ pub fn ensure_model(model_name: &str) -> Result<PathBuf, String> {
     download_model(model_name, |_, _| {})
 }
 
-/// Parse the config to resolve model path:
-/// - If `config.model` is an absolute path, use it as-is.
-/// - If `config.models_dir` is set, use it.
-/// - Otherwise, resolve `transcribe/models/<model_name>`.
 pub fn resolve_model_path(config: &crate::transcribe::config::TranscribeConfig) -> PathBuf {
     let model_path = Path::new(&config.model);
     if model_path.is_absolute() {
@@ -348,7 +258,6 @@ pub fn resolve_model_path(config: &crate::transcribe::config::TranscribeConfig) 
     if !config.models_dir.is_empty() {
         return Path::new(&config.models_dir).join(&config.model);
     }
-    // Default: ~/.config/mhd/transcribe/models/<model_name>
     models_dir()
         .unwrap_or_default()
         .join(&config.model)
