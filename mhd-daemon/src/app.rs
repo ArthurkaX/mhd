@@ -154,7 +154,7 @@ impl DaemonControl for AppHandle {
 
     #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool {
-        self.blackbox.lock().map(|g| g.is_some()).unwrap_or(false)
+        crate::blackbox::is_logging()
     }
 }
 

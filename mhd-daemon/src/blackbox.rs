@@ -11,14 +11,13 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
-use windows::Win32::System::Registry::*;
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
@@ -82,9 +81,17 @@ pub fn send_event(event: BlackboxEvent) {
     }
 }
 
+/// Current enabled state (used by tray to show on/off).
+static BLACKBOX_ENABLED: AtomicBool = AtomicBool::new(false);
+
 #[allow(dead_code)]
 pub fn is_active() -> bool {
     BLACKBOX_TX.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// Returns the current enabled/disabled state (for tray).
+pub fn is_logging() -> bool {
+    BLACKBOX_ENABLED.load(Ordering::Relaxed)
 }
 
 // ── Log path helpers ─────────────────────────────────────────────────────
@@ -238,7 +245,6 @@ struct SessionState {
     last_window_title: Option<String>,
     /// Last app name (exe without path).
     last_app_name: Option<String>,
-    last_desktop_id: Option<String>,
 }
 
 impl SessionState {
@@ -251,7 +257,6 @@ impl SessionState {
             mouse_count: 0,
             last_window_title: None,
             last_app_name: None,
-            last_desktop_id: None,
         }
     }
 
@@ -361,7 +366,8 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
         .spawn(move || {
             let mut writer = LogWriter::new();
             let mut session = SessionState::new();
-            let mut enabled = true; // can be toggled from tray
+            let mut enabled = true;
+            BLACKBOX_ENABLED.store(true, Ordering::Relaxed);
 
             let now = epoch_secs();
             let _ = writer.write_line(&format_line(now, "start", &[]));
@@ -373,13 +379,8 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
             if let Some(app) = get_app_name() {
                 session.last_app_name = Some(app);
             }
-            // Also write initial context
+            // Write initial app + title context
             check_app_and_title(&mut session, &mut writer);
-
-            if let Some(id) = get_desktop_id() {
-                session.last_desktop_id = Some(id.clone());
-                let _ = writer.write_line(&format_line(now, "desk", &[sv("id", &id)]));
-            }
 
             loop {
                 let timeout = Duration::from_secs(if session.active {
@@ -391,14 +392,15 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 let event = match rx.recv_timeout(timeout) {
                     Ok(e) => e,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if session.active {
+                        if enabled && session.active {
                             let now = epoch_secs();
                             if now >= session.last_action_at + idle_seconds {
                                 session.end_session(session.last_action_at, &mut writer, None);
                             }
                         }
-                        check_app_and_title(&mut session, &mut writer);
-                        check_desktop_change(&mut session, &mut writer);
+                        if enabled {
+                            check_app_and_title(&mut session, &mut writer);
+                        }
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -406,29 +408,32 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
 
                 match event {
                     BlackboxEvent::Input { kind, ts } => {
-                        session.on_input(kind, ts, &mut writer);
-                        check_app_and_title(&mut session, &mut writer);
-                        check_desktop_change(&mut session, &mut writer);
+                        if enabled {
+                            session.on_input(kind, ts, &mut writer);
+                            check_app_and_title(&mut session, &mut writer);
+                        }
                     }
                     BlackboxEvent::Shutdown => {
                         let now = epoch_secs();
-                        session.end_session(now, &mut writer, Some("stop"));
+                        if enabled {
+                            session.end_session(now, &mut writer, Some("stop"));
+                        }
                         let _ = writer.write_line(&format_line(now, "stop", &[sv("r", "quit")]));
                         break;
                     }
                     BlackboxEvent::ToggleEnabled => {
                         enabled = !enabled;
-                        // When re-enabling, write start event + current state
+                        BLACKBOX_ENABLED.store(enabled, Ordering::Relaxed);
                         if enabled {
                             let now = epoch_secs();
                             let _ = writer.write_line(&format_line(now, "start", &[]));
                             check_app_and_title(&mut session, &mut writer);
-                            // If there was an active session, we lost its counts
                         }
                     }
                 }
             }
 
+            BLACKBOX_ENABLED.store(false, Ordering::Relaxed);
             clear_sender();
         })
         .map_err(|e| format!("cannot spawn blackbox thread: {e}"))?;
@@ -459,44 +464,7 @@ fn check_app_and_title(session: &mut SessionState, writer: &mut LogWriter) {
     }
 }
 
-// ── Registry: virtual desktop ────────────────────────────────────────────
 
-fn get_desktop_id() -> Option<String> {
-    unsafe {
-        let key = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops";
-        let wide: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut hkey = HKEY::default();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR::from_raw(wide.as_ptr()), 0, KEY_READ, &mut hkey as *mut HKEY).is_err()
-            || hkey.is_invalid() { return None; }
-
-        let vname: Vec<u16> = "CurrentVirtualDesktop\0".encode_utf16().collect();
-        let mut data = [0u8; 16];
-        let mut size = 16u32;
-        let mut typ = REG_NONE;
-        let r = RegQueryValueExW(hkey, PCWSTR::from_raw(vname.as_ptr()), None, Some(&mut typ),
-            Some(data.as_mut_ptr()), Some(&mut size));
-        let _ = RegCloseKey(hkey);
-
-        if r.is_ok() && size == 16 {
-            let d1 = u32::from_le_bytes(data[0..4].try_into().unwrap());
-            let d2 = u16::from_le_bytes(data[4..6].try_into().unwrap());
-            let d3 = u16::from_le_bytes(data[6..8].try_into().unwrap());
-            Some(format!("{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-                d1, d2, d3, data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]))
-        } else { None }
-    }
-}
-
-fn check_desktop_change(session: &mut SessionState, writer: &mut LogWriter) {
-    if let Some(id) = get_desktop_id() {
-        let prev = session.last_desktop_id.as_deref().unwrap_or("");
-        if id != prev {
-            let ts = epoch_secs();
-            session.last_desktop_id = Some(id.clone());
-            let _ = writer.write_line(&format_line(ts, "desk", &[sv("id", &id)]));
-        }
-    }
-}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -611,8 +579,5 @@ mod tests {
         assert_eq!(d, 1);
     }
 
-    #[test]
-    fn test_get_desktop_id() {
-        let _ = get_desktop_id(); // just no crash
-    }
+
 }
