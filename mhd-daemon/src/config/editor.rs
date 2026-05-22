@@ -80,7 +80,9 @@ const EDITOR_ACTION_INDICES: &[usize] = &[
     12, // media_last_track
     13, // media_next_track
     14, // toggle_topmost
-    15, // quit
+    15, // power_actions
+    16, // quick_draw
+    17, // quit
 ];
 
 #[derive(Debug, Clone)]

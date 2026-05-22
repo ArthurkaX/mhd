@@ -9,11 +9,11 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
-    WAIT_EVENT, WAIT_OBJECT_0, WPARAM};
+    WAIT_EVENT, WAIT_OBJECT_0, WPARAM, CloseHandle};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
     DrawTextW, FillRect, GetDC, GetMonitorInfoW, MonitorFromWindow, ReleaseDC, SelectObject,
-    SetBkMode, SetTextColor,
+    SetBkMode, SetTextColor, ScreenToClient,
     BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
     DRAW_TEXT_FORMAT, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
@@ -25,16 +25,18 @@ use windows::Win32::System::Threading::{CreateEventW, SetEvent, INFINITE};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetDesktopWindow,
     GetWindowRect, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
     RegisterClassW, SetCursor, ShowWindow, UpdateLayeredWindow,
-    CS_HREDRAW, CS_VREDRAW, IDC_ARROW, IDC_CROSS, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
-    ULW_ALPHA, WM_ACTIVATE, WM_KEYDOWN,
+    TranslateMessage, DispatchMessageW, GetWindowLongPtrW, SetWindowLongPtrW,
+    GetCursorPos, SetForegroundWindow,
+    CS_HREDRAW, CS_VREDRAW, IDC_ARROW, IDC_CROSS, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOW,
+    ULW_ALPHA, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_QUIT, WM_SETCURSOR,
-    HTCLIENT,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GWLP_USERDATA,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     WNDCLASSW, MSG,
 };
 use windows::core::PCWSTR;
@@ -64,6 +66,14 @@ enum Tool {
     Arrow,
 }
 
+#[derive(Clone, Copy)]
+enum ToolbarAction {
+    SetTool(Tool),
+    SetColor(usize),
+    Clear,
+    Close,
+}
+
 struct State {
     tool: Tool,
     color_idx: usize,
@@ -74,6 +84,7 @@ struct State {
     drag: Option<(i32, i32)>, // mouse-down start for rect/arrow
     dirty: bool,              // true if any drawing exists
     hidden: bool,
+    action: Option<ToolbarAction>,
 }
 
 // ── Thread control ─────────────────────────────────────────────────────
@@ -138,8 +149,6 @@ fn argb_pixel(r: u8, g: u8, b: u8) -> u32 {
     0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32
 }
 
-
-
 // ── Thread main ────────────────────────────────────────────────────────
 
 fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _theme: NativeTheme) {
@@ -163,9 +172,11 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
     let w = wr.right - wr.left;
     let h = wr.bottom - wr.top;
 
+    // Use Layered + Topmost + Toolwindow. DO NOT use WS_EX_TRANSPARENT or WS_EX_NOACTIVATE
+    // because we want mouse input and keyboard focus for ESC!
     let hwnd = match unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             PCWSTR::from_raw(cls.as_ptr()), PCWSTR::null(),
             WS_POPUP, wr.left, wr.top, w, h,
             None, None, hinst, None,
@@ -174,27 +185,31 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
 
     let s = sc(hwnd);
     let pixel_count = (w * h) as usize;
+    // Fill with alpha=1 so DWM hit-testing doesn't pass the click through our canvas!
     let mut st = State {
         tool: Tool::Pencil,
-        color_idx: 0, // black
+        color_idx: 0,
         width: w,
         height: h,
-        pixels: vec![0u32; pixel_count],
-        backup: vec![0u32; pixel_count],
+        pixels: vec![0x01000000; pixel_count],
+        backup: vec![0x01000000; pixel_count],
         drag: None,
         dirty: false,
         hidden: false,
+        action: None,
     };
 
-    // Store state pointer for wndproc
     let state_ptr: *mut State = &mut st;
-    unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
-        hwnd, windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA, state_ptr as isize); }
+    unsafe { let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
 
     paint(hwnd, &st, s);
 
     let event = hdl.0;
-    unsafe { let _ = ShowWindow(hwnd, SW_SHOWNA); }
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(hwnd);
+    }
 
     loop {
         if dying.load(std::sync::atomic::Ordering::Acquire) { break; }
@@ -202,189 +217,215 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
         let wait = [event];
         let res = unsafe { MsgWaitForMultipleObjects(Some(&wait), false, INFINITE, QS_ALLINPUT) };
 
-        match res {
-            WAIT_OBJECT_0 => { // toggle
-                if st.hidden {
-                    // Re-show
-                    paint(hwnd, &st, s);
-                    unsafe { let _ = ShowWindow(hwnd, SW_SHOWNA); }
-                    st.hidden = false;
-                } else if st.dirty {
-                    // Hide but keep state
-                    st.hidden = true;
-                    unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); }
-                } else {
-                    // Clean canvas, unload entirely
-                    st.hidden = true;
-                    unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); }
-                    break; // exit thread, module unloads
+        if res == WAIT_OBJECT_0 {
+            // Toggle visibility externally
+            if st.hidden {
+                paint(hwnd, &st, s);
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = SetFocus(hwnd);
+                }
+                st.hidden = false;
+            } else if st.dirty {
+                st.hidden = true;
+                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); let _ = ReleaseCapture(); }
+            } else {
+                st.hidden = true;
+                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); let _ = ReleaseCapture(); }
+                break;
+            }
+        } else if res == WAIT_EVENT(1) {
+            let mut msg = MSG::default();
+            let mut quit = false;
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    if msg.message == WM_QUIT { quit = true; break; }
+                    let _ = TranslateMessage(&msg);
+                    let _ = DispatchMessageW(&msg);
                 }
             }
-            WAIT_EVENT(1) => {
-                let mut msg = MSG::default();
-                unsafe {
-                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                        if msg.message == WM_QUIT { break; }
-                        if msg.hwnd == hwnd {
-                            if !msg_handler(hwnd, &msg, &mut st, s) {
-                                st.hidden = true;
-                                let _ = ShowWindow(hwnd, SW_HIDE); let _ = ReleaseCapture();
-                                if !st.dirty { break; }
-                            }
-                        }
+            if quit { break; }
+
+            if let Some(action) = st.action.take() {
+                match action {
+                    ToolbarAction::Close => {
+                        st.hidden = true;
+                        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); let _ = ReleaseCapture(); }
+                    }
+                    ToolbarAction::Clear => {
+                        st.pixels.fill(0x01000000); // clear to near-transparent so mouse works
+                        st.dirty = false;
+                        st.drag = None;
+                        paint(hwnd, &st, s);
+                    }
+                    ToolbarAction::SetTool(t) => {
+                        st.tool = t;
+                        paint(hwnd, &st, s);
+                    }
+                    ToolbarAction::SetColor(c) => {
+                        st.color_idx = c;
+                        paint(hwnd, &st, s);
                     }
                 }
-                // Repaint if visible and any repaint-relevant messages were processed
-                // Actually, paint-on-demand in msg_handler for drawing, and here only for ongoing preview
-                if !st.hidden {
-                    paint(hwnd, &st, s);
+                if st.hidden && !st.dirty {
+                    break;
                 }
             }
-            _ => break,
+        } else {
+            break;
         }
     }
 
-    // Unload
-    unsafe { let _ = DestroyWindow(hwnd); }
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+        let _ = CloseHandle(event);
+    }
+    let mut g = CTRL.lock().unwrap();
+    *g = None;
 }
 
-// ── Message handler ────────────────────────────────────────────────────
+// ── Window proc ────────────────────────────────────────────────────────
 
-fn msg_handler(hwnd: HWND, msg: &MSG, st: &mut State, s: f32) -> bool {
-    match msg.message {
-        WM_KEYDOWN if msg.wParam.0 as u32 == 0x1B => { // Escape
-            return false;
-        }
-        WM_ACTIVATE if msg.wParam.0 as u32 == 0 => { // focus loss
-            return false;
-        }
-        WM_LBUTTONDOWN => {
-            let x = (msg.lParam.0 as i32) & 0xFFFF;
-            let y = ((msg.lParam.0 as i32) >> 16) & 0xFFFF;
-            let scx = |v: i32| (v as f32 * s) as i32;
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut State;
+    if !state_ptr.is_null() {
+        let st = unsafe { &mut *state_ptr };
+        let s = sc(hwnd);
 
-            // Check toolbar hit
-            let ty = scx(BTN_Y);
-            let th = scx(BTN_H);
-            if y >= ty && y < ty + th {
-                if let Some(action) = hit_toolbar(x, y, s) {
-                    handle_toolbar_action(hwnd, st, action);
-                    return true;
+        match msg {
+            WM_KEYDOWN => {
+                if wp.0 as u32 == 0x1B { // VK_ESCAPE
+                    st.action = Some(ToolbarAction::Close);
                 }
-                return true; // click on toolbar but no button — consume it
+                return LRESULT(0);
             }
+            WM_LBUTTONDOWN => {
+                let x = (lp.0 as i32) & 0xFFFF;
+                let y = ((lp.0 as i32) >> 16) & 0xFFFF;
+                let x = if x > 32767 { x - 65536 } else { x };
+                let y = if y > 32767 { y - 65536 } else { y };
 
-            // Canvas hit — start drawing
-            let cx = x;
-            let cy = y;
-            if cx >= 0 && cx < st.width && cy >= 0 && cy < st.height {
-                st.dirty = true;
-                match st.tool {
-                    Tool::Pencil => {
-                        set_pixel(&mut st.pixels, st.width, st.height, cx, cy, argb_pixel_from_idx(st.color_idx));
-                        st.drag = Some((cx, cy));
-                        paint(hwnd, st, s);
+                let ty = (BTN_Y as f32 * s) as i32;
+                let th = (BTN_H as f32 * s) as i32;
+                if y >= ty && y < ty + th {
+                    if let Some(action) = hit_toolbar(x, y, s) {
+                        st.action = Some(action);
                     }
-                    Tool::Rect | Tool::Arrow => {
-                        // Save canvas for rubber-band
-                        st.backup.copy_from_slice(&st.pixels);
-                        let color = argb_pixel_from_idx(st.color_idx);
-                        draw_rect_outline(&mut st.pixels, st.width, st.height, cx, cy, cx, cy, color);
-                        st.drag = Some((cx, cy));
-                        paint(hwnd, st, s);
-                    }
+                    return LRESULT(0);
                 }
-                unsafe { let _ = SetCapture(hwnd); }
-            }
-            return true;
-        }
-        WM_MOUSEMOVE => {
-            let x = (msg.lParam.0 as i32) & 0xFFFF;
-            let y = ((msg.lParam.0 as i32) >> 16) & 0xFFFF;
-            if let Some((sx, sy)) = st.drag {
-                match st.tool {
-                    Tool::Pencil => {
-                        draw_line(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
-                        st.drag = Some((x, y));
-                        paint(hwnd, st, s);
+
+                if x >= 0 && x < st.width && y >= 0 && y < st.height {
+                    st.dirty = true;
+                    match st.tool {
+                        Tool::Pencil => {
+                            set_pixel(&mut st.pixels, st.width, st.height, x, y, argb_pixel_from_idx(st.color_idx));
+                            st.drag = Some((x, y));
+                        }
+                        Tool::Rect | Tool::Arrow => {
+                            st.backup.copy_from_slice(&st.pixels);
+                            let color = argb_pixel_from_idx(st.color_idx);
+                            draw_rect_outline(&mut st.pixels, st.width, st.height, x, y, x, y, color);
+                            st.drag = Some((x, y));
+                        }
                     }
-                    Tool::Rect => {
-                        st.pixels.copy_from_slice(&st.backup);
-                        draw_rect_outline(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
-                        paint(hwnd, st, s);
-                    }
-                    Tool::Arrow => {
-                        st.pixels.copy_from_slice(&st.backup);
-                        draw_arrow(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
-                        paint(hwnd, st, s);
-                    }
+                    unsafe { let _ = SetCapture(hwnd); }
+                    paint(hwnd, st, s);
                 }
+                return LRESULT(0);
             }
-            return true;
-        }
-        WM_LBUTTONUP => {
-            if st.drag.is_some() {
-                let x = (msg.lParam.0 as i32) & 0xFFFF;
-                let y = ((msg.lParam.0 as i32) >> 16) & 0xFFFF;
-                match st.tool {
-                    Tool::Pencil => {}
-                    Tool::Rect => {
-                        if let Some((sx, sy)) = st.drag {
+            WM_MOUSEMOVE => {
+                let x = (lp.0 as i32) & 0xFFFF;
+                let y = ((lp.0 as i32) >> 16) & 0xFFFF;
+                let x = if x > 32767 { x - 65536 } else { x };
+                let y = if y > 32767 { y - 65536 } else { y };
+
+                if let Some((sx, sy)) = st.drag {
+                    match st.tool {
+                        Tool::Pencil => {
+                            draw_line(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
+                            st.drag = Some((x, y));
+                            paint(hwnd, st, s);
+                        }
+                        Tool::Rect => {
                             st.pixels.copy_from_slice(&st.backup);
                             draw_rect_outline(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
+                            paint(hwnd, st, s);
                         }
-                    }
-                    Tool::Arrow => {
-                        if let Some((sx, sy)) = st.drag {
+                        Tool::Arrow => {
                             st.pixels.copy_from_slice(&st.backup);
                             draw_arrow(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
+                            paint(hwnd, st, s);
                         }
                     }
                 }
-                st.drag = None;
-                unsafe { let _ = ReleaseCapture(); }
-                paint(hwnd, st, s);
+                return LRESULT(0);
             }
-            return true;
-        }
-        WM_SETCURSOR => {
-            let ty = (BTN_Y as f32 * s) as i32;
-            let th = (BTN_H as f32 * s) as i32;
-            let y = ((msg.lParam.0 as i32) >> 16) & 0xFFFF;
-            if msg.hwnd == hwnd && (msg.wParam.0 as u32 >> 16) as u32 == HTCLIENT {
-                if y >= ty && y < ty + th {
+            WM_LBUTTONUP => {
+                if st.drag.is_some() {
+                    let x = (lp.0 as i32) & 0xFFFF;
+                    let y = ((lp.0 as i32) >> 16) & 0xFFFF;
+                    let x = if x > 32767 { x - 65536 } else { x };
+                    let y = if y > 32767 { y - 65536 } else { y };
+
+                    match st.tool {
+                        Tool::Pencil => {}
+                        Tool::Rect => {
+                            if let Some((sx, sy)) = st.drag {
+                                st.pixels.copy_from_slice(&st.backup);
+                                draw_rect_outline(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
+                            }
+                        }
+                        Tool::Arrow => {
+                            if let Some((sx, sy)) = st.drag {
+                                st.pixels.copy_from_slice(&st.backup);
+                                draw_arrow(&mut st.pixels, st.width, st.height, sx, sy, x, y, argb_pixel_from_idx(st.color_idx));
+                            }
+                        }
+                    }
+                    st.drag = None;
+                    unsafe { let _ = ReleaseCapture(); }
+                    paint(hwnd, st, s);
+                }
+                return LRESULT(0);
+            }
+            WM_SETCURSOR => {
+                let mut pt = POINT::default();
+                unsafe {
+                    let _ = GetCursorPos(&mut pt);
+                    let _ = ScreenToClient(hwnd, &mut pt);
+                }
+                let ty = (BTN_Y as f32 * s) as i32;
+                let th = (BTN_H as f32 * s) as i32;
+                if pt.y >= ty && pt.y < ty + th {
                     unsafe { let _ = SetCursor(LoadCursorW(None, IDC_ARROW).unwrap_or_default()); }
                 } else {
                     unsafe { let _ = SetCursor(LoadCursorW(None, IDC_CROSS).unwrap_or_default()); }
                 }
-                return true;
+                return LRESULT(1);
             }
-            return true;
+            _ => {}
         }
-        _ => {}
     }
-    true
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
 // ── Toolbar hit-test ───────────────────────────────────────────────────
 
-enum ToolbarAction {
-    SetTool(Tool),
-    SetColor(usize),
-    Clear,
-    Close,
-}
-
 fn hit_toolbar(x: i32, _y: i32, s: f32) -> Option<ToolbarAction> {
     let sc = |v: i32| (v as f32 * s) as i32;
-    let bw = sc(BTN_GAP); // left margin
+    let tw = toolbar_width(s);
+    let wr = work_rect();
+    let avail_w = wr.right - wr.left;
+    let tx = (avail_w - tw) / 2;
+
+    let gap = sc(BTN_GAP);
     let tbw = sc(TOOL_BTN_W);
     let ccw = sc(COL_BTN_W);
     let abw = sc(ACT_BTN_W);
-    let gap = sc(BTN_GAP);
     let sep = sc(SEP_W);
 
-    let mut left = bw;
+    let mut left = tx + gap;
 
     // Tools
     for ti in 0..3 {
@@ -410,32 +451,9 @@ fn hit_toolbar(x: i32, _y: i32, s: f32) -> Option<ToolbarAction> {
     None
 }
 
-fn handle_toolbar_action(hwnd: HWND, st: &mut State, action: ToolbarAction) {
-    match action {
-        ToolbarAction::SetTool(t) => st.tool = t,
-        ToolbarAction::SetColor(i) => st.color_idx = i,
-        ToolbarAction::Clear => {
-            st.pixels.fill(0);
-            st.dirty = false;
-            st.drag = None;
-            paint(hwnd, st, sc(hwnd));
-        }
-        ToolbarAction::Close => {
-            st.hidden = true;
-            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); }
-        }
-    }
-}
-
 fn argb_pixel_from_idx(idx: usize) -> u32 {
     let (r, g, b) = COLORS[idx.min(COLORS.len() - 1)];
     argb_pixel(r, g, b)
-}
-
-// ── Window proc ────────────────────────────────────────────────────────
-
-extern "system" fn wndproc(_h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    unsafe { DefWindowProcW(_h, msg, wp, lp) }
 }
 
 // ── Painting ───────────────────────────────────────────────────────────
