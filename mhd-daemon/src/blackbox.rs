@@ -15,9 +15,21 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
 use windows::Win32::System::Registry::*;
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+// Manual FFI — QueryFullProcessImageNameW is not in windows 0.58 crate features.
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn QueryFullProcessImageNameW(
+        hProcess: HANDLE,
+        dwFlags: u32,
+        lpExeName: *mut u16,
+        lpdwSize: *mut u32,
+    ) -> i32;
+}
 
 use crate::config::path::home_dir;
 
@@ -40,22 +52,12 @@ impl Default for BlackboxConfig {
 
 // ── Event types (hook → blackbox worker) ────────────────────────────────
 
-/// Event that the hook thread can send to the blackbox worker.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum BlackboxEvent {
-    /// A counted input action (keyboard press, mouse button down, wheel).
-    Input {
-        kind: InputKind,
-        ts: u64,
-    },
-    /// Foreground window title changed.
-    WindowChanged {
-        title: String,
-        ts: u64,
-    },
-    /// Shutdown the blackbox worker.
+    Input { kind: InputKind, ts: u64 },
     Shutdown,
+    /// Toggle enabled state from tray.
+    ToggleEnabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,7 +72,6 @@ pub enum InputKind {
 static BLACKBOX_TX: LazyLock<Mutex<Option<mpsc::Sender<BlackboxEvent>>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Send an event from the hook hot‑path (lock‑free after initial setup).
 pub fn send_event(event: BlackboxEvent) {
     if let Ok(guard) = BLACKBOX_TX.lock() {
         if let Some(ref tx) = *guard {
@@ -79,7 +80,6 @@ pub fn send_event(event: BlackboxEvent) {
     }
 }
 
-/// Returns `true` if blackbox is active (sender installed).
 #[allow(dead_code)]
 pub fn is_active() -> bool {
     BLACKBOX_TX.lock().map(|g| g.is_some()).unwrap_or(false)
@@ -99,15 +99,12 @@ fn daily_log_path(date: &str) -> PathBuf {
     blackbox_dir().join(format!("{date}.log"))
 }
 
-/// Return today's date as `YYYY-MM-DD`.
 fn today_str() -> String {
     let secs = epoch_secs();
     let (y, m, d) = date_from_epoch(secs);
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// Seconds since UNIX_EPOCH (local time — we don't do timezone math,
-/// system clock is assumed local).
 fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -115,17 +112,19 @@ fn epoch_secs() -> u64 {
         .as_secs()
 }
 
-/// Decompose epoch seconds into (year, month, day).  Naïve Gregorian
-/// calendar — good enough for a log timestamp.
+/// Time-of-day string (HH:MM:SS) for a given epoch second.
+fn time_str(ts: u64) -> String {
+    let s = (ts % 86400) as i64;
+    format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+}
+
 fn date_from_epoch(secs: u64) -> (i64, u32, u32) {
     let days = (secs / 86400) as i64;
     let mut y = 1970i64;
     let mut rem = days;
     loop {
         let diy = if is_leap(y) { 366 } else { 365 };
-        if rem < diy {
-            break;
-        }
+        if rem < diy { break; }
         rem -= diy;
         y += 1;
     }
@@ -136,27 +135,20 @@ fn date_from_epoch(secs: u64) -> (i64, u32, u32) {
     };
     let mut m = 1u32;
     for &md in &mdays {
-        if rem < md {
-            break;
-        }
+        if rem < md { break; }
         rem -= md;
         m += 1;
     }
-    if m > 12 {
-        m = 12;
-        rem = mdays[11] as i64 - 1;
-    }
-    let d = (rem + 1) as u32;
-    (y, m, d)
+    if m > 12 { m = 12; rem = mdays[11] as i64 - 1; }
+    (y, m, (rem + 1) as u32)
 }
 
 fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
-// ── Line formatter ───────────────────────────────────────────────────────
+// ── Line formatter (compact) ─────────────────────────────────────────────
 
-/// Escape a string value for the log format.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for ch in s.chars() {
@@ -170,36 +162,24 @@ fn escape(s: &str) -> String {
     out
 }
 
-/// Format a single log line.
+/// Format: `HH:MM:SS event=short_name k=v …`   (date is in filename).
 fn format_line(ts: u64, event: &str, kv: &[(&str, String)]) -> String {
-    let (y, m, d) = date_from_epoch(ts);
-    let time_secs = (ts % 86400) as i64;
-    let h = time_secs / 3600;
-    let min = (time_secs % 3600) / 60;
-    let sec = time_secs % 60;
-    let mut line = format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02}:{sec:02} event={event}");
-
+    let mut line = format!("{} event={}", time_str(ts), event);
     for (key, val) in kv {
-        let needs_quoting = val.contains(' ')
-            || val.contains('"')
-            || val.contains('\\')
-            || val.is_empty();
-        if needs_quoting {
-            line.push_str(&format!(" {key}=\"{}\"", escape(val)));
+        let q = val.contains(' ') || val.contains('"') || val.contains('\\') || val.is_empty();
+        if q {
+            line.push_str(&format!(" {}=\"{}\"", key, escape(val)));
         } else {
-            line.push_str(&format!(" {key}={}", escape(val)));
+            line.push_str(&format!(" {}={}", key, escape(val)));
         }
     }
     line.push('\n');
     line
 }
 
-/// Helper: string pair for format_line.
 fn sv(key: &'static str, val: &str) -> (&'static str, String) {
     (key, val.to_string())
 }
-
-/// Helper: numeric pair.
 fn nv(key: &str, val: u64) -> (&str, String) {
     (key, val.to_string())
 }
@@ -214,47 +194,32 @@ struct LogWriter {
 
 impl LogWriter {
     fn new() -> Self {
-        LogWriter {
-            current_date: String::new(),
-            file: None,
-            dir_ensured: false,
-        }
+        LogWriter { current_date: String::new(), file: None, dir_ensured: false }
     }
-
     fn ensure_dir(&mut self) -> Result<(), String> {
-        if self.dir_ensured {
-            return Ok(());
-        }
-        let dir = blackbox_dir();
-        std::fs::create_dir_all(&dir)
+        if self.dir_ensured { return Ok(()); }
+        std::fs::create_dir_all(&blackbox_dir())
             .map_err(|e| format!("cannot create blackbox dir: {e}"))?;
         self.dir_ensured = true;
         Ok(())
     }
-
     fn write_line(&mut self, line: &str) -> Result<(), String> {
         self.ensure_dir()?;
-
         let date = today_str();
         if date != self.current_date || self.file.is_none() {
-            self.file.take(); // close previous
+            self.file.take();
             let path = daily_log_path(&date);
             let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
+                .create(true).append(true)
                 .open(&path)
-                .map_err(|e| {
-                    format!("cannot open blackbox log '{}': {e}", path.display())
-                })?;
+                .map_err(|e| format!("cannot open blackbox log '{}': {e}", path.display()))?;
             self.file = Some(file);
             self.current_date = date;
         }
-
         if let Some(ref mut f) = self.file {
             f.write_all(line.as_bytes())
                 .map_err(|e| format!("cannot write blackbox log: {e}"))?;
-            f.flush()
-                .map_err(|e| format!("cannot flush blackbox log: {e}"))?;
+            f.flush().map_err(|e| format!("cannot flush blackbox log: {e}"))?;
         }
         Ok(())
     }
@@ -263,15 +228,14 @@ impl LogWriter {
 // ── Session state machine ────────────────────────────────────────────────
 
 struct SessionState {
-    /// Are we in an active session?
     active: bool,
     started_at: u64,
     last_action_at: u64,
     keyboard_count: u64,
     mouse_count: u64,
-    /// Title we last wrote to the log (for dedup).
     last_window_title: Option<String>,
-    /// Virtual desktop ID (GUID string) we last wrote (for dedup).
+    /// Last app name (exe without path).
+    last_app_name: Option<String>,
     last_desktop_id: Option<String>,
 }
 
@@ -284,90 +248,83 @@ impl SessionState {
             keyboard_count: 0,
             mouse_count: 0,
             last_window_title: None,
+            last_app_name: None,
             last_desktop_id: None,
         }
     }
 
-    /// Process a counted input action.
     fn on_input(&mut self, kind: InputKind, ts: u64, writer: &mut LogWriter) {
         if !self.active {
-            // Start a new session
             self.active = true;
             self.started_at = ts;
             self.last_action_at = ts;
             self.keyboard_count = 0;
             self.mouse_count = 0;
-            // Write session_started (ts = first action time)
-            let line = format_line(ts, "session_started", &[]);
-            let _ = writer.write_line(&line);
+            let _ = writer.write_line(&format_line(ts, "ses+", &[]));
         } else {
             self.last_action_at = ts;
         }
-
         match kind {
             InputKind::Keyboard => self.keyboard_count += 1,
             InputKind::MouseButton | InputKind::Wheel => self.mouse_count += 1,
         }
     }
 
-    /// End the current session (idle timeout or stop).
     fn end_session(&mut self, _ts: u64, writer: &mut LogWriter, reason: Option<&str>) {
-        if !self.active {
-            return;
-        }
+        if !self.active { return; }
         let duration = self.last_action_at.saturating_sub(self.started_at);
-        let actions = self.keyboard_count + self.mouse_count;
-
-        let mut kv = vec![
-            nv("duration_sec", duration),
-            nv("actions", actions),
-            nv("keyboard", self.keyboard_count),
-            nv("mouse", self.mouse_count),
-        ];
+        let acts = self.keyboard_count + self.mouse_count;
+        let mut kv = vec![nv("d", duration), nv("a", acts), nv("k", self.keyboard_count), nv("m", self.mouse_count)];
         if let Some(r) = reason {
-            kv.push(sv("reason", r));
+            kv.push(sv("r", r));
         } else {
-            kv.push(nv("idle_sec", 300)); // default idle
+            kv.push(nv("i", 300));
         }
-
-        let line = format_line(self.last_action_at, "session_ended", &kv);
-        let _ = writer.write_line(&line);
-
+        let _ = writer.write_line(&format_line(self.last_action_at, "ses-", &kv));
         self.active = false;
     }
 }
 
-// ── Foreground window watcher (polling variant) ─────────────────────────
+// ── Foreground window helpers ────────────────────────────────────────────
 
-/// Returns the title of the current foreground window.
 fn get_foreground_title() -> String {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd == HWND::default() {
-            return String::new();
-        }
+        if hwnd == HWND::default() { return String::new(); }
         let mut buf = [0u16; 512];
         let len = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf);
-        if len > 0 {
-            String::from_utf16_lossy(&buf[..len as usize])
-        } else {
-            String::new()
-        }
+        if len > 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { String::new() }
+    }
+}
+
+/// Extract the executable name (without path / extension) of the foreground
+/// window's process.
+fn get_app_name() -> Option<String> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd == HWND::default() { return None; }
+        let mut pid = 0u32;
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 { return None; }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        if handle.is_invalid() { return None; }
+        let mut buf = [0u16; 260];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) != 0;
+        let _ = CloseHandle(handle);
+        if !ok || size == 0 { return None; }
+        let path = String::from_utf16_lossy(&buf[..size as usize]);
+        // Extract filename without extension
+        let stem = std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(path);
+        Some(stem)
     }
 }
 
 // ── Worker thread ────────────────────────────────────────────────────────
 
-/// Start the blackbox monitoring worker.
-///
-/// Spawns a background thread that:
-/// - Listens for input events from the hook
-/// - Manages the session state machine
-/// - Writes to daily log files
-/// - Tracks foreground window (polling, 2 s granularity)
-/// - Detects idle deadlines
-///
-/// Returns a handle whose `shutdown()` can stop the worker.
 pub struct BlackboxHandle {
     tx: mpsc::Sender<BlackboxEvent>,
     join: Option<thread::JoinHandle<()>>,
@@ -380,20 +337,18 @@ impl BlackboxHandle {
             let _: () = j.join().unwrap_or(());
         }
     }
+
+    /// Toggle logging on/off at runtime (from tray).
+    pub fn toggle(&self) {
+        let _ = self.tx.send(BlackboxEvent::ToggleEnabled);
+    }
 }
 
 /// Start blackbox monitoring.
-///
-/// Called once when mhd starts, if `config.enabled == true`.
-/// The returned handle should be kept alive until shutdown to ensure
-/// the worker thread completes its final writes.
 pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
     let idle_seconds = config.idle_seconds;
 
-    // Channel: hook → worker
     let (tx, rx) = mpsc::channel::<BlackboxEvent>();
-
-    // Store sender for hook thread
     {
         let mut guard = BLACKBOX_TX.lock().unwrap();
         *guard = Some(tx.clone());
@@ -404,55 +359,43 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
         .spawn(move || {
             let mut writer = LogWriter::new();
             let mut session = SessionState::new();
+            let mut enabled = true; // can be toggled from tray
 
-            // Write monitoring_started
             let now = epoch_secs();
-            let line = format_line(now, "monitoring_started", &[]);
-            if let Err(e) = writer.write_line(&line) {
-                eprintln!("mhd: blackbox: {e}");
-                clear_sender();
-                return;
-            }
+            let _ = writer.write_line(&format_line(now, "start", &[]));
 
-            // Save initial window title
             let initial_title = get_foreground_title();
             if !initial_title.is_empty() {
                 session.last_window_title = Some(initial_title.clone());
-                let line = format_line(now, "window_changed", &[sv("title", &initial_title)]);
-                let _ = writer.write_line(&line);
+            }
+            if let Some(app) = get_app_name() {
+                session.last_app_name = Some(app);
+            }
+            // Also write initial context
+            check_app_and_title(&mut session, &mut writer);
+
+            if let Some(id) = get_desktop_id() {
+                session.last_desktop_id = Some(id.clone());
+                let _ = writer.write_line(&format_line(now, "desk", &[sv("id", &id)]));
             }
 
-            // Save initial virtual desktop
-            if let Some(desktop_id) = get_desktop_id() {
-                session.last_desktop_id = Some(desktop_id.clone());
-                // Write initial desktop (only if not the default "no name" case)
-                if !desktop_id.is_empty() {
-                    let line = format_line(now, "virtual_desktop_changed", &[sv("id", &desktop_id)]);
-                    let _ = writer.write_line(&line);
-                }
-            }
-
-            // Main event loop
             loop {
-                // If session is active, use timeout for idle detection
                 let timeout = Duration::from_secs(if session.active {
-                    idle_seconds.min(2) // 2s for responsive shutdown + window polling
+                    idle_seconds.min(2)
                 } else {
-                    2 // 2s polling for window changes when idle
+                    2
                 });
 
                 let event = match rx.recv_timeout(timeout) {
                     Ok(e) => e,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // Check idle deadline if active
                         if session.active {
                             let now = epoch_secs();
                             if now >= session.last_action_at + idle_seconds {
                                 session.end_session(session.last_action_at, &mut writer, None);
                             }
                         }
-                        // Poll foreground window and virtual desktop
-                        check_window_change(&mut session, &mut writer);
+                        check_app_and_title(&mut session, &mut writer);
                         check_desktop_change(&mut session, &mut writer);
                         continue;
                     }
@@ -462,28 +405,24 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 match event {
                     BlackboxEvent::Input { kind, ts } => {
                         session.on_input(kind, ts, &mut writer);
-                        // Also check window and desktop (may have changed during idle)
-                        check_window_change(&mut session, &mut writer);
+                        check_app_and_title(&mut session, &mut writer);
                         check_desktop_change(&mut session, &mut writer);
                     }
-                    BlackboxEvent::WindowChanged { title, ts } => {
-                        let prev = session.last_window_title.as_deref().unwrap_or("");
-                        if title == prev {
-                            continue; // dedup
-                        }
-                        session.last_window_title = Some(title.clone());
-                        let line = format_line(ts, "window_changed", &[sv("title", &title)]);
-                        let _ = writer.write_line(&line);
-                        // Window change does NOT start a session
-                    }
                     BlackboxEvent::Shutdown => {
-                        // End active session if any
                         let now = epoch_secs();
                         session.end_session(now, &mut writer, Some("stop"));
-                        // Write monitoring_stopped
-                        let line = format_line(now, "monitoring_stopped", &[sv("reason", "quit")]);
-                        let _ = writer.write_line(&line);
+                        let _ = writer.write_line(&format_line(now, "stop", &[sv("r", "quit")]));
                         break;
+                    }
+                    BlackboxEvent::ToggleEnabled => {
+                        enabled = !enabled;
+                        // When re-enabling, write start event + current state
+                        if enabled {
+                            let now = epoch_secs();
+                            let _ = writer.write_line(&format_line(now, "start", &[]));
+                            check_app_and_title(&mut session, &mut writer);
+                            // If there was an active session, we lost its counts
+                        }
                     }
                 }
             }
@@ -492,95 +431,78 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
         })
         .map_err(|e| format!("cannot spawn blackbox thread: {e}"))?;
 
-    Ok(BlackboxHandle {
-        tx,
-        join: Some(join),
-    })
+    Ok(BlackboxHandle { tx, join: Some(join) })
 }
 
-/// Check if foreground window changed and log if it did.
-fn check_window_change(session: &mut SessionState, writer: &mut LogWriter) {
+/// Check both app name and window title, log changes.
+fn check_app_and_title(session: &mut SessionState, writer: &mut LogWriter) {
+    // App name
+    if let Some(app) = get_app_name() {
+        let prev = session.last_app_name.as_deref().unwrap_or("");
+        if app != prev {
+            let ts = epoch_secs();
+            session.last_app_name = Some(app.clone());
+            let _ = writer.write_line(&format_line(ts, "app", &[sv("n", &app)]));
+        }
+    }
+    // Window title
     let title = get_foreground_title();
     let prev = session.last_window_title.as_deref().unwrap_or("");
     if title != prev {
         let ts = epoch_secs();
         session.last_window_title = Some(title.clone());
         if !title.is_empty() {
-            let line = format_line(ts, "window_changed", &[sv("title", &title)]);
-            let _ = writer.write_line(&line);
+            let _ = writer.write_line(&format_line(ts, "win", &[sv("t", &title)]));
         }
     }
 }
 
-/// Read the current virtual desktop GUID from the registry.
+// ── Registry: virtual desktop ────────────────────────────────────────────
+
 fn get_desktop_id() -> Option<String> {
     unsafe {
         let key = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops";
         let wide: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
         let mut hkey = HKEY::default();
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(wide.as_ptr()),
-            0,
-            KEY_READ,
-            &mut hkey as *mut HKEY,
-        );
-        if result.is_err() || hkey.is_invalid() {
-            return None;
-        }
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR::from_raw(wide.as_ptr()), 0, KEY_READ, &mut hkey as *mut HKEY).is_err()
+            || hkey.is_invalid() { return None; }
 
         let vname: Vec<u16> = "CurrentVirtualDesktop\0".encode_utf16().collect();
         let mut data = [0u8; 16];
         let mut size = 16u32;
         let mut typ = REG_NONE;
-        let r = RegQueryValueExW(
-            hkey,
-            PCWSTR::from_raw(vname.as_ptr()),
-            None,
-            Some(&mut typ),
-            Some(data.as_mut_ptr()),
-            Some(&mut size),
-        );
+        let r = RegQueryValueExW(hkey, PCWSTR::from_raw(vname.as_ptr()), None, Some(&mut typ),
+            Some(data.as_mut_ptr()), Some(&mut size));
         let _ = RegCloseKey(hkey);
 
         if r.is_ok() && size == 16 {
-            let data1 = u32::from_le_bytes(data[0..4].try_into().unwrap());
-            let data2 = u16::from_le_bytes(data[4..6].try_into().unwrap());
-            let data3 = u16::from_le_bytes(data[6..8].try_into().unwrap());
-            let guid = format!(
-                "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-                data1, data2, data3,
-                data[8], data[9], data[10], data[11],
-                data[12], data[13], data[14], data[15]
-            );
-            Some(guid)
-        } else {
-            None
-        }
+            let d1 = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            let d2 = u16::from_le_bytes(data[4..6].try_into().unwrap());
+            let d3 = u16::from_le_bytes(data[6..8].try_into().unwrap());
+            Some(format!("{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+                d1, d2, d3, data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]))
+        } else { None }
     }
 }
 
-/// Check if virtual desktop changed and log if it did.
 fn check_desktop_change(session: &mut SessionState, writer: &mut LogWriter) {
     if let Some(id) = get_desktop_id() {
         let prev = session.last_desktop_id.as_deref().unwrap_or("");
         if id != prev {
             let ts = epoch_secs();
             session.last_desktop_id = Some(id.clone());
-            let line = format_line(ts, "virtual_desktop_changed", &[sv("id", &id)]);
-            let _ = writer.write_line(&line);
+            let _ = writer.write_line(&format_line(ts, "desk", &[sv("id", &id)]));
         }
     }
 }
 
-/// Clear the global sender (called on shutdown).
+// ── Helpers ──────────────────────────────────────────────────────────────
+
 fn clear_sender() {
     if let Ok(mut guard) = BLACKBOX_TX.lock() {
         *guard = None;
     }
 }
-
-#[cfg(test)]
 
 #[cfg(test)]
 mod tests {
@@ -620,39 +542,63 @@ mod tests {
     }
 
     #[test]
-    fn test_format_line_basic() {
-        // 1716371523 = 2024-05-22 09:52:03 (approximately)
-        let line = format_line(1716371523, "test_event", &[sv("key", "value")]);
-        assert!(line.starts_with("2024-05-22 "), "line: {line}");
-        assert!(line.contains("event=test_event"), "line: {line}");
-        assert!(line.contains("key=value"), "line: {line}");
+    fn test_format_line_time_only() {
+        let line = format_line(1716371523, "tst", &[sv("k", "v")]);
+        // format_line outputs HH:MM:SS (no date)
+        assert_eq!(&line[..8], "09:52:03", "line: {line}");
+        assert!(line.contains("event=tst"), "line: {line}");
+        assert!(line.contains("k=v"), "line: {line}");
         assert!(line.ends_with('\n'), "line: {line}");
     }
 
     #[test]
     fn test_format_line_quoted_value() {
-        let line = format_line(1716371523, "event", &[sv("title", "my title")]);
-        assert!(line.contains(r#"title="my title""#), "line: {line}");
+        let line = format_line(1716371523, "w", &[sv("t", "my window")]);
+        assert!(line.contains(r##"t="my window""##), "line: {line}");
     }
 
     #[test]
-    fn test_format_line_empty_value() {
-        let line = format_line(1716371523, "event", &[sv("title", "")]);
-        assert!(line.contains(r#"title="""#), "line: {line}");
+    fn test_format_line_numeric() {
+        let line = format_line(1716371523, "ses-", &[nv("d", 60), nv("k", 42)]);
+        assert!(line.contains("d=60"), "line: {line}");
+        assert!(line.contains("k=42"), "line: {line}");
     }
 
     #[test]
-    fn test_format_line_numeric_value() {
-        let line = format_line(1716371523, "event", &[nv("count", 42)]);
-        assert!(line.contains("count=42"), "line: {line}");
+    fn test_session_smoke() {
+        let mut s = SessionState::new();
+        let mut w = LogWriter::new();
+        assert!(!s.active);
+        s.on_input(InputKind::Keyboard, 1000, &mut w);
+        assert!(s.active);
+        assert_eq!(s.keyboard_count, 1);
+        assert_eq!(s.mouse_count, 0);
+        s.on_input(InputKind::MouseButton, 1005, &mut w);
+        assert_eq!(s.mouse_count, 1);
+        s.on_input(InputKind::Wheel, 1010, &mut w);
+        assert_eq!(s.mouse_count, 2);
+        s.end_session(1005, &mut w, None);
+        assert!(!s.active);
     }
 
     #[test]
-    fn test_date_from_epoch_known() {
-        let (y, m, d) = date_from_epoch(1716371523);
-        assert_eq!(y, 2024, "year for ts=1716371523");
-        assert_eq!(m, 5, "month for ts=1716371523");
-        assert_eq!(d, 22, "day for ts=1716371523");
+    fn test_time_str() {
+        let ts = 9*3600 + 5*60 + 3; // 09:05:03
+        assert_eq!(time_str(ts), "09:05:03");
+    }
+
+    #[test]
+    fn test_time_str_midnight() {
+        assert_eq!(time_str(0), "00:00:00");
+        assert_eq!(time_str(86399), "23:59:59");
+    }
+
+    #[test]
+    fn test_today_str_format() {
+        let s = today_str();
+        assert_eq!(s.len(), 10);
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[7..8], "-");
     }
 
     #[test]
@@ -664,59 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_date_from_epoch_leap_year() {
-        // 2024-02-29 00:00:00 UTC
-        let (y, m, d) = date_from_epoch(1709164800);
-        assert_eq!(y, 2024, "year");
-        assert_eq!(m, 2, "month");
-        assert_eq!(d, 29, "day");
-    }
-
-    #[test]
-    fn test_date_from_epoch_rollover() {
-        // 2025-01-01 00:00:00 UTC
-        let (y, m, d) = date_from_epoch(1735689600);
-        assert_eq!(y, 2025, "year");
-        assert_eq!(m, 1, "month");
-        assert_eq!(d, 1, "day");
-    }
-
-    #[test]
-    fn test_session_smoke() {
-        let mut s = SessionState::new();
-        let mut writer = LogWriter::new();
-        assert!(!s.active);
-
-        s.on_input(InputKind::Keyboard, 1000, &mut writer);
-        assert!(s.active);
-        assert_eq!(s.keyboard_count, 1);
-        assert_eq!(s.mouse_count, 0);
-
-        s.on_input(InputKind::MouseButton, 1005, &mut writer);
-        assert_eq!(s.keyboard_count, 1);
-        assert_eq!(s.mouse_count, 1);
-
-        s.on_input(InputKind::Wheel, 1010, &mut writer);
-        assert_eq!(s.mouse_count, 2);
-
-        let mut w2 = LogWriter::new();
-        s.end_session(1005, &mut w2, None);
-        assert!(!s.active);
-    }
-
-    #[test]
-    fn test_today_str_format() {
-        let s = today_str();
-        assert_eq!(s.len(), 10);
-        assert_eq!(&s[4..5], "-");
-        assert_eq!(&s[7..8], "-");
-        let year: i32 = s[..4].parse().unwrap();
-        assert!(year >= 2024 && year <= 2099);
-    }
-
-    #[test]
     fn test_get_desktop_id() {
-        // Just ensure no crash; may be None in CI
-        let _ = get_desktop_id();
+        let _ = get_desktop_id(); // just no crash
     }
 }

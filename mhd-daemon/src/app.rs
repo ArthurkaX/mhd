@@ -33,6 +33,10 @@ pub trait DaemonControl: Send + Sync {
     fn quiet(&self) -> bool;
     #[allow(dead_code)]
     fn config_path(&self) -> &std::path::Path;
+    /// Toggle blackbox logging on/off.
+    fn toggle_blackbox(&self);
+    /// Whether blackbox is currently running.
+    fn blackbox_enabled(&self) -> bool;
 }
 
 /// Wrapper to make HWND Send+Sync safe.
@@ -55,6 +59,8 @@ pub struct AppHandle {
     pub(crate) quiet: bool,
     pub(crate) theme: Arc<Mutex<NativeTheme>>,
     pub(crate) osd: OsdHandle,
+    /// Blackbox handle (for tray toggle).
+    pub(crate) blackbox: Arc<Mutex<Option<BlackboxHandle>>>,
 }
 
 impl DaemonControl for AppHandle {
@@ -132,6 +138,18 @@ impl DaemonControl for AppHandle {
     fn config_path(&self) -> &std::path::Path {
         &self.config_path
     }
+
+    fn toggle_blackbox(&self) {
+        if let Ok(guard) = self.blackbox.lock() {
+            if let Some(ref bb) = *guard {
+                bb.toggle();
+            }
+        }
+    }
+
+    fn blackbox_enabled(&self) -> bool {
+        self.blackbox.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
 }
 
 /// The mhd application core.
@@ -147,7 +165,7 @@ pub struct App {
     tx: ActionSender,
     osd: OsdHandle,
     theme: Arc<Mutex<NativeTheme>>,
-    blackbox: Option<BlackboxHandle>,
+    blackbox: Arc<Mutex<Option<BlackboxHandle>>>,
 }
 
 impl App {
@@ -170,6 +188,7 @@ impl App {
         let hook_thread_id = Arc::new(AtomicU32::new(0));
         let config = Arc::new(Mutex::new(app_config));
         let theme = Arc::new(Mutex::new(native_theme));
+        let blackbox = Arc::new(Mutex::new(None::<BlackboxHandle>));
 
         let handle = AppHandle {
             running: running.clone(),
@@ -179,6 +198,7 @@ impl App {
             quiet,
             osd: osd.clone(),
             theme: theme.clone(),
+            blackbox: blackbox.clone(),
         };
 
         let (worker, tx) = ActionWorker::new(handle);
@@ -202,7 +222,7 @@ impl App {
             tx,
             osd,
             theme,
-            blackbox: None,
+            blackbox,
         })
     }
 
@@ -220,19 +240,17 @@ impl App {
             quiet: self.quiet,
             osd: self.osd.clone(),
             theme: self.theme.clone(),
+            blackbox: self.blackbox.clone(),
         }
     }
 
     /// Start the blackbox monitoring worker if enabled in config.
-    /// Returns the handle that must be kept alive for proper shutdown.
     fn start_blackbox(config: &BlackboxConfig) -> Option<BlackboxHandle> {
         if !config.enabled {
             return None;
         }
         match crate::blackbox::start(config.clone()) {
-            Ok(h) => {
-                Some(h)
-            }
+            Ok(h) => Some(h),
             Err(e) => {
                 eprintln!("mhd: blackbox: {e}");
                 None
@@ -240,12 +258,7 @@ impl App {
         }
     }
 
-    /// Install low-level hooks and enter the blocking message loop.
-    ///
-    /// Returns when `WM_QUIT` is received (from IPC/tray shutdown) or on
-    /// hook installation error.
-    pub fn run(mut self) -> Result<(), String> {
-        // Record the thread ID – this is where hooks + message loop live.
+    pub fn run(self) -> Result<(), String> {
         let tid = unsafe { GetCurrentThreadId() };
         self.hook_thread_id.store(tid, Ordering::SeqCst);
 
@@ -253,17 +266,19 @@ impl App {
         {
             let config = self.config.lock().unwrap();
             let bb_config = config.blackbox().clone();
-            drop(config);
-            self.blackbox = Self::start_blackbox(&bb_config);
+            if bb_config.enabled {
+                if let Some(h) = Self::start_blackbox(&bb_config) {
+                    *self.blackbox.lock().unwrap() = Some(h);
+                }
+            }
         }
 
         let handle = self.handle();
-
         let result = crate::hook::run_with_config(handle, self.tx);
 
         // Shutdown blackbox after hook exits
-        if let Some(mut bb) = self.blackbox.take() {
-            BlackboxHandle::shutdown(&mut bb);
+        if let Some(mut bb) = self.blackbox.lock().unwrap().take() {
+            bb.shutdown();
         }
 
         result
