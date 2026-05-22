@@ -448,7 +448,16 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             }
                             let _ = writer.write_line(&format_line(now, "on", &kv));
                         } else {
-                            let _ = writer.write_line(&format_line(now, "off", &[]));
+                            let title = get_foreground_title();
+                            let app = get_app_name();
+                            let mut kv = Vec::new();
+                            if let Some(ref a) = app {
+                                kv.push(sv("n", a));
+                            }
+                            if !title.is_empty() {
+                                kv.push(sv("t", &title));
+                            }
+                            let _ = writer.write_line(&format_line(now, "off", &kv));
                         }
                     }
                 }
