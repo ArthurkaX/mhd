@@ -298,9 +298,9 @@ impl SessionState {
         }
     }
 
-    fn end_session(&mut self, _ts: u64, writer: &mut LogWriter, reason: Option<&str>) {
+    fn end_session(&mut self, ts: u64, writer: &mut LogWriter, reason: Option<&str>) {
         if !self.active { return; }
-        let duration = self.last_action_at.saturating_sub(self.started_at);
+        let duration = ts.saturating_sub(self.started_at);
         let acts = self.keyboard_count + self.mouse_count;
         let mut kv = vec![nv("d", duration), nv("a", acts), nv("k", self.keyboard_count), nv("m", self.mouse_count)];
         if let Some(r) = reason {
@@ -308,7 +308,7 @@ impl SessionState {
         } else {
             kv.push(nv("i", 300));
         }
-        let _ = writer.write_line(&format_line(self.last_action_at, "ses-", &kv));
+        let _ = writer.write_line(&format_line(ts, "ses-", &kv));
         self.active = false;
     }
 }

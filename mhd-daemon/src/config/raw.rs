@@ -81,11 +81,8 @@ pub struct RawConfig {
     pub autostart: Option<bool>,
     /// Behavioural logger.
     #[cfg(feature = "blackbox")]
-    #[cfg(feature = "blackbox")]
     #[serde(default)]
     pub blackbox: Option<RawBlackbox>,
-    #[serde(default)]
-    pub transcribe: Option<RawTranscribe>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }

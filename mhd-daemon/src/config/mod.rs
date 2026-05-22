@@ -38,8 +38,6 @@ pub struct AppConfig {
     /// Behavioural logger config.
     #[cfg(feature = "blackbox")]
     pub blackbox: BlackboxConfig,
-    /// Transcription config.
-    pub transcribe: crate::transcribe::config::TranscribeConfig,
 }
 
 impl AppConfig {
@@ -142,7 +140,6 @@ impl AppConfig {
                 enabled: raw.blackbox.as_ref().and_then(|b| b.enabled).unwrap_or(false),
                 idle_seconds: raw.blackbox.as_ref().and_then(|b| b.idle_seconds).unwrap_or(300),
             },
-            transcribe: crate::transcribe::parse_transcribe_config(raw.transcribe.as_ref()),
             autostart: raw.autostart.unwrap_or(false),
         })
     }
