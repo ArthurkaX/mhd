@@ -16,10 +16,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
 
-/// GitHub release info for sherpa-onnx.
+/// GitHub repo for sherpa-onnx.
 const SHERPA_ONNX_REPO: &str = "k2-fsa/sherpa-onnx";
-/// Hardcoded fallback version (will try GitHub API first).
-const SHERPA_ONNX_VERSION: &str = "v1.10.30";
+/// Fallback archive name (used if GitHub API fails).
+/// This is the v1.10.30 naming pattern (old style).
+const FALLBACK_ARCHIVE: &str = "sherpa-onnx-v1.10.30-win-x64-shared.tar.bz2";
+const FALLBACK_VERSION: &str = "v1.10.30";
 
 /// Known Parakeet models (name → HuggingFace repo).
 const PARAKEET_MODELS: &[(&str, &str)] = &[
@@ -78,18 +80,19 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
     fs::create_dir_all(bin_dir)
         .map_err(|e| format!("cannot create bin dir: {e}"))?;
 
-    // Try to get latest version from GitHub API
-    let version = get_latest_sherpa_version().unwrap_or_else(|_| SHERPA_ONNX_VERSION.to_string());
+    // Determine the best archive URL
+    let (version, archive_name) = get_windows_archive_info().unwrap_or_else(|_| {
+        (FALLBACK_VERSION.to_string(), FALLBACK_ARCHIVE.to_string())
+    });
 
-    // Build download URL
-    let version_stripped = version.trim_start_matches('v');
-    let archive_name = format!("sherpa-onnx-win64-cpu-v{version_stripped}.tar.bz2");
     let url = format!(
         "https://github.com/{SHERPA_ONNX_REPO}/releases/download/{version}/{archive_name}"
     );
-    let archive_path = bin_dir.join(&archive_name);
 
     eprintln!("mhd: downloading sherpa-onnx-ws ({version})...");
+    eprintln!("mhd: url: {url}");
+
+    let archive_path = bin_dir.join(&archive_name);
 
     // Download using curl.exe (available on Windows 10+)
     let status = Command::new("curl.exe")
@@ -102,7 +105,7 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
     }
 
     // Extract using tar.exe (available on Windows 10+)
-    eprintln!("mhd: extracting sherpa-onnx-ws...");
+    eprintln!("mhd: extracting...");
     let status = Command::new("tar.exe")
         .args(["-xf", &archive_path.to_string_lossy(), "-C", &bin_dir.to_string_lossy()])
         .status()
@@ -112,37 +115,65 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
         return Err(format!("tar extraction failed (exit: {status:?})"));
     }
 
-    // Move the binary from the extracted subdirectory to bin/
-    let extracted_dir = bin_dir.join(format!("sherpa-onnx-win64-cpu-v{version_stripped}"));
-    let extracted_exe = extracted_dir.join("bin").join("sherpa-onnx-ws.exe");
-    if extracted_exe.exists() {
-        fs::rename(&extracted_exe, &exe_path)
-            .map_err(|e| format!("cannot move sherpa-onnx-ws.exe: {e}"))?;
-        // Clean up extracted directory
-        let _ = fs::remove_dir_all(&extracted_dir);
-    } else {
-        // Maybe the binary is directly in the archive root
-        let alt_exe = extracted_dir.join("sherpa-onnx-ws.exe");
-        if alt_exe.exists() {
-            fs::rename(&alt_exe, &exe_path)
-                .map_err(|e| format!("cannot move sherpa-onnx-ws.exe: {e}"))?;
-            let _ = fs::remove_dir_all(&extracted_dir);
-        }
-    }
+    // Find the binary in the extracted tree
+    let found = find_and_move_exe(bin_dir, &exe_path);
 
     // Remove archive
     let _ = fs::remove_file(&archive_path);
 
-    if exe_path.exists() {
+    if found {
         eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
         Ok(exe_path)
     } else {
-        Err("sherpa-onnx-ws.exe not found after extraction".to_string())
+        Err(format!(
+            "sherpa-onnx-ws.exe not found after extraction in {}",
+            bin_dir.display()
+        ))
     }
 }
 
-/// Get the latest release version from GitHub API.
-fn get_latest_sherpa_version() -> Result<String, String> {
+/// Recursively search for sherpa-onnx-ws.exe in `dir`, move to `dest`.
+fn find_and_move_exe(dir: &Path, dest: &Path) -> bool {
+    // First check common paths
+    let candidates = [
+        dir.join("bin").join("sherpa-onnx-ws.exe"),
+        dir.join("sherpa-onnx-ws.exe"),
+        dir.join("build").join("bin").join("sherpa-onnx-ws.exe"),
+        dir.join("Release").join("bin").join("sherpa-onnx-ws.exe"),
+    ];
+
+    for c in &candidates {
+        if c.exists() {
+            let _ = fs::rename(c, dest);
+            // Clean up extracted dir
+            if let Some(parent) = c.parent() {
+                if let Some(grand) = parent.parent() {
+                    let _ = fs::remove_dir_all(grand);
+                }
+            }
+            return dest.exists();
+        }
+    }
+
+    // Fallback: walk the directory tree
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path != dest.parent().unwrap() {
+                if find_and_move_exe(&path, dest) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Determine the correct Windows release archive name.
+///
+/// Tries the GitHub API to get the latest release, then finds a suitable
+/// Windows x64 shared archive asset.
+fn get_windows_archive_info() -> Result<(String, String), String> {
     let url = format!("https://api.github.com/repos/{SHERPA_ONNX_REPO}/releases/latest");
     let output = Command::new("curl.exe")
         .args(["-s", "-L", "-H", "Accept: application/json", &url])
@@ -154,14 +185,82 @@ fn get_latest_sherpa_version() -> Result<String, String> {
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    // Parse "tag_name" from JSON (simple, no serde dependency)
-    if let Some(tag_start) = body.find(r#""tag_name":""#) {
-        let start = tag_start + r#""tag_name":""#.len();
-        if let Some(end) = body[start..].find('"') {
-            return Ok(body[start..start + end].to_string());
+
+    // Extract tag_name
+    let version = extract_json_string(&body, "tag_name")
+        .ok_or_else(|| "no tag_name in response".to_string())?;
+
+    // Find a Windows x64 shared archive (non-cuda, non-debug, non-jni)
+    // Patterns in the assets list:
+    //   "sherpa-onnx-v{ver}-win-x64-shared.tar.bz2"           (old naming)
+    //   "sherpa-onnx-v{ver}-win-x64-shared-MD-Release.tar.bz2" (new naming)
+    //   "sherpa-onnx-v{ver}-win-x64-shared-MT-Release.tar.bz2"
+    //   "sherpa-onnx-v{ver}-win-x64-static-MD-Release.tar.bz2"
+    //   etc.
+    //
+    // We prefer: shared (not static), not cuda, not debug, not jni, not no-tts
+
+    let asset_names = extract_asset_names(&body);
+    let preferred = asset_names.iter().find(|name| {
+        name.contains("win-x64")
+            && name.contains("shared")
+            && !name.contains("static")
+            && !name.contains("cuda")
+            && !name.contains("Debug")
+            && !name.contains("RelWithDebInfo")
+            && !name.contains("MinSizeRel")
+            && !name.contains("jni")
+            && !name.contains("-lib")
+            && !name.contains("-no-tts")
+            && name.ends_with(".tar.bz2")
+    });
+
+    if let Some(archive_name) = preferred {
+        return Ok((version, archive_name.clone()));
+    }
+
+    // Fallback: any win-x64 shared archive
+    let fallback = asset_names.iter().find(|name| {
+        name.contains("win-x64")
+            && name.contains("shared")
+            && !name.contains("cuda")
+            && name.ends_with(".tar.bz2")
+    });
+
+    if let Some(archive_name) = fallback {
+        return Ok((version, archive_name.clone()));
+    }
+
+    Err("no suitable Windows archive found in release assets".to_string())
+}
+
+/// Extract a JSON string field by key (no serde dependency).
+fn extract_json_string(body: &str, key: &str) -> Option<String> {
+    let search = format!(r#""{key}":""#);
+    if let Some(start) = body.find(&search) {
+        let val_start = start + search.len();
+        if let Some(end) = body[val_start..].find('"') {
+            return Some(body[val_start..val_start + end].to_string());
         }
     }
-    Err("could not parse tag_name from GitHub API response".to_string())
+    None
+}
+
+/// Extract all asset names from a GitHub releases JSON body.
+fn extract_asset_names(body: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let search = r#""name":""#;
+    let mut pos = 0;
+    while let Some(start) = body[pos..].find(search) {
+        let val_start = pos + start + search.len();
+        if let Some(end) = body[val_start..].find('"') {
+            names.push(body[val_start..val_start + end].to_string());
+            pos = val_start + end + 1;
+        } else {
+            break;
+        }
+    }
+    names
 }
 
 /// Return list of available model names.
@@ -210,9 +309,7 @@ where
             continue;
         }
 
-        let url = format!(
-            "https://huggingface.co/{repo}/resolve/main/{file}"
-        );
+        let url = format!("https://huggingface.co/{repo}/resolve/main/{file}");
 
         eprintln!("mhd: downloading model file {}/{}: {file}", i + 1, total_files);
         let status = Command::new("curl.exe")
