@@ -199,11 +199,24 @@ struct LogWriter {
     current_date: String,
     file: Option<std::fs::File>,
     dir_ensured: bool,
+    /// Lines written since last flush.
+    lines_since_flush: u32,
+    /// Epoch seconds of last flush.
+    last_flush_ts: u64,
 }
+
+const FLUSH_LINES: u32 = 50;
+const FLUSH_SECS: u64 = 20;
 
 impl LogWriter {
     fn new() -> Self {
-        LogWriter { current_date: String::new(), file: None, dir_ensured: false }
+        LogWriter {
+            current_date: String::new(),
+            file: None,
+            dir_ensured: false,
+            lines_since_flush: 0,
+            last_flush_ts: 0,
+        }
     }
     fn ensure_dir(&mut self) -> Result<(), String> {
         if self.dir_ensured { return Ok(()); }
@@ -228,7 +241,15 @@ impl LogWriter {
         if let Some(ref mut f) = self.file {
             f.write_all(line.as_bytes())
                 .map_err(|e| format!("cannot write blackbox log: {e}"))?;
-            f.flush().map_err(|e| format!("cannot flush blackbox log: {e}"))?;
+            self.lines_since_flush += 1;
+            let now = epoch_secs();
+            if self.lines_since_flush >= FLUSH_LINES
+                || now.saturating_sub(self.last_flush_ts) >= FLUSH_SECS
+            {
+                f.flush().map_err(|e| format!("cannot flush blackbox log: {e}"))?;
+                self.lines_since_flush = 0;
+                self.last_flush_ts = now;
+            }
         }
         Ok(())
     }
