@@ -370,17 +370,25 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
             BLACKBOX_ENABLED.store(true, Ordering::Relaxed);
 
             let now = epoch_secs();
-            let _ = writer.write_line(&format_line(now, "start", &[]));
 
             let initial_title = get_foreground_title();
             if !initial_title.is_empty() {
                 session.last_window_title = Some(initial_title.clone());
             }
-            if let Some(app) = get_app_name() {
-                session.last_app_name = Some(app);
+            let initial_app = get_app_name();
+            if let Some(ref app) = initial_app {
+                session.last_app_name = Some(app.clone());
             }
-            // Write initial app + title context
-            check_app_and_title(&mut session, &mut writer);
+
+            // Write start event with current context
+            let mut kv = Vec::new();
+            if let Some(ref app) = initial_app {
+                kv.push(sv("n", app));
+            }
+            if !initial_title.is_empty() {
+                kv.push(sv("t", &initial_title));
+            }
+            let _ = writer.write_line(&format_line(now, "start", &kv));
 
             loop {
                 let timeout = Duration::from_secs(if session.active {
@@ -426,8 +434,19 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         BLACKBOX_ENABLED.store(enabled, Ordering::Relaxed);
                         if enabled {
                             let now = epoch_secs();
-                            let _ = writer.write_line(&format_line(now, "start", &[]));
-                            check_app_and_title(&mut session, &mut writer);
+                            // Snapshot current context for start event
+                            let title = get_foreground_title();
+                            let app = get_app_name();
+                            let mut kv = Vec::new();
+                            if let Some(ref a) = app {
+                                kv.push(sv("n", a));
+                                session.last_app_name = Some(a.clone());
+                            }
+                            if !title.is_empty() {
+                                kv.push(sv("t", &title));
+                                session.last_window_title = Some(title.clone());
+                            }
+                            let _ = writer.write_line(&format_line(now, "start", &kv));
                         }
                     }
                 }
