@@ -49,8 +49,8 @@ impl Default for TranscribeConfig {
         TranscribeConfig {
             enabled: false,
             model: "parakeet-tdt-0.6b-v3".into(),
-            models_dir: String::new(),
-            sherpa_onnx_ws: String::new(),
+            models_dir: String::new(),      // auto-resolved to ~/.config/mhd/transcribe/models/
+            sherpa_onnx_ws: String::new(),  // auto-downloaded to ~/.config/mhd/transcribe/bin/
             output: OutputMode::PasteOnBlur,
             show_preview: true,
             keep_sidecar_warm: false,
@@ -67,17 +67,13 @@ impl Default for TranscribeConfig {
 
 impl TranscribeConfig {
     /// Validate config fields. Returns `Ok(())` or a list of errors.
+    /// Note: `sherpa_onnx_ws` and `models_dir` may be empty — they will be
+    /// auto-downloaded to `~/.config/mhd/transcribe/` on first use.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
         if self.model.trim().is_empty() {
             errors.push("transcribe.model must not be empty".into());
-        }
-        if self.sherpa_onnx_ws.trim().is_empty() {
-            errors.push("transcribe.sherpa_onnx_ws must be set".into());
-        }
-        if self.models_dir.trim().is_empty() {
-            errors.push("transcribe.models_dir must be set".into());
         }
         if self.threads < 1 {
             errors.push("transcribe.threads must be >= 1".into());

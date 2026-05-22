@@ -21,6 +21,7 @@ pub mod session;
 pub mod parakeet;
 pub mod clipboard;
 pub mod segmenter;
+pub mod downloader;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, LazyLock};
@@ -103,9 +104,38 @@ pub fn toggle(config: TranscribeConfig) -> Result<String, String> {
         // Validate config
         config.validate().map_err(|errs| errs.join("; "))?;
 
+        // 0. Auto-download sidecar + model if missing
+        let mut resolved_config = config.clone();
+
+        // Resolve sherpa-onnx-ws path
+        if resolved_config.sherpa_onnx_ws.trim().is_empty() {
+            resolved_config.sherpa_onnx_ws = downloader::ensure_sherpa_onnx()?
+                .to_string_lossy().to_string();
+        } else if !std::path::Path::new(&resolved_config.sherpa_onnx_ws).exists() {
+            // Try auto-download anyway
+            resolved_config.sherpa_onnx_ws = downloader::ensure_sherpa_onnx()?
+                .to_string_lossy().to_string();
+        }
+
+        // Resolve model path
+        let model_path = std::path::Path::new(&resolved_config.model);
+        if !model_path.is_absolute() && !model_path.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
+            // It's a bare model name — ensure downloaded
+            downloader::ensure_model(&resolved_config.model)?;
+            let models_dir = downloader::models_dir()?;
+            resolved_config.model = models_dir.join(&resolved_config.model)
+                .to_string_lossy().to_string();
+        } else if !model_path.exists() {
+            // Might still be a model name with relative path, try download
+            downloader::ensure_model(&resolved_config.model)?;
+            let models_dir = downloader::models_dir()?;
+            resolved_config.model = models_dir.join(&resolved_config.model)
+                .to_string_lossy().to_string();
+        }
+
         // 1. Start sherpa-onnx-ws sidecar
         let port = find_free_port()?;
-        let mut sidecar = Sidecar::start(&config, port)?;
+        let mut sidecar = Sidecar::start(&resolved_config, port)?;
 
         // 2. Start WASAPI capture
         let running = Arc::new(AtomicBool::new(true));
@@ -164,7 +194,6 @@ fn run_pipeline(
     // We read from the channel and also read WS responses concurrently.
     // Use non-blocking check on both sides.
     let mut pending_results: Vec<String> = Vec::new();
-    let mut current_segment: Option<Vec<f32>> = None;
     let mut done = false;
     let mut segment_id: u64 = 0;
 
