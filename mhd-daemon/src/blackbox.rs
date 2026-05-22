@@ -173,7 +173,7 @@ fn escape(s: &str) -> String {
 
 /// Format: `HH:MM:SS event=short_name k=v …`   (date is in filename).
 fn format_line(ts: u64, event: &str, kv: &[(&str, String)]) -> String {
-    let mut line = format!("{} event={}", time_str(ts), event);
+    let mut line = format!("{} {}", time_str(ts), event);
     for (key, val) in kv {
         let q = val.contains(' ') || val.contains('"') || val.contains('\\') || val.is_empty();
         if q {
@@ -380,6 +380,9 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 session.last_app_name = Some(app.clone());
             }
 
+            // Write legend header once per run
+            let _ = writer.write_line(&format_line(now, "# legend: start=monitoring_start blackbox_on/off=logging_toggle ses+=session_start ses-=session_end win=window_title app=app_name", &[]));
+
             // Write start event with current context
             let mut kv = Vec::new();
             if let Some(ref app) = initial_app {
@@ -544,9 +547,9 @@ mod tests {
     #[test]
     fn test_format_line_time_only() {
         let line = format_line(1716371523, "tst", &[sv("k", "v")]);
-        // format_line outputs HH:MM:SS (no date)
+        // format_line outputs `HH:MM:SS tst k=v` (без event=)
         assert_eq!(&line[..8], "09:52:03", "line: {line}");
-        assert!(line.contains("event=tst"), "line: {line}");
+        assert!(line.starts_with("09:52:03 tst"), "line: {line}");
         assert!(line.contains("k=v"), "line: {line}");
         assert!(line.ends_with('\n'), "line: {line}");
     }
