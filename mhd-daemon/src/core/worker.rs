@@ -121,6 +121,24 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::QuickDraw => {
             crate::overlays::quickdraw::show(handle.theme());
         }
+        Action::Transcribe => {
+            let cfg = handle.config.lock().unwrap();
+            let tcfg = cfg.transcribe.clone();
+            drop(cfg);
+            if tcfg.enabled {
+                let ctrl = crate::transcribe::TranscribeController::new(tcfg);
+                match ctrl.toggle() {
+                    Ok(msg) => {
+                        if !handle.quiet() {
+                            println!("mhd: {msg}");
+                        }
+                    }
+                    Err(e) => eprintln!("mhd: transcribe: {e}"),
+                }
+            } else {
+                eprintln!("mhd: transcribe is not enabled in config");
+            }
+        }
         Action::BrightnessUp { value } => {
             if monitor::adjust_brightness(*value as i32).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {

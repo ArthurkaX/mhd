@@ -47,6 +47,7 @@ pub(crate) mod blackbox {
 }
 mod app;
 mod monitor;
+mod transcribe;
 mod config;
 mod overlays;
 mod osd;

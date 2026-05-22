@@ -36,6 +36,8 @@ pub enum Action {
     PowerActions,
     /// Show the Quick Draw overlay (drawing tools).
     QuickDraw,
+    /// Toggle speech-to-text dictation.
+    Transcribe,
     Quit,
 }
 
@@ -112,6 +114,7 @@ impl Action {
             "media_next_track" => Ok(Action::MediaNextTrack),
             "quick_draw" => Ok(Action::QuickDraw),
             "power_actions" => Ok(Action::PowerActions),
+            "transcribe" => Ok(Action::Transcribe),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
         }
@@ -260,6 +263,7 @@ impl Action {
             Action::ToggleTopmost => "toggle_topmost".to_string(),
             Action::PowerActions => "power_actions".to_string(),
             Action::QuickDraw => "quick_draw".to_string(),
+            Action::Transcribe => "transcribe".to_string(),
             Action::MediaNextTrack => "media_next_track".to_string(),
             Action::Quit => "quit".to_string(),
         }
@@ -399,6 +403,12 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "quick_draw",
         label: "Quick Draw",
+        category: "General",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "transcribe",
+        label: "Transcribe (Dictation)",
         category: "General",
         param_key: None,
     },
