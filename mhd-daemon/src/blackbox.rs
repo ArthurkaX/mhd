@@ -14,7 +14,10 @@ use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Registry::*;
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::config::path::home_dir;
 
@@ -268,6 +271,8 @@ struct SessionState {
     mouse_count: u64,
     /// Title we last wrote to the log (for dedup).
     last_window_title: Option<String>,
+    /// Virtual desktop ID (GUID string) we last wrote (for dedup).
+    last_desktop_id: Option<String>,
 }
 
 impl SessionState {
@@ -279,6 +284,7 @@ impl SessionState {
             keyboard_count: 0,
             mouse_count: 0,
             last_window_title: None,
+            last_desktop_id: None,
         }
     }
 
@@ -336,7 +342,7 @@ impl SessionState {
 /// Returns the title of the current foreground window.
 fn get_foreground_title() -> String {
     unsafe {
-        let hwnd = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        let hwnd = GetForegroundWindow();
         if hwnd == HWND::default() {
             return String::new();
         }
@@ -416,6 +422,16 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 let _ = writer.write_line(&line);
             }
 
+            // Save initial virtual desktop
+            if let Some(desktop_id) = get_desktop_id() {
+                session.last_desktop_id = Some(desktop_id.clone());
+                // Write initial desktop (only if not the default "no name" case)
+                if !desktop_id.is_empty() {
+                    let line = format_line(now, "virtual_desktop_changed", &[sv("id", &desktop_id)]);
+                    let _ = writer.write_line(&line);
+                }
+            }
+
             // Main event loop
             loop {
                 // If session is active, use timeout for idle detection
@@ -435,8 +451,9 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                                 session.end_session(session.last_action_at, &mut writer, None);
                             }
                         }
-                        // Poll foreground window
+                        // Poll foreground window and virtual desktop
                         check_window_change(&mut session, &mut writer);
+                        check_desktop_change(&mut session, &mut writer);
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -445,8 +462,9 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 match event {
                     BlackboxEvent::Input { kind, ts } => {
                         session.on_input(kind, ts, &mut writer);
-                        // Also check window (may have changed during idle)
+                        // Also check window and desktop (may have changed during idle)
                         check_window_change(&mut session, &mut writer);
+                        check_desktop_change(&mut session, &mut writer);
                     }
                     BlackboxEvent::WindowChanged { title, ts } => {
                         let prev = session.last_window_title.as_deref().unwrap_or("");
@@ -489,6 +507,67 @@ fn check_window_change(session: &mut SessionState, writer: &mut LogWriter) {
         session.last_window_title = Some(title.clone());
         if !title.is_empty() {
             let line = format_line(ts, "window_changed", &[sv("title", &title)]);
+            let _ = writer.write_line(&line);
+        }
+    }
+}
+
+/// Read the current virtual desktop GUID from the registry.
+fn get_desktop_id() -> Option<String> {
+    unsafe {
+        let key = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops";
+        let wide: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut hkey = HKEY::default();
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR::from_raw(wide.as_ptr()),
+            0,
+            KEY_READ,
+            &mut hkey as *mut HKEY,
+        );
+        if result.is_err() || hkey.is_invalid() {
+            return None;
+        }
+
+        let vname: Vec<u16> = "CurrentVirtualDesktop\0".encode_utf16().collect();
+        let mut data = [0u8; 16];
+        let mut size = 16u32;
+        let mut typ = REG_NONE;
+        let r = RegQueryValueExW(
+            hkey,
+            PCWSTR::from_raw(vname.as_ptr()),
+            None,
+            Some(&mut typ),
+            Some(data.as_mut_ptr()),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(hkey);
+
+        if r.is_ok() && size == 16 {
+            let data1 = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            let data2 = u16::from_le_bytes(data[4..6].try_into().unwrap());
+            let data3 = u16::from_le_bytes(data[6..8].try_into().unwrap());
+            let guid = format!(
+                "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+                data1, data2, data3,
+                data[8], data[9], data[10], data[11],
+                data[12], data[13], data[14], data[15]
+            );
+            Some(guid)
+        } else {
+            None
+        }
+    }
+}
+
+/// Check if virtual desktop changed and log if it did.
+fn check_desktop_change(session: &mut SessionState, writer: &mut LogWriter) {
+    if let Some(id) = get_desktop_id() {
+        let prev = session.last_desktop_id.as_deref().unwrap_or("");
+        if id != prev {
+            let ts = epoch_secs();
+            session.last_desktop_id = Some(id.clone());
+            let line = format_line(ts, "virtual_desktop_changed", &[sv("id", &id)]);
             let _ = writer.write_line(&line);
         }
     }
