@@ -1,19 +1,15 @@
 //! Transcibe module — speech-to-text dictation via sherpa-onnx / Parakeet.
 //!
-//! ## Phase 1: Single-shot MVP (done)
-//! - Config, action, sidecar start/stop, WebSocket client, clipboard output.
+//! ## Architecture
 //!
-//! ## Phase 2: WASAPI microphone capture (done)
-//! - Capture mic audio, convert to Parakeet format.
+//! `toggle()` is called from the worker on each hotkey press. It never blocks:
+//! - First press spawns a **session thread** that downloads dependencies,
+//!   starts the sidecar, captures audio, segments, sends to WebSocket,
+//!   and collects results.
+//! - Second press signals the thread to stop and returns the accumulated text.
 //!
-//! ## Phase 3: Silence chunking + live pipeline (in progress)
-//! - RMS segmenter emits chunks on pauses.
-//! - Transcribe chunks while recording continues.
-//!
-//! ## Phase 4: Live preview overlay
-//! - Preview overlay shows incremental results.
-//!
-//! ## Phase 5: Model registry, downloader, paste-on-blur, polish.
+//! The session thread runs independently, so hotkeys remain responsive
+//! even during long downloads (sherpa-onnx-ws ~18 MB, model ~465 MB).
 
 pub mod audio;
 pub mod config;
@@ -26,6 +22,7 @@ pub mod downloader;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, LazyLock};
 use std::thread;
+use std::time::Duration;
 
 use crate::config::raw::RawTranscribe;
 use crate::transcribe::audio::AudioChunk;
@@ -33,53 +30,44 @@ use crate::transcribe::config::{TranscribeConfig, OutputMode};
 use crate::transcribe::parakeet::{Sidecar, WsClient, find_free_port};
 use crate::transcribe::segmenter::SegmentEvent;
 
-/// The sherpa-onnx-ws model expects 16 kHz mono f32 audio as binary frames.
-const TARGET_SR: u32 = 16000;
 const CHUNK_MS: u64 = 50;
 
-// ── Global pipeline state ─────────────────────────────────────────────
+// ── Global session state ────────────────────────────────────────────
 
-struct Pipeline {
-    /// Thread handles (capture + pipeline).
-    capture_handle: Option<thread::JoinHandle<()>>,
-    pipeline_handle: Option<thread::JoinHandle<()>>,
-    /// Signal to stop capture.
+/// Handle to a running session thread.
+struct SessionHandle {
+    /// Signal the thread to stop (download phase or pipeline phase).
     running: Arc<AtomicBool>,
-    /// Accumulated transcript text.
-    transcript: Vec<String>,
-    /// Sidecar handle.
-    sidecar: Option<Sidecar>,
+    /// Thread join handle.
+    handle: Option<thread::JoinHandle<()>>,
+    /// Accumulated transcript (written by session thread, read on stop).
+    transcript: Arc<Mutex<Vec<String>>>,
 }
 
-static PIPELINE: LazyLock<Mutex<Option<Pipeline>>> = LazyLock::new(|| Mutex::new(None));
+static SESSION: LazyLock<Mutex<Option<SessionHandle>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Toggle transcription: start if idle, stop if recording.
 ///
-/// This is called from the worker on each hotkey press.
+/// Non-blocking: returns immediately after spawning/stopping the session thread.
 pub fn toggle(config: TranscribeConfig) -> Result<String, String> {
-    let mut pipeline_guard = PIPELINE.lock().map_err(|e| format!("lock error: {e}"))?;
+    let mut session_guard = SESSION.lock().map_err(|e| format!("lock error: {e}"))?;
 
-    if pipeline_guard.is_some() {
+    if let Some(mut session) = session_guard.take() {
         // ── STOP ──
-        let mut pipeline = pipeline_guard.take().unwrap();
 
-        // Signal capture to stop
-        pipeline.running.store(false, Ordering::Relaxed);
+        // Signal thread to stop
+        session.running.store(false, Ordering::Relaxed);
 
-        // Wait for threads to finish
-        if let Some(h) = pipeline.capture_handle.take() {
-            let _ = h.join();
-        }
-        if let Some(h) = pipeline.pipeline_handle.take() {
+        // Wait for it to finish
+        if let Some(h) = session.handle.take() {
             let _ = h.join();
         }
 
-        // Stop sidecar
-        if let Some(mut sc) = pipeline.sidecar.take() {
-            sc.stop();
-        }
-
-        let text = pipeline.transcript.join(&config.join_separator);
+        // Collect transcript
+        let text = {
+            let t = session.transcript.lock().unwrap();
+            t.join(&config.join_separator)
+        };
 
         // Deliver output
         if !text.is_empty() {
@@ -101,70 +89,127 @@ pub fn toggle(config: TranscribeConfig) -> Result<String, String> {
         Ok(text)
     } else {
         // ── START ──
-        // Validate config
+
         config.validate().map_err(|errs| errs.join("; "))?;
 
-        // 0. Auto-download sidecar + model if missing
-        let mut resolved_config = config.clone();
-
-        // Resolve sherpa-onnx-ws path
-        if resolved_config.sherpa_onnx_ws.trim().is_empty() {
-            resolved_config.sherpa_onnx_ws = downloader::ensure_sherpa_onnx()?
-                .to_string_lossy().to_string();
-        } else if !std::path::Path::new(&resolved_config.sherpa_onnx_ws).exists() {
-            // Try auto-download anyway
-            resolved_config.sherpa_onnx_ws = downloader::ensure_sherpa_onnx()?
-                .to_string_lossy().to_string();
-        }
-
-        // Resolve model path
-        let model_path = std::path::Path::new(&resolved_config.model);
-        if !model_path.is_absolute() && !model_path.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
-            // It's a bare model name — ensure downloaded
-            downloader::ensure_model(&resolved_config.model)?;
-            let models_dir = downloader::models_dir()?;
-            resolved_config.model = models_dir.join(&resolved_config.model)
-                .to_string_lossy().to_string();
-        } else if !model_path.exists() {
-            // Might still be a model name with relative path, try download
-            downloader::ensure_model(&resolved_config.model)?;
-            let models_dir = downloader::models_dir()?;
-            resolved_config.model = models_dir.join(&resolved_config.model)
-                .to_string_lossy().to_string();
-        }
-
-        // 1. Start sherpa-onnx-ws sidecar
-        let port = find_free_port()?;
-        let mut sidecar = Sidecar::start(&resolved_config, port)?;
-
-        // 2. Start WASAPI capture
         let running = Arc::new(AtomicBool::new(true));
-        let audio_rx = audio::start_capture(running.clone())?;
-
-        // 3. Start pipeline thread
         let transcript: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let running_clone = running.clone();
         let transcript_clone = transcript.clone();
         let config_clone = config.clone();
-        let pipeline_handle = thread::Builder::new()
-            .name("transcribe-pipeline".into())
+
+        let handle = thread::Builder::new()
+            .name("transcribe-session".into())
             .spawn(move || {
-                run_pipeline(audio_rx, &config_clone, port, transcript_clone);
+                run_session(config_clone, running_clone, transcript_clone);
             })
-            .map_err(|e| format!("cannot spawn pipeline thread: {e}"))?;
+            .map_err(|e| format!("cannot spawn session thread: {e}"))?;
 
-        // Wait a moment for the sidecar to be ready
-        thread::sleep(std::time::Duration::from_millis(200));
-
-        *pipeline_guard = Some(Pipeline {
-            capture_handle: None, // audio::start_capture doesn't return handle; it's self-contained
-            pipeline_handle: Some(pipeline_handle),
+        *session_guard = Some(SessionHandle {
             running,
-            transcript: Vec::new(),
-            sidecar: Some(sidecar),
+            handle: Some(handle),
+            transcript,
         });
 
         Ok("transcribe: session started".into())
     }
+}
+
+/// Session thread entry point.
+///
+/// 1. Downloads dependencies (if needed) — checks `running` periodically.
+/// 2. Starts sherpa-onnx-ws sidecar.
+/// 3. Starts WASAPI capture + pipeline thread.
+/// 4. Waits for stop signal or errors, then cleans up.
+fn run_session(
+    config: TranscribeConfig,
+    running: Arc<AtomicBool>,
+    transcript: Arc<Mutex<Vec<String>>>,
+) {
+    // ── Resolve / download dependencies ─────────────────────────────────
+    let resolved_config = match resolve_deps(&config, &running) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("mhd: transcribe: dependency error: {e}");
+            return;
+        }
+    };
+
+    if !running.load(Ordering::Relaxed) {
+        return;
+    }
+
+    // ── Start sidecar ─────────────────────────────────────────────────
+    let port = match find_free_port() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("mhd: transcribe: cannot find free port: {e}");
+            return;
+        }
+    };
+
+    let mut sidecar = match Sidecar::start(&resolved_config, port) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("mhd: transcribe: sidecar error: {e}");
+            return;
+        }
+    };
+
+    if !running.load(Ordering::Relaxed) {
+        sidecar.stop();
+        return;
+    }
+
+    // ── Start capture ─────────────────────────────────────────────────
+    let audio_rx = match audio::start_capture(running.clone()) {
+        Ok(rx) => rx,
+        Err(e) => {
+            eprintln!("mhd: transcribe: capture error: {e}");
+            sidecar.stop();
+            return;
+        }
+    };
+
+    // ── Run pipeline ──────────────────────────────────────────────────
+    run_pipeline(audio_rx, &resolved_config, port, transcript, &running);
+
+    // ── Cleanup ───────────────────────────────────────────────────────
+    sidecar.stop();
+}
+
+/// Download dependencies, checking `running` between steps.
+fn resolve_deps(config: &TranscribeConfig, running: &AtomicBool) -> Result<TranscribeConfig, String> {
+    let mut resolved = config.clone();
+
+    // 1. sherpa-onnx-ws
+    if running.load(Ordering::Relaxed) {
+        if resolved.sherpa_onnx_ws.trim().is_empty()
+            || !std::path::Path::new(&resolved.sherpa_onnx_ws).exists()
+        {
+            resolved.sherpa_onnx_ws = downloader::ensure_sherpa_onnx()?
+                .to_string_lossy().to_string();
+        }
+    }
+
+    // 2. Model
+    if running.load(Ordering::Relaxed) {
+        let model_path = std::path::Path::new(&resolved.model);
+        if !model_path.is_absolute() || !model_path.exists() {
+            // Bare model name or missing path — ensure downloaded
+            let model_name = model_path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !model_name.is_empty() {
+                downloader::ensure_model(&model_name)?;
+                let models_dir = downloader::models_dir()?;
+                resolved.model = models_dir.join(&model_name)
+                    .to_string_lossy().to_string();
+            }
+        }
+    }
+
+    Ok(resolved)
 }
 
 /// Run the pipeline: read audio chunks, segment, send to WS, collect results.
@@ -173,6 +218,7 @@ fn run_pipeline(
     config: &TranscribeConfig,
     port: u16,
     transcript: Arc<Mutex<Vec<String>>>,
+    running: &AtomicBool,
 ) {
     // Connect WebSocket to sherpa-onnx-ws
     let mut ws = match WsClient::connect("127.0.0.1", port, "/") {
@@ -183,6 +229,9 @@ fn run_pipeline(
         }
     };
 
+    // Set read timeout to poll both WS and running flag
+    let _ = ws.stream().set_read_timeout(Some(Duration::from_millis(200)));
+
     let mut segmenter = segmenter::RmsSegmenter::new(
         config.speech_rms_threshold,
         config.silence_ms,
@@ -191,64 +240,51 @@ fn run_pipeline(
         CHUNK_MS,
     );
 
-    // We read from the channel and also read WS responses concurrently.
-    // Use non-blocking check on both sides.
     let mut pending_results: Vec<String> = Vec::new();
-    let mut done = false;
-    let mut segment_id: u64 = 0;
 
-    // Set WS read timeout to 100ms to poll for new audio chunks
-    let _ = ws.stream().set_read_timeout(Some(std::time::Duration::from_millis(100)));
+    loop {
+        // Check stop signal
+        if !running.load(Ordering::Relaxed) {
+            // Drain remaining segments
+            while let Some(event) = segmenter.finish() {
+                if let SegmentEvent::Phrase(audio) = event {
+                    let _ = ws.send_binary(&float32_to_bytes(&audio));
+                }
+            }
+            break;
+        }
 
-    while !done {
-        // 1. Try to read an audio chunk (non-blocking with 100ms timeout)
-        let audio_event = audio_rx.recv_timeout(std::time::Duration::from_millis(100));
-        match audio_event {
+        // Try to read audio chunk with timeout
+        match audio_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(chunk) => {
                 // Feed segmenter
                 while let Some(event) = segmenter.feed(&chunk) {
-                    match event {
-                        SegmentEvent::Phrase(audio) => {
-                            // Send to WS
-                            if let Err(e) = ws.send_binary(&float32_to_bytes(&audio)) {
-                                eprintln!("mhd: transcribe: WS send: {e}");
-                                done = true;
-                                break;
-                            }
-                            segment_id += 1;
+                    if let SegmentEvent::Phrase(audio) = event {
+                        if let Err(e) = ws.send_binary(&float32_to_bytes(&audio)) {
+                            eprintln!("mhd: transcribe: WS send: {e}");
+                            return;
                         }
-                        SegmentEvent::Flush => {}
                     }
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // No audio — might be done, check running flag
-            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                // Capture thread finished — drain segmenter
+                // Capture thread ended — drain and exit
                 while let Some(event) = segmenter.finish() {
-                    match event {
-                        SegmentEvent::Phrase(audio) => {
-                            if let Err(e) = ws.send_binary(&float32_to_bytes(&audio)) {
-                                eprintln!("mhd: transcribe: WS send: {e}");
-                                break;
-                            }
-                            segment_id += 1;
-                        }
-                        SegmentEvent::Flush => {}
+                    if let SegmentEvent::Phrase(audio) = event {
+                        let _ = ws.send_binary(&float32_to_bytes(&audio));
                     }
                 }
-                done = true;
+                break;
             }
         }
 
-        // 2. Try to read WS responses
+        // Read WS responses
         loop {
             match ws.read_frame() {
                 Ok((opcode, payload)) => {
                     match opcode {
                         0x1 | 0x2 => {
-                            // Text or binary — treat as transcription result
                             if let Ok(text) = String::from_utf8(payload) {
                                 let trimmed = text.trim().to_string();
                                 if !trimmed.is_empty() {
@@ -256,41 +292,28 @@ fn run_pipeline(
                                 }
                             }
                         }
-                        0x8 => {
-                            // Close frame
-                            done = true;
-                            break;
-                        }
-                        0x9 => {
-                            // Ping — respond with pong
-                            let _ = ws.send_pong(&[]);
-                        }
+                        0x8 => return, // Close frame
+                        0x9 => { let _ = ws.send_pong(&[]); }
                         _ => {}
                     }
                 }
-                Err(ref e) if e.contains("timed out") => {
-                    break; // no data, continue loop
-                }
+                Err(ref e) if e.contains("timed out") => break,
                 Err(e) => {
-                    if !done {
-                        eprintln!("mhd: transcribe: WS read: {e}");
-                    }
-                    done = true;
-                    break;
+                    eprintln!("mhd: transcribe: WS read: {e}");
+                    return;
                 }
             }
         }
     }
 
-    // Close WS connection
+    // Close WS
     let _ = ws.close();
 
     // Store results
-    let mut transcript_guard = transcript.lock().unwrap();
-    transcript_guard.extend(pending_results.drain(..));
+    let mut t = transcript.lock().unwrap();
+    t.extend(pending_results.drain(..));
 }
 
-/// Convert f32 slice to little-endian bytes (sherpa-onnx-ws expects PCM f32).
 fn float32_to_bytes(samples: &[f32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(samples.len() * 4);
     for &s in samples {
@@ -299,9 +322,9 @@ fn float32_to_bytes(samples: &[f32]) -> Vec<u8> {
     bytes
 }
 
-// ── Legacy controller (kept for backward compat) ─────────────────────
+// ── Config parsing (legacy) ─────────────────────────────────────────
 
-/// (Legacy) Parse `[transcribe]` raw config.
+/// Parse `[transcribe]` raw config.
 pub fn parse_transcribe_config(raw: Option<&RawTranscribe>) -> TranscribeConfig {
     match raw {
         Some(r) => TranscribeConfig {
