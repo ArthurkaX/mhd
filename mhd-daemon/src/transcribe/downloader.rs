@@ -121,24 +121,38 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
 
         let _ = fs::remove_file(&archive_path);
 
-        // Find sherpa-onnx-ws.exe in the extracted tree.
+        // Find the WebSocket server in the extracted tree.
         // The archive extracts to a subdirectory like:
-        //   sherpa-onnx-v1.13.2-win-x64-shared-MD-Release/bin/sherpa-onnx-ws.exe
+        //   sherpa-onnx-v1.13.2-win-x64-shared-MD-Release/bin/
+        // The binary is called `sherpa-onnx-online-websocket-server.exe`
+        // (not `sherpa-onnx-ws.exe` as in older documentation).
         if let Some(extracted) = find_subdir(bin_dir, "sherpa-onnx") {
-            let candidate = extracted.join("bin").join("sherpa-onnx-ws.exe");
-            if candidate.exists() {
-                eprintln!("mhd:   found at {}", candidate.display());
-                let _ = fs::rename(&candidate, &exe_path);
-                let _ = fs::remove_dir_all(&extracted);
-                eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
-                return Ok(exe_path);
+            let bin_subdir = extracted.join("bin");
+
+            // Check common names in order of preference
+            let candidates = [
+                bin_subdir.join("sherpa-onnx-online-websocket-server.exe"),
+                bin_subdir.join("sherpa-onnx-offline-websocket-server.exe"),
+                bin_subdir.join("sherpa-onnx-ws.exe"),
+            ];
+
+            for c in &candidates {
+                if c.exists() {
+                    eprintln!("mhd:   found {} -> sherpa-onnx-ws.exe", c.file_name().unwrap().to_string_lossy());
+                    let _ = fs::rename(c, &exe_path);
+                    let _ = fs::remove_dir_all(&extracted);
+                    eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
+                    return Ok(exe_path);
+                }
             }
-            // Search recursively
+
+            // Search recursively (handle non-standard layout)
             let mut found = Vec::new();
             collect_files(&extracted, &mut found);
             for f in &found {
-                if f.ends_with("sherpa-onnx-ws.exe") {
-                    eprintln!("mhd:   found at {}", f.display());
+                let name = f.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                if name.contains("websocket-server") || name == "sherpa-onnx-ws.exe" {
+                    eprintln!("mhd:   found {} -> sherpa-onnx-ws.exe", name);
                     let _ = fs::rename(f, &exe_path);
                     let _ = fs::remove_dir_all(&extracted);
                     eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
