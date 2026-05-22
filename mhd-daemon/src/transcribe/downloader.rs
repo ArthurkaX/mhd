@@ -1,5 +1,8 @@
 //! Automatic downloader for sherpa-onnx-ws and Parakeet models.
 //!
+//! Uses pure Rust crates (ureq + tar + bzip2) — no dependency on curl.exe
+//! or tar.exe. This module is loaded/unloaded with the transcribe feature.
+//!
 //! Directory layout:
 //!   ~/.config/mhd/transcribe/
 //!     bin/
@@ -12,17 +15,16 @@
 //!         joiner.int8.onnx
 //!       ...
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-/// Known working Windows release archives.
-/// (version, archive_name, url)
+/// Known working Windows release archives for sherpa-onnx.
+/// (version, archive_name, download_url)
 const WINDOWS_RELEASES: &[(&str, &str, &str)] = &[
-    // Latest (May 2026)
     ("v1.13.2", "sherpa-onnx-v1.13.2-win-x64-shared-MD-Release.tar.bz2",
      "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-win-x64-shared-MD-Release.tar.bz2"),
-    // Old naming (v1.10.x)
     ("v1.10.30", "sherpa-onnx-v1.10.30-win-x64-shared.tar.bz2",
      "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.10.30/sherpa-onnx-v1.10.30-win-x64-shared.tar.bz2"),
 ];
@@ -47,8 +49,7 @@ const MODEL_FILES: &[&str] = &[
 // ── Path helpers ─────────────────────────────────────────────────────
 
 fn transcribe_dir() -> Result<PathBuf, String> {
-    let base = get_config_dir()?;
-    Ok(base.join("transcribe"))
+    Ok(get_config_dir()?.join("transcribe"))
 }
 
 pub fn sherpa_onnx_path() -> Result<PathBuf, String> {
@@ -64,9 +65,40 @@ fn get_config_dir() -> Result<PathBuf, String> {
         .or_else(|_| std::env::var("HOME"))
         .map_err(|_| "cannot determine home directory".to_string())?;
     let dir = Path::new(&home).join(".config").join("mhd");
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("cannot create config dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create config dir: {e}"))?;
     Ok(dir)
+}
+
+// ── HTTP download helper ────────────────────────────────────────────
+
+/// Download a URL to a file. Returns the number of bytes downloaded.
+fn download_to_file(url: &str, dest: &Path) -> Result<u64, String> {
+    let response = ureq::get(url)
+        .call()
+        .map_err(|e| format!("HTTP {url}: {e}"))?;
+
+    let body: ureq::Body = response.into_body();
+    let mut reader = body.into_reader();
+    let mut file = fs::File::create(dest)
+        .map_err(|e| format!("cannot create file: {e}"))?;
+
+    let downloaded = io::copy(&mut reader, &mut file)
+        .map_err(|e| format!("download error: {e}"))?;
+
+    Ok(downloaded)
+}
+
+// ── Archive extraction ──────────────────────────────────────────────
+
+/// Extract a .tar.bz2 archive into `dest_dir` using bzip2 + tar crates.
+fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
+    let file = fs::File::open(archive_path)
+        .map_err(|e| format!("cannot open archive: {e}"))?;
+    let bz_reader = bzip2::read::BzDecoder::new(file);
+    let mut archive = tar::Archive::new(bz_reader);
+    archive.unpack(dest_dir)
+        .map_err(|e| format!("cannot extract archive: {e}"))?;
+    Ok(())
 }
 
 // ── sherpa-onnx-ws download ─────────────────────────────────────────
@@ -88,48 +120,34 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
 
         // Download
         eprintln!("mhd:   downloading {archive_name} ...");
-        let status = Command::new("curl.exe")
-            .args(["-L", "-o", &archive_path.to_string_lossy(), url])
-            .status()
-            .map_err(|e| format!("cannot run curl.exe: {e}"))?;
-
-        if !status.success() {
-            eprintln!("mhd:   download failed, trying next...");
+        if let Err(e) = download_to_file(url, &archive_path) {
+            eprintln!("mhd:   download failed: {e}");
             let _ = fs::remove_file(&archive_path);
             continue;
         }
 
-        // Reject error pages (less than 1 MB)
-        if fs::metadata(&archive_path).ok().map(|m| m.len()).unwrap_or(0) < 1024 * 1024 {
-            eprintln!("mhd:   archive too small (probably error page), trying next...");
+        let size = fs::metadata(&archive_path).ok().map(|m| m.len()).unwrap_or(0);
+        if size < 1024 * 1024 {
+            eprintln!("mhd:   archive too small ({size} bytes), trying next...");
             let _ = fs::remove_file(&archive_path);
             continue;
         }
+        eprintln!("mhd:   downloaded {size} bytes");
 
         // Extract
         eprintln!("mhd:   extracting ...");
-        let status = Command::new("tar.exe")
-            .args(["-xf", &archive_path.to_string_lossy(), "-C", &bin_dir.to_string_lossy()])
-            .status()
-            .map_err(|e| format!("cannot run tar.exe: {e}"))?;
-
-        if !status.success() {
-            eprintln!("mhd:   extraction failed, trying next...");
+        if let Err(e) = extract_tar_bz2(&archive_path, bin_dir) {
+            eprintln!("mhd:   extraction failed: {e}");
             let _ = fs::remove_file(&archive_path);
             continue;
         }
 
         let _ = fs::remove_file(&archive_path);
 
-        // Find the WebSocket server in the extracted tree.
-        // The archive extracts to a subdirectory like:
-        //   sherpa-onnx-v1.13.2-win-x64-shared-MD-Release/bin/
-        // The binary is called `sherpa-onnx-online-websocket-server.exe`
-        // (not `sherpa-onnx-ws.exe` as in older documentation).
+        // Find the WebSocket server binary
         if let Some(extracted) = find_subdir(bin_dir, "sherpa-onnx") {
             let bin_subdir = extracted.join("bin");
 
-            // Check common names in order of preference
             let candidates = [
                 bin_subdir.join("sherpa-onnx-online-websocket-server.exe"),
                 bin_subdir.join("sherpa-onnx-offline-websocket-server.exe"),
@@ -138,7 +156,8 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
 
             for c in &candidates {
                 if c.exists() {
-                    eprintln!("mhd:   found {} -> sherpa-onnx-ws.exe", c.file_name().unwrap().to_string_lossy());
+                    eprintln!("mhd:   found {} -> sherpa-onnx-ws.exe",
+                        c.file_name().unwrap().to_string_lossy());
                     let _ = fs::rename(c, &exe_path);
                     let _ = fs::remove_dir_all(&extracted);
                     eprintln!("mhd: sherpa-onnx-ws ready at {}", exe_path.display());
@@ -146,7 +165,7 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
                 }
             }
 
-            // Search recursively (handle non-standard layout)
+            // Recursive search
             let mut found = Vec::new();
             collect_files(&extracted, &mut found);
             for f in &found {
@@ -168,7 +187,6 @@ pub fn ensure_sherpa_onnx() -> Result<PathBuf, String> {
     Err("sherpa-onnx-ws.exe could not be downloaded from any known release".to_string())
 }
 
-/// Find first subdirectory starting with `prefix` inside `dir`.
 fn find_subdir(dir: &Path, prefix: &str) -> Option<PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -185,7 +203,6 @@ fn find_subdir(dir: &Path, prefix: &str) -> Option<PathBuf> {
     None
 }
 
-/// Recursively collect all file paths under `dir`.
 fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -199,12 +216,14 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-// ── Model helpers ────────────────────────────────────────────────────
+// ── Model download ──────────────────────────────────────────────────
 
+/// Return list of available model names.
 pub fn available_models() -> Vec<&'static str> {
     PARAKEET_MODELS.iter().map(|(name, _)| *name).collect()
 }
 
+/// Check if a specific model is already downloaded.
 pub fn is_model_downloaded(model_name: &str) -> Result<bool, String> {
     let model_dir = models_dir()?.join(model_name);
     if !model_dir.exists() {
@@ -218,9 +237,11 @@ pub fn is_model_downloaded(model_name: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-pub fn download_model<F>(model_name: &str, progress: F) -> Result<PathBuf, String>
+/// Download a Parakeet model from HuggingFace.
+/// Reports progress via a callback (can be used for UI).
+pub fn download_model<F>(model_name: &str, mut progress: F) -> Result<PathBuf, String>
 where
-    F: Fn(usize, usize),
+    F: FnMut(usize, usize),
 {
     let repo = PARAKEET_MODELS
         .iter()
@@ -242,14 +263,9 @@ where
         let url = format!("https://huggingface.co/{repo}/resolve/main/{file}");
         eprintln!("mhd: downloading model file {}/{}: {file}", i + 1, MODEL_FILES.len());
 
-        let status = Command::new("curl.exe")
-            .args(["-L", "-o", &dest.to_string_lossy(), &url])
-            .status()
-            .map_err(|e| format!("cannot run curl.exe for {file}: {e}"))?;
+        download_to_file(&url, &dest)
+            .map_err(|e| format!("failed to download {file}: {e}"))?;
 
-        if !status.success() {
-            return Err(format!("download failed for {file} (exit: {status:?})"));
-        }
         progress(i + 1, MODEL_FILES.len());
     }
 
@@ -257,6 +273,7 @@ where
     Ok(model_dir)
 }
 
+/// Ensure a model is downloaded. Returns the model directory path.
 pub fn ensure_model(model_name: &str) -> Result<PathBuf, String> {
     if is_model_downloaded(model_name)? {
         return Ok(models_dir()?.join(model_name));
@@ -264,6 +281,7 @@ pub fn ensure_model(model_name: &str) -> Result<PathBuf, String> {
     download_model(model_name, |_, _| {})
 }
 
+/// Resolve model path from config.
 pub fn resolve_model_path(config: &crate::transcribe::config::TranscribeConfig) -> PathBuf {
     let model_path = Path::new(&config.model);
     if model_path.is_absolute() {
