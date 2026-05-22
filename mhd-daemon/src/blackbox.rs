@@ -446,7 +446,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                                 kv.push(sv("t", &title));
                                 session.last_window_title = Some(title.clone());
                             }
-                            let _ = writer.write_line(&format_line(now, "on", &kv));
+                            let _ = writer.write_line(&format_line(now, "blackbox_on", &kv));
                         } else {
                             let title = get_foreground_title();
                             let app = get_app_name();
@@ -457,7 +457,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             if !title.is_empty() {
                                 kv.push(sv("t", &title));
                             }
-                            let _ = writer.write_line(&format_line(now, "off", &kv));
+                            let _ = writer.write_line(&format_line(now, "blackbox_off", &kv));
                         }
                     }
                 }
