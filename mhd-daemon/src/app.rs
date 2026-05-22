@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
+#[cfg(feature = "blackbox")]
 use crate::blackbox::{BlackboxConfig, BlackboxHandle};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
@@ -34,8 +35,10 @@ pub trait DaemonControl: Send + Sync {
     #[allow(dead_code)]
     fn config_path(&self) -> &std::path::Path;
     /// Toggle blackbox logging on/off.
+    #[cfg(feature = "blackbox")]
     fn toggle_blackbox(&self);
     /// Whether blackbox is currently running.
+    #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool;
 }
 
@@ -60,6 +63,7 @@ pub struct AppHandle {
     pub(crate) theme: Arc<Mutex<NativeTheme>>,
     pub(crate) osd: OsdHandle,
     /// Blackbox handle (for tray toggle).
+    #[cfg(feature = "blackbox")]
     pub(crate) blackbox: Arc<Mutex<Option<BlackboxHandle>>>,
 }
 
@@ -139,6 +143,7 @@ impl DaemonControl for AppHandle {
         &self.config_path
     }
 
+    #[cfg(feature = "blackbox")]
     fn toggle_blackbox(&self) {
         if let Ok(guard) = self.blackbox.lock() {
             if let Some(ref bb) = *guard {
@@ -147,6 +152,7 @@ impl DaemonControl for AppHandle {
         }
     }
 
+    #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool {
         self.blackbox.lock().map(|g| g.is_some()).unwrap_or(false)
     }
@@ -165,6 +171,7 @@ pub struct App {
     tx: ActionSender,
     osd: OsdHandle,
     theme: Arc<Mutex<NativeTheme>>,
+    #[cfg(feature = "blackbox")]
     blackbox: Arc<Mutex<Option<BlackboxHandle>>>,
 }
 
@@ -188,6 +195,7 @@ impl App {
         let hook_thread_id = Arc::new(AtomicU32::new(0));
         let config = Arc::new(Mutex::new(app_config));
         let theme = Arc::new(Mutex::new(native_theme));
+        #[cfg(feature = "blackbox")]
         let blackbox = Arc::new(Mutex::new(None::<BlackboxHandle>));
 
         let handle = AppHandle {
@@ -198,6 +206,7 @@ impl App {
             quiet,
             osd: osd.clone(),
             theme: theme.clone(),
+            #[cfg(feature = "blackbox")]
             blackbox: blackbox.clone(),
         };
 
@@ -222,6 +231,7 @@ impl App {
             tx,
             osd,
             theme,
+            #[cfg(feature = "blackbox")]
             blackbox,
         })
     }
@@ -240,11 +250,13 @@ impl App {
             quiet: self.quiet,
             osd: self.osd.clone(),
             theme: self.theme.clone(),
+            #[cfg(feature = "blackbox")]
             blackbox: self.blackbox.clone(),
         }
     }
 
     /// Start the blackbox monitoring worker if enabled in config.
+    #[cfg(feature = "blackbox")]
     fn start_blackbox(config: &BlackboxConfig) -> Option<BlackboxHandle> {
         if !config.enabled {
             return None;
@@ -263,6 +275,7 @@ impl App {
         self.hook_thread_id.store(tid, Ordering::SeqCst);
 
         // Start blackbox if configured
+        #[cfg(feature = "blackbox")]
         {
             let config = self.config.lock().unwrap();
             let bb_config = config.blackbox().clone();
@@ -277,6 +290,7 @@ impl App {
         let result = crate::hook::run_with_config(handle, self.tx);
 
         // Shutdown blackbox after hook exits
+        #[cfg(feature = "blackbox")]
         if let Some(mut bb) = self.blackbox.lock().unwrap().take() {
             bb.shutdown();
         }

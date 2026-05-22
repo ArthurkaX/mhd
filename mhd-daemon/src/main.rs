@@ -5,7 +5,46 @@
 #![windows_subsystem = "windows"]
 
 mod core;
+#[cfg(feature = "blackbox")]
 pub(crate) mod blackbox;
+#[cfg(not(feature = "blackbox"))]
+#[allow(dead_code)]
+pub(crate) mod blackbox {
+    #[derive(Debug, Clone)]
+    pub struct BlackboxConfig {
+        pub enabled: bool,
+        pub idle_seconds: u64,
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum BlackboxEvent {
+        Input { kind: InputKind, ts: u64 },
+        Shutdown,
+        ToggleEnabled,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum InputKind {
+        Keyboard,
+        MouseButton,
+        Wheel,
+    }
+
+    #[derive(Debug)]
+    pub struct BlackboxHandle;
+
+    pub fn send_event(_: BlackboxEvent) {}
+
+    pub fn start(_: BlackboxConfig) -> Result<BlackboxHandle, String> {
+        Ok(BlackboxHandle)
+    }
+
+    impl BlackboxHandle {
+        pub fn shutdown(&mut self) {}
+
+        pub fn toggle(&self) {}
+    }
+}
 mod app;
 mod monitor;
 mod config;

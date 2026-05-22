@@ -22,6 +22,7 @@ pub struct RawBinding {
 }
 
 /// Raw TOML `[blackbox]` section.
+#[cfg(feature = "blackbox")]
 #[derive(Debug, Deserialize)]
 pub struct RawBlackbox {
     /// Enable behavioural logging. Default: `false`.
@@ -46,6 +47,7 @@ pub struct RawConfig {
     #[serde(default)]
     pub autostart: Option<bool>,
     /// Behavioural logger.
+    #[cfg(feature = "blackbox")]
     #[serde(default)]
     pub blackbox: Option<RawBlackbox>,
     #[serde(default)]

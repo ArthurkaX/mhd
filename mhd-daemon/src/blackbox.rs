@@ -1,3 +1,5 @@
+#![cfg(feature = "blackbox")]
+
 //! Blackbox — minimal append‑only behaviour logger.
 //!
 //! Records daily activity log: input actions (keyboard/mouse), session

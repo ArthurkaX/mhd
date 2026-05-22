@@ -3,6 +3,10 @@ name = "mhd-daemon"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+blackbox = []
+
 [[bin]]
 name = "mhd"
 path = "src/main.rs"

@@ -20,10 +20,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, InsertMenuW, LoadImageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_GRAYED,
-    MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_GRAYED, MF_STRING, MSG,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
+    WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
+#[cfg(feature = "blackbox")]
+use windows::Win32::UI::WindowsAndMessaging::MF_CHECKED;
 
 use crate::app::{AppHandle, DaemonControl};
 use crate::monitor_panel;
@@ -40,6 +42,7 @@ const CMD_VOLUME_MIXER: usize = 6;
 const CMD_MONITOR_PANEL: usize = 7;
 const CMD_POWER: usize = 8;
 const CMD_QUICK_DRAW: usize = 9;
+#[cfg(feature = "blackbox")]
 const CMD_BLACKBOX_TOGGLE: usize = 10;
 const CMD_ABOUT: usize = 4;
 const CMD_QUIT: usize = 5;
@@ -186,25 +189,28 @@ fn show_menu(hwnd: HWND) {
             PCWSTR::from_raw(quick_draw.as_ptr()),
         );
 
-        let bb_text = if state.app.blackbox_enabled() { "Blackbox: on\0" } else { "Blackbox: off\0" };
-        let bb_label: Vec<u16> = bb_text.encode_utf16().collect();
-        let bb_flags = if state.app.blackbox_enabled() {
-            MF_BYPOSITION | MF_STRING | MF_CHECKED
-        } else {
-            MF_BYPOSITION | MF_STRING
-        };
-        let _ = InsertMenuW(
-            menu,
-            7,
-            bb_flags,
-            CMD_BLACKBOX_TOGGLE,
-            PCWSTR::from_raw(bb_label.as_ptr()),
-        );
+        #[cfg(feature = "blackbox")]
+        {
+            let bb_text = if state.app.blackbox_enabled() { "Blackbox: on\0" } else { "Blackbox: off\0" };
+            let bb_label: Vec<u16> = bb_text.encode_utf16().collect();
+            let bb_flags = if state.app.blackbox_enabled() {
+                MF_BYPOSITION | MF_STRING | MF_CHECKED
+            } else {
+                MF_BYPOSITION | MF_STRING
+            };
+            let _ = InsertMenuW(
+                menu,
+                7,
+                bb_flags,
+                CMD_BLACKBOX_TOGGLE,
+                PCWSTR::from_raw(bb_label.as_ptr()),
+            );
+        }
 
         let about: Vec<u16> = "About\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            8,
+            if cfg!(feature = "blackbox") { 8 } else { 7 },
             MF_BYPOSITION | MF_STRING,
             CMD_ABOUT,
             PCWSTR::from_raw(about.as_ptr()),
@@ -213,7 +219,7 @@ fn show_menu(hwnd: HWND) {
         let quit: Vec<u16> = "Quit mhd\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            9,
+            if cfg!(feature = "blackbox") { 9 } else { 8 },
             MF_BYPOSITION | MF_STRING,
             CMD_QUIT,
             PCWSTR::from_raw(quit.as_ptr()),
@@ -305,6 +311,7 @@ unsafe extern "system" fn wnd_proc(
                     CMD_QUICK_DRAW => {
                         quickdraw::show(state.app.theme());
                     }
+                    #[cfg(feature = "blackbox")]
                     CMD_BLACKBOX_TOGGLE => {
                         state.app.toggle_blackbox();
                     }
