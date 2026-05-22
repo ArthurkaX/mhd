@@ -432,9 +432,9 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                     BlackboxEvent::ToggleEnabled => {
                         enabled = !enabled;
                         BLACKBOX_ENABLED.store(enabled, Ordering::Relaxed);
+                        let now = epoch_secs();
                         if enabled {
-                            let now = epoch_secs();
-                            // Snapshot current context for start event
+                            // Snapshot current context for on event
                             let title = get_foreground_title();
                             let app = get_app_name();
                             let mut kv = Vec::new();
@@ -446,7 +446,9 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                                 kv.push(sv("t", &title));
                                 session.last_window_title = Some(title.clone());
                             }
-                            let _ = writer.write_line(&format_line(now, "start", &kv));
+                            let _ = writer.write_line(&format_line(now, "on", &kv));
+                        } else {
+                            let _ = writer.write_line(&format_line(now, "off", &[]));
                         }
                     }
                 }
