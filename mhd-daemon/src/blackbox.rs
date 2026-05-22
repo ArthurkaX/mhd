@@ -402,7 +402,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
             }
 
             // Write legend header once per run
-            let _ = writer.write_line(&format_line(now, "# legend: start=monitoring_start blackbox_on/off=logging_toggle ses+=session_start ses-=session_end win=window_title app=app_name", &[]));
+            let _ = writer.write_line(&format_line(now, "# legend: start=monitoring_start blackbox_on/off=logging_toggle ses+=session_start ses-=session_end d=duration_sec a=actions k=keyboard m=mouse i=idle_sec r=reason win=window_title app=app_name n=app_name t=title", &[]));
 
             // Write start event with current context
             let mut kv = Vec::new();
