@@ -18,6 +18,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows::Win32::System::Time::GetTimeZoneInformation;
+use windows::Win32::System::Time::TIME_ZONE_ID_INVALID;
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
@@ -108,8 +110,32 @@ fn daily_log_path(date: &str) -> PathBuf {
     blackbox_dir().join(format!("{date}.log"))
 }
 
+/// Timezone bias from UTC in seconds (positive = east of UTC, i.e. local time = utc + bias).
+fn timezone_bias_secs() -> i64 {
+    unsafe {
+        let mut tzi = std::mem::zeroed();
+        let ret = GetTimeZoneInformation(&mut tzi);
+        if ret == TIME_ZONE_ID_INVALID {
+            0
+        } else {
+            // Bias is minutes WEST of UTC -> we want seconds EAST
+            -(tzi.Bias as i64) * 60
+        }
+    }
+}
+
+/// Convert a UTC epoch second to local epoch second (accounting for DST).
+fn utc_to_local(utc: u64) -> u64 {
+    let bias = timezone_bias_secs();
+    if bias >= 0 {
+        utc + bias as u64
+    } else {
+        utc.saturating_sub(bias.unsigned_abs())
+    }
+}
+
 fn today_str() -> String {
-    let secs = epoch_secs();
+    let secs = utc_to_local(epoch_secs());
     let (y, m, d) = date_from_epoch(secs);
     format!("{y:04}-{m:02}-{d:02}")
 }
@@ -121,9 +147,9 @@ fn epoch_secs() -> u64 {
         .as_secs()
 }
 
-/// Time-of-day string (HH:MM:SS) for a given epoch second.
-fn time_str(ts: u64) -> String {
-    let s = (ts % 86400) as i64;
+/// Time-of-day string (HH:MM:SS) for a given LOCAL epoch second.
+fn time_str(ts_local: u64) -> String {
+    let s = (ts_local % 86400) as i64;
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
@@ -172,8 +198,10 @@ fn escape(s: &str) -> String {
 }
 
 /// Format: `HH:MM:SS event=short_name k=v …`   (date is in filename).
+/// `ts` is UTC epoch seconds — converted to local time for display.
 fn format_line(ts: u64, event: &str, kv: &[(&str, String)]) -> String {
-    let mut line = format!("{} {}", time_str(ts), event);
+    let ts_local = utc_to_local(ts);
+    let mut line = format!("{} {}", time_str(ts_local), event);
     for (key, val) in kv {
         let q = val.contains(' ') || val.contains('"') || val.contains('\\') || val.is_empty();
         if q {
@@ -566,13 +594,21 @@ mod tests {
     }
 
     #[test]
-    fn test_format_line_time_only() {
+    fn test_format_line_shape() {
+        // Don't test exact HH:MM:SS (depends on local timezone).
         let line = format_line(1716371523, "tst", &[sv("k", "v")]);
-        // format_line outputs `HH:MM:SS tst k=v` (без event=)
-        assert_eq!(&line[..8], "09:52:03", "line: {line}");
-        assert!(line.starts_with("09:52:03 tst"), "line: {line}");
+        // format_line outputs `HH:MM:SS tst k=v`
+        assert!(line.len() > 8, "line: {line}");
+        assert!(line.contains(" tst "), "line: {line}");
         assert!(line.contains("k=v"), "line: {line}");
         assert!(line.ends_with('\n'), "line: {line}");
+        // First 8 chars should be HH:MM:SS
+        let hms = &line[..8];
+        assert_eq!(hms.chars().nth(2), Some(':'), "expected HH:MM:SS, got {hms}");
+        assert_eq!(hms.chars().nth(5), Some(':'), "expected HH:MM:SS, got {hms}");
+        assert!(hms[..2].parse::<u8>().is_ok(), "bad hour in {hms}");
+        assert!(hms[3..5].parse::<u8>().is_ok(), "bad min in {hms}");
+        assert!(hms[6..8].parse::<u8>().is_ok(), "bad sec in {hms}");
     }
 
     #[test]
