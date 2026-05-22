@@ -579,3 +579,144 @@ fn clear_sender() {
         *guard = None;
     }
 }
+
+#[cfg(test)]
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_normal() {
+        assert_eq!(escape("hello"), "hello");
+    }
+
+    #[test]
+    fn test_escape_backslash() {
+        assert_eq!(escape("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn test_escape_double_quote() {
+        assert_eq!(escape("a\"b"), "a\\\"b");
+    }
+
+    #[test]
+    fn test_escape_newline_becomes_space() {
+        assert_eq!(escape("a\nb"), "a b");
+    }
+
+    #[test]
+    fn test_escape_carriage_return_becomes_space() {
+        assert_eq!(escape("a\rb"), "a b");
+    }
+
+    #[test]
+    fn test_escape_combined() {
+        assert_eq!(
+            escape("has \"quotes\" and \\ back"),
+            "has \\\"quotes\\\" and \\\\ back"
+        );
+    }
+
+    #[test]
+    fn test_format_line_basic() {
+        // 1716371523 = 2024-05-22 09:52:03 (approximately)
+        let line = format_line(1716371523, "test_event", &[sv("key", "value")]);
+        assert!(line.starts_with("2024-05-22 "), "line: {line}");
+        assert!(line.contains("event=test_event"), "line: {line}");
+        assert!(line.contains("key=value"), "line: {line}");
+        assert!(line.ends_with('\n'), "line: {line}");
+    }
+
+    #[test]
+    fn test_format_line_quoted_value() {
+        let line = format_line(1716371523, "event", &[sv("title", "my title")]);
+        assert!(line.contains(r#"title="my title""#), "line: {line}");
+    }
+
+    #[test]
+    fn test_format_line_empty_value() {
+        let line = format_line(1716371523, "event", &[sv("title", "")]);
+        assert!(line.contains(r#"title="""#), "line: {line}");
+    }
+
+    #[test]
+    fn test_format_line_numeric_value() {
+        let line = format_line(1716371523, "event", &[nv("count", 42)]);
+        assert!(line.contains("count=42"), "line: {line}");
+    }
+
+    #[test]
+    fn test_date_from_epoch_known() {
+        let (y, m, d) = date_from_epoch(1716371523);
+        assert_eq!(y, 2024, "year for ts=1716371523");
+        assert_eq!(m, 5, "month for ts=1716371523");
+        assert_eq!(d, 22, "day for ts=1716371523");
+    }
+
+    #[test]
+    fn test_date_from_epoch_1970() {
+        let (y, m, d) = date_from_epoch(0);
+        assert_eq!(y, 1970);
+        assert_eq!(m, 1);
+        assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn test_date_from_epoch_leap_year() {
+        // 2024-02-29 00:00:00 UTC
+        let (y, m, d) = date_from_epoch(1709164800);
+        assert_eq!(y, 2024, "year");
+        assert_eq!(m, 2, "month");
+        assert_eq!(d, 29, "day");
+    }
+
+    #[test]
+    fn test_date_from_epoch_rollover() {
+        // 2025-01-01 00:00:00 UTC
+        let (y, m, d) = date_from_epoch(1735689600);
+        assert_eq!(y, 2025, "year");
+        assert_eq!(m, 1, "month");
+        assert_eq!(d, 1, "day");
+    }
+
+    #[test]
+    fn test_session_smoke() {
+        let mut s = SessionState::new();
+        let mut writer = LogWriter::new();
+        assert!(!s.active);
+
+        s.on_input(InputKind::Keyboard, 1000, &mut writer);
+        assert!(s.active);
+        assert_eq!(s.keyboard_count, 1);
+        assert_eq!(s.mouse_count, 0);
+
+        s.on_input(InputKind::MouseButton, 1005, &mut writer);
+        assert_eq!(s.keyboard_count, 1);
+        assert_eq!(s.mouse_count, 1);
+
+        s.on_input(InputKind::Wheel, 1010, &mut writer);
+        assert_eq!(s.mouse_count, 2);
+
+        let mut w2 = LogWriter::new();
+        s.end_session(1005, &mut w2, None);
+        assert!(!s.active);
+    }
+
+    #[test]
+    fn test_today_str_format() {
+        let s = today_str();
+        assert_eq!(s.len(), 10);
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[7..8], "-");
+        let year: i32 = s[..4].parse().unwrap();
+        assert!(year >= 2024 && year <= 2099);
+    }
+
+    #[test]
+    fn test_get_desktop_id() {
+        // Just ensure no crash; may be None in CI
+        let _ = get_desktop_id();
+    }
+}
