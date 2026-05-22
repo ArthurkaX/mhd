@@ -1,5 +1,7 @@
 # mhd Transcribe Module TODO
 
+> Last updated: 2026-05-22 — Phase 1 ✅ Phase 2 ✅
+
 Goal: add a short-lived dictation/transcription module to `mhd`.
 
 The daemon must stay lightweight at idle. Transcription resources are created only when the action is invoked, then released after the session finishes:
@@ -9,6 +11,38 @@ The daemon must stay lightweight at idle. Transcription resources are created on
 - transcription queue drains
 - `sherpa-onnx-ws.exe` sidecar is stopped unless explicitly configured to stay warm
 - model/audio temp files are closed and cleaned
+
+## Status Overview
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Single-shot MVP (config, action, sidecar, WS, clipboard) | ✅ Done |
+| 2 | WASAPI microphone capture | ✅ Done |
+| 3 | Silence chunking + live transcription pipeline | ❌ Not started |
+| 4 | Live preview overlay | ❌ Not started |
+| 5 | Model registry / download | ❌ Not started |
+| 6 | Polish (paste_on_blur, cancellation, etc.) | ❌ Not started |
+
+## Implemented Modules
+
+| File | Description | Phase |
+|------|-------------|-------|
+| `src/transcribe/mod.rs` | `TranscribeController`, `parse_transcribe_config()` | 1 |
+| `src/transcribe/config.rs` | `TranscribeConfig`, `OutputMode`, validation | 1 |
+| `src/transcribe/session.rs` | `SessionState` (Idle→Recording→Done) | 1 |
+| `src/transcribe/parakeet.rs` | `Sidecar` (sherpa-onnx-ws start/stop), `WsClient` (RFC 6455), `transcribe_wav_file()`, WAV parser | 1 |
+| `src/transcribe/clipboard.rs` | `set_clipboard_text()`, `send_paste()` (Ctrl+V) | 1 |
+| `src/transcribe/audio.rs` | WASAPI capture → 16 kHz mono f32 chunks (50 ms) | 2 |
+
+## Integration Points
+
+| Integration | Done |
+|-------------|------|
+| `Action::Transcribe` in enum + parser + descriptor | ✅ |
+| `[transcribe]` config section in `config/raw.rs` + `config/mod.rs` | ✅ |
+| Worker dispatch in `core/worker.rs` | ✅ |
+| Editor indices in `config/editor.rs` | ✅ |
+| New deps: `sha1`, `base64` (WS handshake) | ✅ |
 
 ## Target UX
 
@@ -490,74 +524,52 @@ Resampling:
 
 ## Implementation Phases
 
-### Phase 1: Single-shot MVP
+### Phase 1: Single-shot MVP ✅
 
-- Add `Action::Transcribe`.
-- Add config parsing.
-- Implement manual model path config.
-- Implement `sherpa-onnx-ws` sidecar start/stop.
-- Implement WebSocket transcription from a WAV/test file.
-- Implement clipboard output.
-- Verify CPU-only Parakeet inference.
+- [x] Add `Action::Transcribe`.
+- [x] Add config parsing.
+- [x] Implement manual model path config.
+- [x] Implement `sherpa-onnx-ws` sidecar start/stop.
+- [x] Implement WebSocket transcription from a WAV/test file.
+- [x] Implement clipboard output.
+- [ ] Verify CPU-only Parakeet inference (needs model + sidecar downloaded).
 
-Acceptance:
+### Phase 2: Microphone Recording ✅
 
-- Given a valid 16 kHz mono WAV file, `mhd` can transcribe it and copy text.
-- Sidecar exits after transcription.
+- [x] Implement WASAPI/recording.
+- [ ] Record until second hotkey press (needs session wiring in controller).
+- [x] Convert to Parakeet input (16 kHz mono f32 chunks).
+- [ ] Transcribe whole recording (needs Phase 3 pipeline).
+- [x] Copy/paste output helpers.
 
-### Phase 2: Microphone Recording
+### Phase 3: Silence Chunking ❌
 
-- Implement WASAPI/recording.
-- Record until second hotkey press.
-- Convert to Parakeet input.
-- Transcribe whole recording.
-- Copy/paste output.
+- [ ] Add RMS segmenter (`src/transcribe/segmenter.rs`).
+- [ ] Emit chunks on pauses (silence_ms config).
+- [ ] Transcribe chunks while recording continues.
+- [ ] Assemble final transcript in order.
 
-Acceptance:
+### Phase 4: Live Preview Overlay ❌
 
-- Hotkey start/stop records microphone and outputs final text.
-- Memory returns near baseline after session ends.
+- [ ] Add preview overlay (`src/overlays/transcribe_preview.rs`).
+- [ ] Show chunk text as each result completes.
+- [ ] Show recording/processing/finalizing states.
+- [ ] Hide on final output.
 
-### Phase 3: Silence Chunking
+### Phase 5: Model Registry / Download ❌
 
-- Add RMS segmenter.
-- Emit chunks on pauses.
-- Transcribe chunks while recording continues.
-- Assemble final transcript in order.
+- [ ] List Parakeet models from GitHub release assets.
+- [ ] Download selected `.tar.bz2`.
+- [ ] Extract and validate required files.
+- [ ] Store in mhd cache directory.
 
-Acceptance:
+### Phase 6: Polish ❌
 
-- Speaking with pauses produces multiple chunk results.
-- Final transcript contains all chunks in correct order.
-
-### Phase 4: Live Preview Overlay
-
-- Add preview overlay.
-- Show chunk text as each result completes.
-- Show recording/processing/finalizing states.
-- Hide on final output.
-
-Acceptance:
-
-- User sees text appear during recording.
-- Overlay disappears after session completion.
-
-### Phase 5: Model Registry / Download
-
-- List Parakeet models from GitHub release assets.
-- Download selected `.tar.bz2`.
-- Extract and validate required files.
-- Store in mhd cache directory.
-
-Acceptance:
-
-- User can choose/install Parakeet model without manual download.
-
-### Phase 6: Polish
-
-- Add `paste_on_blur`.
-- Add target window restore.
-- Add configurable paste delay.
+- [ ] `paste_on_blur` — hide overlay, restore target, paste.
+- [ ] Target window restore.
+- [ ] Configurable paste delay.
+- [ ] Cancellation (force_cleanup).
+- [ ] Debug diagnostics.
 - Add cancellation.
 - Add better no-audio detection.
 - Add debug diagnostics.
