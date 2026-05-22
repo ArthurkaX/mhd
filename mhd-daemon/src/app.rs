@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+
+use crate::blackbox::{BlackboxConfig, BlackboxHandle};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
@@ -145,7 +147,7 @@ pub struct App {
     tx: ActionSender,
     osd: OsdHandle,
     theme: Arc<Mutex<NativeTheme>>,
-
+    blackbox: Option<BlackboxHandle>,
 }
 
 impl App {
@@ -200,6 +202,7 @@ impl App {
             tx,
             osd,
             theme,
+            blackbox: None,
         })
     }
 
@@ -220,16 +223,49 @@ impl App {
         }
     }
 
+    /// Start the blackbox monitoring worker if enabled in config.
+    /// Returns the handle that must be kept alive for proper shutdown.
+    fn start_blackbox(config: &BlackboxConfig) -> Option<BlackboxHandle> {
+        if !config.enabled {
+            return None;
+        }
+        match crate::blackbox::start(config.clone()) {
+            Ok(h) => {
+                Some(h)
+            }
+            Err(e) => {
+                eprintln!("mhd: blackbox: {e}");
+                None
+            }
+        }
+    }
+
     /// Install low-level hooks and enter the blocking message loop.
     ///
     /// Returns when `WM_QUIT` is received (from IPC/tray shutdown) or on
     /// hook installation error.
-    pub fn run(self) -> Result<(), String> {
+    pub fn run(mut self) -> Result<(), String> {
         // Record the thread ID – this is where hooks + message loop live.
         let tid = unsafe { GetCurrentThreadId() };
         self.hook_thread_id.store(tid, Ordering::SeqCst);
+
+        // Start blackbox if configured
+        {
+            let config = self.config.lock().unwrap();
+            let bb_config = config.blackbox().clone();
+            drop(config);
+            self.blackbox = Self::start_blackbox(&bb_config);
+        }
+
         let handle = self.handle();
 
-        crate::hook::run_with_config(handle, self.tx)
+        let result = crate::hook::run_with_config(handle, self.tx);
+
+        // Shutdown blackbox after hook exits
+        if let Some(mut bb) = self.blackbox.take() {
+            BlackboxHandle::shutdown(&mut bb);
+        }
+
+        result
     }
 }

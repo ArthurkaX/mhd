@@ -21,6 +21,17 @@ pub struct RawBinding {
     pub code: Option<String>,
 }
 
+/// Raw TOML `[blackbox]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawBlackbox {
+    /// Enable behavioural logging. Default: `false`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Seconds of inactivity before a session is considered ended.
+    #[serde(default)]
+    pub idle_seconds: Option<u64>,
+}
+
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
@@ -34,6 +45,9 @@ pub struct RawConfig {
     /// Whether to autostart mhd at user logon (via scheduled task).
     #[serde(default)]
     pub autostart: Option<bool>,
+    /// Behavioural logger.
+    #[serde(default)]
+    pub blackbox: Option<RawBlackbox>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }

@@ -5,6 +5,7 @@
 #![windows_subsystem = "windows"]
 
 mod core;
+pub(crate) mod blackbox;
 mod app;
 mod monitor;
 mod config;

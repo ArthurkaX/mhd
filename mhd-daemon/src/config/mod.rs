@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::action::Action;
 use crate::trigger::parse_trigger;
+use crate::blackbox::BlackboxConfig;
 use self::raw::RawConfig;
 
 /// A validated binding.
@@ -33,6 +34,8 @@ pub struct AppConfig {
     pub volume_step: u32,
     /// Autostart at user logon (via scheduled task).
     pub autostart: bool,
+    /// Behavioural logger config.
+    pub blackbox: BlackboxConfig,
 }
 
 impl AppConfig {
@@ -130,7 +133,11 @@ impl AppConfig {
             trigger_map,
             theme,
             volume_step: raw.volume_step.unwrap_or(1),
-            autostart: raw.autostart.unwrap_or(false),
+            blackbox: BlackboxConfig {
+            enabled: raw.blackbox.as_ref().and_then(|b| b.enabled).unwrap_or(false),
+            idle_seconds: raw.blackbox.as_ref().and_then(|b| b.idle_seconds).unwrap_or(300),
+        },
+        autostart: raw.autostart.unwrap_or(false),
         })
     }
 
@@ -196,5 +203,10 @@ impl AppConfig {
     /// Whether autostart is enabled.
     pub fn autostart(&self) -> bool {
         self.autostart
+    }
+
+    /// Blackbox configuration.
+    pub fn blackbox(&self) -> &BlackboxConfig {
+        &self.blackbox
     }
 }

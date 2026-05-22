@@ -1,12 +1,14 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
+use crate::blackbox::{self, BlackboxEvent, InputKind};
+
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEWHEEL, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::action::Action;
@@ -262,6 +264,18 @@ unsafe extern "system" fn keyboard_hook_proc(
         let is_key_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
         let is_key_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
 
+        // Report all non‑modifier key‑downs to blackbox (if active)
+        if is_key_down && !is_modifier_vk(vk) {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            blackbox::send_event(BlackboxEvent::Input {
+                kind: InputKind::Keyboard,
+                ts,
+            });
+        }
+
         if is_key_down && !is_modifier_vk(vk) {
             let modifiers = get_pressed_modifiers();
             let trigger = Trigger {
@@ -302,10 +316,20 @@ unsafe extern "system" fn mouse_hook_proc(
         let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         let msg_type = w_param.0 as u32;
 
+        // Helper to send counted action to blackbox
+        let bb_input = |kind: InputKind| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            blackbox::send_event(BlackboxEvent::Input { kind, ts });
+        };
+
         match msg_type {
             WM_XBUTTONDOWN => {
                 let xbutton = (ms_struct.mouseData >> 16) as u8;
                 if xbutton == 1 || xbutton == 2 {
+                    bb_input(InputKind::MouseButton);
                     let modifiers = get_pressed_modifiers();
                     let trigger = Trigger {
                         modifiers,
@@ -325,7 +349,11 @@ unsafe extern "system" fn mouse_hook_proc(
                     }
                 }
             }
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+                bb_input(InputKind::MouseButton);
+            }
             WM_MBUTTONDOWN => {
+                bb_input(InputKind::MouseButton);
                 // Middle button
                 let modifiers = get_pressed_modifiers();
                 let trigger = Trigger {
@@ -343,6 +371,7 @@ unsafe extern "system" fn mouse_hook_proc(
                 }
             }
             WM_MOUSEWHEEL => {
+                bb_input(InputKind::Wheel);
                 // Delta is in MSLLHOOKSTRUCT.mouseData, NOT in wParam (for LL hooks)
                 let delta = wheel_delta(ms_struct.mouseData);
                 let key = if delta > 0 { PhysicalKey::WheelUp } else { PhysicalKey::WheelDown };
@@ -353,6 +382,7 @@ unsafe extern "system" fn mouse_hook_proc(
                 }
             }
             WM_MOUSEHWHEEL => {
+                bb_input(InputKind::Wheel);
                 let delta = wheel_delta(ms_struct.mouseData);
                 let key = if delta > 0 { PhysicalKey::WheelRight } else { PhysicalKey::WheelLeft };
                 let modifiers = get_pressed_modifiers();

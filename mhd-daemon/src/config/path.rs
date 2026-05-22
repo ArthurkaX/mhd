@@ -74,6 +74,11 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Autostart mhd at user logon (via scheduled task with highest privileges).
 # autostart = true
 
+# Behavioural logger (disabled by default).
+# [blackbox]
+# enabled = true
+# idle_seconds = 300
+
 # Quit mhd (Ctrl+Alt+F12).
 [[binding]]
 trigger = "ctrl+alt+f12"
