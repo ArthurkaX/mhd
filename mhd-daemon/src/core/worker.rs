@@ -126,11 +126,14 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             let tcfg = cfg.transcribe.clone();
             drop(cfg);
             if tcfg.enabled {
-                let ctrl = crate::transcribe::TranscribeController::new(tcfg);
-                match ctrl.toggle() {
+                match crate::transcribe::toggle(tcfg) {
                     Ok(msg) => {
                         if !handle.quiet() {
-                            println!("mhd: {msg}");
+                            if msg.is_empty() {
+                                println!("mhd: transcribe: session ended");
+                            } else {
+                                println!("mhd: transcribe: session ended — \"{msg}\"");
+                            }
                         }
                     }
                     Err(e) => eprintln!("mhd: transcribe: {e}"),

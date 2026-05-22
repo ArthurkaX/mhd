@@ -218,6 +218,16 @@ impl WsClient {
         let _ = self.read_frame();
         Ok(())
     }
+
+    /// Get mutable reference to the underlying TcpStream (for timeout, etc.).
+    pub fn stream(&mut self) -> &mut TcpStream {
+        &mut self.stream
+    }
+
+    /// Send a pong frame.
+    pub fn send_pong(&mut self, payload: &[u8]) -> Result<(), String> {
+        send_frame(&mut self.stream, OPCODE_PONG, payload, true)
+    }
 }
 
 fn send_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8], masked: bool) -> Result<(), String> {
