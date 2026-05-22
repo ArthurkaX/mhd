@@ -55,15 +55,14 @@ pub fn toggle(config: TranscribeConfig) -> Result<String, String> {
     if let Some(mut session) = session_guard.take() {
         // ── STOP ──
 
-        // Signal thread to stop
+        // Signal thread to stop (it will check running flag during download/pipeline)
         session.running.store(false, Ordering::Relaxed);
 
-        // Wait for it to finish
-        if let Some(h) = session.handle.take() {
-            let _ = h.join();
-        }
+        // Don't join/detach — let it exit on its own.
+        // The session thread checks running and exits promptly.
+        // Sidecar::drop kills the child process when the thread exits.
 
-        // Collect transcript
+        // Collect whatever transcript was accumulated so far
         let text = {
             let t = session.transcript.lock().unwrap();
             t.join(&config.join_separator)

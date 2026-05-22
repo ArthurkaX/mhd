@@ -129,8 +129,10 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 match crate::transcribe::toggle(tcfg) {
                     Ok(msg) => {
                         if !handle.quiet() {
-                            if msg.is_empty() {
-                                println!("mhd: transcribe: session ended");
+                            if msg == "transcribe: session started" {
+                                println!("mhd: transcribe: session started");
+                            } else if msg.is_empty() {
+                                println!("mhd: transcribe: session ended (no text)");
                             } else {
                                 println!("mhd: transcribe: session ended — \"{msg}\"");
                             }
