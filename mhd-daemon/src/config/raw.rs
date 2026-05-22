@@ -33,39 +33,6 @@ pub struct RawBlackbox {
     pub idle_seconds: Option<u64>,
 }
 
-/// Raw TOML `[transcribe]` section.
-#[derive(Debug, Deserialize)]
-pub struct RawTranscribe {
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub models_dir: Option<String>,
-    #[serde(default)]
-    pub sherpa_onnx_ws: Option<String>,
-    #[serde(default)]
-    pub output: Option<String>,
-    #[serde(default)]
-    pub show_preview: Option<bool>,
-    #[serde(default)]
-    pub keep_sidecar_warm: Option<bool>,
-    #[serde(default)]
-    pub threads: Option<u32>,
-    #[serde(default)]
-    pub silence_ms: Option<u64>,
-    #[serde(default)]
-    pub min_chunk_ms: Option<u64>,
-    #[serde(default)]
-    pub max_chunk_ms: Option<u64>,
-    #[serde(default)]
-    pub overlap_ms: Option<u64>,
-    #[serde(default)]
-    pub speech_rms_threshold: Option<f32>,
-    #[serde(default)]
-    pub join_separator: Option<String>,
-}
-
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
