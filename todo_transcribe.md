@@ -18,9 +18,9 @@ The daemon must stay lightweight at idle. Transcription resources are created on
 |-------|-------------|--------|
 | 1 | Single-shot MVP (config, action, sidecar, WS, clipboard) | ✅ Done |
 | 2 | WASAPI microphone capture | ✅ Done |
-| 3 | Silence chunking + live transcription pipeline | ❌ Not started |
+| 3 | Silence chunking + live transcription pipeline | ✅ Done |
 | 4 | Live preview overlay | ❌ Not started |
-| 5 | Model registry / download | ❌ Not started |
+| 5 | Model auto-download (sidecar + models) | ✅ Done |
 | 6 | Polish (paste_on_blur, cancellation, etc.) | ❌ Not started |
 
 ## Implemented Modules
@@ -542,12 +542,13 @@ Resampling:
 - [ ] Transcribe whole recording (needs Phase 3 pipeline).
 - [x] Copy/paste output helpers.
 
-### Phase 3: Silence Chunking ❌
+### Phase 3: Silence Chunking ✅
 
-- [ ] Add RMS segmenter (`src/transcribe/segmenter.rs`).
-- [ ] Emit chunks on pauses (silence_ms config).
-- [ ] Transcribe chunks while recording continues.
-- [ ] Assemble final transcript in order.
+- [x] Add RMS segmenter (`src/transcribe/segmenter.rs`).
+- [x] Emit chunks on pauses (silence_ms config).
+- [x] Transcribe chunks while recording continues.
+- [x] Assemble final transcript in order.
+- [x] Pipeline threads: capture → segment → WS → collect.
 
 ### Phase 4: Live Preview Overlay ❌
 
@@ -556,12 +557,13 @@ Resampling:
 - [ ] Show recording/processing/finalizing states.
 - [ ] Hide on final output.
 
-### Phase 5: Model Registry / Download ❌
+### Phase 5: Model Auto-Download ✅
 
-- [ ] List Parakeet models from GitHub release assets.
-- [ ] Download selected `.tar.bz2`.
-- [ ] Extract and validate required files.
-- [ ] Store in mhd cache directory.
+- [x] `downloader.rs` — download sherpa-onnx-ws from GitHub releases.
+- [x] `downloader.rs` — download Parakeet models from HuggingFace.
+- [x] 5 known models in registry.
+- [x] Auto-download on first `toggle()` call.
+- [x] Storage: `~/.config/mhd/transcribe/{bin/,models/}`.
 
 ### Phase 6: Polish ❌
 
@@ -570,6 +572,7 @@ Resampling:
 - [ ] Configurable paste delay.
 - [ ] Cancellation (force_cleanup).
 - [ ] Debug diagnostics.
+- [ ] Live preview overlay (Phase 4).
 - Add cancellation.
 - Add better no-audio detection.
 - Add debug diagnostics.
