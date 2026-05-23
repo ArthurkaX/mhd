@@ -63,6 +63,7 @@ const WM_POM_EXTEND: u32 = WM_APP + 103;
 const WM_POM_SET_TASK: u32 = WM_APP + 104;  // wparam = overlay HWND, lparam = string ptr
 const WM_POM_REGISTER_OVERLAY: u32 = WM_APP + 105;  // wparam = overlay HWND
 const WM_POM_UNREGISTER_OVERLAY: u32 = WM_APP + 106;
+const WM_POM_BREAK: u32 = WM_APP + 107;  // start a break timer
 
 // Daemon → Overlay
 const WM_POM_UPDATE: u32 = WM_APP + 200;  // wparam = remaining_secs, lparam = phase as u32
@@ -92,26 +93,26 @@ pub enum Phase {
     Finished = 3,
 }
 
-impl Phase {
-    fn from_u32(v: u32) -> Self {
-        match v {
-            0 => Phase::Idle,
-            1 => Phase::Running,
-            2 => Phase::Paused,
-            3 => Phase::Finished,
-            _ => Phase::Idle,
-        }
-    }
+// ── Mode (work / break) ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PomodoroMode {
+    Work = 0,
+    Break = 1,
 }
 
 // ── Shared state ─────────────────────────────────────────────────────
 
 pub struct PomodoroState {
     pub phase: Phase,
+    pub mode: PomodoroMode,
     pub remaining: u32,
     pub task_name: String,
     pub start_time: u64,
     pub overlay_hwnd: Option<SendHwnd>,
+    pub last_theme: Option<crate::core::native_theme::NativeTheme>,
+    pub bb: bool,
 }
 
 // ── Daemon handle ────────────────────────────────────────────────────
@@ -237,10 +238,12 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
 
     let edit_brush = unsafe { CreateSolidBrush(gdi_color(theme.surface, theme.background).to_colorref()) };
 
-    // Set state's overlay_hwnd
+    // Save theme + bb in daemon state
     {
         let mut st = state.lock().unwrap();
         st.overlay_hwnd = Some(SendHwnd(hwnd));
+        st.last_theme = Some(theme.clone());
+        st.bb = bb;
         // If daemon is running, update task name from overlay
         if !st.task_name.is_empty() {
             let _ = unsafe { SendMessageW(edit_hwnd, WM_SETTEXT, WPARAM(0), LPARAM(to_utf16_z(&st.task_name).as_ptr() as isize)) };
@@ -415,21 +418,44 @@ fn handle_overlay_click(os: &OverlayState, _hwnd: HWND, x: i32, y: i32) {
     if y < btn_y || y > btn_y + BTN_H {
         return;
     }
+
+    // Read current phase + mode to map buttons correctly
+    let st = os.state.lock().unwrap();
+    let is_finished = st.phase == Phase::Finished;
+    let is_work = st.mode == PomodoroMode::Work;
+    drop(st);
+
     let btn_total = BTN_W * 4 + PAD * 3;
     let btn_start_x = (WIN_W - btn_total) / 2;
 
-    let msg = if x >= btn_start_x && x < btn_start_x + BTN_W {
-        WM_POM_START
+    let btn_idx = if x >= btn_start_x && x < btn_start_x + BTN_W {
+        0usize
     } else if x >= btn_start_x + BTN_W + PAD && x < btn_start_x + BTN_W * 2 + PAD {
-        WM_POM_PAUSE
+        1
     } else if x >= btn_start_x + BTN_W * 2 + PAD * 2 && x < btn_start_x + BTN_W * 3 + PAD * 2 {
-        WM_POM_STOP
+        2
     } else if x >= btn_start_x + BTN_W * 3 + PAD * 3 && x < btn_start_x + BTN_W * 4 + PAD * 3 {
-        WM_POM_EXTEND
+        3
     } else {
         return;
     };
-    let _ = os;
+
+    let msg = if is_finished {
+        match btn_idx {
+            0 => WM_POM_EXTEND,          // +5m
+            1 if is_work => WM_POM_BREAK, // Break 5m (work finished)
+            1 => WM_POM_START,           // Work 25m (break finished)
+            _ => return,                  // buttons 2,3 = empty
+        }
+    } else {
+        match btn_idx {
+            0 => WM_POM_START,
+            1 => WM_POM_PAUSE,
+            2 => WM_POM_STOP,
+            3 => WM_POM_EXTEND,
+            _ => return,
+        }
+    };
     unsafe { let _ = PostMessageW(daemon_hwnd, msg, WPARAM(0), LPARAM(0)); }
 }
 
@@ -499,9 +525,12 @@ fn paint_overlay(hdc: HDC, _hwnd: HWND, os: &OverlayState) {
     // ── Phase label ───────────────────────────────────────────────
     let phase_label = match st.phase {
         Phase::Idle => "Press Start or Enter",
-        Phase::Running => "Running",
+        Phase::Running if st.mode == PomodoroMode::Work => "Running",
+        Phase::Running if st.mode == PomodoroMode::Break => "Break 🧘",
         Phase::Paused => "Paused",
-        Phase::Finished => "Time's up! 🎉",
+        Phase::Finished if st.mode == PomodoroMode::Work => "Time's up! 🎉",
+        Phase::Finished if st.mode == PomodoroMode::Break => "Break over! 🎯",
+        _ => "",
     };
     unsafe {
         let mut pr = RECT {
@@ -517,8 +546,17 @@ fn paint_overlay(hdc: HDC, _hwnd: HWND, os: &OverlayState) {
     let btn_y = WIN_H - PAD - BTN_H;
     let btn_total = BTN_W * 4 + PAD * 3;
     let btn_start_x = (WIN_W - btn_total) / 2;
-    let labels = ["Start", "Pause", "Stop", "+5m"];
+    let labels = if st.phase == Phase::Finished {
+        if st.mode == PomodoroMode::Work {
+            ["+5m", "Break 5m", "", ""]
+        } else {
+            ["+5m", "Work 25m", "", ""]
+        }
+    } else {
+        ["Start", "Pause", "Stop", "+5m"]
+    };
     for i in 0..4 {
+        if labels[i].is_empty() { continue; }
         let bx = btn_start_x + i as i32 * (BTN_W + PAD);
         let br = RECT { left: bx, top: btn_y, right: bx + BTN_W, bottom: btn_y + BTN_H };
         unsafe {
@@ -584,10 +622,13 @@ unsafe extern "system" fn edit_wndproc(
 fn spawn_daemon() -> DaemonHandle {
     let state = Arc::new(Mutex::new(PomodoroState {
         phase: Phase::Idle,
+        mode: PomodoroMode::Work,
         remaining: DEFAULT_WORK_SECS,
         task_name: String::new(),
         start_time: 0,
         overlay_hwnd: None,
+        last_theme: None,
+        bb: false,
     }));
 
     let state_clone = state.clone();
@@ -678,10 +719,25 @@ unsafe extern "system" fn daemon_wndproc(
                     st.phase = Phase::Finished;
                     st.remaining = 0;
                     let _ = KillTimer(hwnd, TIMER_ID);
-                    log_blackbox_raw(&st, "pomodoro_end");
-                    // Beep + flash overlay
+                    log_blackbox_raw(&st, if st.mode == PomodoroMode::Work { "pomodoro_end" } else { "break_end" });
+                    // Beep
                     let _ = Beep(800, 200);
-                    if let Some(ref oh) = st.overlay_hwnd {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let _ = Beep(1000, 200);
+                    // Auto-show overlay + flash if closed
+                    if st.overlay_hwnd.is_none() {
+                        if let Some(ref theme) = st.last_theme {
+                            let state_arc2 = state_arc.clone();
+                            let theme2 = theme.clone();
+                            let bb2 = st.bb;
+                            std::thread::Builder::new()
+                                .name("pomodoro-overlay".into())
+                                .spawn(move || {
+                                    run_overlay(state_arc2, theme2, bb2);
+                                })
+                                .ok();
+                        }
+                    } else if let Some(ref oh) = st.overlay_hwnd {
                         let _ = FlashWindow(oh.0, TRUE);
                     }
                 } else {
@@ -698,6 +754,7 @@ unsafe extern "system" fn daemon_wndproc(
         WM_POM_START => {
             match st.phase {
                 Phase::Idle | Phase::Finished => {
+                    st.mode = PomodoroMode::Work;
                     st.phase = Phase::Running;
                     st.remaining = DEFAULT_WORK_SECS;
                     st.start_time = epoch_secs();
@@ -748,13 +805,15 @@ unsafe extern "system" fn daemon_wndproc(
                     st.remaining = st.remaining.saturating_add(EXTEND_SECS);
                 }
                 Phase::Finished => {
+                    // Keep current mode (Work/Break)
                     st.phase = Phase::Running;
                     st.remaining = EXTEND_SECS;
                     st.start_time = epoch_secs();
                     let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
-                    log_blackbox_raw(&st, "pomodoro_restart");
+                    log_blackbox_raw(&st, if st.mode == PomodoroMode::Work { "pomodoro_restart" } else { "break_restart" });
                 }
                 Phase::Idle => {
+                    st.mode = PomodoroMode::Work;
                     st.phase = Phase::Running;
                     st.remaining = DEFAULT_WORK_SECS;
                     st.start_time = epoch_secs();
@@ -762,6 +821,17 @@ unsafe extern "system" fn daemon_wndproc(
                     log_blackbox_raw(&st, "pomodoro_start");
                 }
             }
+            notify_overlay(&st);
+            LRESULT(0)
+        }
+
+        WM_POM_BREAK => {
+            st.mode = PomodoroMode::Break;
+            st.phase = Phase::Running;
+            st.remaining = 5 * 60; // 5 min break
+            st.start_time = epoch_secs();
+            let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+            log_blackbox_raw(&st, "break_start");
             notify_overlay(&st);
             LRESULT(0)
         }
