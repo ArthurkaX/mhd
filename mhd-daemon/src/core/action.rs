@@ -116,6 +116,7 @@ impl Action {
             "media_next_track" => Ok(Action::MediaNextTrack),
             "quick_draw" => Ok(Action::QuickDraw),
             "quick_note" => Ok(Action::QuickNote),
+            "pomodoro" => Ok(Action::Pomodoro),
             "power_actions" => Ok(Action::PowerActions),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
