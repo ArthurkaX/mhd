@@ -1,20 +1,10 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 //! Quick Note — hotkey-driven text note overlay.
 //!
 //! Opens a small popup window. Type text, Enter saves to
 //! `~/.config/mhd/notes/YYYY-MM-DD.md`, Escape cancels.
 //! If blackbox is active, logs a `quicknote` artefact.
-
-#![allow(unsafe_op_in_unsafe_fn)]
-
-/// Quick debug logging to a temp file (survives crashes).
-fn qlog(msg: impl std::fmt::Display) {
-    use std::io::Write;
-    let path = std::env::var("TEMP").unwrap_or_else(|_| ".".into());
-    let path = std::path::Path::new(&path).join("mhd_qn.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{}", msg);
-    }
-}
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -27,8 +17,8 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::INFINITE;
-use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_BACK, VK_DELETE, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_BACK, VK_DELETE, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::path::home_dir;
@@ -78,10 +68,8 @@ pub fn is_active() -> bool {
 }
 
 pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
-    qlog(format!("quicknote: show() called"));
     if let Ok(g) = CTRL.lock() {
         if let Some(ref tx) = *g {
-            qlog(format!("quicknote: toggling existing window"));
             let _ = tx.send(());
             return;
         }
@@ -92,15 +80,12 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
     let (tx, rx) = mpsc::channel();
     *CTRL.lock().unwrap() = Some(tx);
 
-    qlog(format!("quicknote: spawning thread"));
     std::thread::Builder::new()
         .name("quicknote".into())
         .spawn(move || {
-            qlog(format!("quicknote: thread started"));
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run(theme, notes_dir, bb, d2, &rx);
             }));
-            qlog(format!("quicknote: thread exiting"));
             *CTRL.lock().unwrap() = None;
         })
         .ok();
@@ -127,10 +112,8 @@ fn run(
     dying: Arc<AtomicBool>,
     ctrl: &mpsc::Receiver<()>,
 ) {
-    qlog(format!("quicknote: run() entered"));
     let cls = to_utf16_z(CLS);
     let hi: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap_or_default() }.into();
-    qlog(format!("quicknote: got module handle"));
 
     unsafe {
         let wc = WNDCLASSW {
@@ -143,7 +126,6 @@ fn run(
         };
         let _ = RegisterClassW(&wc);
     }
-    qlog(format!("quicknote: class registered"));
 
     let hwnd = match unsafe {
         CreateWindowExW(
@@ -156,9 +138,8 @@ fn run(
         )
     } {
         Ok(h) => h,
-        Err(e) => { qlog(format!("quicknote: CreateWindowExW failed: {:?}", e)); return; },
+        Err(_) => return,
     };
-    qlog(format!("quicknote: window created hwnd={:?}", hwnd));
 
     // Mutable state lives on stack for the window's lifetime
     let mut st = WndState {
@@ -174,37 +155,28 @@ fn run(
     };
     let state_ptr: *mut WndState = &mut st;
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
-    qlog(format!("quicknote: state pointer set"));
 
     // Centre
     let wa = work_area();
     let x = wa.left + (wa.right - wa.left - W) / 2;
     let y = wa.top + (wa.bottom - wa.top - H) / 2;
     unsafe { let _ = SetWindowPos(hwnd, HWND::default(), x, y, W, H, SWP_NOZORDER); }
-    qlog(format!("quicknote: window positioned"));
 
     // Title
     let today = date_str();
     let title = format!("Quick Note — {today}\0");
     let tw: Vec<u16> = title.encode_utf16().collect();
     unsafe { let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(tw.as_ptr())); }
-    qlog(format!("quicknote: title set"));
 
     // Show + focus + timer
-    qlog(format!("quicknote: about to show window"));
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-        qlog(format!("quicknote: window shown"));
         let _ = SetForegroundWindow(hwnd);
-        qlog(format!("quicknote: foreground set"));
         let _ = SetFocus(hwnd);
-        qlog(format!("quicknote: focus set"));
         let _ = SetTimer(hwnd, TMR_ID, CARET_MS, None);
-        qlog(format!("quicknote: timer set"));
     }
 
     // ── Message loop ──────────────────────────────────────────────────
-    qlog(format!("quicknote: entering message loop"));
     loop {
         if dying.load(Ordering::Acquire) { break; }
 
@@ -252,8 +224,6 @@ fn run(
 // ─── Window proc ───────────────────────────────────────────────────────
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    qlog(format!("quicknote: wndproc msg=0x{:04x} wp={}", msg, wp.0));
-
     let s = || -> Option<&'static mut WndState> {
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
         if ptr == 0 { None } else { Some(&mut *(ptr as *mut WndState)) }
@@ -337,7 +307,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let hdc = BeginPaint(hwnd, &mut ps);
             if !hdc.is_invalid() {
                 if let Some(st) = s() {
-                    paint(hwnd, hdc, &st);
+                    paint(hwnd, hdc, st);
                 }
                 let _ = EndPaint(hwnd, &ps);
             }
@@ -473,8 +443,6 @@ fn tick_ms() -> u32 {
 fn to_utf16_z(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
-
-
 
 fn work_area() -> RECT {
     unsafe {
