@@ -32,6 +32,7 @@ use crate::monitor_panel;
 use crate::volume_mixer;
 use crate::power;
 use crate::quickdraw;
+use crate::quicknote;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
@@ -42,6 +43,7 @@ const CMD_VOLUME_MIXER: usize = 6;
 const CMD_MONITOR_PANEL: usize = 7;
 const CMD_POWER: usize = 8;
 const CMD_QUICK_DRAW: usize = 9;
+const CMD_QUICK_NOTE: usize = 11;
 #[cfg(feature = "blackbox")]
 const CMD_BLACKBOX_TOGGLE: usize = 10;
 const CMD_ABOUT: usize = 4;
@@ -189,6 +191,15 @@ fn show_menu(hwnd: HWND) {
             PCWSTR::from_raw(quick_draw.as_ptr()),
         );
 
+        let quick_note: Vec<u16> = "Quick Note\0".encode_utf16().collect();
+        let _ = InsertMenuW(
+            menu,
+            7,
+            MF_BYPOSITION | MF_STRING,
+            CMD_QUICK_NOTE,
+            PCWSTR::from_raw(quick_note.as_ptr()),
+        );
+
         #[cfg(feature = "blackbox")]
         {
             let bb_text = if state.app.blackbox_enabled() { "Blackbox: on\0" } else { "Blackbox: off\0" };
@@ -200,7 +211,7 @@ fn show_menu(hwnd: HWND) {
             };
             let _ = InsertMenuW(
                 menu,
-                7,
+                8,
                 bb_flags,
                 CMD_BLACKBOX_TOGGLE,
                 PCWSTR::from_raw(bb_label.as_ptr()),
@@ -210,7 +221,7 @@ fn show_menu(hwnd: HWND) {
         let about: Vec<u16> = "About\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            if cfg!(feature = "blackbox") { 8 } else { 7 },
+            if cfg!(feature = "blackbox") { 9 } else { 8 },
             MF_BYPOSITION | MF_STRING,
             CMD_ABOUT,
             PCWSTR::from_raw(about.as_ptr()),
@@ -219,7 +230,7 @@ fn show_menu(hwnd: HWND) {
         let quit: Vec<u16> = "Quit mhd\0".encode_utf16().collect();
         let _ = InsertMenuW(
             menu,
-            if cfg!(feature = "blackbox") { 9 } else { 8 },
+            if cfg!(feature = "blackbox") { 10 } else { 9 },
             MF_BYPOSITION | MF_STRING,
             CMD_QUIT,
             PCWSTR::from_raw(quit.as_ptr()),
@@ -310,6 +321,14 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_QUICK_DRAW => {
                         quickdraw::show(state.app.theme());
+                    }
+                    CMD_QUICK_NOTE => {
+                        let cfg = state.app.quicknote_config();
+                        #[cfg(feature = "blackbox")]
+                        let bb = state.app.blackbox_enabled();
+                        #[cfg(not(feature = "blackbox"))]
+                        let bb = false;
+                        quicknote::show(state.app.theme(), cfg.notes_dir.clone(), bb);
                     }
                     #[cfg(feature = "blackbox")]
                     CMD_BLACKBOX_TOGGLE => {

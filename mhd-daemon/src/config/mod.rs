@@ -3,13 +3,23 @@ pub mod raw;
 pub mod editor;
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::action::Action;
 use crate::trigger::parse_trigger;
 #[cfg(feature = "blackbox")]
 use crate::blackbox::BlackboxConfig;
+use crate::overlays::quicknote::QuickNoteConfig;
+use crate::config::path::home_dir;
 use self::raw::RawConfig;
+
+fn default_notes_dir() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join("mhd")
+        .join("notes")
+}
 
 /// A validated binding.
 #[derive(Debug, Clone)]
@@ -38,6 +48,8 @@ pub struct AppConfig {
     /// Behavioural logger config.
     #[cfg(feature = "blackbox")]
     pub blackbox: BlackboxConfig,
+    /// Quick Note config.
+    pub quicknote: QuickNoteConfig,
 }
 
 impl AppConfig {
@@ -140,6 +152,10 @@ impl AppConfig {
                 enabled: raw.blackbox.as_ref().and_then(|b| b.enabled).unwrap_or(false),
                 idle_seconds: raw.blackbox.as_ref().and_then(|b| b.idle_seconds).unwrap_or(300),
             },
+            quicknote: QuickNoteConfig {
+                enabled: raw.quicknote.as_ref().and_then(|q| q.enabled).unwrap_or(true),
+                notes_dir: raw.quicknote.as_ref().and_then(|q| q.notes_dir.as_ref()).map(PathBuf::from).unwrap_or_else(default_notes_dir),
+            },
             autostart: raw.autostart.unwrap_or(false),
         })
     }
@@ -212,5 +228,9 @@ impl AppConfig {
     #[cfg(feature = "blackbox")]
     pub fn blackbox(&self) -> &BlackboxConfig {
         &self.blackbox
+    }
+
+    pub fn quicknote_config(&self) -> &QuickNoteConfig {
+        &self.quicknote
     }
 }

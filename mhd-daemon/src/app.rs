@@ -19,6 +19,7 @@ use crate::action::Action;
 use crate::config::AppConfig;
 use crate::native_theme::NativeTheme;
 use crate::osd::OsdHandle;
+use crate::overlays::quicknote::QuickNoteConfig;
 use crate::trigger::Trigger;
 use crate::worker::{ActionSender, ActionWorker};
 
@@ -40,6 +41,8 @@ pub trait DaemonControl: Send + Sync {
     /// Whether blackbox is currently running.
     #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool;
+    /// Quick Note config snapshot.
+    fn quicknote_config(&self) -> QuickNoteConfig;
 }
 
 /// Wrapper to make HWND Send+Sync safe.
@@ -155,6 +158,10 @@ impl DaemonControl for AppHandle {
     #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool {
         crate::blackbox::is_logging()
+    }
+
+    fn quicknote_config(&self) -> QuickNoteConfig {
+        self.config.lock().unwrap().quicknote_config().clone()
     }
 }
 

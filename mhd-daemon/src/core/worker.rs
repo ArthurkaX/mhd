@@ -121,6 +121,16 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::QuickDraw => {
             crate::overlays::quickdraw::show(handle.theme());
         }
+        Action::QuickNote => {
+            let cfg = handle.quicknote_config();
+            let bb = {
+                #[cfg(feature = "blackbox")]
+                { handle.blackbox_enabled() }
+                #[cfg(not(feature = "blackbox"))]
+                { false }
+            };
+            crate::overlays::quicknote::show(handle.theme(), cfg.notes_dir.clone(), bb);
+        }
         Action::BrightnessUp { value } => {
             if monitor::adjust_brightness(*value as i32).is_ok() {
                 if let Ok((new_val, name)) = monitor::get_brightness() {

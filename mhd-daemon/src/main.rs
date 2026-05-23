@@ -53,7 +53,7 @@ mod osd;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
 pub use core::{action, hook, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
-pub use overlays::{about, autostart, monitor_panel, power, quickdraw, topmost, tray, volume_mixer};
+pub use overlays::{about, autostart, monitor_panel, power, quickdraw, quicknote, topmost, tray, volume_mixer};
 // Re-export config/editor as config_editor for backward compat.
 pub use config::editor as config_editor;
 

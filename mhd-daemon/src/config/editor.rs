@@ -82,7 +82,8 @@ const EDITOR_ACTION_INDICES: &[usize] = &[
     14, // toggle_topmost
     15, // power_actions
     16, // quick_draw
-    17, // quit
+    17, // quick_note
+    18, // quit
 ];
 
 #[derive(Debug, Clone)]

@@ -33,6 +33,17 @@ pub struct RawBlackbox {
     pub idle_seconds: Option<u64>,
 }
 
+/// Raw TOML `[quicknote]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawQuickNote {
+    /// Enable quick note. Default: `true`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Directory for saved notes. Default: `~/.config/mhd/notes/`.
+    #[serde(default)]
+    pub notes_dir: Option<String>,
+}
+
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
@@ -50,6 +61,8 @@ pub struct RawConfig {
     #[cfg(feature = "blackbox")]
     #[serde(default)]
     pub blackbox: Option<RawBlackbox>,
+    #[serde(default)]
+    pub quicknote: Option<RawQuickNote>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }
