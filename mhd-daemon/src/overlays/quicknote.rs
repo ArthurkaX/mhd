@@ -72,7 +72,7 @@ pub fn is_active() -> bool {
 }
 
 pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
-    let mut guard = CTRL.lock().unwrap();
+    let Ok(mut guard) = CTRL.lock() else { return; };
     if let Some(sh) = guard.as_ref() {
         // Second press while window is open → close it (no save)
         unsafe { let _ = PostMessageW(sh.0, WM_CLOSE, WPARAM(0), LPARAM(0)); }
@@ -127,7 +127,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
         )
     } {
         Ok(h) => h,
-        Err(_) => { *CTRL.lock().unwrap() = None; return; }
+        Err(_) => { if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
     };
 
     // ── Create EDIT child ──────────────────────────────────────────
@@ -148,7 +148,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
         )
     } {
         Ok(h) => h,
-        Err(_) => { unsafe { let _ = DestroyWindow(hwnd); } *CTRL.lock().unwrap() = None; return; }
+        Err(_) => { unsafe { let _ = DestroyWindow(hwnd); } if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
     };
     unsafe {
         let _ = SendMessageW(edit_hwnd, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _), LPARAM(1));
@@ -172,7 +172,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
 
     // ── Publish HWND so show() can find and close us ───────────────
-    *CTRL.lock().unwrap() = Some(SendHwnd(hwnd));
+    if let Ok(mut g) = CTRL.lock() { *g = Some(SendHwnd(hwnd)); }
 
     // ── Centre ─────────────────────────────────────────────────────
     let wa = work_area();
@@ -202,12 +202,19 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     }
 
     // ── Thread exit cleanup ────────────────────────────────────────
-    *CTRL.lock().unwrap() = None;
+    if let Ok(mut g) = CTRL.lock() { *g = None; }
 }
 
 // ─── Window proc ───────────────────────────────────────────────────────
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match std::panic::catch_unwind(|| wndproc_inner(hwnd, msg, wp, lp)) {
+        Ok(r) => r,
+        Err(_) => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+}
+
+fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let s = || -> Option<&'static mut WndState> {
         unsafe {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -254,7 +261,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_DESTROY => {
             // Mark inactive immediately. This avoids a stale HWND if the hotkey
             // is pressed again while the window thread is still unwinding.
-            *CTRL.lock().unwrap() = None;
+            if let Ok(mut g) = CTRL.lock() { *g = None; }
             if let Some(st) = s() {
                 if !st.edit_brush.is_invalid() {
                     unsafe { let _ = DeleteObject(st.edit_brush); }
@@ -300,13 +307,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 // ─── EDIT subclass ────────────────────────────────────────────────────
 
 extern "system" fn edit_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match std::panic::catch_unwind(|| edit_wndproc_inner(hwnd, msg, wp, lp)) {
+        Ok(r) => r,
+        Err(_) => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+}
+
+fn edit_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let old_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
         if old_ptr == 0 {
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
-        let old_proc: extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
-            std::mem::transmute(old_ptr);
+        let old_proc: WNDPROC = std::mem::transmute(old_ptr);
 
         match msg {
             WM_KEYDOWN => {
@@ -320,7 +333,7 @@ extern "system" fn edit_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                     let shift = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
                     let ctrl = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                     if shift || ctrl {
-                        return old_proc(hwnd, msg, wp, lp);
+                        return CallWindowProcW(old_proc, hwnd, msg, wp, lp);
                     }
                     if let Ok(parent) = GetParent(hwnd) {
                         let _ = PostMessageW(parent, WM_APP_SAVE, WPARAM(0), LPARAM(0));
@@ -331,7 +344,7 @@ extern "system" fn edit_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             _ => {}
         }
 
-        old_proc(hwnd, msg, wp, lp)
+        CallWindowProcW(old_proc, hwnd, msg, wp, lp)
     }
 }
 
