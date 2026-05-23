@@ -61,7 +61,7 @@ use std::env;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+use windows::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
 
 use crate::config::path::{resolve_config_path, create_example_config, create_bundled_themes};
 use crate::app::DaemonControl;
@@ -138,11 +138,13 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let mut quiet = false;
     let mut no_tray = false;
+    let mut debug_quicknote = false;
 
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "--quiet" => quiet = true,
             "--daemon" | "--no-tray" => no_tray = true,
+            "--debug-quicknote" => debug_quicknote = true,
             "--help" | "-h" => {
                 print_help();
                 return ExitCode::SUCCESS;
@@ -153,6 +155,16 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+    }
+
+    if debug_quicknote {
+        quicknote::set_debug_logging(true);
+        unsafe {
+            if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
+                let _ = AllocConsole();
+            }
+        }
+        println!("mhd: quicknote debug logging enabled");
     }
 
     let config_path = resolve_config_path();
@@ -240,5 +252,6 @@ fn print_help() {
     eprintln!("  mhd.exe               Run with system tray (default)");
     eprintln!("  mhd.exe --daemon      Run headless (no tray)");
     eprintln!("  mhd.exe --quiet       Suppress startup messages");
+    eprintln!("  mhd.exe --debug-quicknote  Print QuickNote lifecycle/debug events to console");
     eprintln!("  mhd.exe --help        Show this help");
 }

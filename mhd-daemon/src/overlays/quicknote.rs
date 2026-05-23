@@ -7,6 +7,7 @@
 //! If blackbox is active, logs the note text.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,14 +67,27 @@ const EC_RIGHTMARGIN: u32 = 0x0002;
 /// Stores the HWND while Quick Note is open. `None` means no window.
 /// The thread sets this after window creation; clears it on exit.
 static CTRL: Mutex<Option<SendHwnd>> = Mutex::new(None);
+static DEBUG_LOG: AtomicBool = AtomicBool::new(false);
+
+pub fn set_debug_logging(enabled: bool) {
+    DEBUG_LOG.store(enabled, Ordering::Release);
+}
+
+fn qn_log(msg: impl AsRef<str>) {
+    if DEBUG_LOG.load(Ordering::Acquire) {
+        println!("[quicknote] {}", msg.as_ref());
+    }
+}
 
 pub fn is_active() -> bool {
     CTRL.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
-    let Ok(mut guard) = CTRL.lock() else { return; };
+    qn_log(format!("show() theme={} notes_dir={}", theme.name, notes_dir.display()));
+    let Ok(mut guard) = CTRL.lock() else { qn_log("show(): CTRL lock poisoned"); return; };
     if let Some(sh) = guard.as_ref() {
+        qn_log(format!("show(): already open, posting WM_CLOSE to {:?}", sh.0));
         // Second press while window is open → close it (no save)
         unsafe { let _ = PostMessageW(sh.0, WM_CLOSE, WPARAM(0), LPARAM(0)); }
         return;
@@ -85,7 +99,10 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
     std::thread::Builder::new()
         .name("quicknote".into())
         .spawn(move || {
-            run(theme, notes_dir, bb);
+            qn_log("thread start");
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(theme, notes_dir, bb)));
+            if r.is_err() { qn_log("thread panic caught"); }
+            qn_log("thread end");
         })
         .ok();
 }
@@ -101,6 +118,7 @@ struct WndState {
 }
 
 fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
+    qn_log("run(): registering class");
     let cls = to_utf16_z(CLS);
     let hi: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap_or_default() }.into();
 
@@ -126,8 +144,8 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
             None, None, hi, None,
         )
     } {
-        Ok(h) => h,
-        Err(_) => { if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
+        Ok(h) => { qn_log(format!("run(): parent hwnd={h:?}")); h },
+        Err(e) => { qn_log(format!("run(): CreateWindowEx parent failed: {e}")); if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
     };
 
     // ── Create EDIT child ──────────────────────────────────────────
@@ -147,8 +165,8 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
             None,
         )
     } {
-        Ok(h) => h,
-        Err(_) => { unsafe { let _ = DestroyWindow(hwnd); } if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
+        Ok(h) => { qn_log(format!("run(): edit hwnd={h:?}")); h },
+        Err(e) => { qn_log(format!("run(): CreateWindowEx EDIT failed: {e}")); unsafe { let _ = DestroyWindow(hwnd); } if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
     };
     unsafe {
         let _ = SendMessageW(edit_hwnd, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _), LPARAM(1));
@@ -172,6 +190,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
 
     // ── Publish HWND so show() can find and close us ───────────────
+    qn_log("run(): publishing hwnd");
     if let Ok(mut g) = CTRL.lock() { *g = Some(SendHwnd(hwnd)); }
 
     // ── Centre ─────────────────────────────────────────────────────
@@ -188,11 +207,13 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
 
     // ── Show + focus ───────────────────────────────────────────────
     unsafe {
+        qn_log("run(): show + focus");
         let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
         steal_focus(hwnd, edit_hwnd);
     }
 
     // ── Message loop (classic GetMessageW) ─────────────────────────
+    qn_log("run(): entering message loop");
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0).as_bool() } {
         unsafe {
@@ -202,6 +223,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     }
 
     // ── Thread exit cleanup ────────────────────────────────────────
+    qn_log("run(): message loop exited, clearing CTRL");
     if let Ok(mut g) = CTRL.lock() { *g = None; }
 }
 
@@ -237,6 +259,7 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
 
         // ── Save (Enter pressed in EDIT) ───────────────────────────
         WM_APP_SAVE => {
+            qn_log("wndproc: WM_APP_SAVE");
             if let Some(st) = s() {
                 let text = get_edit_text(st.edit_hwnd);
                 save(&st.notes_dir, &text, st.bb);
@@ -247,18 +270,21 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
 
         // ── Cancel (Escape pressed in EDIT) ────────────────────────
         WM_APP_CANCEL => {
+            qn_log("wndproc: WM_APP_CANCEL");
             unsafe { let _ = DestroyWindow(hwnd); }
             LRESULT(0)
         }
 
         // ── User clicked X, Alt+F4, or second hotkey press ─────────
         WM_CLOSE => {
+            qn_log("wndproc: WM_CLOSE");
             unsafe { let _ = DestroyWindow(hwnd); }
             LRESULT(0)
         }
 
         // ── Posted by DestroyWindow → posts WM_QUIT to message loop
         WM_DESTROY => {
+            qn_log("wndproc: WM_DESTROY");
             // Mark inactive immediately. This avoids a stale HWND if the hotkey
             // is pressed again while the window thread is still unwinding.
             if let Ok(mut g) = CTRL.lock() { *g = None; }
@@ -288,6 +314,7 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         }
 
         WM_CTLCOLOREDIT => {
+            qn_log("wndproc: WM_CTLCOLOREDIT");
             if let Some(st) = s() {
                 let hdc = HDC(wp.0 as *mut _);
                 unsafe {
@@ -325,11 +352,13 @@ fn edit_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             WM_KEYDOWN => {
                 let vk = wp.0 as u16;
                 if vk == VK_ESCAPE.0 {
+                    qn_log("edit: Escape");
                     if let Ok(parent) = GetParent(hwnd) {
                         let _ = PostMessageW(parent, WM_APP_CANCEL, WPARAM(0), LPARAM(0));
                     }
                     return LRESULT(0);
                 } else if vk == VK_RETURN.0 {
+                    qn_log("edit: Return");
                     let shift = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
                     let ctrl = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                     if shift || ctrl {
