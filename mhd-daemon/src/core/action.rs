@@ -38,6 +38,8 @@ pub enum Action {
     QuickDraw,
     /// Show the Quick Note overlay (text note).
     QuickNote,
+    /// Show the Pomodoro timer overlay.
+    Pomodoro,
     Quit,
 }
 
@@ -252,6 +254,7 @@ impl Action {
             Action::PowerActions => "power_actions",
             Action::QuickDraw => "quick_draw",
             Action::QuickNote => "quick_note",
+            Action::Pomodoro => "pomodoro",
             Action::Quit => "quit",
         }
     }
@@ -294,6 +297,7 @@ impl Action {
             | Action::PowerActions
             | Action::QuickDraw
             | Action::QuickNote
+            | Action::Pomodoro
             | Action::Quit => self.name().to_string(),
         }
     }
@@ -438,6 +442,12 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "quick_note",
         label: "Quick Note",
+        category: "General",
+        param_key: None,
+    },
+    ActionDescriptor {
+        name: "pomodoro",
+        label: "Pomodoro Timer",
         category: "General",
         param_key: None,
     },

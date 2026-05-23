@@ -60,6 +60,8 @@ pub enum BlackboxEvent {
     Input { kind: InputKind, ts: u64 },
     /// Quick Note was saved (ts = save time, text = note content).
     QuickNote { ts: u64, text: String },
+    /// Custom log event (e.g. pomodoro) with key-value pairs.
+    LogCustom { ts: u64, event: String, kv: Vec<(String, String)> },
     Shutdown,
     /// Toggle enabled state from tray.
     ToggleEnabled,
@@ -486,6 +488,12 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                     BlackboxEvent::QuickNote { ts, text } => {
                         if enabled {
                             let _ = writer.write_line(&format_line(ts, "qn", &[sv("t", &text)]));
+                        }
+                    }
+                    BlackboxEvent::LogCustom { ts, event, kv } => {
+                        if enabled {
+                            let kv_ref: Vec<(&str, String)> = kv.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+                            let _ = writer.write_line(&format_line(ts, &event, &kv_ref));
                         }
                     }
                     BlackboxEvent::ToggleEnabled => {
