@@ -15,7 +15,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId, INFINITE};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -206,8 +206,10 @@ fn run(
     loop {
         if dying.load(Ordering::Acquire) { break; }
 
+        // Wake up every 200ms so we can check the mpsc toggle channel
+        // even when no Windows messages arrive (window is hidden, no timer).
         let _ = unsafe {
-            MsgWaitForMultipleObjects(None, false, INFINITE, QS_ALLINPUT)
+            MsgWaitForMultipleObjects(None, false, 200, QS_ALLINPUT)
         };
 
         // Toggle hidden/shown
