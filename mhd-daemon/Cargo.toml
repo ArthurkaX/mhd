@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["blackbox"]
 blackbox = []
+debug-dump = ["windows/Win32_System_Diagnostics_Debug", "windows/Win32_System_Kernel"]
 
 [[bin]]
 name = "mhd"

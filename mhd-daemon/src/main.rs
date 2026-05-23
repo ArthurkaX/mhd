@@ -50,6 +50,8 @@ mod monitor;
 mod config;
 mod overlays;
 mod osd;
+#[cfg(feature = "debug-dump")]
+mod crash_dump;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
 pub use core::{action, hook, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
@@ -128,9 +130,18 @@ fn setup_panic_hook() {
 }
 
 fn main() -> ExitCode {
-    // Install panic hook — saves panic details to the config directory
-    // so crashes can be diagnosed without a terminal.
-    setup_panic_hook();
+    #[cfg(feature = "debug-dump")]
+    {
+        crash_dump::clear_old_logs();
+        crash_dump::install();
+    }
+
+    #[cfg(not(feature = "debug-dump"))]
+    {
+        // Install panic hook — saves panic details to the config directory
+        // so crashes can be diagnosed without a terminal.
+        setup_panic_hook();
+    }
 
     // Try to attach to parent console so we can print messages if launched from a terminal.
     unsafe { let _ = AttachConsole(ATTACH_PARENT_PROCESS); }
@@ -253,5 +264,9 @@ fn print_help() {
     eprintln!("  mhd.exe --daemon      Run headless (no tray)");
     eprintln!("  mhd.exe --quiet       Suppress startup messages");
     eprintln!("  mhd.exe --debug-quicknote  Print QuickNote lifecycle/debug events to console");
+    eprintln!();
+    eprintln!("Debug crash dumps:");
+    eprintln!("  cargo build --release --features debug-dump");
+    eprintln!("  writes %TEMP%\\mhd_debug_dump.log and %TEMP%\\mhd_*.dmp");
     eprintln!("  mhd.exe --help        Show this help");
 }

@@ -436,7 +436,10 @@ fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
 fn get_edit_text(hwnd: HWND) -> String {
     unsafe {
         let len = GetWindowTextLengthW(hwnd);
-        if len == 0 { return String::new(); }
+        // GetWindowTextLengthW returns 0 for empty text and may return a
+        // negative value on error/invalid HWND. Never cast a negative value
+        // to usize — it becomes huge and panics with capacity overflow.
+        if len <= 0 { return String::new(); }
         let mut buf = vec![0u16; (len + 1) as usize];
         let copied = GetWindowTextW(hwnd, &mut buf);
         buf.truncate(copied.max(0) as usize);
