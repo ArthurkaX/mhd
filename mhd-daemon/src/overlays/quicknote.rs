@@ -3,12 +3,11 @@
 //! Small popup with a standard multiline EDIT control.
 //! Enter saves to `~/.config/mhd/notes/YYYY-MM-DD.md`,
 //! Shift+Enter inserts a new line, Escape cancels.
-//! If blackbox is active, logs a `quicknote` artefact.
+//! Second hotkey press closes the window without saving.
+//! If blackbox is active, logs the note text.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::core::PCWSTR;
@@ -19,6 +18,7 @@ use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::app::SendHwnd;
 use crate::config::path::home_dir;
 
 // ── Config ─────────────────────────────────────────────────────────────
@@ -56,34 +56,31 @@ const EDIT_ID: usize = 100;
 const WM_APP_SAVE: u32 = WM_APP;
 const WM_APP_CANCEL: u32 = WM_APP + 1;
 
-// ─── Global toggle ─────────────────────────────────────────────────────
+// ─── Static window handle ──────────────────────────────────────────────
 
-static CTRL: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
+/// Stores the HWND while Quick Note is open. `None` means no window.
+/// The thread sets this after window creation; clears it on exit.
+static CTRL: Mutex<Option<SendHwnd>> = Mutex::new(None);
 
 pub fn is_active() -> bool {
     CTRL.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
-    if let Ok(g) = CTRL.lock() {
-        if let Some(ref tx) = *g {
-            let _ = tx.send(());
-            return;
-        }
+    let mut guard = CTRL.lock().unwrap();
+    if let Some(sh) = guard.as_ref() {
+        // Second press while window is open → close it (no save)
+        unsafe { let _ = PostMessageW(sh.0, WM_CLOSE, WPARAM(0), LPARAM(0)); }
+        return;
     }
-
-    let dying = Arc::new(AtomicBool::new(false));
-    let d2 = dying.clone();
-    let (tx, rx) = mpsc::channel();
-    *CTRL.lock().unwrap() = Some(tx);
+    // Mark as pending before spawning to prevent double-launch
+    *guard = Some(SendHwnd(HWND::default()));
+    drop(guard);
 
     std::thread::Builder::new()
         .name("quicknote".into())
         .spawn(move || {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(theme, notes_dir, bb, d2, &rx);
-            }));
-            *CTRL.lock().unwrap() = None;
+            run(theme, notes_dir, bb);
         })
         .ok();
 }
@@ -91,21 +88,13 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
 // ─── Window thread ─────────────────────────────────────────────────────
 
 struct WndState {
-    _dying: Arc<AtomicBool>,
     notes_dir: PathBuf,
     bb: bool,
-    hidden: bool,
     edit_hwnd: HWND,
     theme: crate::core::native_theme::NativeTheme,
 }
 
-fn run(
-    theme: crate::core::native_theme::NativeTheme,
-    notes_dir: PathBuf,
-    bb: bool,
-    dying: Arc<AtomicBool>,
-    ctrl: &mpsc::Receiver<()>,
-) {
+fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
     let cls = to_utf16_z(CLS);
     let hi: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap_or_default() }.into();
 
@@ -114,7 +103,7 @@ fn run(
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: hi,
-            hbrBackground: HBRUSH(2 as _), // COLOR_WINDOW+1 = white brush
+            hbrBackground: HBRUSH(2 as _), // COLOR_WINDOW+1
             lpszClassName: PCWSTR::from_raw(cls.as_ptr()),
             ..Default::default()
         };
@@ -132,7 +121,7 @@ fn run(
         )
     } {
         Ok(h) => h,
-        Err(_) => return,
+        Err(_) => { *CTRL.lock().unwrap() = None; return; }
     };
 
     // ── Create EDIT child ──────────────────────────────────────────
@@ -143,8 +132,7 @@ fn run(
             PCWSTR::null(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
                 | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32),
-            PAD,
-            PAD,
+            PAD, PAD,
             W - 2 * PAD,
             H - 2 * PAD - 20,
             hwnd,
@@ -154,35 +142,28 @@ fn run(
         )
     } {
         Ok(h) => h,
-        Err(_) => { unsafe { let _ = DestroyWindow(hwnd); } return; }
+        Err(_) => { unsafe { let _ = DestroyWindow(hwnd); } *CTRL.lock().unwrap() = None; return; }
     };
-    // Set default GUI font for the EDIT control
     unsafe {
         let _ = SendMessageW(edit_hwnd, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _), LPARAM(1));
     }
 
-    // Subclass the EDIT to intercept Enter/Escape
+    // Subclass EDIT to intercept Enter/Escape
     let old_edit_proc = unsafe {
-        Some(std::mem::transmute::<_, extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>(
-            SetWindowLongPtrW(edit_hwnd, GWLP_WNDPROC, edit_wndproc as *const () as isize)
-        ))
+        SetWindowLongPtrW(edit_hwnd, GWLP_WNDPROC, edit_wndproc as *const () as isize)
     };
     // Store old proc in EDIT's GWLP_USERDATA
     unsafe {
-        SetWindowLongPtrW(edit_hwnd, GWLP_USERDATA, old_edit_proc.unwrap() as isize);
+        SetWindowLongPtrW(edit_hwnd, GWLP_USERDATA, old_edit_proc);
     }
 
     // ── State ──────────────────────────────────────────────────────
-    let mut st = WndState {
-        _dying: dying.clone(),
-        notes_dir,
-        bb,
-        hidden: false,
-        edit_hwnd,
-        theme,
-    };
+    let mut st = WndState { notes_dir, bb, edit_hwnd, theme };
     let state_ptr: *mut WndState = &mut st;
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
+
+    // ── Publish HWND so show() can find and close us ───────────────
+    *CTRL.lock().unwrap() = Some(SendHwnd(hwnd));
 
     // ── Centre ─────────────────────────────────────────────────────
     let wa = work_area();
@@ -202,51 +183,17 @@ fn run(
         steal_focus(hwnd, edit_hwnd);
     }
 
-    // ── Message loop ───────────────────────────────────────────────
-    loop {
-        if dying.load(Ordering::Acquire) { break; }
-
-        // Wake up every 200ms so we can check the mpsc toggle channel
-        // even when no Windows messages arrive (window is hidden, no timer).
-        let _ = unsafe {
-            MsgWaitForMultipleObjects(None, false, 200, QS_ALLINPUT)
-        };
-
-        // Toggle hidden/shown
-        if ctrl.try_recv().is_ok() {
-            st.hidden = !st.hidden;
-            if st.hidden {
-                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
-            } else {
-                unsafe {
-                    // Clear EDIT content
-                    let _ = SetWindowTextW(edit_hwnd, PCWSTR::null());
-                    let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-                    steal_focus(hwnd, edit_hwnd);
-                }
-            }
-        }
-
-        let mut msg = MSG::default();
-        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() } {
-            if msg.message == WM_QUIT {
-                dying.store(true, Ordering::Release);
-                break;
-            }
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                let _ = DispatchMessageW(&msg);
-            }
+    // ── Message loop (classic GetMessageW) ─────────────────────────
+    let mut msg = MSG::default();
+    while unsafe { GetMessageW(&mut msg, None, 0, 0).as_bool() } {
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            let _ = DispatchMessageW(&msg);
         }
     }
 
-    unsafe {
-        // Restore original EDIT wndproc before destroying
-        if let Some(old_proc) = old_edit_proc {
-            SetWindowLongPtrW(edit_hwnd, GWLP_WNDPROC, old_proc as isize);
-        }
-        let _ = DestroyWindow(hwnd);
-    }
+    // ── Thread exit cleanup ────────────────────────────────────────
+    *CTRL.lock().unwrap() = None;
 }
 
 // ─── Window proc ───────────────────────────────────────────────────────
@@ -260,44 +207,35 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     };
 
     match msg {
-        WM_ACTIVATE => {
-            if wp.0 as u32 == WA_INACTIVE {
-                if let Some(st) = s() { st.hidden = true; }
-                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
-            }
-            LRESULT(0)
-        }
-        WM_SYSCOMMAND if wp.0 as u32 == SC_CLOSE => {
-            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
-            if let Some(st) = s() { st.hidden = true; }
-            LRESULT(0)
-        }
-        WM_CLOSE => {
-            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
-            if let Some(st) = s() { st.hidden = true; }
-            LRESULT(0)
-        }
-
-        // ── Custom messages from EDIT subclass ─────────────────────
+        // ── Save (Enter pressed in EDIT) ───────────────────────────
         WM_APP_SAVE => {
             if let Some(st) = s() {
                 let text = get_edit_text(st.edit_hwnd);
                 save(&st.notes_dir, &text, st.bb);
-                st.hidden = true;
-                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
             }
-            LRESULT(0)
-        }
-        WM_APP_CANCEL => {
-            if let Some(st) = s() {
-                st.hidden = true;
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
-            }
+            unsafe { let _ = DestroyWindow(hwnd); }
             LRESULT(0)
         }
 
+        // ── Cancel (Escape pressed in EDIT) ────────────────────────
+        WM_APP_CANCEL => {
+            unsafe { let _ = DestroyWindow(hwnd); }
+            LRESULT(0)
+        }
+
+        // ── User clicked X, Alt+F4, or second hotkey press ─────────
+        WM_CLOSE => {
+            unsafe { let _ = DestroyWindow(hwnd); }
+            LRESULT(0)
+        }
+
+        // ── Posted by DestroyWindow → posts WM_QUIT to message loop
+        WM_DESTROY => {
+            unsafe { PostQuitMessage(0); }
+            LRESULT(0)
+        }
+
+        // ── Paint background + hint text ───────────────────────────
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             unsafe {
@@ -309,12 +247,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     let _ = EndPaint(hwnd, &ps);
                 }
             }
-            // Return 0 to indicate paint was handled
             LRESULT(0)
         }
 
         WM_CTLCOLOREDIT => {
-            // Let EDIT use its default colors (no custom theming for now)
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
 
@@ -326,7 +262,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
 extern "system" fn edit_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
-        // Read old proc from this window's GWLP_USERDATA
         let old_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
         if old_ptr == 0 {
             return DefWindowProcW(hwnd, msg, wp, lp);
@@ -346,10 +281,8 @@ extern "system" fn edit_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                     let shift = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
                     let ctrl = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                     if shift || ctrl {
-                        // Let EDIT handle it (inserts \r\n)
                         return old_proc(hwnd, msg, wp, lp);
                     }
-                    // Save and close
                     if let Ok(parent) = GetParent(hwnd) {
                         let _ = PostMessageW(parent, WM_APP_SAVE, WPARAM(0), LPARAM(0));
                     }
@@ -370,12 +303,10 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
 
-        // Fill background
         let bg = CreateSolidBrush(st.theme.background.to_colorref());
         let _ = FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg);
 
-        // Draw hint text at the bottom
         let mut hint_rc = RECT {
             left: rc.left + PAD,
             top: rc.bottom - 18,
@@ -384,15 +315,14 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
         };
         let _ = SetBkMode(hdc, TRANSPARENT);
         let _ = SetTextColor(hdc, st.theme.text_muted.to_colorref());
-        draw_text(hdc, "Enter · save    Shift+Enter · new line    Esc · cancel", &mut hint_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        draw_text(hdc, "Enter · save    Shift+Enter · new line    Esc · cancel", &mut hint_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
 }
 
-// ─── Text helpers ──────────────────────────────────────────────────────
+// ─── Text helpers ─────────────────────────────────────────────────────
 
 fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
-    // Always pass a buffer with at least a NUL so DrawTextW never sees a
-    // dangling pointer from an empty Rust slice.
     let mut wz: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe { let _ = DrawTextW(hdc, &mut wz, rc as *mut RECT, fmt); }
 }
@@ -400,9 +330,7 @@ fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
 fn get_edit_text(hwnd: HWND) -> String {
     unsafe {
         let len = GetWindowTextLengthW(hwnd);
-        if len == 0 {
-            return String::new();
-        }
+        if len == 0 { return String::new(); }
         let mut buf = vec![0u16; (len + 1) as usize];
         let copied = GetWindowTextW(hwnd, &mut buf);
         buf.truncate(copied.max(0) as usize);
@@ -410,7 +338,7 @@ fn get_edit_text(hwnd: HWND) -> String {
     }
 }
 
-// ─── Save ──────────────────────────────────────────────────────────────
+// ─── Save ─────────────────────────────────────────────────────────────
 
 fn save(notes_dir: &PathBuf, text: &str, bb: bool) {
     let text = text.trim();
@@ -468,9 +396,6 @@ fn is_leap(y: i64) -> bool {
 
 // ─── Win32 helpers ─────────────────────────────────────────────────────
 
-/// Steal foreground focus to our window from a background thread.
-/// Standard Win32 approach: attach our input queue to the current
-/// foreground window's thread, then SetForegroundWindow + SetFocus.
 unsafe fn steal_focus(hwnd: HWND, edit_hwnd: HWND) {
     let our_tid = GetCurrentThreadId();
     let fore_tid = GetWindowThreadProcessId(GetForegroundWindow(), None);
