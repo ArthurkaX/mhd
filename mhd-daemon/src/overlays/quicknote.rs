@@ -429,9 +429,9 @@ fn save(notes_dir: &PathBuf, text: &str, bb: bool) {
 
     #[cfg(feature = "blackbox")]
     if bb {
-        crate::blackbox::send_event(crate::blackbox::BlackboxEvent::Input {
-            kind: crate::blackbox::InputKind::Keyboard,
+        crate::blackbox::send_event(crate::blackbox::BlackboxEvent::QuickNote {
             ts: epoch_secs(),
+            len: text.len(),
         });
     }
 }

@@ -58,6 +58,8 @@ impl Default for BlackboxConfig {
 #[derive(Debug, Clone)]
 pub enum BlackboxEvent {
     Input { kind: InputKind, ts: u64 },
+    /// Quick Note was saved (ts = save time, len = note character count).
+    QuickNote { ts: u64, len: usize },
     Shutdown,
     /// Toggle enabled state from tray.
     ToggleEnabled,
@@ -430,7 +432,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
             }
 
             // Write legend header once per run
-            let _ = writer.write_line(&format_line(now, "# legend: start=monitoring_start blackbox_on/off=logging_toggle ses+=session_start ses-=session_end d=duration_sec a=actions k=keyboard m=mouse i=idle_sec r=reason win=window_title app=app_name n=app_name t=title", &[]));
+            let _ = writer.write_line(&format_line(now, "# legend: start=monitoring_start blackbox_on/off=logging_toggle ses+=session_start ses-=session_end d=duration_sec a=actions k=keyboard m=mouse i=idle_sec r=reason win=window_title app=app_name n=app_name t=title qn=quick_note l=note_len", &[]));
 
             // Write start event with current context
             let mut kv = Vec::new();
@@ -480,6 +482,11 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         }
                         let _ = writer.write_line(&format_line(now, "stop", &[sv("r", "quit")]));
                         break;
+                    }
+                    BlackboxEvent::QuickNote { ts, len } => {
+                        if enabled {
+                            let _ = writer.write_line(&format_line(ts, "qn", &[nv("l", len as u64)]));
+                        }
                     }
                     BlackboxEvent::ToggleEnabled => {
                         enabled = !enabled;
