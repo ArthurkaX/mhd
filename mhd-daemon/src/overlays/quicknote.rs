@@ -431,7 +431,7 @@ fn save(notes_dir: &PathBuf, text: &str, bb: bool) {
     if bb {
         crate::blackbox::send_event(crate::blackbox::BlackboxEvent::QuickNote {
             ts: epoch_secs(),
-            len: text.len(),
+            text: text.to_string(),
         });
     }
 }
