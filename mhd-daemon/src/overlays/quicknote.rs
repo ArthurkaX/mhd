@@ -1,5 +1,3 @@
-#![allow(unsafe_op_in_unsafe_fn)]
-
 //! Quick Note — hotkey-driven text note overlay.
 //!
 //! Opens a small popup window. Type text, Enter saves to
@@ -223,27 +221,29 @@ fn run(
 
 // ─── Window proc ───────────────────────────────────────────────────────
 
-unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let s = || -> Option<&'static mut WndState> {
-        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-        if ptr == 0 { None } else { Some(&mut *(ptr as *mut WndState)) }
+        unsafe {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if ptr == 0 { None } else { Some(&mut *(ptr as *mut WndState)) }
+        }
     };
 
     match msg {
         WM_ACTIVATE => {
             if wp.0 as u32 == WA_INACTIVE {
-                let _ = ShowWindow(hwnd, SW_HIDE);
+                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
                 if let Some(st) = s() { st.hidden = true; }
             }
             LRESULT(0)
         }
         WM_SYSCOMMAND if wp.0 as u32 == SC_CLOSE => {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
             if let Some(st) = s() { st.hidden = true; }
             LRESULT(0)
         }
         WM_CLOSE => {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
             if let Some(st) = s() { st.hidden = true; }
             LRESULT(0)
         }
@@ -254,24 +254,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if vk == VK_RETURN.0 {
                     save(&st.notes_dir, &st.text, st.bb);
                     st.text.clear(); st.cursor = 0; st.hidden = true;
-                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
                 } else if vk == VK_ESCAPE.0 {
                     st.text.clear(); st.cursor = 0; st.hidden = true;
-                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
                 } else if vk == VK_BACK.0 && st.cursor > 0 {
                     st.cursor -= 1; st.text.remove(st.cursor);
-                    let _ = InvalidateRect(hwnd, None, false);
+                    unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 } else if vk == VK_DELETE.0 && st.cursor < st.text.len() {
                     st.text.remove(st.cursor);
-                    let _ = InvalidateRect(hwnd, None, false);
+                    unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 } else if vk == VK_LEFT.0 && st.cursor > 0 {
-                    st.cursor -= 1; let _ = InvalidateRect(hwnd, None, false);
+                    st.cursor -= 1; unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 } else if vk == VK_RIGHT.0 && st.cursor < st.text.len() {
-                    st.cursor += 1; let _ = InvalidateRect(hwnd, None, false);
+                    st.cursor += 1; unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 } else if vk == VK_HOME.0 {
-                    st.cursor = 0; let _ = InvalidateRect(hwnd, None, false);
+                    st.cursor = 0; unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 } else if vk == VK_END.0 {
-                    st.cursor = st.text.len(); let _ = InvalidateRect(hwnd, None, false);
+                    st.cursor = st.text.len(); unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 }
             }
             LRESULT(0)
@@ -283,7 +283,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if let Some(st) = s() {
                         st.text.insert(st.cursor, c);
                         st.cursor += 1;
-                        let _ = InvalidateRect(hwnd, None, false);
+                        unsafe { let _ = InvalidateRect(hwnd, None, false); }
                     }
                 }
             }
@@ -296,7 +296,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if now.saturating_sub(st.last_tick) >= CARET_MS {
                     st.caret_on = !st.caret_on;
                     st.last_tick = now;
-                    let _ = InvalidateRect(hwnd, None, false);
+                    unsafe { let _ = InvalidateRect(hwnd, None, false); }
                 }
             }
             LRESULT(0)
@@ -304,17 +304,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            if !hdc.is_invalid() {
-                if let Some(st) = s() {
-                    paint(hwnd, hdc, st);
+            unsafe {
+                let hdc = BeginPaint(hwnd, &mut ps);
+                if !hdc.is_invalid() {
+                    if let Some(st) = s() {
+                        paint(hwnd, hdc, st);
+                    }
+                    let _ = EndPaint(hwnd, &ps);
                 }
-                let _ = EndPaint(hwnd, &ps);
             }
             LRESULT(0)
         }
 
-        _ => DefWindowProcW(hwnd, msg, wp, lp),
+        _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
 }
 
