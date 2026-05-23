@@ -506,15 +506,15 @@ fn is_leap(y: i64) -> bool {
 // ─── Win32 helpers ─────────────────────────────────────────────────────
 
 unsafe fn steal_focus(hwnd: HWND, edit_hwnd: HWND) {
-    let our_tid = GetCurrentThreadId();
-    let fore_tid = GetWindowThreadProcessId(GetForegroundWindow(), None);
+    let our_tid = unsafe { GetCurrentThreadId() };
+    let fore_tid = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
     if fore_tid != our_tid && fore_tid != 0 {
-        let _ = AttachThreadInput(fore_tid, our_tid, true);
+        let _ = unsafe { AttachThreadInput(fore_tid, our_tid, true) };
     }
-    let _ = SetForegroundWindow(hwnd);
-    let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd);
+    let _ = unsafe { SetForegroundWindow(hwnd) };
+    let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd) };
     if fore_tid != our_tid && fore_tid != 0 {
-        let _ = AttachThreadInput(fore_tid, our_tid, false);
+        let _ = unsafe { AttachThreadInput(fore_tid, our_tid, false) };
     }
 }
 

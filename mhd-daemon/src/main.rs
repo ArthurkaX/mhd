@@ -73,6 +73,7 @@ use crate::app::DaemonControl;
 ///
 /// The file is overwritten on each panic so you always have the *last*
 /// crash log.
+#[cfg(not(feature = "debug-dump"))]
 fn setup_panic_hook() {
     // Resolve config directory once (before any potential panic)
     let config_path = resolve_config_path();
