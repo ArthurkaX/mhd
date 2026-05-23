@@ -136,7 +136,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
             WINDOW_EX_STYLE(0),
             windows::core::w!("EDIT"),
             PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP
                 | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32),
             PAD, HEADER_H + PAD,
             W - 2 * PAD,
@@ -252,8 +252,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
         // ── Posted by DestroyWindow → posts WM_QUIT to message loop
         WM_DESTROY => {
+            // Mark inactive immediately. This avoids a stale HWND if the hotkey
+            // is pressed again while the window thread is still unwinding.
+            *CTRL.lock().unwrap() = None;
             if let Some(st) = s() {
-                unsafe { let _ = DeleteObject(st.edit_brush); }
+                if !st.edit_brush.is_invalid() {
+                    unsafe { let _ = DeleteObject(st.edit_brush); }
+                    st.edit_brush = HBRUSH::default();
+                }
             }
             unsafe { PostQuitMessage(0); }
             LRESULT(0)
