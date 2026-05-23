@@ -15,8 +15,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::INFINITE;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId, INFINITE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::path::home_dir;
@@ -199,8 +199,7 @@ fn run(
     // ── Show + focus ───────────────────────────────────────────────
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-        let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(edit_hwnd);
+        steal_focus(hwnd, edit_hwnd);
     }
 
     // ── Message loop ───────────────────────────────────────────────
@@ -221,8 +220,7 @@ fn run(
                     // Clear EDIT content
                     let _ = SetWindowTextW(edit_hwnd, PCWSTR::null());
                     let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-                    let _ = SetForegroundWindow(hwnd);
-                    let _ = SetFocus(edit_hwnd);
+                    steal_focus(hwnd, edit_hwnd);
                 }
             }
         }
@@ -467,6 +465,22 @@ fn is_leap(y: i64) -> bool {
 }
 
 // ─── Win32 helpers ─────────────────────────────────────────────────────
+
+/// Steal foreground focus to our window from a background thread.
+/// Standard Win32 approach: attach our input queue to the current
+/// foreground window's thread, then SetForegroundWindow + SetFocus.
+unsafe fn steal_focus(hwnd: HWND, edit_hwnd: HWND) {
+    let our_tid = GetCurrentThreadId();
+    let fore_tid = GetWindowThreadProcessId(GetForegroundWindow(), None);
+    if fore_tid != our_tid && fore_tid != 0 {
+        let _ = AttachThreadInput(fore_tid, our_tid, true);
+    }
+    let _ = SetForegroundWindow(hwnd);
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd);
+    if fore_tid != our_tid && fore_tid != 0 {
+        let _ = AttachThreadInput(fore_tid, our_tid, false);
+    }
+}
 
 fn to_utf16_z(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
