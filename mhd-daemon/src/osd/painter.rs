@@ -264,7 +264,13 @@ pub fn fix_gdi_alpha(bits: *mut c_void, width: i32, height: i32, background: Arg
             if is_background_like_pixel(*px, bg_px, background.a) {
                 continue;
             }
-            *px = 0xff00_0000 | (*px & 0x00ff_ffff);
+
+            // GDI text/brush calls often leave alpha at 0. Restore only those
+            // pixels; custom drawing helpers already write meaningful alpha
+            // for glass/hover/selection colors and must keep it.
+            if (*px >> 24) == 0 {
+                *px = 0xff00_0000 | (*px & 0x00ff_ffff);
+            }
         }
     }
 }

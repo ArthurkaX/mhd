@@ -21,6 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::SendHwnd;
 use crate::config::path::home_dir;
+use crate::core::native_theme::Argb;
 
 // ── Config ─────────────────────────────────────────────────────────────
 
@@ -136,7 +137,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
 
     let hwnd = match unsafe {
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             PCWSTR::from_raw(cls.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
@@ -147,6 +148,15 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
         Ok(h) => { qn_log(format!("run(): parent hwnd={h:?}")); h },
         Err(e) => { qn_log(format!("run(): CreateWindowEx parent failed: {e}")); if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
     };
+
+    // Apply background alpha as uniform window opacity. Standard child EDIT
+    // controls cannot do true per-pixel alpha, but this makes glass themes
+    // consistently translucent instead of silently ignoring alpha.
+    if theme.background.a < 255 {
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), theme.background.a, LWA_ALPHA);
+        }
+    }
 
     // ── Create EDIT child ──────────────────────────────────────────
     let edit_hwnd = match unsafe {
@@ -184,7 +194,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     }
 
     // ── State ──────────────────────────────────────────────────────
-    let edit_brush = unsafe { CreateSolidBrush(theme.surface.to_colorref()) };
+    let edit_brush = unsafe { CreateSolidBrush(gdi_theme_color(theme.surface, theme.background).to_colorref()) };
     let mut st = WndState { notes_dir, bb, edit_hwnd, edit_brush, theme };
     let state_ptr: *mut WndState = &mut st;
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
@@ -319,7 +329,8 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let hdc = HDC(wp.0 as *mut _);
                 unsafe {
                     let _ = SetBkMode(hdc, OPAQUE);
-                    let _ = SetBkColor(hdc, st.theme.surface.to_colorref());
+                    let surface = gdi_theme_color(st.theme.surface, st.theme.background);
+                    let _ = SetBkColor(hdc, surface.to_colorref());
                     let _ = SetTextColor(hdc, st.theme.text.to_colorref());
                 }
                 return LRESULT(st.edit_brush.0 as isize);
@@ -384,12 +395,12 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
 
-        let bg = CreateSolidBrush(st.theme.background.to_colorref());
+        let bg = CreateSolidBrush(gdi_theme_color(st.theme.background, Argb::new(255, 0, 0, 0)).to_colorref());
         let _ = FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg);
 
         // Thin strict border around the popup.
-        let pen = CreatePen(PS_SOLID, 1, st.theme.border.to_colorref());
+        let pen = CreatePen(PS_SOLID, 1, gdi_theme_color(st.theme.border, st.theme.background).to_colorref());
         let old_pen = SelectObject(hdc, pen);
         let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
         let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
@@ -515,6 +526,14 @@ unsafe fn steal_focus(hwnd: HWND, edit_hwnd: HWND) {
     let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd) };
     if fore_tid != our_tid && fore_tid != 0 {
         let _ = unsafe { AttachThreadInput(fore_tid, our_tid, false) };
+    }
+}
+
+fn gdi_theme_color(color: Argb, background: Argb) -> Argb {
+    if color.a == 255 {
+        color
+    } else {
+        color.blend_over(background)
     }
 }
 
