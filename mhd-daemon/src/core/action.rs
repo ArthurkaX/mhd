@@ -227,6 +227,35 @@ impl Action {
         }
     }
 
+    /// Stable TOML action name used for serialisation and editor matching.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Action::ReplaceKey { .. } => "replace_key",
+            Action::RunPs { .. } => "run_ps",
+            Action::RunProgram { .. } => "run_program",
+            Action::SwitchScheme { .. } => "switch_scheme",
+            Action::SetBrightness { relative: true, value } if *value > 0 => "brightness_up",
+            Action::SetBrightness { .. } => "brightness_down",
+            Action::BrightnessUp { .. } => "brightness_up",
+            Action::BrightnessDown { .. } => "brightness_down",
+            Action::Vcp { .. } => "vcp",
+            Action::ShowMonitorPanel => "show_monitor_panel",
+            Action::ShowVolumeMixer => "show_volume_mixer",
+            Action::MediaVolumeUp => "media_volume_up",
+            Action::MediaVolumeDown => "media_volume_down",
+            Action::MediaMute => "media_mute",
+            Action::MediaPlayPause => "media_play_pause",
+            Action::MediaStop => "media_stop",
+            Action::MediaLastTrack => "media_last_track",
+            Action::MediaNextTrack => "media_next_track",
+            Action::ToggleTopmost => "toggle_topmost",
+            Action::PowerActions => "power_actions",
+            Action::QuickDraw => "quick_draw",
+            Action::QuickNote => "quick_note",
+            Action::Quit => "quit",
+        }
+    }
+
     /// Get a human-readable description of the action.
     pub fn describe(&self) -> String {
         match self {
@@ -252,20 +281,20 @@ impl Action {
             }
             Action::BrightnessUp { value } => format!("brightness_up: +{}", value),
             Action::BrightnessDown { value } => format!("brightness_down: -{}", value),
-            Action::ShowMonitorPanel => "show_monitor_panel".to_string(),
-            Action::ShowVolumeMixer => "show_volume_mixer".to_string(),
-            Action::MediaVolumeUp => "media_volume_up".to_string(),
-            Action::MediaVolumeDown => "media_volume_down".to_string(),
-            Action::MediaMute => "media_mute".to_string(),
-            Action::MediaPlayPause => "media_play_pause".to_string(),
-            Action::MediaStop => "media_stop".to_string(),
-            Action::MediaLastTrack => "media_last_track".to_string(),
-            Action::ToggleTopmost => "toggle_topmost".to_string(),
-            Action::PowerActions => "power_actions".to_string(),
-            Action::QuickDraw => "quick_draw".to_string(),
-            Action::QuickNote => "quick_note".to_string(),
-            Action::MediaNextTrack => "media_next_track".to_string(),
-            Action::Quit => "quit".to_string(),
+            Action::ShowMonitorPanel
+            | Action::ShowVolumeMixer
+            | Action::MediaVolumeUp
+            | Action::MediaVolumeDown
+            | Action::MediaMute
+            | Action::MediaPlayPause
+            | Action::MediaStop
+            | Action::MediaLastTrack
+            | Action::MediaNextTrack
+            | Action::ToggleTopmost
+            | Action::PowerActions
+            | Action::QuickDraw
+            | Action::QuickNote
+            | Action::Quit => self.name().to_string(),
         }
     }
 }

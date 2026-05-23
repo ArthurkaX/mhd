@@ -32,7 +32,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
-use crate::action::ALL_ACTIONS;
 use crate::app::{AppHandle, DaemonControl};
 use crate::hook::WM_BINDING_CAPTURED;
 use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
@@ -62,34 +61,55 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 
 // ── State ───────────────────────────────────────────────────────────
 
-/// Indices into [`ALL_ACTIONS`] for actions exposed in the config editor.
-/// Add new editor‑exposed actions here (by their position in `ALL_ACTIONS`).
-const EDITOR_ACTION_INDICES: &[usize] = &[
-    0,  // replace_key
-    1,  // run_program
-    2,  // run_ps
-    3,  // brightness_up
-    4,  // brightness_down
-    5,  // show_monitor_panel
-    6,  // show_volume_mixer
-    7,  // media_volume_up
-    8,  // media_volume_down
-    9,  // media_mute
-    10, // media_play_pause
-    11, // media_stop
-    12, // media_last_track
-    13, // media_next_track
-    14, // toggle_topmost
-    15, // power_actions
-    16, // quick_draw
-    17, // quick_note
-    18, // quit
+/// Actions exposed in the settings editor, by stable TOML action name.
+///
+/// Do not store positions from `ALL_ACTIONS` here: adding/reordering actions in
+/// the registry must not shift editor choices (that caused Quick Note to become
+/// Quit mhd in saved configs).
+const EDITOR_ACTION_NAMES: &[&str] = &[
+    "replace_key",
+    "run_program",
+    "run_ps",
+    "brightness_up",
+    "brightness_down",
+    "show_monitor_panel",
+    "show_volume_mixer",
+    "media_volume_up",
+    "media_volume_down",
+    "media_mute",
+    "media_play_pause",
+    "media_stop",
+    "media_last_track",
+    "media_next_track",
+    "toggle_topmost",
+    "power_actions",
+    "quick_draw",
+    "quick_note",
+    "quit",
 ];
+
+fn editor_action_desc(editor_idx: usize) -> &'static crate::action::ActionDescriptor {
+    let name = EDITOR_ACTION_NAMES
+        .get(editor_idx)
+        .copied()
+        .unwrap_or("quit");
+    crate::action::ALL_ACTIONS
+        .iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| crate::action::ALL_ACTIONS.iter().find(|d| d.name == "quit").unwrap())
+}
+
+fn editor_index_for_action_name(name: &str) -> usize {
+    EDITOR_ACTION_NAMES
+        .iter()
+        .position(|n| *n == name)
+        .unwrap_or_else(|| EDITOR_ACTION_NAMES.iter().position(|n| *n == "quit").unwrap())
+}
 
 #[derive(Debug, Clone)]
 struct UIBinding {
     trigger: String,
-    /// Index into [`EDITOR_ACTION_INDICES`].
+    /// Index into [`EDITOR_ACTION_NAMES`].
     kind_idx: usize,
     param: String,
     is_recording_trigger: bool,
@@ -423,7 +443,7 @@ fn compute_layout(scale: f32) -> Layout {
 }
 
 fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
-    use crate::action::{Action, find_action_index};
+    use crate::action::Action;
     use crate::trigger::keys_to_string;
 
     let config = handle.config.lock().unwrap();
@@ -431,34 +451,8 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
         .active_bindings()
         .iter()
         .map(|b| {
-            // Map Action variant → index in EDITOR_ACTION_INDICES
-            let action_name = match &b.action {
-                Action::ReplaceKey { .. } => "replace_key",
-                Action::RunPs { .. } => "run_ps",
-                Action::BrightnessUp { .. } => "brightness_up",
-                Action::BrightnessDown { .. } => "brightness_down",
-                Action::SetBrightness { relative: true, value: v } if *v > 0 => "brightness_up",
-                Action::SetBrightness { .. } => "brightness_down",
-                Action::RunProgram { .. } => "run_program",
-                Action::ShowMonitorPanel => "show_monitor_panel",
-                Action::ShowVolumeMixer => "show_volume_mixer",
-                Action::MediaVolumeUp => "media_volume_up",
-                Action::MediaVolumeDown => "media_volume_down",
-                Action::MediaMute => "media_mute",
-                Action::MediaPlayPause => "media_play_pause",
-                Action::MediaStop => "media_stop",
-                Action::MediaLastTrack => "media_last_track",
-                Action::ToggleTopmost => "toggle_topmost",
-                Action::MediaNextTrack => "media_next_track",
-                _ => "quit",
-            };
-            let global_idx = find_action_index(action_name).unwrap_or(11);
-            let kind_idx = EDITOR_ACTION_INDICES
-                .iter()
-                .position(|&i| i == global_idx)
-                .unwrap_or_else(|| {
-                    EDITOR_ACTION_INDICES.len() - 1 // fallback to Quit
-                });
+            // Map Action variant → editor action by stable TOML name.
+            let kind_idx = editor_index_for_action_name(b.action.name());
 
             let param = match &b.action {
                 Action::ReplaceKey { keys } => keys_to_string(keys),
@@ -2404,8 +2398,6 @@ fn close_combo_popup(state: &mut SettingsState) {
 }
 
 fn open_kind_menu(state: &mut SettingsState, idx: usize) {
-    use crate::action::ALL_ACTIONS;
-
     const ID_ACTION_BASE: usize = 1000;
 
     unsafe {
@@ -2418,8 +2410,8 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
 
         // Collect unique categories in display order.
         let mut categories: Vec<&str> = Vec::new();
-        for &gi in EDITOR_ACTION_INDICES {
-            let cat = ALL_ACTIONS[gi].category;
+        for editor_idx in 0..EDITOR_ACTION_NAMES.len() {
+            let cat = editor_action_desc(editor_idx).category;
             if !categories.contains(&cat) {
                 categories.push(cat);
             }
@@ -2431,10 +2423,11 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
             if sub == HMENU::default() {
                 continue;
             }
-            for (editor_idx, &gi) in EDITOR_ACTION_INDICES.iter().enumerate() {
-                if ALL_ACTIONS[gi].category == cat {
+            for editor_idx in 0..EDITOR_ACTION_NAMES.len() {
+                let desc = editor_action_desc(editor_idx);
+                if desc.category == cat {
                     let cmd = ID_ACTION_BASE + editor_idx;
-                    let label = to_utf16_z(ALL_ACTIONS[gi].label);
+                    let label = to_utf16_z(desc.label);
                     let _ = AppendMenuW(sub, MF_STRING, cmd, PCWSTR::from_raw(label.as_ptr()));
                 }
             }
@@ -2477,11 +2470,11 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
 
         if chosen >= ID_ACTION_BASE {
             let selected = chosen - ID_ACTION_BASE;
-            if selected < EDITOR_ACTION_INDICES.len() {
+            if selected < EDITOR_ACTION_NAMES.len() {
                 if state.bindings[idx].kind_idx != selected {
                     state.bindings[idx].kind_idx = selected;
-                    // Set default param 5 for parameterised brightness actions
-                    let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[selected]];
+                    // Set default param 5 for parameterised actions
+                    let desc = editor_action_desc(selected);
                     state.bindings[idx].param = if desc.param_key.is_some() {
                         "5".to_string()
                     } else {
@@ -2572,7 +2565,7 @@ fn draw_binding_row(
     }
 
     // Left-aligned label text
-    let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[binding.kind_idx]];
+    let desc = editor_action_desc(binding.kind_idx);
     let mut kind_wz = to_utf16_z(desc.label);
     let mut kind_text_rc = RECT {
         left: kind_x + 8,
@@ -2827,7 +2820,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
         && y < row_y + (lay.row_h + lay.btn_h) / 2
     {
         close_kind_popup(state);
-        let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[state.bindings[idx].kind_idx]];
+        let desc = editor_action_desc(state.bindings[idx].kind_idx);
         let is_replace_key = desc.name == "replace_key";
         let has_params = desc.param_key.is_some();
 
@@ -3074,7 +3067,7 @@ fn save_config(
                 toml::Value::String(b.trigger.clone()),
             );
 
-            let desc = &ALL_ACTIONS[EDITOR_ACTION_INDICES[b.kind_idx]];
+            let desc = editor_action_desc(b.kind_idx);
 
             map.insert(
                 "action".to_string(),
@@ -3132,5 +3125,31 @@ fn monitor_work_rect() -> RECT {
         };
         let _ = GetMonitorInfoW(hmon, &mut info);
         info.rcWork
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::Action;
+
+    #[test]
+    fn quick_note_maps_to_quick_note_not_quit() {
+        let idx = editor_index_for_action_name(Action::QuickNote.name());
+        assert_eq!(editor_action_desc(idx).name, "quick_note");
+        assert_eq!(editor_action_desc(idx).label, "Quick Note");
+    }
+
+    #[test]
+    fn all_editor_actions_resolve_by_name() {
+        for i in 0..EDITOR_ACTION_NAMES.len() {
+            assert_eq!(editor_action_desc(i).name, EDITOR_ACTION_NAMES[i]);
+        }
+    }
+
+    #[test]
+    fn unknown_editor_action_falls_back_to_quit() {
+        let idx = editor_index_for_action_name("does_not_exist");
+        assert_eq!(editor_action_desc(idx).name, "quit");
     }
 }

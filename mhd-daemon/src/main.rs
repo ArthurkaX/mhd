@@ -61,6 +61,7 @@ pub use config::editor as config_editor;
 
 use std::env;
 use std::process::ExitCode;
+#[cfg(not(feature = "debug-dump"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
