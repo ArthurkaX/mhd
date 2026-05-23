@@ -135,9 +135,14 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
         let _ = RegisterClassW(&wc);
     }
 
+    let ex_style = if theme.background.a < 255 {
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED
+    } else {
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW
+    };
     let hwnd = match unsafe {
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            ex_style,
             PCWSTR::from_raw(cls.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
