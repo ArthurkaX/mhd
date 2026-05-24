@@ -17,13 +17,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{
-    HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    HINSTANCE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
@@ -37,6 +37,11 @@ use crate::hook::WM_BINDING_CAPTURED;
 use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
 use crate::osd::to_utf16_z;
 use crate::trigger::{KeyCombo, Modifiers, PhysicalKey, keys_to_string};
+
+// RichEdit constants used by the param edit popup.
+use windows::Win32::UI::Controls::RichEdit::{
+    CFE_EFFECTS, CFM_COLOR, CHARFORMATW, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_DEFAULT,
+};
 
 // ── Layout constants (96 dpi base) ─────────────────────────────────
 
@@ -237,7 +242,27 @@ struct SettingsState {
     scroll_drag_start_y: i32,
     /// Scroll drag starting scroll offset
     scroll_drag_start_offset: i32,
+
+    /// Popup window for inline parameter editing (RichEdit child inside).
+    param_edit_popup: Option<HWND>,
+    /// Binding index being edited in the param edit popup.
+    param_edit_idx: Option<usize>,
     // (kind_popup replaced by HMENU cascading menu)
+}
+
+// ── Custom messages for param edit popup ───────────────────────────
+const WM_PARAM_EDIT_COMMIT: u32 = WM_APP + 1;
+
+/// Data passed via `CREATESTRUCTW.lpCreateParams` to the popup.
+#[repr(C)]
+struct ParamEditCreateInfo {
+    state_ptr: *mut SettingsState,
+    idx: usize,
+    width: i32,
+    height: i32,
+    initial_text: [u16; 1024],
+    text_color: Argb,
+    brush_color: Argb,
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -274,6 +299,20 @@ pub fn show_config_editor(handle: AppHandle) {
     };
     unsafe {
         RegisterClassW(&popup_wc);
+    }
+
+    // Param edit popup class — regular popup with a RichEdit child.
+    let edit_popup_cls = to_utf16_z("mhd_param_edit_popup_cls");
+    let edit_popup_wc = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(param_edit_popup_wndproc),
+        hInstance: hinstance,
+        lpszClassName: PCWSTR::from_raw(edit_popup_cls.as_ptr()),
+        hbrBackground: HBRUSH::default(),
+        ..Default::default()
+    };
+    unsafe {
+        RegisterClassW(&edit_popup_wc);
     }
 
     let theme = handle.theme();
@@ -346,7 +385,8 @@ pub fn show_config_editor(handle: AppHandle) {
         is_dragging_scroll: false,
         scroll_drag_start_y: 0,
         scroll_drag_start_offset: 0,
-
+        param_edit_popup: None,
+        param_edit_idx: None,
     }));
     unsafe {
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
@@ -2322,6 +2362,209 @@ unsafe extern "system" fn combo_popup_wndproc(
     }
 }
 
+/// Subclass wndproc for the RichEdit inside the param edit popup.
+/// Intercepts Enter (commit) and Escape (cancel).  Forwards all other
+/// messages to the original wndproc stored in GWLP_USERDATA.
+unsafe extern "system" fn param_edit_rich_edit_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_CHAR => {
+            let ch = (wparam.0 as u16) as u8 as char;
+            if ch == '\r' {
+                // Enter → commit
+                if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                    unsafe { let _ = SendMessageW(parent, WM_PARAM_EDIT_COMMIT, WPARAM(0), LPARAM(0)); }
+                }
+                return LRESULT(0);
+            }
+            if ch == '\x1b' {
+                // Escape → cancel
+                if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                    unsafe { let _ = DestroyWindow(parent); }
+                }
+                return LRESULT(0);
+            }
+        }
+        _ => {}
+    }
+    let old_proc = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+    if old_proc != 0 {
+        let proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
+            unsafe { std::mem::transmute(old_proc) };
+        unsafe { proc(hwnd, msg, wparam, lparam) }
+    } else {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+}
+
+/// Wndproc for the parameter edit popup window.
+/// Manages a RichEdit child; commits or cancels on Enter/Escape/focus loss.
+unsafe extern "system" fn param_edit_popup_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_CREATE => {
+            let cs = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
+            let info = unsafe { &*(cs.lpCreateParams as *const ParamEditCreateInfo) };
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, info.state_ptr as isize); }
+
+            // Load msftedit.dll if not already loaded.
+            unsafe { let _ = LoadLibraryW(windows::core::w!("msftedit.dll")); }
+
+            if let Ok(edit) = unsafe {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    windows::core::w!("RICHEDIT50W"),
+                    PCWSTR::null(),
+                    WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | ES_AUTOHSCROLL as u32),
+                    0,
+                    0,
+                    info.width,
+                    info.height,
+                    hwnd,
+                    HMENU::default(),
+                    GetModuleHandleW(None).unwrap_or_default(),
+                    None,
+                )
+            } {
+                unsafe {
+                    // Default font
+                    let _ = SendMessageW(
+                        edit,
+                        WM_SETFONT,
+                        WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _),
+                        LPARAM(1),
+                    );
+                    // Subclass
+                    let old_proc = SetWindowLongPtrW(
+                        edit,
+                        GWLP_WNDPROC,
+                        param_edit_rich_edit_subclass as *const () as isize,
+                    );
+                    SetWindowLongPtrW(edit, GWLP_USERDATA, old_proc);
+                    // Background brush
+                    let brush = CreateSolidBrush(info.brush_color.to_colorref());
+                    let _ = SetPropW(edit, windows::core::w!("EDIT_BRUSH"), HANDLE(brush.0 as *mut _));
+                    // Background colour via EM_SETBKGNDCOLOR
+                    let _ = SendMessageW(
+                        edit,
+                        EM_SETBKGNDCOLOR,
+                        WPARAM(0),
+                        LPARAM(info.brush_color.to_colorref().0 as isize),
+                    );
+                    // Set the initial text
+                    let wz = &info.initial_text;
+                    let len = wz.iter().position(|&c| c == 0).unwrap_or(info.initial_text.len());
+                    if len > 0 {
+                        let _ = SendMessageW(
+                            edit,
+                            WM_SETTEXT,
+                            WPARAM(0),
+                            LPARAM(wz.as_ptr() as isize),
+                        );
+                    }
+                    // Set text colour via EM_SETCHARFORMAT
+                    let cf = CHARFORMATW {
+                        cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
+                        dwMask: CFM_COLOR,
+                        dwEffects: CFE_EFFECTS::default(),
+                        crTextColor: info.text_color.to_colorref(),
+                        ..Default::default()
+                    };
+                    let _ = SendMessageW(
+                        edit,
+                        EM_SETCHARFORMAT,
+                        WPARAM((SCF_DEFAULT | SCF_ALL) as usize),
+                        LPARAM(&cf as *const _ as isize),
+                    );
+                    // Position and focus
+                    let _ = SetWindowPos(edit, None, 0, 0, info.width, info.height, SWP_NOZORDER);
+                    let _ = SetFocus(edit);
+                }
+            }
+
+            LRESULT(0)
+        }
+
+        WM_SIZE => {
+            let w = (lparam.0 as i16) as i32;
+            let h = ((lparam.0 >> 16) as i16) as i32;
+            if let Ok(edit) = unsafe { GetWindow(hwnd, GW_CHILD) } {
+                unsafe { let _ = SetWindowPos(edit, None, 0, 0, w, h, SWP_NOZORDER); }
+            }
+            LRESULT(0)
+        }
+
+        WM_PARAM_EDIT_COMMIT => {
+            if let Ok(edit) = unsafe { GetWindow(hwnd, GW_CHILD) } {
+                let text_len = unsafe { SendMessageW(edit, WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)) }.0 as usize;
+                let mut buf = vec![0u16; text_len + 1];
+                unsafe {
+                    SendMessageW(
+                        edit,
+                        WM_GETTEXT,
+                        WPARAM(buf.len() as _),
+                        LPARAM(buf.as_mut_ptr() as isize),
+                    );
+                }
+                let new_text = String::from_utf16_lossy(&buf[..text_len]);
+
+                let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
+                if !state_ptr.is_null() {
+                    let state = unsafe { &mut *state_ptr };
+                    if let Some(idx) = state.param_edit_idx {
+                        if idx < state.bindings.len() {
+                            state.bindings[idx].param = new_text;
+                            paint_settings(state.hwnd, state_ptr, &state.layout);
+                        }
+                    }
+                    state.param_edit_popup = None;
+                    state.param_edit_idx = None;
+                }
+            }
+            unsafe { let _ = DestroyWindow(hwnd); }
+            LRESULT(0)
+        }
+
+        WM_ACTIVATE => {
+            if loword(wparam.0 as u32) == 0 {
+                // Deactivation → cancel
+                let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
+                if !state_ptr.is_null() {
+                    let state = unsafe { &mut *state_ptr };
+                    state.param_edit_popup = None;
+                    state.param_edit_idx = None;
+                }
+                unsafe { let _ = DestroyWindow(hwnd); }
+            }
+            LRESULT(0)
+        }
+
+        WM_DESTROY => {
+            // Clean up the RichEdit background brush.
+            if let Ok(edit) = unsafe { GetWindow(hwnd, GW_CHILD) } {
+                let brush_handle = unsafe { GetPropW(edit, windows::core::w!("EDIT_BRUSH")) };
+                if brush_handle.0 as usize != 0 {
+                    unsafe {
+                        let _ = DeleteObject(HBRUSH(brush_handle.0 as _));
+                        let _ = RemovePropW(edit, windows::core::w!("EDIT_BRUSH"));
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
 fn loword(dw: u32) -> u16 {
     (dw & 0xffff) as u16
 }
@@ -2900,16 +3143,86 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     }
 }
 
-fn spawn_inline_edit(state: &mut SettingsState, idx: usize, _rc: RECT) {
-    // No child HWND — we render the text directly in paint_settings
-    // to avoid layered‑window compositing issues (UpdateLayeredWindow +
-    // child EDIT controls are invisible).  Keyboard input is handled
-    // via WM_CHAR / WM_KEYDOWN in the main window procedure.
-    state.edit_idx = Some(idx);
-    state.edit_text = state.bindings[idx].param.clone();
-    state.edit_cursor = state.bindings[idx].param.len();
-    state.edit_select_start = None;
-    state.edit_old_value = state.bindings[idx].param.clone();
+fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
+    // Create a small popup window with a RichEdit control for proper text
+    // editing (avoids the layered‑window child HWND problem by using a
+    // separate popup instead of a child of the settings window).
+
+    // Close any existing popup first.
+    if let Some(old) = state.param_edit_popup.take() {
+        unsafe { let _ = DestroyWindow(old); }
+    }
+
+    // Convert param cell position to screen coordinates.
+    let mut pt = POINT { x: rc.left, y: rc.top };
+    unsafe {
+        let _ = ClientToScreen(state.hwnd, &mut pt);
+    }
+
+    let w = rc.right - rc.left;
+    let h = rc.bottom - rc.top;
+
+    // Build ParamEditCreateInfo.
+    let initial_text = state.bindings[idx].param.clone();
+    let mut text_buf = [0u16; 1024];
+    let len = initial_text.encode_utf16().count().min(1023);
+    for (i, c) in initial_text.encode_utf16().take(len).enumerate() {
+        text_buf[i] = c;
+    }
+    text_buf[len] = 0;
+
+    let param_bg = state.theme.surface.blend_over(state.theme.background);
+    let text_color = param_bg.contrasting_text_color();
+
+    let info = ParamEditCreateInfo {
+        state_ptr: state as *mut SettingsState,
+        idx,
+        width: w,
+        height: h,
+        initial_text: text_buf,
+        text_color,
+        brush_color: param_bg,
+    };
+
+    let cls_name = to_utf16_z("mhd_param_edit_popup_cls");
+    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
+    let hinstance: HINSTANCE = hinst.into();
+
+    let popup = unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            PCWSTR::from_raw(cls_name.as_ptr()),
+            PCWSTR::null(),
+            WS_POPUP | WS_BORDER,
+            pt.x,
+            pt.y,
+            w,
+            h,
+            state.hwnd,
+            HMENU::default(),
+            hinstance,
+            Some(&info as *const _ as *const c_void),
+        )
+    };
+
+    match popup {
+        Ok(h) => {
+            state.param_edit_popup = Some(h);
+            state.param_edit_idx = Some(idx);
+            unsafe {
+                let _ = ShowWindow(h, SW_SHOW);
+                // The RichEdit child gets focus via WM_CREATE → SetFocus
+            }
+        }
+        Err(_) => {
+            // Fall back to old DIB inline edit if popup creation fails.
+            state.edit_idx = Some(idx);
+            state.edit_text = state.bindings[idx].param.clone();
+            state.edit_cursor = state.bindings[idx].param.len();
+            state.edit_select_start = None;
+            state.edit_old_value = state.bindings[idx].param.clone();
+        }
+    }
 }
 
 fn finish_inline_edit(state: &mut SettingsState) {
