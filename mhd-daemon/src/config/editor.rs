@@ -1430,8 +1430,20 @@ unsafe extern "system" fn settings_wndproc(
                 let state = &*state_ptr;
                 let lay = &state.layout;
 
-                // Header → drag, but only outside control rows.
+                // Header → drag, but exclude the tab strip (which lives on the
+                // same row as the title) so tabs remain clickable.
                 if pt.y < lay.header_h {
+                    if pt.y >= lay.tab_y && pt.y < lay.tab_y + lay.tab_h {
+                        let total_tab_w = lay.tab_w * 2 + 8;
+                        let tab_start_x = lay.win_w - lay.pad - total_tab_w;
+                        let tx = pt.x - tab_start_x;
+                        if tx >= 0 {
+                            let ti = tx / (lay.tab_w + 8);
+                            if ti < 2 {
+                                return LRESULT(HTCLIENT as isize);
+                            }
+                        }
+                    }
                     return LRESULT(HTCAPTION as isize);
                 }
 
@@ -1643,7 +1655,7 @@ unsafe extern "system" fn settings_wndproc(
 
                         // Tab strip
                         let total_tab_w = lay.tab_w * 2 + 8;
-                        let tab_start_x = (lay.win_w - total_tab_w) / 2;
+                        let tab_start_x = lay.win_w - lay.pad - total_tab_w;
                         if y >= lay.tab_y && y < lay.tab_y + lay.tab_h {
                             let tx = x - tab_start_x;
                             if tx >= 0 {
