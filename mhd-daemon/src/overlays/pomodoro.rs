@@ -347,7 +347,8 @@ unsafe extern "system" fn overlay_wndproc(
             let hdc = HDC(wparam.0 as _);
             let surface = os.theme.surface.blend_over(os.theme.background);
             let _ = SetBkColor(hdc, surface.to_colorref());
-            let _ = SetTextColor(hdc, os.theme.text.to_colorref());
+            let text_color = surface.contrasting_text_color();
+            let _ = SetTextColor(hdc, text_color.to_colorref());
             LRESULT(os.text_host.brush().0 as _)
         }
 

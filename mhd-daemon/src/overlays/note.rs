@@ -320,7 +320,10 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     let _ = SetBkMode(hdc, OPAQUE);
                     let surface = st.theme.surface.blend_over(st.theme.background);
                     let _ = SetBkColor(hdc, surface.to_colorref());
-                    let _ = SetTextColor(hdc, st.theme.text.to_colorref());
+                    // Use contrasting text colour (white on dark bg, black on light bg)
+                    // to ensure readability regardless of theme's `text` value.
+                    let text_color = surface.contrasting_text_color();
+                    let _ = SetTextColor(hdc, text_color.to_colorref());
                 }
                 return LRESULT(st.text_host.brush().0 as isize);
             }
@@ -413,7 +416,8 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
         let _ = SetBkMode(hdc, TRANSPARENT);
 
         let mut title_rc = RECT { left: PAD, top: 0, right: rc.right - PAD, bottom: HEADER_H };
-        let _ = SetTextColor(hdc, st.theme.text.to_colorref());
+        let title_color = st.theme.background.contrasting_text_color();
+        let _ = SetTextColor(hdc, title_color.to_colorref());
         draw_text(hdc, "Quick Note", &mut title_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         let mut hint_rc = RECT {
@@ -422,7 +426,8 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
             right: rc.right - PAD,
             bottom: rc.bottom,
         };
-        let _ = SetTextColor(hdc, st.theme.text_muted.to_colorref());
+        let hint_color = st.theme.background.contrasting_text_color().with_alpha(160);
+        let _ = SetTextColor(hdc, hint_color.to_colorref());
         draw_text(hdc, "Enter saves   ·   Shift+Enter newline   ·   Esc cancels", &mut hint_rc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }

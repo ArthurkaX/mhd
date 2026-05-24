@@ -88,6 +88,24 @@ impl Argb {
     ///
     /// Returns an opaque color (alpha = 255) that looks like this color
     /// when drawn over the given background.
+    /// Return black or white text colour that has sufficient contrast
+    /// against this background (based on WCAG‑style luminance).
+    /// Return a copy with the alpha channel replaced.
+    pub fn with_alpha(&self, a: u8) -> Argb {
+        Argb { a, r: self.r, g: self.g, b: self.b }
+    }
+
+    pub fn contrasting_text_color(&self) -> Argb {
+        let lum = 0.2126 * (self.r as f32 / 255.0)
+            + 0.7152 * (self.g as f32 / 255.0)
+            + 0.0722 * (self.b as f32 / 255.0);
+        if lum < 0.5 {
+            Argb::new(255, 255, 255, 255) // white
+        } else {
+            Argb::new(255, 0, 0, 0) // black
+        }
+    }
+
     pub fn blend_over(self, background: Argb) -> Argb {
         if self.a == 255 {
             return Argb { a: 255, ..self };
