@@ -36,6 +36,7 @@ const WM_TRAYICON: u32 = WM_USER + 1;
 const CMD_TOGGLE_SUSPEND: usize = 1;
 #[cfg(feature = "blackbox")]
 const CMD_BLACKBOX_TOGGLE: usize = 2;
+const CMD_EDIT_CONFIG: usize = 9;
 const CMD_VOLUME: usize = 3;
 const CMD_MONITOR: usize = 4;
 const CMD_NOTE: usize = 5;
@@ -170,13 +171,24 @@ fn show_menu(hwnd: HWND) {
         // Separator
         let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
 
+        // ── Settings group header ──────────────────────────────────
+
+        let settings_label: Vec<u16> = "Settings\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING | MF_GRAYED, 0, PCWSTR::from_raw(settings_label.as_ptr()));
+
+        let edit_text: Vec<u16> = "  Edit Config\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 12, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, PCWSTR::from_raw(edit_text.as_ptr()));
+
+        // Separator
+        let _ = InsertMenuW(menu, 13, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+
         // ── Bottom section ─────────────────────────────────────────
 
         let about_text: Vec<u16> = "About\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
+        let _ = InsertMenuW(menu, 14, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
 
         let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 12, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
+        let _ = InsertMenuW(menu, 15, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
 
         let _ = SetForegroundWindow(hwnd);
 
@@ -267,6 +279,9 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_DRAW => {
                         draw::show(state.app.theme());
+                    }
+                    CMD_EDIT_CONFIG => {
+                        crate::config_editor::show_config_editor(state.app.clone());
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());
