@@ -28,6 +28,39 @@ fn exe_path() -> Result<String, String> {
         .map_err(|e| format!("cannot determine exe path: {e}"))
 }
 
+/// Helper: open the Run key with desired access, call `f`, then close the
+/// key.  Returns `f`'s result.
+unsafe fn with_run_key<R>(
+    desired_access: REG_SAM_FLAGS,
+    f: impl FnOnce(HKEY) -> Result<R, String>,
+) -> Result<R, String> {
+    let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    let mut key = HKEY::default();
+
+    let ret = unsafe {
+        RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        PCWSTR::from_raw(path.as_ptr()),
+        0,
+        desired_access,
+        &mut key,
+    )
+    };
+    if ret != ERROR_SUCCESS {
+        return Err(format!("RegOpenKeyExW failed: {ret:?}"));
+    }
+
+    let result = f(key);
+
+    // Always close the key — even if `f` returned an error the handle
+    // is still open.
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+
+    result
+}
+
 /// Install autostart by writing to `HKCU\…\Run`.
 pub fn install_autostart() -> Result<(), String> {
     let exe_str = exe_path()?;
@@ -35,38 +68,26 @@ pub fn install_autostart() -> Result<(), String> {
     let wide_name = to_wide(VALUE_NAME);
 
     unsafe {
-        let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
-        let mut key = HKEY::default();
+        with_run_key(KEY_SET_VALUE, |key| {
+            // RegSetValueExW expects lpdata as Option<&[u8]>; include the
+            // null terminator in the byte count for a proper REG_SZ.
+            let slice = std::slice::from_raw_parts(
+                wide_value.as_ptr().cast::<u8>(),
+                wide_value.len() * 2,
+            );
 
-        let ret = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(path.as_ptr()),
-            0,
-            KEY_SET_VALUE,
-            &mut key,
-        );
-        if ret != ERROR_SUCCESS {
-            return Err(format!("RegOpenKeyExW failed: {ret:?}"));
-        }
-
-        // RegSetValueExW expects lpdata as Option<&[u8]>, the slice length is byte count
-        let slice = std::slice::from_raw_parts(
-            wide_value.as_ptr().cast::<u8>(),
-            (wide_value.len() - 1) * 2,
-        );
-
-        let ret = RegSetValueExW(
-            key,
-            PCWSTR::from_raw(wide_name.as_ptr()),
-            0,
-            REG_SZ,
-            Some(slice),
-        );
-        if ret != ERROR_SUCCESS {
-            return Err(format!("RegSetValueExW failed: {ret:?}"));
-        }
-
-        Ok(())
+            let ret = RegSetValueExW(
+                key,
+                PCWSTR::from_raw(wide_name.as_ptr()),
+                0,
+                REG_SZ,
+                Some(slice),
+            );
+            if ret != ERROR_SUCCESS {
+                return Err(format!("RegSetValueExW failed: {ret:?}"));
+            }
+            Ok(())
+        })
     }
 }
 
@@ -75,57 +96,36 @@ pub fn remove_autostart() -> Result<(), String> {
     let wide_name = to_wide(VALUE_NAME);
 
     unsafe {
-        let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
-        let mut key = HKEY::default();
-
-        let ret = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(path.as_ptr()),
-            0,
-            KEY_SET_VALUE,
-            &mut key,
-        );
-        if ret != ERROR_SUCCESS {
-            return Err(format!("RegOpenKeyExW failed: {ret:?}"));
-        }
-
-        let ret = RegDeleteValueW(key, PCWSTR::from_raw(wide_name.as_ptr()));
-        if ret != ERROR_SUCCESS {
-            return Err(format!("RegDeleteValueW failed: {ret:?}"));
-        }
-
-        Ok(())
+        with_run_key(KEY_SET_VALUE, |key| {
+            let ret = RegDeleteValueW(key, PCWSTR::from_raw(wide_name.as_ptr()));
+            if ret != ERROR_SUCCESS {
+                return Err(format!("RegDeleteValueW failed: {ret:?}"));
+            }
+            Ok(())
+        })
     }
 }
 
 /// Check whether autostart is currently enabled (value exists).
-#[allow(dead_code)]
 pub fn is_autostart_enabled() -> bool {
     let wide_name = to_wide(VALUE_NAME);
 
     unsafe {
-        let path = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
-        let mut key = HKEY::default();
-
-        let ret = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR::from_raw(path.as_ptr()),
-            0,
-            KEY_QUERY_VALUE,
-            &mut key,
-        );
-        if ret != ERROR_SUCCESS {
-            return false;
-        }
-
-        let ret = RegQueryValueExW(
-            key,
-            PCWSTR::from_raw(wide_name.as_ptr()),
-            None,  // lpreserved
-            None,  // lptype
-            None,  // lpdata
-            None,  // lpcbdata
-        );
-        ret == ERROR_SUCCESS
+        let result = with_run_key(KEY_QUERY_VALUE, |key| {
+            let ret = RegQueryValueExW(
+                key,
+                PCWSTR::from_raw(wide_name.as_ptr()),
+                None, // lpreserved
+                None, // lptype
+                None, // lpdata
+                None, // lpcbdata
+            );
+            if ret == ERROR_SUCCESS {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        });
+        result.unwrap_or(false)
     }
 }

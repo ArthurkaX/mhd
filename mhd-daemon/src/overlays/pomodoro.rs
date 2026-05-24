@@ -72,6 +72,7 @@ const WM_POM_UPDATE: u32 = WM_APP + 200;  // wparam = remaining_secs, lparam = p
 
 static DEBUG_LOG: AtomicBool = AtomicBool::new(false);
 
+#[allow(dead_code)]
 pub fn set_debug_logging(enabled: bool) {
     DEBUG_LOG.store(enabled, std::sync::atomic::Ordering::Release);
 }
@@ -323,6 +324,7 @@ unsafe extern "system" fn overlay_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    unsafe {
     if msg == WM_CREATE {
         return LRESULT(0);
     }
@@ -403,6 +405,7 @@ unsafe extern "system" fn overlay_wndproc(
         }
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
     }
 }
 
@@ -586,6 +589,7 @@ unsafe extern "system" fn edit_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    unsafe {
     let old_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     let old: WNDPROC = Some(std::mem::transmute::<isize, extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>(old_proc));
 
@@ -595,7 +599,7 @@ unsafe extern "system" fn edit_wndproc(
             if vk == VK_RETURN.0 as u32 {
                 let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                 if !ctrl_down {
-                    if let Ok(parent) = GetParent(hwnd) {
+                    if let Ok(_parent) = GetParent(hwnd) {
                         let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
                         if daemon_hwnd != HWND::default() {
                             let _ = PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
@@ -615,6 +619,7 @@ unsafe extern "system" fn edit_wndproc(
     }
 
     CallWindowProcW(old, hwnd, msg, wparam, lparam)
+    }
 }
 
 // ── Daemon (background) ─────────────────────────────────────────────
@@ -701,6 +706,7 @@ unsafe extern "system" fn daemon_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    unsafe {
     if msg == WM_CREATE {
         return LRESULT(0);
     }
@@ -870,6 +876,7 @@ unsafe extern "system" fn daemon_wndproc(
         }
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
     }
 }
 

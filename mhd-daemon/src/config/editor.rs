@@ -315,7 +315,7 @@ pub fn show_config_editor(handle: AppHandle) {
         hover_sel: None,
         combo_popup: None,
         combo_open,
-        autostart: handle.config.lock().unwrap().autostart(),
+        autostart: crate::autostart::is_autostart_enabled(),
         bindings,
         scroll_y: 0,
         recording_info: None,

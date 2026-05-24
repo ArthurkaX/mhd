@@ -44,6 +44,7 @@ pub struct AppConfig {
     /// Volume adjustment step for `media_volume_up` / `media_volume_down`.
     pub volume_step: u32,
     /// Autostart at user logon (via scheduled task).
+    #[allow(dead_code)]
     pub autostart: bool,
     /// Behavioural logger config.
     #[cfg(feature = "blackbox")]
@@ -220,6 +221,7 @@ impl AppConfig {
     }
 
     /// Whether autostart is enabled.
+    #[allow(dead_code)]
     pub fn autostart(&self) -> bool {
         self.autostart
     }
