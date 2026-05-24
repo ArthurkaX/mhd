@@ -1069,7 +1069,14 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     frame.fix_gdi_alpha(theme.background);
 
     // ── UpdateLayeredWindow (via DibFrame) ─────────────────────────
-    frame.present_layered(hwnd, 0, 0, 255);
+    // Pass the current window position — UpdateLayeredWindow with a
+    // non‑None position moves the window, so we must not clobber it.
+    let cur_pos = unsafe {
+        let mut wr = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut wr);
+        (wr.left, wr.top)
+    };
+    frame.present_layered(hwnd, cur_pos.0, cur_pos.1, 255);
     // DibFrame::drop handles DC, DIB, and screen DC cleanup.
 }
 
