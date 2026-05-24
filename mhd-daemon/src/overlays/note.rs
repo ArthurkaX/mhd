@@ -179,6 +179,9 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     // Larger font for comfortable editing
     let edit_font = crate::osd::create_font(-16, false, "Segoe UI");
     text_host.set_font(edit_font);
+    // Set text colour directly (RichEdit ignores SetTextColor from WM_CTLCOLOREDIT)
+    let surface_for_color = if theme.surface.a == 255 { theme.surface } else { theme.surface.blend_over(theme.background) };
+    text_host.set_default_text_color(surface_for_color.contrasting_text_color());
     qn_log(format!("run(): edit hwnd={:?}", text_host.hwnd()));
 
     // ── State ──────────────────────────────────────────────────────

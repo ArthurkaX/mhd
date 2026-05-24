@@ -27,7 +27,9 @@ use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::Win32::UI::Controls::RichEdit::EM_SETBKGNDCOLOR;
+use windows::Win32::UI::Controls::RichEdit::{
+    CFE_EFFECTS, CFM_COLOR, CHARFORMATW, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_DEFAULT,
+};
 
 use crate::core::native_theme::Argb;
 
@@ -158,6 +160,30 @@ impl TextHost {
         }
 
         Some(TextHost { hwnd, brush })
+    }
+
+    // ── Text color (RichEdit) ────────────────────────────────────────
+
+    /// Set the default text colour for new and existing content via
+    /// `EM_SETCHARFORMAT`.  RichEdit ignores `SetTextColor` from
+    /// `WM_CTLCOLOREDIT` — this is the reliable way to control text colour.
+    pub fn set_default_text_color(&self, color: Argb) {
+        unsafe {
+            let cf = CHARFORMATW {
+                cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
+                dwMask: CFM_COLOR,
+                dwEffects: CFE_EFFECTS::default(), // 0 = explicit color (not AUTOCOLOR)
+                crTextColor: color.to_colorref(),
+                ..Default::default()
+            };
+            // Apply to both default format (new text) and all existing text.
+            let _ = SendMessageW(
+                self.hwnd,
+                EM_SETCHARFORMAT,
+                WPARAM((SCF_DEFAULT | SCF_ALL) as usize),
+                LPARAM(&cf as *const _ as isize),
+            );
+        }
     }
 
     // ── Font ─────────────────────────────────────────────────────────

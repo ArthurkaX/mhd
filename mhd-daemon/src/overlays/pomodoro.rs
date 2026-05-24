@@ -226,6 +226,9 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
         brush_color,
     ).expect("TextHost::create failed");
     text_host.set_text("Task name (optional)");
+    // Set text colour directly (RichEdit ignores SetTextColor from WM_CTLCOLOREDIT)
+    let surface_for_color = if theme.surface.a == 255 { theme.surface } else { theme.surface.blend_over(theme.background) };
+    text_host.set_default_text_color(surface_for_color.contrasting_text_color());
 
     // Save theme + bb in daemon state
     {
