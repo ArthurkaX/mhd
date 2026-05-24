@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, InsertMenuW, LoadImageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
     WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
@@ -143,44 +143,38 @@ fn show_menu(hwnd: HWND) {
         // Separator
         let _ = InsertMenuW(menu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
 
-        // ── Control group header ───────────────────────────────────
+        // ── Control group ──────────────────────────────────────────
 
-        let ctrl_label: Vec<u16> = "Control\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 3, MF_BYPOSITION | MF_STRING | MF_GRAYED, 0, PCWSTR::from_raw(ctrl_label.as_ptr()));
+        let vol_text: Vec<u16> = "Volume\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 3, MF_BYPOSITION | MF_STRING, CMD_VOLUME, PCWSTR::from_raw(vol_text.as_ptr()));
 
-        let vol_text: Vec<u16> = "  Volume\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 4, MF_BYPOSITION | MF_STRING, CMD_VOLUME, PCWSTR::from_raw(vol_text.as_ptr()));
-
-        let mon_text: Vec<u16> = "  Monitor\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 5, MF_BYPOSITION | MF_STRING, CMD_MONITOR, PCWSTR::from_raw(mon_text.as_ptr()));
+        let mon_text: Vec<u16> = "Monitor\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 4, MF_BYPOSITION | MF_STRING, CMD_MONITOR, PCWSTR::from_raw(mon_text.as_ptr()));
 
         // Separator
-        let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = InsertMenuW(menu, 5, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
 
-        // ── Actions group header ───────────────────────────────────
+        // ── Actions group ──────────────────────────────────────────
 
-        let act_label: Vec<u16> = "Actions\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 7, MF_BYPOSITION | MF_STRING | MF_GRAYED, 0, PCWSTR::from_raw(act_label.as_ptr()));
+        let note_text: Vec<u16> = "Note\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_STRING, CMD_NOTE, PCWSTR::from_raw(note_text.as_ptr()));
 
-        let note_text: Vec<u16> = "  Note\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 8, MF_BYPOSITION | MF_STRING, CMD_NOTE, PCWSTR::from_raw(note_text.as_ptr()));
-
-        let draw_text: Vec<u16> = "  Draw\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_STRING, CMD_DRAW, PCWSTR::from_raw(draw_text.as_ptr()));
+        let draw_text: Vec<u16> = "Draw\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 7, MF_BYPOSITION | MF_STRING, CMD_DRAW, PCWSTR::from_raw(draw_text.as_ptr()));
 
         // Separator
-        let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = InsertMenuW(menu, 8, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
 
         // ── Bottom section ─────────────────────────────────────────
 
         let settings_text: Vec<u16> = "Settings\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, PCWSTR::from_raw(settings_text.as_ptr()));
+        let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, PCWSTR::from_raw(settings_text.as_ptr()));
 
         let about_text: Vec<u16> = "About\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 12, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
+        let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
 
         let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 13, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
+        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
 
         let _ = SetForegroundWindow(hwnd);
 
