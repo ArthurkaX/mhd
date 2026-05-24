@@ -213,6 +213,7 @@ struct SettingsState {
     /// List of bindings being edited
     bindings: Vec<UIBinding>,
     /// Vertical scroll offset per section
+    #[allow(dead_code)] // reserved for General tab scrolling
     general_scroll_y: i32,
     bindings_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)
