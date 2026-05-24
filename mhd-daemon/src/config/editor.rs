@@ -117,9 +117,17 @@ struct UIBinding {
     is_recording_param: bool,
 }
 
+/// Active section in the settings editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSection {
+    General,
+    Bindings,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoverTarget {
     None,
+    Tab(usize),
     ThemeCombo,
     AutostartToggle,
     ApplyBtn,
@@ -143,6 +151,11 @@ struct Layout {
     pad: i32,
     header_h: i32,
     footer_h: i32,
+
+    // Tab strip
+    tab_y: i32,
+    tab_h: i32,
+    tab_w: i32,
 
     // Sections
     appearance_y: i32,
@@ -182,6 +195,7 @@ struct SettingsState {
     theme: NativeTheme,
     hwnd: HWND,
     layout: Layout,
+    active_section: SettingsSection,
     /// Theme names for the combo box
     theme_names: Vec<String>,
     /// Currently selected theme index
@@ -198,8 +212,9 @@ struct SettingsState {
 
     /// List of bindings being edited
     bindings: Vec<UIBinding>,
-    /// Vertical scroll offset in pixels
-    scroll_y: i32,
+    /// Vertical scroll offset per section
+    general_scroll_y: i32,
+    bindings_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)
     recording_info: Option<(usize, bool)>,
     /// Index of binding being edited inline
@@ -315,9 +330,11 @@ pub fn show_config_editor(handle: AppHandle) {
         hover_sel: None,
         combo_popup: None,
         combo_open,
+        active_section: SettingsSection::General,
         autostart: crate::autostart::is_autostart_enabled(),
         bindings,
-        scroll_y: 0,
+        general_scroll_y: 0,
+        bindings_scroll_y: 0,
         recording_info: None,
         edit_idx: None,
         edit_text: String::new(),
@@ -392,7 +409,12 @@ fn compute_layout(scale: f32) -> Layout {
     let win_w = (WIN_WIDTH_BASE as f32 * scale) as i32;
     let win_h = (WIN_HEIGHT_BASE as f32 * scale) as i32;
 
-    let appearance_y = header_h + pad / 2;
+    // Tab strip below header
+    let tab_h = (32.0 * scale) as i32;
+    let tab_y = header_h;
+    let tab_w = (100.0 * scale) as i32;
+
+    let appearance_y = tab_y + tab_h + pad / 2;
     let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;
     let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * scale) as i32);
     let combo_x = pad + label_w + 8;
@@ -419,6 +441,9 @@ fn compute_layout(scale: f32) -> Layout {
         pad,
         header_h,
         footer_h,
+        tab_y,
+        tab_h,
+        tab_w,
         appearance_y,
         shortcuts_y,
         autostart_y,
@@ -580,21 +605,55 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // ── Appearance Section ─────────────────────────────────────────
-    unsafe {
-        let _ = SelectObject(dib_dc, title_font);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    // ── Tab strip ───────────────────────────────────────────────────
+    let tab_names = ["General", "Bindings"];
+    let tab_count = tab_names.len() as i32;
+    let total_tab_w = lay.tab_w * tab_count + (8 * (tab_count - 1));
+    let tab_start_x = (lay.win_w - total_tab_w) / 2;
+    for (ti, &name) in tab_names.iter().enumerate() {
+        let tx = tab_start_x + (ti as i32) * (lay.tab_w + 8);
+        let ty = lay.tab_y;
+        let tab_rect = RECT { left: tx, top: ty, right: tx + lay.tab_w, bottom: ty + lay.tab_h };
+        let is_active = (ti == 0 && state.active_section == SettingsSection::General)
+            || (ti == 1 && state.active_section == SettingsSection::Bindings);
+
+        let bg = if is_active {
+            theme.accent
+        } else {
+            theme.surface.blend_over(theme.background)
+        };
+        let fg = if is_active {
+            if contrast_text_on(theme.accent) { Argb::new(255, 0, 0, 0) } else { Argb::new(255, 255, 255, 255) }
+        } else {
+            theme.text_muted
+        };
+        let tab_color = bg;
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, tab_rect, (4.0 * lay.scale) as i32, tab_color);
+        unsafe { let _ = SetTextColor(dib_dc, fg.to_colorref()); }
+        unsafe { let _ = SelectObject(dib_dc, body_font); }
+        let mut label = to_utf16_z(name);
+        let mut label_rc = RECT { left: tx, top: ty, right: tx + lay.tab_w, bottom: ty + lay.tab_h };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut label, &mut label_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        }
     }
-    let mut app_wz = to_utf16_z("Appearance");
-    let mut app_rc = RECT {
-        left: lay.pad,
-        top: lay.appearance_y,
-        right: lay.win_w - lay.pad,
-        bottom: lay.appearance_y + (24.0 * lay.scale) as i32,
-    };
-    unsafe {
-        let _ = DrawTextW(dib_dc, &mut app_wz, &mut app_rc, DT_LEFT | DT_SINGLELINE);
-    }
+
+    // ── Appearance Section (General tab) ───────────────────────────
+    if state.active_section == SettingsSection::General {
+        unsafe {
+            let _ = SelectObject(dib_dc, title_font);
+            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+        }
+        let mut app_wz = to_utf16_z("Appearance");
+        let mut app_rc = RECT {
+            left: lay.pad,
+            top: lay.appearance_y,
+            right: lay.win_w - lay.pad,
+            bottom: lay.appearance_y + (24.0 * lay.scale) as i32,
+        };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut app_wz, &mut app_rc, DT_LEFT | DT_SINGLELINE);
+        }
 
     // Theme label
     unsafe {
@@ -778,15 +837,17 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     unsafe {
         let _ = DrawTextW(dib_dc, &mut auto_help_wz, &mut auto_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     }
+    } // end if General
 
-    // ── Shortcuts Section ──────────────────────────────────────────
-    unsafe {
-        let _ = SelectObject(dib_dc, title_font);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
-    }
-    let mut short_wz = to_utf16_z("Shortcuts");
-    let mut short_rc = RECT {
-        left: lay.pad,
+    // ── Shortcuts Section (Bindings tab) ────────────────────────────
+    if state.active_section == SettingsSection::Bindings {
+        unsafe {
+            let _ = SelectObject(dib_dc, title_font);
+            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+        }
+        let mut short_wz = to_utf16_z("Shortcuts");
+        let mut short_rc = RECT {
+            left: lay.pad,
         top: lay.shortcuts_y,
         right: lay.win_w - lay.pad,
         bottom: lay.shortcuts_y + (24.0 * lay.scale) as i32,
@@ -866,7 +927,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    let mut row_y = lay.list_y - state.scroll_y;
+    let mut row_y = lay.list_y - state.bindings_scroll_y;
     for (i, b) in state.bindings.iter().enumerate() {
         if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
             draw_binding_row(
@@ -895,6 +956,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             ButtonStyle::Secondary,
         );
     }
+    } // end of if active_section == Bindings
 
     unsafe {
         let rgn = CreateRectRgn(0, 0, lay.win_w, lay.win_h);
@@ -955,9 +1017,10 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         ButtonStyle::Secondary,
     );
 
-    // ── Scrollbar ──────────────────────────────────────────────────
-    let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
-    if content_h > lay.list_h {
+    // ── Scrollbar (Bindings only) ────────────────────────────────────
+    if state.active_section == SettingsSection::Bindings {
+        let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+        if content_h > lay.list_h {
         let scroll_w = (6.0 * lay.scale) as i32;
         let scroll_x = lay.win_w - lay.pad + (lay.pad - scroll_w) / 2;
 
@@ -974,7 +1037,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
         let max_scroll = content_h - lay.list_h;
-        let thumb_y = lay.list_y + ((state.scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
+        let thumb_y = lay.list_y + ((state.bindings_scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
 
         let is_thumb_active = state.hovered_target == HoverTarget::Scrollbar || state.is_dragging_scroll;
         let thumb_color = if is_thumb_active {
@@ -991,6 +1054,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         };
         draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, thumb_rect, scroll_w / 2, thumb_color);
     }
+    } // end if Bindings (scrollbar)
 
     // ── Cleanup GDI objects ────────────────────────────────────────
     unsafe {
@@ -1380,6 +1444,26 @@ unsafe extern "system" fn settings_wndproc(
 
                 let combo_h = (COMBO_HIT_HEIGHT as f32 * lay.scale) as i32;
 
+                // Tab click
+                let total_tab_w = lay.tab_w * 2 + 8;
+                let tab_start_x = (lay.win_w - total_tab_w) / 2;
+                if y >= lay.tab_y && y < lay.tab_y + lay.tab_h {
+                    let tx = x - tab_start_x;
+                    if tx >= 0 {
+                        let ti = tx / (lay.tab_w + 8);
+                        if ti < 2 {
+                            close_combo_popup(state);
+                            close_kind_popup(state);
+                            let new_section = if ti == 0 { SettingsSection::General } else { SettingsSection::Bindings };
+                            if state.active_section != new_section {
+                                state.active_section = new_section;
+                                paint_settings(hwnd, state_ptr, &lay);
+                            }
+                            return LRESULT(0);
+                        }
+                    }
+                }
+
                 // Scrollbar click / drag start
                 let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
                 if content_h > lay.list_h {
@@ -1393,22 +1477,22 @@ unsafe extern "system" fn settings_wndproc(
                         let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
                         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
                         let max_scroll = content_h - lay.list_h;
-                        let thumb_y = lay.list_y + ((state.scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
+                        let thumb_y = lay.list_y + ((state.bindings_scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
 
                         if y >= thumb_y && y < thumb_y + thumb_h {
                             state.is_dragging_scroll = true;
                             state.scroll_drag_start_y = y;
-                            state.scroll_drag_start_offset = state.scroll_y;
+                            state.scroll_drag_start_offset = state.bindings_scroll_y;
                             let _ = SetCapture(hwnd);
                         } else {
                             let track_click_y = y - lay.list_y - thumb_h / 2;
                             let pct = track_click_y as f32 / (lay.list_h - thumb_h) as f32;
-                            state.scroll_y = (pct * max_scroll as f32) as i32;
-                            state.scroll_y = state.scroll_y.clamp(0, max_scroll);
+                            state.bindings_scroll_y = (pct * max_scroll as f32) as i32;
+                            state.bindings_scroll_y = state.bindings_scroll_y.clamp(0, max_scroll);
                             
                             state.is_dragging_scroll = true;
                             state.scroll_drag_start_y = y;
-                            state.scroll_drag_start_offset = state.scroll_y;
+                            state.scroll_drag_start_offset = state.bindings_scroll_y;
                             let _ = SetCapture(hwnd);
                             paint_settings(hwnd, state_ptr, &lay);
                         }
@@ -1452,7 +1536,7 @@ unsafe extern "system" fn settings_wndproc(
                     // Close any active edit if clicking elsewhere
                     finish_inline_edit(state);
 
-                    let mut row_y = lay.list_y - state.scroll_y;
+                    let mut row_y = lay.list_y - state.bindings_scroll_y;
                     let mut clicked = false;
 
                     for i in 0..state.bindings.len() {
@@ -1539,7 +1623,7 @@ unsafe extern "system" fn settings_wndproc(
                         if thumb_travel > 0 {
                             let dy = y - state.scroll_drag_start_y;
                             let scroll_delta = (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
-                            state.scroll_y = (state.scroll_drag_start_offset + scroll_delta).clamp(0, max_scroll);
+                            state.bindings_scroll_y = (state.scroll_drag_start_offset + scroll_delta).clamp(0, max_scroll);
                             paint_settings(hwnd, state_ptr, &lay);
                         }
                     } else {
@@ -1547,8 +1631,20 @@ unsafe extern "system" fn settings_wndproc(
 
                         let combo_h = (COMBO_HIT_HEIGHT as f32 * lay.scale) as i32;
 
+                        // Tab strip
+                        let total_tab_w = lay.tab_w * 2 + 8;
+                        let tab_start_x = (lay.win_w - total_tab_w) / 2;
+                        if y >= lay.tab_y && y < lay.tab_y + lay.tab_h {
+                            let tx = x - tab_start_x;
+                            if tx >= 0 {
+                                let ti = tx / (lay.tab_w + 8);
+                                if ti < 2 {
+                                    target = HoverTarget::Tab(ti as usize);
+                                }
+                            }
+                        }
                         // Theme combo
-                        if y >= lay.combo_y
+                        else if y >= lay.combo_y
                             && y < lay.combo_y + combo_h
                             && x >= lay.combo_x
                             && x < lay.combo_x + lay.combo_w
@@ -1596,7 +1692,7 @@ unsafe extern "system" fn settings_wndproc(
                             }
 
                             if !hit_scroll_track {
-                                let mut row_y = lay.list_y - state.scroll_y;
+                                let mut row_y = lay.list_y - state.bindings_scroll_y;
                                 let mut found = false;
 
                                 for i in 0..state.bindings.len() {
@@ -1676,12 +1772,14 @@ unsafe extern "system" fn settings_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    let lay = state.layout;
-                    let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
-                    let max_scroll = (content_h - lay.list_h).max(0);
-                    state.scroll_y =
-                        (state.scroll_y - (delta as i32 / 120) * 40).clamp(0, max_scroll);
-                    paint_settings(hwnd, state_ptr, &lay);
+                    if state.active_section == SettingsSection::Bindings {
+                        let lay = state.layout;
+                        let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                        let max_scroll = (content_h - lay.list_h).max(0);
+                        state.bindings_scroll_y =
+                            (state.bindings_scroll_y - (delta as i32 / 120) * 40).clamp(0, max_scroll);
+                        paint_settings(hwnd, state_ptr, &lay);
+                    }
                 }
                 LRESULT(0)
             }
@@ -2329,7 +2427,7 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
         // Position the menu at the kind button
         let lay = state.layout;
         let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
-        let btn_y_in_row = state.layout.list_y - state.scroll_y + (idx as i32) * lay.row_h
+        let btn_y_in_row = state.layout.list_y - state.bindings_scroll_y + (idx as i32) * lay.row_h
             + (lay.row_h - lay.btn_h) / 2;
         let mut pt = POINT {
             x: kind_x,
