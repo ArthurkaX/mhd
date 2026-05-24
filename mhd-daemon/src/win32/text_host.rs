@@ -160,6 +160,20 @@ impl TextHost {
         Some(TextHost { hwnd, brush })
     }
 
+    // ── Font ─────────────────────────────────────────────────────────
+
+    /// Replace the control's font.
+    pub fn set_font(&self, font: HFONT) {
+        unsafe {
+            let _ = SendMessageW(
+                self.hwnd,
+                WM_SETFONT,
+                WPARAM(font.0 as _),
+                LPARAM(1),
+            );
+        }
+    }
+
     // ── Margins ───────────────────────────────────────────────────────
 
     /// Set left and right margins (EM_SETMARGINS).

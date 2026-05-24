@@ -110,6 +110,7 @@ struct WndState {
     notes_dir: PathBuf,
     bb: bool,
     text_host: TextHost,
+    edit_font: HFONT,
     theme: crate::core::native_theme::NativeTheme,
 }
 
@@ -175,10 +176,13 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
         brush_color,
     ).expect("TextHost::create failed");
     text_host.set_margins(8, 8);
+    // Larger font for comfortable editing
+    let edit_font = crate::osd::create_font(-16, false, "Segoe UI");
+    text_host.set_font(edit_font);
     qn_log(format!("run(): edit hwnd={:?}", text_host.hwnd()));
 
     // ── State ──────────────────────────────────────────────────────
-    let mut st = WndState { notes_dir, bb, text_host, theme };
+    let mut st = WndState { notes_dir, bb, text_host, edit_font, theme };
     let state_ptr: *mut WndState = &mut st;
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
 
@@ -283,6 +287,12 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             if let Ok(mut g) = CTRL.lock() { *g = None; }
             // TextHost::drop will clean up the EDIT background brush.
             // The EDIT child is destroyed automatically by DestroyWindow.
+            // Clean up the GDI font we created.
+            if let Some(st) = s() {
+                if !st.edit_font.is_invalid() {
+                    unsafe { let _ = DeleteObject(st.edit_font); }
+                }
+            }
             unsafe { PostQuitMessage(0); }
             LRESULT(0)
         }
