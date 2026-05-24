@@ -422,7 +422,7 @@ fn compute_layout(scale: f32) -> Layout {
     let combo_w = (COMBO_POPUP_WIDTH as f32 * scale) as i32;
     let combo_y = appearance_y + (30.0 * scale) as i32;
 
-    let shortcuts_y = combo_y + combo_h + pad;
+    let shortcuts_y = appearance_y;
     let autostart_y = combo_y + combo_h + (8.0 * scale) as i32;
     let list_y = shortcuts_y + (48.0 * scale) as i32;
     let list_h = (win_h - footer_h) - list_y - pad / 2;
@@ -1348,7 +1348,8 @@ fn draw_button(
             if is_hovered {
                 bg = theme.hover.blend_over(bg);
             }
-            (bg, theme.text, theme.border)
+            let fg = bg.contrasting_text_color();
+            (bg, fg, theme.border)
         }
         ButtonStyle::DangerGhost => {
             let mut bg = Argb::new(0, 0, 0, 0);
@@ -1366,7 +1367,8 @@ fn draw_button(
                 bg = theme.hover.blend_over(bg);
                 border = theme.text;
             }
-            (bg, theme.text, border)
+            let fg = bg.contrasting_text_color();
+            (bg, fg, border)
         }
     };
 
