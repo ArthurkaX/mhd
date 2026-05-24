@@ -411,11 +411,12 @@ fn compute_layout(scale: f32) -> Layout {
     let win_h = (WIN_HEIGHT_BASE as f32 * scale) as i32;
 
     // Tab strip below header
-    let tab_h = (32.0 * scale) as i32;
-    let tab_y = header_h;
+    // Tabs on same line as title to save vertical space
+    let tab_h = (24.0 * scale) as i32;
+    let tab_y = pad / 2;
     let tab_w = (100.0 * scale) as i32;
 
-    let appearance_y = tab_y + tab_h + pad / 2;
+    let appearance_y = header_h + pad / 2;
     let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;
     let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * scale) as i32);
     let combo_x = pad + label_w + 8;
@@ -606,11 +607,11 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // ── Tab strip ───────────────────────────────────────────────────
+    // ── Tab strip (right‑aligned, same row as title) ──────────────
     let tab_names = ["General", "Bindings"];
     let tab_count = tab_names.len() as i32;
     let total_tab_w = lay.tab_w * tab_count + (8 * (tab_count - 1));
-    let tab_start_x = (lay.win_w - total_tab_w) / 2;
+    let tab_start_x = lay.win_w - lay.pad - total_tab_w;
     for (ti, &name) in tab_names.iter().enumerate() {
         let tx = tab_start_x + (ti as i32) * (lay.tab_w + 8);
         let ty = lay.tab_y;
@@ -628,8 +629,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         } else {
             theme.text_muted
         };
-        let tab_color = bg;
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, tab_rect, (4.0 * lay.scale) as i32, tab_color);
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, tab_rect, (4.0 * lay.scale) as i32, bg);
         unsafe { let _ = SetTextColor(dib_dc, fg.to_colorref()); }
         unsafe { let _ = SelectObject(dib_dc, body_font); }
         let mut label = to_utf16_z(name);
@@ -1456,7 +1456,7 @@ unsafe extern "system" fn settings_wndproc(
 
                 // Tab click
                 let total_tab_w = lay.tab_w * 2 + 8;
-                let tab_start_x = (lay.win_w - total_tab_w) / 2;
+                let tab_start_x = lay.win_w - lay.pad - total_tab_w;
                 if y >= lay.tab_y && y < lay.tab_y + lay.tab_h {
                     let tx = x - tab_start_x;
                     if tx >= 0 {
@@ -1708,17 +1708,23 @@ unsafe extern "system" fn settings_wndproc(
                                 for i in 0..state.bindings.len() {
                                     if y >= row_y && y < row_y + lay.row_h {
                                         let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
-                                        let param_x = kind_x + lay.kind_w + (8.0 * lay.scale) as i32;
-                                        let param_w = lay.win_w - lay.pad - lay.del_w - (8.0 * lay.scale) as i32 - param_x;
+                                        let desc = crate::action::ALL_ACTIONS.iter().find(|a| a.name == crate::config::editor::EDITOR_ACTION_NAMES.get(state.bindings[i].kind_idx).copied().unwrap_or("quit")).unwrap();
 
                                         if x >= lay.pad && x < lay.pad + lay.trig_w {
                                             target = HoverTarget::RowTrigger(i);
                                         } else if x >= kind_x && x < kind_x + lay.kind_w {
                                             target = HoverTarget::RowKind(i);
-                                        } else if x >= param_x && x < param_x + param_w {
-                                            target = HoverTarget::RowParam(i);
-                                        } else if x >= lay.win_w - lay.pad - lay.del_w && x < lay.win_w - lay.pad {
-                                            target = HoverTarget::RowDelete(i);
+                                        } else if desc.param_key.is_some() {
+                                            let param_x = kind_x + lay.kind_w + (8.0 * lay.scale) as i32;
+                                            let param_w = lay.win_w - lay.pad - lay.del_w - (8.0 * lay.scale) as i32 - param_x;
+                                            if x >= param_x && x < param_x + param_w {
+                                                target = HoverTarget::RowParam(i);
+                                            }
+                                        }
+                                        if target == HoverTarget::None {
+                                            if x >= lay.win_w - lay.pad - lay.del_w && x < lay.win_w - lay.pad {
+                                                target = HoverTarget::RowDelete(i);
+                                            }
                                         }
                                         found = true;
                                         break;
@@ -2554,7 +2560,9 @@ fn draw_binding_row(
 
     unsafe {
         let _ = SelectObject(hdc, small_font);
-        let _ = SetTextColor(hdc, theme.text.to_colorref());
+        // Use contrasting text colour on the kind button background
+        let kind_text_color = kind_btn_color.contrasting_text_color();
+        let _ = SetTextColor(hdc, kind_text_color.to_colorref());
     }
 
     // Left-aligned label text
@@ -2592,148 +2600,152 @@ fn draw_binding_row(
         );
     }
 
-    // 3. Param area
-    let param_x = kind_rect.right + (8.0 * lay.scale) as i32;
-    let param_w = row_rc.right - param_x - lay.del_w - (8.0 * lay.scale) as i32;
-    let param_rc = RECT {
-        left: param_x,
-        top: trig_rc.top,
-        right: param_x + param_w,
-        bottom: trig_rc.bottom,
-    };
-
-    let param_bg = theme.surface.blend_over(theme.background);
-    let is_param_hovered = state.hovered_target == HoverTarget::RowParam(idx);
-    let is_recording_param = binding.is_recording_param;
-    let is_editing_param = state.edit_idx == Some(idx);
-
-    if is_editing_param {
-        // Draw the editor background
-        let param_radius = (4.0 * lay.scale) as i32;
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, param_bg);
-
-        // Draw the edit text inline (no child control — layered window compat)
-        unsafe {
-            let _ = SelectObject(hdc, small_font);
-        }
-
-        let text_x = param_rc.left + 8;
-        let text_y = param_rc.top;
-        let text_h = param_rc.bottom - param_rc.top;
-        let accent = theme.accent;
-
-        // Determine selection range
-        let sel = state.edit_select_start;
-        let (sel_start, sel_end) = match sel {
-            Some(s) if s != state.edit_cursor => (s.min(state.edit_cursor), s.max(state.edit_cursor)),
-            _ => (state.edit_cursor, state.edit_cursor),
+    // 3. Param area — only drawn for actions that have a parameter
+    let has_param = desc.param_key.is_some();
+    if has_param {
+        let param_x = kind_rect.right + (8.0 * lay.scale) as i32;
+        let param_w = row_rc.right - param_x - lay.del_w - (8.0 * lay.scale) as i32;
+        let param_rc = RECT {
+            left: param_x,
+            top: trig_rc.top,
+            right: param_x + param_w,
+            bottom: trig_rc.bottom,
         };
-        let has_selection = sel.is_some() && sel.unwrap() != state.edit_cursor;
 
-        if has_selection {
-            let full_text = &state.edit_text;
-            let before = &full_text[..sel_start];
-            let selected = &full_text[sel_start..sel_end];
-            let after = &full_text[sel_end..];
+        let param_bg = theme.surface.blend_over(theme.background);
+        let is_param_hovered = state.hovered_target == HoverTarget::RowParam(idx);
+        let is_recording_param = binding.is_recording_param;
+        let is_editing_param = state.edit_idx == Some(idx);
+        let param_text_color = param_bg.contrasting_text_color();
 
-            let wz_before = to_utf16_z(before);
-            let wz_selected = to_utf16_z(selected);
+        if is_editing_param {
+            // Draw the editor background
+            let param_radius = (4.0 * lay.scale) as i32;
+            draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, param_bg);
 
-            let mut before_size = SIZE::default();
-            let mut selected_size = SIZE::default();
+            // Draw the edit text inline (no child control — layered window compat)
             unsafe {
-                let _ = GetTextExtentPoint32W(hdc, &wz_before, &mut before_size);
-                let _ = GetTextExtentPoint32W(hdc, &wz_selected, &mut selected_size);
+                let _ = SelectObject(hdc, small_font);
             }
 
-            let sel_rect_left = text_x + before_size.cx;
-            let sel_rect_right = sel_rect_left + selected_size.cx;
+            let text_x = param_rc.left + 8;
+            let text_y = param_rc.top;
+            let text_h = param_rc.bottom - param_rc.top;
+            let accent = theme.accent;
 
-            // Draw selection background
-            draw_rounded_rect_in_buffer(
-                bits, lay.win_w, lay.win_h,
-                RECT { left: sel_rect_left, top: param_rc.top + 2, right: sel_rect_right, bottom: param_rc.bottom - 2 },
-                0, accent,
-            );
+            // Determine selection range
+            let sel = state.edit_select_start;
+            let (sel_start, sel_end) = match sel {
+                Some(s) if s != state.edit_cursor => (s.min(state.edit_cursor), s.max(state.edit_cursor)),
+                _ => (state.edit_cursor, state.edit_cursor),
+            };
+            let has_selection = sel.is_some() && sel.unwrap() != state.edit_cursor;
 
-            // Draw before (normal color)
-            unsafe {
-                let _ = SetTextColor(hdc, theme.text.to_colorref());
-                let mut rc = RECT { left: text_x, top: text_y, right: sel_rect_left, bottom: text_y + text_h };
-                let _ = DrawTextW(hdc, &mut (before.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            }
-            // Draw selected (white on accent bg)
-            unsafe {
-                let _ = SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
-                let mut rc = RECT { left: sel_rect_left, top: text_y, right: sel_rect_right, bottom: text_y + text_h };
-                let _ = DrawTextW(hdc, &mut (selected.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            }
-            // Draw after (normal color)
-            unsafe {
-                let _ = SetTextColor(hdc, theme.text.to_colorref());
-                let mut rc = RECT { left: sel_rect_right, top: text_y, right: param_rc.right - 8, bottom: text_y + text_h };
-                let _ = DrawTextW(hdc, &mut (after.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            }
+            if has_selection {
+                let full_text = &state.edit_text;
+                let before = &full_text[..sel_start];
+                let selected = &full_text[sel_start..sel_end];
+                let after = &full_text[sel_end..];
 
-            // Draw cursor at the "active" end of selection
-            let cursor_x = if state.edit_cursor == sel_end { sel_rect_right } else { sel_rect_left };
-            let buf_size = (lay.win_w * lay.win_h) as usize;
-            let cursor_color = theme.text.to_premultiplied_argb_pixel();
-            for dy in (text_h / 4)..(text_h * 3 / 4) {
-                let px = cursor_x + text_y * lay.win_w + dy * lay.win_w;
-                if px >= 0 && (px as usize) < buf_size {
-                    unsafe { *bits.add(px as usize).cast::<u32>() = cursor_color; }
+                let wz_before = to_utf16_z(before);
+                let wz_selected = to_utf16_z(selected);
+
+                let mut before_size = SIZE::default();
+                let mut selected_size = SIZE::default();
+                unsafe {
+                    let _ = GetTextExtentPoint32W(hdc, &wz_before, &mut before_size);
+                    let _ = GetTextExtentPoint32W(hdc, &wz_selected, &mut selected_size);
+                }
+
+                let sel_rect_left = text_x + before_size.cx;
+                let sel_rect_right = sel_rect_left + selected_size.cx;
+
+                // Draw selection background
+                draw_rounded_rect_in_buffer(
+                    bits, lay.win_w, lay.win_h,
+                    RECT { left: sel_rect_left, top: param_rc.top + 2, right: sel_rect_right, bottom: param_rc.bottom - 2 },
+                    0, accent,
+                );
+
+                // Draw before (contrasting text)
+                unsafe {
+                    let _ = SetTextColor(hdc, param_text_color.to_colorref());
+                    let mut rc = RECT { left: text_x, top: text_y, right: sel_rect_left, bottom: text_y + text_h };
+                    let _ = DrawTextW(hdc, &mut (before.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                }
+                // Draw selected (white on accent bg)
+                unsafe {
+                    let _ = SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                    let mut rc = RECT { left: sel_rect_left, top: text_y, right: sel_rect_right, bottom: text_y + text_h };
+                    let _ = DrawTextW(hdc, &mut (selected.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                }
+                // Draw after (contrasting text)
+                unsafe {
+                    let _ = SetTextColor(hdc, param_text_color.to_colorref());
+                    let mut rc = RECT { left: sel_rect_right, top: text_y, right: param_rc.right - 8, bottom: text_y + text_h };
+                    let _ = DrawTextW(hdc, &mut (after.to_string() + "\0").encode_utf16().collect::<Vec<_>>(), &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                }
+
+                // Draw cursor at the "active" end of selection
+                let cursor_x = if state.edit_cursor == sel_end { sel_rect_right } else { sel_rect_left };
+                let buf_size = (lay.win_w * lay.win_h) as usize;
+                let cursor_color = param_text_color.to_premultiplied_argb_pixel();
+                for dy in (text_h / 4)..(text_h * 3 / 4) {
+                    let px = cursor_x + text_y * lay.win_w + dy * lay.win_w;
+                    if px >= 0 && (px as usize) < buf_size {
+                        unsafe { *bits.add(px as usize).cast::<u32>() = cursor_color; }
+                    }
+                }
+            } else {
+                // No selection — draw text with cursor
+                unsafe { let _ = SetTextColor(hdc, param_text_color.to_colorref()); }
+                let display = if state.edit_cursor <= state.edit_text.len() {
+                    let (before, after) = state.edit_text.split_at(state.edit_cursor);
+                    format!("{}|{}", before, after)
+                } else {
+                    state.edit_text.clone()
+                };
+                let mut wz = to_utf16_z(&display);
+                let mut text_rc = RECT { left: text_x, ..param_rc };
+                unsafe {
+                    let _ = DrawTextW(hdc, &mut wz, &mut text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
                 }
             }
         } else {
-            // No selection — draw text with cursor
-            unsafe { let _ = SetTextColor(hdc, theme.text.to_colorref()); }
-            let display = if state.edit_cursor <= state.edit_text.len() {
-                let (before, after) = state.edit_text.split_at(state.edit_cursor);
-                format!("{}|{}", before, after)
-            } else {
-                state.edit_text.clone()
-            };
-            let mut wz = to_utf16_z(&display);
-            let mut text_rc = RECT { left: text_x, ..param_rc };
+            let mut current_bg = param_bg;
+            if is_param_hovered {
+                current_bg = theme.hover.blend_over(current_bg);
+            }
+
+            let param_radius = (4.0 * lay.scale) as i32;
+            draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, current_bg);
+
             unsafe {
-                let _ = DrawTextW(hdc, &mut wz, &mut text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                let _ = SetTextColor(hdc, param_text_color.to_colorref());
+                let mut wz = to_utf16_z(&binding.param);
+                let mut text_rc = RECT {
+                    left: param_rc.left + 8,
+                    ..param_rc
+                };
+                let _ = DrawTextW(
+                    hdc,
+                    &mut wz,
+                    &mut text_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
             }
         }
-    } else {
-        let mut current_bg = param_bg;
-        if is_param_hovered {
-            current_bg = theme.hover.blend_over(current_bg);
-        }
 
+        let border_color = if is_recording_param || is_editing_param {
+            theme.accent
+        } else if is_param_hovered {
+            theme.text
+        } else {
+            theme.border
+        };
         let param_radius = (4.0 * lay.scale) as i32;
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, current_bg);
-
-        unsafe {
-            let _ = SetTextColor(hdc, theme.text.to_colorref());
-            let mut wz = to_utf16_z(&binding.param);
-            let mut text_rc = RECT {
-                left: param_rc.left + 8,
-                ..param_rc
-            };
-            let _ = DrawTextW(
-                hdc,
-                &mut wz,
-                &mut text_rc,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-            );
-        }
+        draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, 1, border_color);
     }
-
-    let border_color = if is_recording_param || is_editing_param {
-        theme.accent
-    } else if is_param_hovered {
-        theme.text
-    } else {
-        theme.border
-    };
-    let param_radius = (4.0 * lay.scale) as i32;
-    draw_rounded_border_in_buffer(bits, lay.win_w, lay.win_h, param_rc, param_radius, 1, border_color);
 
     // 4. Delete button (DangerGhost style)
     let del_rc = RECT {
