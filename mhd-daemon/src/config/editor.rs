@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{
-    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::DataExchange::{
@@ -35,7 +35,7 @@ use windows::core::PCWSTR;
 use crate::app::{AppHandle, DaemonControl};
 use crate::hook::WM_BINDING_CAPTURED;
 use crate::native_theme::{Argb, NativeTheme, load_theme_from_path};
-use crate::osd::{draw_rounded_rect, to_utf16_z};
+use crate::osd::to_utf16_z;
 use crate::trigger::{KeyCombo, Modifiers, PhysicalKey, keys_to_string};
 
 // ── Layout constants (96 dpi base) ─────────────────────────────────
@@ -525,43 +525,15 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     let theme = &state.theme;
     let lay = layout;
 
-    let screen_dc = unsafe { GetDC(None) };
-
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: lay.win_w,
-            biHeight: -lay.win_h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: 0,
-            biSizeImage: 0,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        },
-        bmiColors: [RGBQUAD::default(); 1],
+    let mut frame = match crate::renderer::DibFrame::new(lay.win_w, lay.win_h) {
+        Some(f) => f,
+        None => return,
     };
-
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let dib = unsafe { CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) };
-    let Ok(dib) = dib else {
-        unsafe {
-            let _ = ReleaseDC(None, screen_dc);
-        }
-        return;
-    };
-
-    let dib_dc = unsafe { CreateCompatibleDC(screen_dc) };
-    let old_bmp = unsafe { SelectObject(dib_dc, dib) };
+    let dib_dc = frame.dc();
+    let bits = frame.pixels_mut().as_mut_ptr() as *mut c_void;
 
     // ── Background rounded rect ────────────────────────────────────
-    unsafe {
-        let pixels =
-            std::slice::from_raw_parts_mut(bits as *mut u32, (lay.win_w * lay.win_h) as usize);
-        draw_rounded_rect(pixels, lay.win_w, lay.win_h, lay.radius, theme.background);
-    }
+    crate::osd::draw_rounded_rect(frame.pixels_mut(), lay.win_w, lay.win_h, lay.radius, theme.background);
 
     // ── GDI painting helpers ───────────────────────────────────────
     unsafe {
@@ -1029,88 +1001,14 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     }
 
     // GDI writes RGB into a 32-bit DIB but often leaves alpha as 0.
-    // For a layered window that makes buttons/lines/text transparent holes.
-    // Restore alpha for newly drawn RGB pixels while preserving the original
-    // per-pixel alpha of the rounded background (glass theme stays glassy).
-    fix_gdi_alpha(bits, lay.win_w, lay.win_h, theme.background);
+    frame.fix_gdi_alpha(theme.background);
 
-    // ── UpdateLayeredWindow ────────────────────────────────────────
-    let blend = BLENDFUNCTION {
-        BlendOp: AC_SRC_OVER as u8,
-        BlendFlags: 0,
-        SourceConstantAlpha: 255,
-        AlphaFormat: AC_SRC_ALPHA as u8,
-    };
-
-    let pt_src = POINT { x: 0, y: 0 };
-    let sz = SIZE {
-        cx: lay.win_w,
-        cy: lay.win_h,
-    };
-
-    unsafe {
-        let _ = UpdateLayeredWindow(
-            hwnd,
-            HDC::default(),
-            None, // keep current position
-            Some(&sz),
-            dib_dc,
-            Some(&pt_src),
-            COLORREF(0),
-            Some(&blend),
-            ULW_ALPHA,
-        );
-    }
-
-    // ── Cleanup DIB ────────────────────────────────────────────────
-    unsafe {
-        let _ = SelectObject(dib_dc, old_bmp);
-        let _ = DeleteObject(dib);
-        let _ = DeleteDC(dib_dc);
-        let _ = ReleaseDC(None, screen_dc);
-    }
+    // ── UpdateLayeredWindow (via DibFrame) ─────────────────────────
+    frame.present_layered(hwnd, 0, 0, 255);
+    // DibFrame::drop handles DC, DIB, and screen DC cleanup.
 }
 
 /// Draw a rectangular button on the DIB.
-fn fix_gdi_alpha(
-    bits: *mut c_void,
-    width: i32,
-    height: i32,
-    background: crate::native_theme::Argb,
-) {
-    if bits.is_null() || width <= 0 || height <= 0 {
-        return;
-    }
-
-    let bg_px = background.to_premultiplied_argb_pixel();
-    unsafe {
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
-        for px in pixels.iter_mut() {
-            let a = (*px >> 24) & 0xff;
-            let rgb = *px & 0x00ff_ffff;
-
-            // Do not touch transparent outside corners.
-            if *px == 0 {
-                continue;
-            }
-
-            // Preserve the original glass background (including anti-aliased
-            // rounded corners).
-            if is_background_like_pixel(*px, bg_px, background.a) {
-                continue;
-            }
-
-            // Only make pixels fully opaque if they were drawn by standard GDI
-            // functions (which write 0 to the alpha channel).
-            // Our custom drawing helpers (like rounded buttons and scrollbars)
-            // write correct alpha values which we must preserve.
-            if a == 0 {
-                *px = 0xff00_0000 | rgb;
-            }
-        }
-    }
-}
-
 fn blend_pixels_premultiplied(original: u32, overlay: Argb, opacity: f32) -> u32 {
     let overlay_a = (overlay.a as f32 * opacity) as u32;
     if overlay_a == 0 {
@@ -1294,20 +1192,6 @@ fn draw_rounded_border_in_buffer(
             }
         }
     }
-}
-
-fn is_background_like_pixel(px: u32, bg_px: u32, bg_alpha: u8) -> bool {
-    if px == bg_px {
-        return true;
-    }
-
-    let a = ((px >> 24) & 0xff) as u8;
-    let rgb = px & 0x00ff_ffff;
-    let bg_rgb = bg_px & 0x00ff_ffff;
-
-    // Common glass case: black background. Anti-aliased corners have the
-    // same RGB but lower alpha; keep them translucent.
-    rgb == bg_rgb && a <= bg_alpha
 }
 
 /// Returns true if white text has sufficient contrast on this background.
@@ -3091,42 +2975,11 @@ fn save_config(
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn create_font(h: i32, bold: bool, family: &str) -> HFONT {
-    let name = to_utf16_z(family);
-    unsafe {
-        CreateFontW(
-            h,
-            0,
-            0,
-            0,
-            if bold {
-                FW_BOLD.0 as i32
-            } else {
-                FW_NORMAL.0 as i32
-            },
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET.0 as u32,
-            OUT_DEFAULT_PRECIS.0 as u32,
-            CLIP_DEFAULT_PRECIS.0 as u32,
-            DEFAULT_QUALITY.0 as u32,
-            FF_DONTCARE.0 as u32,
-            PCWSTR::from_raw(name.as_ptr()),
-        )
-    }
+    crate::renderer::create_font(h, bold, family)
 }
 
 fn monitor_work_rect() -> RECT {
-    unsafe {
-        let desktop = GetDesktopWindow();
-        let hmon = MonitorFromWindow(desktop, MONITOR_DEFAULTTONEAREST);
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let _ = GetMonitorInfoW(hmon, &mut info);
-        info.rcWork
-    }
+    crate::renderer::primary_monitor_work_rect()
 }
 
 #[cfg(test)]

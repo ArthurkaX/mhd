@@ -13,7 +13,10 @@ use windows::core::PCWSTR;
 
 use crate::native_theme::NativeTheme;
 use self::painter::paint_osd;
-pub use self::painter::{draw_rounded_rect, to_utf16_z};
+/// Re-export shared renderer primitives for backward compatibility.
+/// All overlay windows access these via `crate::osd::*`.
+pub use crate::renderer::{draw_rounded_rect, to_utf16_z, create_font,
+    ShellRenderer, centered_position};
 
 #[derive(Copy, Clone)]
 struct ThreadHandle(HANDLE);

@@ -15,13 +15,13 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::SendHwnd;
 use crate::config::path::home_dir;
 use crate::core::native_theme::Argb;
+use crate::win32::text_host::{TextHost, TextHostKind};
 
 // ── Config ─────────────────────────────────────────────────────────────
 
@@ -56,12 +56,8 @@ const PAD: i32 = 12;
 const HEADER_H: i32 = 34;
 const HINT_H: i32 = 24;
 const CLS: &str = "mhd_quicknote_cls";
-const EDIT_ID: usize = 100;
 const WM_APP_SAVE: u32 = WM_APP;
 const WM_APP_CANCEL: u32 = WM_APP + 1;
-const EM_SETMARGINS: u32 = 0x00D3;
-const EC_LEFTMARGIN: u32 = 0x0001;
-const EC_RIGHTMARGIN: u32 = 0x0002;
 
 // ─── Static window handle ──────────────────────────────────────────────
 
@@ -113,14 +109,13 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
 struct WndState {
     notes_dir: PathBuf,
     bb: bool,
-    edit_hwnd: HWND,
-    edit_brush: HBRUSH,
+    text_host: TextHost,
     theme: crate::core::native_theme::NativeTheme,
 }
 
 fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
     qn_log("run(): registering class");
-    let cls = to_utf16_z(CLS);
+    let cls = crate::renderer::to_utf16_z(CLS);
     let hi: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap_or_default() }.into();
 
     unsafe {
@@ -163,44 +158,27 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
         }
     }
 
-    // ── Create EDIT child ──────────────────────────────────────────
-    let edit_hwnd = match unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            windows::core::w!("EDIT"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP
-                | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32),
-            PAD, HEADER_H + PAD,
-            W - 2 * PAD,
-            H - HEADER_H - HINT_H - 2 * PAD,
-            hwnd,
-            HMENU(EDIT_ID as _),
-            hi,
-            None,
-        )
-    } {
-        Ok(h) => { qn_log(format!("run(): edit hwnd={h:?}")); h },
-        Err(e) => { qn_log(format!("run(): CreateWindowEx EDIT failed: {e}")); unsafe { let _ = DestroyWindow(hwnd); } if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
+    // ── Create EDIT child via TextHost ─────────────────────────────
+    let brush_color = if theme.surface.a == 255 {
+        theme.surface
+    } else {
+        theme.surface.blend_over(theme.background)
     };
-    unsafe {
-        let _ = SendMessageW(edit_hwnd, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _), LPARAM(1));
-        // A little breathing room inside the strict borderless EDIT.
-        let _ = SendMessageW(edit_hwnd, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM((8 | (8 << 16)) as isize));
-    }
-
-    // Subclass EDIT to intercept Enter/Escape
-    let old_edit_proc = unsafe {
-        SetWindowLongPtrW(edit_hwnd, GWLP_WNDPROC, edit_wndproc as *const () as isize)
-    };
-    // Store old proc in EDIT's GWLP_USERDATA
-    unsafe {
-        SetWindowLongPtrW(edit_hwnd, GWLP_USERDATA, old_edit_proc);
-    }
+    let text_host = TextHost::create(
+        TextHostKind::RichEdit,
+        hwnd,
+        PAD, HEADER_H + PAD,
+        W - 2 * PAD,
+        H - HEADER_H - HINT_H - 2 * PAD,
+        (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32,
+        edit_wndproc,
+        brush_color,
+    ).expect("TextHost::create failed");
+    text_host.set_margins(8, 8);
+    qn_log(format!("run(): edit hwnd={:?}", text_host.hwnd()));
 
     // ── State ──────────────────────────────────────────────────────
-    let edit_brush = unsafe { CreateSolidBrush(gdi_theme_color(theme.surface, theme.background).to_colorref()) };
-    let mut st = WndState { notes_dir, bb, edit_hwnd, edit_brush, theme };
+    let mut st = WndState { notes_dir, bb, text_host, theme };
     let state_ptr: *mut WndState = &mut st;
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
 
@@ -224,7 +202,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     unsafe {
         qn_log("run(): show + focus");
         let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-        steal_focus(hwnd, edit_hwnd);
+        st.text_host.focus(hwnd);
     }
 
     // ── Message loop (classic GetMessageW) ─────────────────────────
@@ -276,7 +254,7 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         WM_APP_SAVE => {
             qn_log("wndproc: WM_APP_SAVE");
             if let Some(st) = s() {
-                let text = get_edit_text(st.edit_hwnd);
+                let text = st.text_host.get_text();
                 save(&st.notes_dir, &text, st.bb);
             }
             unsafe { let _ = DestroyWindow(hwnd); }
@@ -303,12 +281,8 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             // Mark inactive immediately. This avoids a stale HWND if the hotkey
             // is pressed again while the window thread is still unwinding.
             if let Ok(mut g) = CTRL.lock() { *g = None; }
-            if let Some(st) = s() {
-                if !st.edit_brush.is_invalid() {
-                    unsafe { let _ = DeleteObject(st.edit_brush); }
-                    st.edit_brush = HBRUSH::default();
-                }
-            }
+            // TextHost::drop will clean up the EDIT background brush.
+            // The EDIT child is destroyed automatically by DestroyWindow.
             unsafe { PostQuitMessage(0); }
             LRESULT(0)
         }
@@ -334,11 +308,11 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let hdc = HDC(wp.0 as *mut _);
                 unsafe {
                     let _ = SetBkMode(hdc, OPAQUE);
-                    let surface = gdi_theme_color(st.theme.surface, st.theme.background);
+                    let surface = st.theme.surface.blend_over(st.theme.background);
                     let _ = SetBkColor(hdc, surface.to_colorref());
                     let _ = SetTextColor(hdc, st.theme.text.to_colorref());
                 }
-                return LRESULT(st.edit_brush.0 as isize);
+                return LRESULT(st.text_host.brush().0 as isize);
             }
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
@@ -400,12 +374,14 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
 
-        let bg = CreateSolidBrush(gdi_theme_color(st.theme.background, Argb::new(255, 0, 0, 0)).to_colorref());
+        let bg_b = st.theme.background.blend_over(Argb::new(255, 0, 0, 0));
+        let bg = CreateSolidBrush(bg_b.to_colorref());
         let _ = FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg);
 
         // Thin strict border around the popup.
-        let pen = CreatePen(PS_SOLID, 1, gdi_theme_color(st.theme.border, st.theme.background).to_colorref());
+        let pen_color = st.theme.border.blend_over(st.theme.background);
+        let pen = CreatePen(PS_SOLID, 1, pen_color.to_colorref());
         let old_pen = SelectObject(hdc, pen);
         let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
         let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
@@ -449,19 +425,7 @@ fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
     unsafe { let _ = DrawTextW(hdc, &mut wz, rc as *mut RECT, fmt); }
 }
 
-fn get_edit_text(hwnd: HWND) -> String {
-    unsafe {
-        let len = GetWindowTextLengthW(hwnd);
-        // GetWindowTextLengthW returns 0 for empty text and may return a
-        // negative value on error/invalid HWND. Never cast a negative value
-        // to usize — it becomes huge and panics with capacity overflow.
-        if len <= 0 { return String::new(); }
-        let mut buf = vec![0u16; (len + 1) as usize];
-        let copied = GetWindowTextW(hwnd, &mut buf);
-        buf.truncate(copied.max(0) as usize);
-        String::from_utf16_lossy(&buf)
-    }
-}
+// get_edit_text moved to crate::win32::text_host::get_edit_text
 
 // ─── Save ─────────────────────────────────────────────────────────────
 
@@ -521,31 +485,6 @@ fn is_leap(y: i64) -> bool {
 
 // ─── Win32 helpers ─────────────────────────────────────────────────────
 
-unsafe fn steal_focus(hwnd: HWND, edit_hwnd: HWND) {
-    let our_tid = unsafe { GetCurrentThreadId() };
-    let fore_tid = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
-    if fore_tid != our_tid && fore_tid != 0 {
-        let _ = unsafe { AttachThreadInput(fore_tid, our_tid, true) };
-    }
-    let _ = unsafe { SetForegroundWindow(hwnd) };
-    let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd) };
-    if fore_tid != our_tid && fore_tid != 0 {
-        let _ = unsafe { AttachThreadInput(fore_tid, our_tid, false) };
-    }
-}
-
-fn gdi_theme_color(color: Argb, background: Argb) -> Argb {
-    if color.a == 255 {
-        color
-    } else {
-        color.blend_over(background)
-    }
-}
-
-fn to_utf16_z(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 fn work_area() -> RECT {
     unsafe {
         let mut r = std::mem::zeroed();
@@ -565,7 +504,7 @@ mod tests {
     fn test_date_epoch_0() { assert_eq!(date_str_from_epoch(0), "1970-01-01"); }
     #[test]
     fn test_get_edit_text_empty() {
-        assert!(get_edit_text(HWND::default()).is_empty());
+        assert!(crate::win32::text_host::get_edit_text(HWND::default()).is_empty());
     }
 
     fn date_str_from_epoch(secs: u64) -> String {

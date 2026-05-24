@@ -5,17 +5,15 @@
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
-use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
     WAIT_EVENT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, FillRect, GetDC, GetMonitorInfoW, InvalidateRect, MonitorFromWindow,
-    ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
+    CreateSolidBrush, DeleteObject,
+    DrawTextW, FillRect, GetMonitorInfoW, InvalidateRect, MonitorFromWindow,
+    SelectObject, SetBkMode, SetTextColor,
     DRAW_TEXT_FORMAT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
-    FF_DONTCARE, FW_NORMAL, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    OUT_DEFAULT_PRECIS, RGBQUAD, TRANSPARENT, AC_SRC_ALPHA, AC_SRC_OVER,
+    HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
@@ -31,10 +29,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture,
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetDesktopWindow,
     GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
-    PostMessageW, RegisterClassW, SetTimer, ShowWindow, UpdateLayeredWindow,
+    PostMessageW, RegisterClassW, SetTimer, ShowWindow,
     CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
     SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-    GWLP_USERDATA, ULW_ALPHA, WM_ACTIVATE, WM_APP, WM_KEYDOWN,
+    GWLP_USERDATA, WM_ACTIVATE, WM_APP, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_TIMER, WM_SYSCOMMAND,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     WNDCLASSW, MSG,
@@ -657,27 +655,16 @@ fn hit_pcancel(x: i32, y: i32, sc: f32) -> bool {
 // ── Main window painting ──────────────────────────────────────────────
 
 fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
-    let dc = unsafe { GetDC(hwnd) };
-    if dc.is_invalid() { return; }
-    let mem = unsafe { CreateCompatibleDC(dc) };
-    if mem.is_invalid() { unsafe { let _ = ReleaseDC(hwnd, dc); } return; }
-
-    let (dib, bits) = make_dib(mem, w, h);
-    let _ob = unsafe { SelectObject(mem, dib) };
-    unsafe {
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-        crate::osd::painter::draw_rounded_rect(
-            pixels,
-            w,
-            h,
-            (RADIUS as f32 * sc) as i32,
-            st.theme.background,
-        );
-    }
-    let font = make_font(14, sc);
+    let mut frame = match crate::renderer::DibFrame::new(w, h) {
+        Some(f) => f,
+        None => return,
+    };
+    let pixels = frame.pixels_mut();
+    crate::osd::draw_rounded_rect(pixels, w, h, (RADIUS as f32 * sc) as i32, st.theme.background);
+    let mem = frame.dc();
+    let font = crate::osd::create_font(-(14.0 * sc) as i32, false, "Segoe UI");
     let _of = unsafe { SelectObject(mem, font) };
 
-    let bg = st.theme.background;
     let fg = st.theme.text;
     let accent = st.theme.accent;
     let dim = st.theme.text_muted;
@@ -808,24 +795,16 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
 
-    crate::osd::painter::fix_gdi_alpha(bits, w, h, bg);
+    frame.fix_gdi_alpha(st.theme.background);
 
     // ── Blit ──
     unsafe {
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8, BlendFlags: 0,
-            SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8,
-        };
         let mut wr = RECT::default();
         let _ = GetWindowRect(hwnd, &mut wr);
-        let pt_dst = POINT { x: wr.left, y: wr.top };
-        let pt_src = POINT { x: 0, y: 0 };
-        let sz = SIZE { cx: w, cy: h };
-        let _ = UpdateLayeredWindow(hwnd, HDC::default(), Some(&pt_dst), Some(&sz),
-                                    mem, Some(&pt_src), COLORREF(0), Some(&blend), ULW_ALPHA);
+        frame.present_layered(hwnd, wr.left, wr.top, 255);
     }
 
-    unsafe { let _ = DeleteObject(font); _ = DeleteObject(dib); _ = DeleteDC(mem); _ = ReleaseDC(hwnd, dc); }
+    unsafe { let _ = DeleteObject(font); }
 }
 
 // ── Countdown painting ────────────────────────────────────────────────
@@ -834,25 +813,14 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
     let w = (280.0 * sc) as i32;
     let h = (130.0 * sc) as i32;
 
-    let dc = unsafe { GetDC(hwnd) };
-    if dc.is_invalid() { return; }
-    let mem = unsafe { CreateCompatibleDC(dc) };
-    if mem.is_invalid() { unsafe { let _ = ReleaseDC(hwnd, dc); } return; }
-
-    let (dib, bits) = make_dib(mem, w, h);
-    let _ob = unsafe { SelectObject(mem, dib) };
+    let mut frame = match crate::renderer::DibFrame::new(w, h) {
+        Some(f) => f,
+        None => return,
+    };
     let bg = Argb { a: 230, r: 30, g: 30, b: 30 };
-    unsafe {
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-        crate::osd::painter::draw_rounded_rect(
-            pixels,
-            w,
-            h,
-            (RADIUS as f32 * sc) as i32,
-            bg,
-        );
-    }
-    let font = make_font(14, sc);
+    crate::osd::draw_rounded_rect(frame.pixels_mut(), w, h, (RADIUS as f32 * sc) as i32, bg);
+    let mem = frame.dc();
+    let font = crate::osd::create_font(-(14.0 * sc) as i32, false, "Segoe UI");
     let _of = unsafe { SelectObject(mem, font) };
 
     let fg = Argb { a: 255, r: 220, g: 220, b: 220 };
@@ -885,50 +853,23 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
        &mut rct(bx, by, bx + bw, by + bh),
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-    crate::osd::painter::fix_gdi_alpha(bits, w, h, bg);
+    frame.fix_gdi_alpha(bg);
 
     unsafe {
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8, BlendFlags: 0,
-            SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8,
-        };
         let mut wr = RECT::default();
         let _ = GetWindowRect(hwnd, &mut wr);
-        let pt_dst = POINT { x: wr.left, y: wr.top };
-        let pt_src = POINT { x: 0, y: 0 };
-        let sz = SIZE { cx: w, cy: h };
-        let _ = UpdateLayeredWindow(hwnd, HDC::default(), Some(&pt_dst), Some(&sz),
-                                    mem, Some(&pt_src), COLORREF(0), Some(&blend), ULW_ALPHA);
+        frame.present_layered(hwnd, wr.left, wr.top, 255);
     }
 
-    unsafe { let _ = DeleteObject(font); _ = DeleteObject(dib); _ = DeleteDC(mem); _ = ReleaseDC(hwnd, dc); }
+    unsafe { let _ = DeleteObject(font); }
 }
 
 // ── Drawing helpers ────────────────────────────────────────────────────
 
-fn make_dib(dc: HDC, w: i32, h: i32) -> (windows::Win32::Graphics::Gdi::HBITMAP, *mut c_void) {
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32,
-            biCompression: 0, ..Default::default()
-        },
-        bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }; 1],
-    };
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let dib = unsafe { CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default() };
-    (dib, bits)
-}
 
 fn make_font(size: i32, sc: f32) -> windows::Win32::Graphics::Gdi::HFONT {
     let h = (size as f32 * sc) as i32;
-    let name = to_utf16_z("Segoe UI");
-    unsafe {
-        CreateFontW(-h, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0,
-            DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32,
-            CLIP_DEFAULT_PRECIS.0 as u32, DEFAULT_QUALITY.0 as u32,
-            FF_DONTCARE.0 as u32, PCWSTR::from_raw(name.as_ptr()))
-    }
+    crate::osd::create_font(-h, false, "Segoe UI")
 }
 
 fn fill_rect(dc: HDC, x1: i32, y1: i32, x2: i32, y2: i32, color: Argb) {

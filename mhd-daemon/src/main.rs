@@ -50,6 +50,8 @@ mod ddc;
 mod config;
 mod overlays;
 mod osd;
+pub mod renderer;
+pub mod win32;
 #[cfg(feature = "debug-dump")]
 mod crash_dump;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.

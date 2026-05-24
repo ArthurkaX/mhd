@@ -23,12 +23,12 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::AttachThreadInput;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::SendHwnd;
 use crate::core::native_theme::Argb;
+use crate::win32::text_host::{TextHost, TextHostKind};
 
 // ── Manual FFI ────────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ const BTN_H: i32 = 30;
 const BTN_W: i32 = 72;
 const DAEMON_CLS: &str = "mhd_pomodoro_daemon_cls";
 const OVERLAY_CLS: &str = "mhd_pomodoro_overlay_cls";
-const EDIT_ID: usize = 100;
+
 const TIMER_ID: usize = 1;
 
 const DEFAULT_WORK_SECS: u32 = 25 * 60;
@@ -210,34 +210,22 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
         unsafe { let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), theme.background.a, LWA_ALPHA); }
     }
 
-    // ── Create EDIT ──────────────────────────────────────────────
-    let edit_hwnd = match unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            windows::core::w!("EDIT"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE((ES_AUTOHSCROLL) as u32),
-            PAD, HEADER_H + PAD,
-            WIN_W - 2 * PAD, INPUT_H,
-            hwnd,
-            HMENU(EDIT_ID as _),
-            hi,
-            None,
-        )
-    } {
-        Ok(h) => h,
-        Err(e) => { plog(format!("create EDIT failed: {e}")); unsafe { let _ = DestroyWindow(hwnd); } return; }
+    // ── Create EDIT via TextHost ──────────────────────────────────
+    let brush_color = if theme.surface.a == 255 {
+        theme.surface
+    } else {
+        theme.surface.blend_over(theme.background)
     };
-    unsafe {
-        let _ = SendMessageW(edit_hwnd, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _), LPARAM(1));
-        let placeholder = to_utf16_z("Task name (optional)");
-        let _ = SendMessageW(edit_hwnd, WM_SETTEXT, WPARAM(0), LPARAM(placeholder.as_ptr() as isize));
-    }
-
-    let old_edit_proc = unsafe { SetWindowLongPtrW(edit_hwnd, GWLP_WNDPROC, edit_wndproc as *const () as isize) };
-    unsafe { SetWindowLongPtrW(edit_hwnd, GWLP_USERDATA, old_edit_proc); }
-
-    let edit_brush = unsafe { CreateSolidBrush(gdi_color(theme.surface, theme.background).to_colorref()) };
+    let text_host = TextHost::create(
+        TextHostKind::Edit,
+        hwnd,
+        PAD, HEADER_H + PAD,
+        WIN_W - 2 * PAD, INPUT_H,
+        ES_AUTOHSCROLL as u32,
+        edit_wndproc,
+        brush_color,
+    ).expect("TextHost::create failed");
+    text_host.set_text("Task name (optional)");
 
     // Save theme + bb in daemon state
     {
@@ -247,19 +235,9 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
         st.bb = bb;
         // If daemon is running, update task name from overlay
         if !st.task_name.is_empty() {
-            let _ = unsafe { SendMessageW(edit_hwnd, WM_SETTEXT, WPARAM(0), LPARAM(to_utf16_z(&st.task_name).as_ptr() as isize)) };
+            text_host.set_text(&st.task_name);
         }
     }
-
-    // Store reference to shared state
-    let state_box = Box::into_raw(Box::new(OverlayState {
-        state: state.clone(),
-        edit_hwnd,
-        edit_brush,
-        theme: theme.clone(),
-        _bb: bb,
-    }));
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_box as isize); }
 
     // Centre
     let wa = work_area();
@@ -267,11 +245,20 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
     let y = wa.top + (wa.bottom - wa.top - WIN_H) / 2;
     unsafe { let _ = SetWindowPos(hwnd, HWND::default(), x, y, WIN_W, WIN_H, SWP_NOZORDER); }
 
-    // Show + focus
+    // Show + focus (before text_host is moved into state)
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-        steal_focus(hwnd, edit_hwnd);
+        text_host.focus(hwnd);
     }
+
+    // Store reference to shared state
+    let state_box = Box::into_raw(Box::new(OverlayState {
+        state: state.clone(),
+        text_host,
+        theme: theme.clone(),
+        _bb: bb,
+    }));
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_box as isize); }
 
     // Register with daemon
     let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
@@ -310,8 +297,7 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
 
 struct OverlayState {
     state: Arc<Mutex<PomodoroState>>,
-    edit_hwnd: HWND,
-    edit_brush: HBRUSH,
+    text_host: TextHost,
     theme: crate::core::native_theme::NativeTheme,
     _bb: bool,
 }
@@ -359,9 +345,10 @@ unsafe extern "system" fn overlay_wndproc(
 
         WM_CTLCOLOREDIT => {
             let hdc = HDC(wparam.0 as _);
-            let _ = SetBkColor(hdc, gdi_color(os.theme.surface, os.theme.background).to_colorref());
+            let surface = os.theme.surface.blend_over(os.theme.background);
+            let _ = SetBkColor(hdc, surface.to_colorref());
             let _ = SetTextColor(hdc, os.theme.text.to_colorref());
-            LRESULT(os.edit_brush.0 as _)
+            LRESULT(os.text_host.brush().0 as _)
         }
 
         WM_POM_UPDATE => {
@@ -374,10 +361,10 @@ unsafe extern "system" fn overlay_wndproc(
             let code = (wparam.0 >> 16) as u32;
             if code == EN_UPDATE {
                 let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
-                let len = SendMessageW(os.edit_hwnd, WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0 as usize;
+                let len = SendMessageW(os.text_host.hwnd(), WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0 as usize;
                 if len > 0 && daemon_hwnd != HWND::default() {
                     let mut buf = vec![0u16; len + 1];
-                    SendMessageW(os.edit_hwnd, WM_GETTEXT, WPARAM(buf.len()), LPARAM(buf.as_mut_ptr() as isize));
+                    SendMessageW(os.text_host.hwnd(), WM_GETTEXT, WPARAM(buf.len()), LPARAM(buf.as_mut_ptr() as isize));
                     // Send task name to daemon as a heap-allocated string
                     let s = String::from_utf16_lossy(&buf[..len]).trim().to_string();
                     let s_box = Box::into_raw(Box::new(s));
@@ -929,18 +916,6 @@ fn work_area() -> RECT {
     }
 }
 
-fn steal_focus(parent: HWND, child: HWND) {
-    unsafe {
-        let our_tid = GetWindowThreadProcessId(parent, None);
-        let fore_tid = GetWindowThreadProcessId(GetForegroundWindow(), None);
-        if our_tid != fore_tid {
-            let _ = AttachThreadInput(our_tid, fore_tid, TRUE);
-            let _ = SetForegroundWindow(parent);
-            let _ = AttachThreadInput(our_tid, fore_tid, FALSE);
-        }
-        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(child);
-    }
-}
 
 fn epoch_secs() -> u64 {
     SystemTime::now()

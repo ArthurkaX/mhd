@@ -5,22 +5,20 @@
 //! interactive: click/drag on a volume bar to adjust, press Escape
 //! to close.
 
-use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
 
 use windows::core::{GUID, PCWSTR};
 use windows::Win32::Foundation::{
-    COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WAIT_EVENT, WAIT_OBJECT_0, WPARAM,
+    HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_EVENT, WAIT_OBJECT_0, WPARAM,
     CloseHandle,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, FillRect, GetDC, MonitorFromWindow, GetMonitorInfoW, ReleaseDC, SelectObject,
-    SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CLIP_DEFAULT_PRECIS,
-    DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT, DT_RIGHT,
-    DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_NORMAL, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    OUT_DEFAULT_PRECIS, RGBQUAD, TRANSPARENT, AC_SRC_ALPHA, AC_SRC_OVER,
+    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, MonitorFromWindow, GetMonitorInfoW,
+    SelectObject, SetBkMode, SetTextColor,
+    DT_END_ELLIPSIS, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    TRANSPARENT,
 };
 use windows::Win32::Media::Audio::{
     eMultimedia, eRender, IAudioSessionControl, IAudioSessionControl2,
@@ -44,9 +42,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow,
     GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
-    RegisterClassW, SetCursor, SetTimer, ShowWindow, TranslateMessage, UpdateLayeredWindow,
+    RegisterClassW, SetCursor, SetTimer, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ULW_ALPHA, WM_ACTIVATE, WM_KEYDOWN,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_ACTIVATE, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR,
     WM_TIMER,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -570,8 +568,6 @@ fn paint_mixer(
     width: i32,
     scale: f32,
 ) {
-    let screen_dc = unsafe { GetDC(None) };
-
     let row_count = state.sessions.len() as i32;
     let pad = (PAD_BASE as f32 * scale) as i32;
     let font_h = -(14.0 * scale) as i32;
@@ -587,67 +583,22 @@ fn paint_mixer(
         let _ = SetWindowPos(hwnd, None, 0, 0, width, total_h, SWP_NOMOVE | SWP_NOZORDER);
     }
 
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -total_h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: 0,
-            biSizeImage: 0,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        },
-        bmiColors: [RGBQUAD::default(); 1],
+    // DibFrame handles DIB creation, cleanup, and presenting.
+    let mut frame = match crate::renderer::DibFrame::new(width, total_h) {
+        Some(f) => f,
+        None => return,
     };
-
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let dib = unsafe { CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) };
-    let Ok(dib) = dib else {
-        unsafe { let _ = ReleaseDC(None, screen_dc); }
-        return;
-    };
-
-    let dib_dc = unsafe { CreateCompatibleDC(screen_dc) };
-    let old_bmp = unsafe { SelectObject(dib_dc, dib) };
-
     let theme = &state.theme;
     let radius = (RADIUS_BASE as f32 * scale) as i32;
+    crate::osd::draw_rounded_rect(frame.pixels_mut(), width, total_h, radius, theme.background);
 
+    let hfont = crate::osd::create_font(font_h, false, "Segoe UI");
+    let hfont_small = crate::osd::create_font(font_small_h, false, "Segoe UI");
+
+    let old_font = unsafe { SelectObject(frame.dc(), hfont) };
     unsafe {
-        let pixels = std::slice::from_raw_parts_mut(
-            bits as *mut u32,
-            (width * total_h) as usize,
-        );
-        crate::osd::painter::draw_rounded_rect(pixels, width, total_h, radius, theme.background);
-    }
-
-    let font_name = crate::osd::to_utf16_z("Segoe UI");
-
-    let hfont = unsafe {
-        CreateFontW(
-            font_h, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0,
-            DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32,
-            CLIP_DEFAULT_PRECIS.0 as u32, DEFAULT_QUALITY.0 as u32,
-            FF_DONTCARE.0 as u32, PCWSTR::from_raw(font_name.as_ptr()),
-        )
-    };
-    let hfont_small = unsafe {
-        CreateFontW(
-            font_small_h, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0,
-            DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32,
-            CLIP_DEFAULT_PRECIS.0 as u32, DEFAULT_QUALITY.0 as u32,
-            FF_DONTCARE.0 as u32, PCWSTR::from_raw(font_name.as_ptr()),
-        )
-    };
-
-    let old_font = unsafe { SelectObject(dib_dc, hfont) };
-    unsafe {
-        let _ = SetBkMode(dib_dc, TRANSPARENT);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+        let _ = SetBkMode(frame.dc(), TRANSPARENT);
+        let _ = SetTextColor(frame.dc(), theme.text.to_colorref());
     }
 
     // ── Header ──
@@ -661,7 +612,7 @@ fn paint_mixer(
     let mut header_wz = crate::osd::to_utf16_z("Volume Mixer");
     unsafe {
         let _ = DrawTextW(
-            dib_dc, &mut header_wz, &mut header_rc,
+            frame.dc(), &mut header_wz, &mut header_rc,
             DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
     }
@@ -669,12 +620,12 @@ fn paint_mixer(
     // Count
     let count_str = format!("{} sessions", state.sessions.len());
     unsafe {
-        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        let _ = SetTextColor(frame.dc(), theme.text_muted.to_colorref());
     }
     let mut count_wz = crate::osd::to_utf16_z(&count_str);
     unsafe {
         let _ = DrawTextW(
-            dib_dc, &mut count_wz, &mut header_rc,
+            frame.dc(), &mut count_wz, &mut header_rc,
             DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
     }
@@ -687,14 +638,14 @@ fn paint_mixer(
             left: pad, top: sep_y, right: width - pad, bottom: sep_y + 1,
         };
         unsafe {
-            let _ = FillRect(dib_dc, &sep_rc, sep_brush);
+            let _ = FillRect(frame.dc(), &sep_rc, sep_brush);
             let _ = DeleteObject(sep_brush);
         }
     }
 
     // ── Rows ──
     unsafe {
-        let _ = SelectObject(dib_dc, hfont_small);
+        let _ = SelectObject(frame.dc(), hfont_small);
     }
 
     let bar_h = (BAR_HEIGHT_BASE as f32 * scale).max(3.0) as i32;
@@ -709,7 +660,7 @@ fn paint_mixer(
         // App name
         unsafe {
             let text_color = if i == 0 { theme.accent } else { theme.text };
-            let _ = SetTextColor(dib_dc, text_color.to_colorref());
+            let _ = SetTextColor(frame.dc(), text_color.to_colorref());
         }
         let mut name_rc = RECT {
             left: pad,
@@ -720,7 +671,7 @@ fn paint_mixer(
         let mut name_wz = crate::osd::to_utf16_z(&session.name);
         unsafe {
             let _ = DrawTextW(
-                dib_dc, &mut name_wz, &mut name_rc,
+                frame.dc(), &mut name_wz, &mut name_rc,
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
             );
         }
@@ -733,7 +684,7 @@ fn paint_mixer(
             left: bar_x, top: bar_y, right: bar_x + bar_max_w, bottom: bar_y + bar_h,
         };
         unsafe {
-            let _ = FillRect(dib_dc, &track_rc, track_brush);
+            let _ = FillRect(frame.dc(), &track_rc, track_brush);
             let _ = DeleteObject(track_brush);
         }
 
@@ -745,7 +696,7 @@ fn paint_mixer(
             left: bar_x, top: bar_y, right: bar_x + fill_w, bottom: bar_y + bar_h,
         };
         unsafe {
-            let _ = FillRect(dib_dc, &fill_rc, fill_brush);
+            let _ = FillRect(frame.dc(), &fill_rc, fill_brush);
             let _ = DeleteObject(fill_brush);
         }
 
@@ -756,12 +707,12 @@ fn paint_mixer(
             left: pct_x, top: row_y, right: pct_x + 44, bottom: row_y + row_h,
         };
         unsafe {
-            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            let _ = SetTextColor(frame.dc(), theme.text_muted.to_colorref());
         }
         let mut pct_wz = crate::osd::to_utf16_z(&pct);
         unsafe {
             let _ = DrawTextW(
-                dib_dc, &mut pct_wz, &mut pct_rc,
+                frame.dc(), &mut pct_wz, &mut pct_rc,
                 DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
             );
         }
@@ -776,50 +727,26 @@ fn paint_mixer(
                 bottom: master_sep_y + 1,
             };
             unsafe {
-                let _ = FillRect(dib_dc, &sep_rc, sep_brush);
+                let _ = FillRect(frame.dc(), &sep_rc, sep_brush);
                 let _ = DeleteObject(sep_brush);
             }
         }
     }
 
     unsafe {
-        let _ = SelectObject(dib_dc, old_font);
+        let _ = SelectObject(frame.dc(), old_font);
         let _ = DeleteObject(hfont);
         let _ = DeleteObject(hfont_small);
     }
 
-    crate::osd::painter::fix_gdi_alpha(bits, width, total_h, theme.background);
+    frame.fix_gdi_alpha(theme.background);
 
-    let blend = BLENDFUNCTION {
-        BlendOp: AC_SRC_OVER as u8,
-        BlendFlags: 0,
-        SourceConstantAlpha: 255,
-        AlphaFormat: AC_SRC_ALPHA as u8,
-    };
-
-    let pt_src = POINT { x: 0, y: 0 };
-    let sz = SIZE { cx: width, cy: total_h };
     let pt_dst = *state.window_pos.get_or_insert_with(|| POINT {
         x: work.left + (work.right - work.left - width) / 2,
         y: work.top + (work.bottom - work.top - total_h) / 2,
     });
 
-    unsafe {
-        let _ = UpdateLayeredWindow(
-            hwnd, HDC::default(),
-            Some(&pt_dst), Some(&sz),
-            dib_dc, Some(&pt_src),
-            COLORREF(0), Some(&blend),
-            ULW_ALPHA,
-        );
-    }
-
-    unsafe {
-        let _ = SelectObject(dib_dc, old_bmp);
-        let _ = DeleteObject(dib);
-        let _ = DeleteDC(dib_dc);
-        let _ = ReleaseDC(None, screen_dc);
-    }
+    frame.present_layered(hwnd, pt_dst.x, pt_dst.y, 255);
 }
 
 // ── Interaction ────────────────────────────────────────────────────────
