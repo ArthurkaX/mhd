@@ -46,7 +46,7 @@ pub(crate) mod blackbox {
     }
 }
 mod app;
-mod monitor;
+mod ddc;
 mod config;
 mod overlays;
 mod osd;
@@ -55,7 +55,7 @@ mod crash_dump;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
 pub use core::{action, hook, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
-pub use overlays::{about, autostart, monitor_panel, power, quickdraw, quicknote, topmost, tray, volume_mixer};
+pub use overlays::{about, autostart, draw, monitor, note, power, topmost, tray, volume};
 // Re-export config/editor as config_editor for backward compat.
 pub use config::editor as config_editor;
 
@@ -171,7 +171,7 @@ fn main() -> ExitCode {
     }
 
     if debug_quicknote {
-        quicknote::set_debug_logging(true);
+        note::set_debug_logging(true);
         unsafe {
             if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
                 let _ = AllocConsole();

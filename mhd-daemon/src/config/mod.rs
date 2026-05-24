@@ -9,7 +9,7 @@ use crate::action::Action;
 use crate::trigger::parse_trigger;
 #[cfg(feature = "blackbox")]
 use crate::blackbox::BlackboxConfig;
-use crate::overlays::quicknote::QuickNoteConfig;
+use crate::overlays::note::QuickNoteConfig;
 use crate::config::path::home_dir;
 use self::raw::RawConfig;
 

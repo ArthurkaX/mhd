@@ -27,6 +27,8 @@ struct HookState {
     /// Lock‑free flags for mouse buttons whose up should be swallowed.
     /// Bit 0 = XBUTTON1, bit 1 = XBUTTON2, bit 2 = MBUTTON.
     swallowed_mouse: AtomicU8,
+    /// When `true`, all hotkey processing is suspended (tray toggle).
+    suspended: AtomicBool,
 }
 
 /// Wrapper to make HHOOK Send+Sync safe.
@@ -98,6 +100,7 @@ fn run_impl(handle: AppHandle, tx: ActionSender) -> Result<(), String> {
         tx,
         swallowed_keys: Box::new([const { AtomicBool::new(false) }; 256]),
         swallowed_mouse: AtomicU8::new(0),
+        suspended: AtomicBool::new(false),
     });
     let state_ref: &'static HookState = Box::leak(state);
     let _ = HOOK_STATE.set(state_ref);
@@ -139,6 +142,25 @@ fn cleanup() {
     // OnceLock state is intentionally leaked — the process is exiting or
     // about to exit, so cleanup is not necessary. No more callbacks can
     // fire because the hooks are uninstalled.
+}
+
+/// Toggle the suspended state of all hotkey processing.
+/// Returns the new state (`true` = suspended).
+pub fn toggle_suspended() -> bool {
+    let state = HOOK_STATE.get();
+    match state {
+        Some(s) => {
+            let new = !s.suspended.load(Ordering::Acquire);
+            s.suspended.store(new, Ordering::Release);
+            new
+        }
+        None => false,
+    }
+}
+
+/// Whether hotkey processing is currently suspended.
+pub fn is_suspended() -> bool {
+    HOOK_STATE.get().map_or(false, |s| s.suspended.load(Ordering::Acquire))
 }
 
 pub(crate) fn signal_tray_to_quit() {
@@ -249,6 +271,11 @@ unsafe extern "system" fn keyboard_hook_proc(
             Some(s) => s,
             None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
         };
+        // If suspended, pass through everything
+        if state.suspended.load(Ordering::Acquire) {
+            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+        }
+
         let kb_struct = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
         let vk = kb_struct.vkCode;
         let flags = kb_struct.flags;
@@ -314,6 +341,11 @@ unsafe extern "system" fn mouse_hook_proc(
             Some(s) => s,
             None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
         };
+        // If suspended, pass through everything
+        if state.suspended.load(Ordering::Acquire) {
+            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+        }
+
         let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         let msg_type = w_param.0 as u32;
 

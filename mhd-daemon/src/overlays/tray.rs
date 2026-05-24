@@ -20,34 +20,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, InsertMenuW, LoadImageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_GRAYED, MF_STRING, MSG,
+    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
     WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
-#[cfg(feature = "blackbox")]
-use windows::Win32::UI::WindowsAndMessaging::MF_CHECKED;
 
 use crate::app::{AppHandle, DaemonControl};
-use crate::monitor_panel;
-use crate::volume_mixer;
-use crate::power;
-use crate::quickdraw;
-use crate::quicknote;
+use crate::monitor;
+use crate::volume;
+use crate::draw;
+use crate::note;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
-const CMD_STATUS: usize = 1;
-const CMD_EDIT_CONFIG: usize = 2;
-const CMD_RELOAD: usize = 3;
-const CMD_VOLUME_MIXER: usize = 6;
-const CMD_MONITOR_PANEL: usize = 7;
-const CMD_POWER: usize = 8;
-const CMD_QUICK_DRAW: usize = 9;
-const CMD_QUICK_NOTE: usize = 11;
+const CMD_TOGGLE_SUSPEND: usize = 1;
 #[cfg(feature = "blackbox")]
-const CMD_BLACKBOX_TOGGLE: usize = 10;
-const CMD_ABOUT: usize = 4;
-const CMD_QUIT: usize = 5;
+const CMD_BLACKBOX_TOGGLE: usize = 2;
+const CMD_VOLUME: usize = 3;
+const CMD_MONITOR: usize = 4;
+const CMD_NOTE: usize = 5;
+const CMD_DRAW: usize = 6;
+const CMD_ABOUT: usize = 7;
+const CMD_QUIT: usize = 8;
 
 // ── State ──────────────────────────────────────────────────────────────
 
@@ -122,119 +116,67 @@ fn show_menu(hwnd: HWND) {
             None => return,
         };
 
-        let running = state.app.status();
-        let status_text = if running {
-            "Status: running\0"
+        // ── Top section: master toggle + blackbox ──────────────────
+
+        let suspended = crate::hook::is_suspended();
+        let mhd_flags = if !suspended {
+            MF_BYPOSITION | MF_STRING | MF_CHECKED
         } else {
-            "Status: stopped\0"
+            MF_BYPOSITION | MF_STRING
         };
-        let ws: Vec<u16> = status_text.encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            0,
-            MF_BYPOSITION | MF_STRING | MF_GRAYED,
-            CMD_STATUS,
-            PCWSTR::from_raw(ws.as_ptr()),
-        );
-
-        let edit: Vec<u16> = "Edit Config\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            1,
-            MF_BYPOSITION | MF_STRING,
-            CMD_EDIT_CONFIG,
-            PCWSTR::from_raw(edit.as_ptr()),
-        );
-
-        let reload: Vec<u16> = "Reload Config\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            2,
-            MF_BYPOSITION | MF_STRING,
-            CMD_RELOAD,
-            PCWSTR::from_raw(reload.as_ptr()),
-        );
-
-        let monitor_panel: Vec<u16> = "Monitor Control\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            3,
-            MF_BYPOSITION | MF_STRING,
-            CMD_MONITOR_PANEL,
-            PCWSTR::from_raw(monitor_panel.as_ptr()),
-        );
-
-        let volume_mixer: Vec<u16> = "Volume Mixer\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            4,
-            MF_BYPOSITION | MF_STRING,
-            CMD_VOLUME_MIXER,
-            PCWSTR::from_raw(volume_mixer.as_ptr()),
-        );
-
-        let power_ctrl: Vec<u16> = "Power Control\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            5,
-            MF_BYPOSITION | MF_STRING,
-            CMD_POWER,
-            PCWSTR::from_raw(power_ctrl.as_ptr()),
-        );
-
-        let quick_draw: Vec<u16> = "Quick Draw\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            6,
-            MF_BYPOSITION | MF_STRING,
-            CMD_QUICK_DRAW,
-            PCWSTR::from_raw(quick_draw.as_ptr()),
-        );
-
-        let quick_note: Vec<u16> = "Quick Note\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            7,
-            MF_BYPOSITION | MF_STRING,
-            CMD_QUICK_NOTE,
-            PCWSTR::from_raw(quick_note.as_ptr()),
-        );
+        let mhd_text: Vec<u16> = "mhd on/off\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 0, mhd_flags, CMD_TOGGLE_SUSPEND, PCWSTR::from_raw(mhd_text.as_ptr()));
 
         #[cfg(feature = "blackbox")]
         {
-            let bb_text = if state.app.blackbox_enabled() { "Blackbox: on\0" } else { "Blackbox: off\0" };
-            let bb_label: Vec<u16> = bb_text.encode_utf16().collect();
-            let bb_flags = if state.app.blackbox_enabled() {
+            let bb_enabled = state.app.blackbox_enabled();
+            let bb_flags = if bb_enabled {
                 MF_BYPOSITION | MF_STRING | MF_CHECKED
             } else {
                 MF_BYPOSITION | MF_STRING
             };
-            let _ = InsertMenuW(
-                menu,
-                8,
-                bb_flags,
-                CMD_BLACKBOX_TOGGLE,
-                PCWSTR::from_raw(bb_label.as_ptr()),
-            );
+            let bb_text: Vec<u16> = "Blackbox on/off\0".encode_utf16().collect();
+            let _ = InsertMenuW(menu, 1, bb_flags, CMD_BLACKBOX_TOGGLE, PCWSTR::from_raw(bb_text.as_ptr()));
         }
 
-        let about: Vec<u16> = "About\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            if cfg!(feature = "blackbox") { 9 } else { 8 },
-            MF_BYPOSITION | MF_STRING,
-            CMD_ABOUT,
-            PCWSTR::from_raw(about.as_ptr()),
-        );
+        // Separator
+        let _ = InsertMenuW(menu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
 
-        let quit: Vec<u16> = "Quit mhd\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            if cfg!(feature = "blackbox") { 10 } else { 9 },
-            MF_BYPOSITION | MF_STRING,
-            CMD_QUIT,
-            PCWSTR::from_raw(quit.as_ptr()),
-        );
+        // ── Control group header ───────────────────────────────────
+
+        let ctrl_label: Vec<u16> = "Control\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 3, MF_BYPOSITION | MF_STRING | MF_GRAYED, 0, PCWSTR::from_raw(ctrl_label.as_ptr()));
+
+        let vol_text: Vec<u16> = "  Volume\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 4, MF_BYPOSITION | MF_STRING, CMD_VOLUME, PCWSTR::from_raw(vol_text.as_ptr()));
+
+        let mon_text: Vec<u16> = "  Monitor\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 5, MF_BYPOSITION | MF_STRING, CMD_MONITOR, PCWSTR::from_raw(mon_text.as_ptr()));
+
+        // Separator
+        let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+
+        // ── Actions group header ───────────────────────────────────
+
+        let act_label: Vec<u16> = "Actions\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 7, MF_BYPOSITION | MF_STRING | MF_GRAYED, 0, PCWSTR::from_raw(act_label.as_ptr()));
+
+        let note_text: Vec<u16> = "  Note\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 8, MF_BYPOSITION | MF_STRING, CMD_NOTE, PCWSTR::from_raw(note_text.as_ptr()));
+
+        let draw_text: Vec<u16> = "  Draw\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_STRING, CMD_DRAW, PCWSTR::from_raw(draw_text.as_ptr()));
+
+        // Separator
+        let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+
+        // ── Bottom section ─────────────────────────────────────────
+
+        let about_text: Vec<u16> = "About\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
+
+        let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 12, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
 
         let _ = SetForegroundWindow(hwnd);
 
@@ -302,37 +244,29 @@ unsafe extern "system" fn wnd_proc(
             let cmd = wparam.0;
             if let Some(state) = state_ref() {
                 match cmd {
-                    CMD_EDIT_CONFIG => {
-                        crate::config_editor::show_config_editor(state.app.clone());
+                    CMD_TOGGLE_SUSPEND => {
+                        crate::hook::toggle_suspended();
                     }
-                    CMD_RELOAD => {
-                        if let Err(e) = state.app.reload_config() {
-                            eprintln!("mhd: reload error: {e}");
-                        }
+                    #[cfg(feature = "blackbox")]
+                    CMD_BLACKBOX_TOGGLE => {
+                        state.app.toggle_blackbox();
                     }
-                    CMD_MONITOR_PANEL => {
-                        monitor_panel::show(state.app.theme());
+                    CMD_VOLUME => {
+                        volume::show(state.app.theme());
                     }
-                    CMD_VOLUME_MIXER => {
-                        volume_mixer::show(state.app.theme());
+                    CMD_MONITOR => {
+                        monitor::show(state.app.theme());
                     }
-                    CMD_POWER => {
-                        power::show(state.app.theme());
-                    }
-                    CMD_QUICK_DRAW => {
-                        quickdraw::show(state.app.theme());
-                    }
-                    CMD_QUICK_NOTE => {
+                    CMD_NOTE => {
                         let cfg = state.app.quicknote_config();
                         #[cfg(feature = "blackbox")]
                         let bb = state.app.blackbox_enabled();
                         #[cfg(not(feature = "blackbox"))]
                         let bb = false;
-                        quicknote::show(state.app.theme(), cfg.notes_dir.clone(), bb);
+                        note::show(state.app.theme(), cfg.notes_dir.clone(), bb);
                     }
-                    #[cfg(feature = "blackbox")]
-                    CMD_BLACKBOX_TOGGLE => {
-                        state.app.toggle_blackbox();
+                    CMD_DRAW => {
+                        draw::show(state.app.theme());
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());

@@ -2,11 +2,11 @@
 
 pub mod about;
 pub mod autostart;
-pub mod monitor_panel;
+pub mod monitor;
 pub mod power;
-pub mod quickdraw;
-pub mod quicknote;
+pub mod draw;
+pub mod note;
 pub mod pomodoro;
 pub mod topmost;
 pub mod tray;
-pub mod volume_mixer;
+pub mod volume;

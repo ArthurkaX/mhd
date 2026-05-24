@@ -19,7 +19,7 @@ use crate::action::Action;
 use crate::config::AppConfig;
 use crate::native_theme::NativeTheme;
 use crate::osd::OsdHandle;
-use crate::overlays::quicknote::QuickNoteConfig;
+use crate::overlays::note::QuickNoteConfig;
 use crate::trigger::Trigger;
 use crate::worker::{ActionSender, ActionWorker};
 

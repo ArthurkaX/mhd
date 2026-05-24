@@ -42,7 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, MSG,
 };
 
-use crate::monitor::{self, PhysicalMonitorHandle, PhysicalMonitorInfo, VcpValue};
+use crate::ddc::{self, PhysicalMonitorHandle, PhysicalMonitorInfo, VcpValue};
 use crate::native_theme::NativeTheme;
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -472,7 +472,7 @@ fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
 fn refresh_monitors(state: &mut PanelState) {
     state.monitors.clear();
 
-    let monitors = match monitor::enumerate_cursor_monitor() {
+    let monitors = match ddc::enumerate_cursor_monitor() {
         Ok(m) => m,
         Err(_) => return,
     };
@@ -495,7 +495,7 @@ fn detect_features(m: &PhysicalMonitorInfo) -> Vec<ParamInfo> {
         .capabilities()
         .ok()
         .and_then(|caps| {
-            let parsed = monitor::parse_capabilities_vcp(&caps);
+            let parsed = ddc::parse_capabilities_vcp(&caps);
             if parsed.is_empty() {
                 None
             } else {
@@ -506,7 +506,7 @@ fn detect_features(m: &PhysicalMonitorInfo) -> Vec<ParamInfo> {
     let mut params: Vec<ParamInfo> = Vec::new();
 
     // Helper: try to add a VCP-based feature
-    let try_add_vcp = |code: u8, supported: &Option<Vec<monitor::SupportedVcp>>| {
+    let try_add_vcp = |code: u8, supported: &Option<Vec<ddc::SupportedVcp>>| {
         if let Some(list) = supported {
             // Check if this code is in the capabilities list
             if list.iter().any(|sv| sv.code == code) {

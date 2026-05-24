@@ -2,10 +2,10 @@ use std::sync::mpsc;
 
 use crate::action::Action;
 use crate::app::{AppHandle, DaemonControl};
-use crate::monitor;
+use crate::ddc;
 use crate::platform;
-use crate::monitor_panel;
-use crate::volume_mixer;
+use crate::monitor;
+use crate::volume;
 use crate::power;
 
 /// Messages sent from hook callbacks to the worker thread.
@@ -110,16 +110,16 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         }
         Action::RunPs { command } => run_powershell(command),
         Action::ShowMonitorPanel => {
-            monitor_panel::show(handle.theme());
+            monitor::show(handle.theme());
         }
         Action::ShowVolumeMixer => {
-            volume_mixer::show(handle.theme());
+            volume::show(handle.theme());
         }
         Action::PowerActions => {
             power::show(handle.theme());
         }
         Action::QuickDraw => {
-            crate::overlays::quickdraw::show(handle.theme());
+            crate::overlays::draw::show(handle.theme());
         }
         Action::QuickNote => {
             let cfg = handle.quicknote_config();
@@ -129,7 +129,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 #[cfg(not(feature = "blackbox"))]
                 { false }
             };
-            crate::overlays::quicknote::show(handle.theme(), cfg.notes_dir.clone(), bb);
+            crate::overlays::note::show(handle.theme(), cfg.notes_dir.clone(), bb);
         }
         Action::Pomodoro => {
             let bb = {
@@ -141,29 +141,29 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             crate::overlays::pomodoro::show(handle.theme(), bb);
         }
         Action::BrightnessUp { value } => {
-            if monitor::adjust_brightness(*value as i32).is_ok() {
-                if let Ok((new_val, name)) = monitor::get_brightness() {
+            if ddc::adjust_brightness(*value as i32).is_ok() {
+                if let Ok((new_val, name)) = ddc::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
             }
         }
         Action::BrightnessDown { value } => {
-            if monitor::adjust_brightness(-(*value as i32)).is_ok() {
-                if let Ok((new_val, name)) = monitor::get_brightness() {
+            if ddc::adjust_brightness(-(*value as i32)).is_ok() {
+                if let Ok((new_val, name)) = ddc::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
             }
         }
         Action::SetBrightness { relative, value } => {
             let res = if *relative {
-                monitor::adjust_brightness(*value)
+                ddc::adjust_brightness(*value)
             } else {
-                monitor::set_brightness_absolute(*value as u32)
+                ddc::set_brightness_absolute(*value as u32)
             };
 
             match res {
                 Ok(_) => {
-                    if let Ok((new_val, name)) = monitor::get_brightness() {
+                    if let Ok((new_val, name)) = ddc::get_brightness() {
                         handle.osd.show_brightness(new_val, name);
                     }
                 }
@@ -172,11 +172,11 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         }
         Action::Vcp { code, relative, value } => {
             if *relative {
-                if let Err(e) = monitor::adjust_vcp_feature(*code, *value) {
+                if let Err(e) = ddc::adjust_vcp_feature(*code, *value) {
                     eprintln!("mhd: VCP error: {e}");
                 }
             } else {
-                if let Err(e) = monitor::set_vcp_feature(*code, *value as u32) {
+                if let Err(e) = ddc::set_vcp_feature(*code, *value as u32) {
                     eprintln!("mhd: VCP error: {e}");
                 }
             }
