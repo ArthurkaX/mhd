@@ -143,6 +143,7 @@ struct UIBinding {
 enum SettingsPage {
     General,
     Shortcuts,
+    Advanced,
 }
 
 /// Result from the centralized hit‑test function.
@@ -160,7 +161,8 @@ enum SettingsHit {
     /// Delete button on a shortcut row (with confirmation).
     RowDelete(usize),
     Scrollbar,
-    /// Generic button on the Advanced page (index identifies the button).
+    /// Button on the Advanced page (index identifies the button).
+    AdvancedButton(usize),
     // ── Shortcut editor panel ───────────────────────────────────
     /// Close / Cancel the editor panel.
     EditCancel,
@@ -187,6 +189,7 @@ enum HoverTarget {
     RowDelete(usize),
     Scrollbar,
     /// Hover target for a button on the Advanced page.
+    AdvancedBtn(usize),
     // ── Shortcut editor panel hovers ───────────────────────────
     EditCancel,
     EditSave,
@@ -502,7 +505,6 @@ pub fn show_config_editor(handle: AppHandle) {
 
 fn compute_layout(scale: f32) -> Layout {
     let pad = (PADDING as f32 * scale) as i32;
-    let content_x = pad;
     let header_h = (HEADER_HEIGHT_BASE as f32 * scale) as i32;
     let footer_h = (FOOTER_HEIGHT_BASE as f32 * scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
@@ -679,7 +681,7 @@ fn hit_test_general(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
 fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     let lay = &state.layout;
 
-    if y < lay.list_y || y >= lay.list_y + lay.list_h || x < lay.content_x {
+    if y < lay.list_y || y >= lay.list_y + lay.list_h || x < lay.pad {
         return SettingsHit::None;
     }
 
@@ -713,7 +715,7 @@ fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     // Add binding row (click only on the button)
     if y >= row_y && y < row_y + lay.row_h {
         let btn_w = (80.0 * lay.scale) as i32;
-        if x >= lay.content_x && x < lay.content_x + btn_w {
+        if x >= lay.pad && x < lay.pad + btn_w {
             return SettingsHit::AddBtn;
         }
     }
@@ -825,12 +827,14 @@ fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
 
     // ── Tab bar (horizontal, below header separator) ──────────
     if y >= lay.tab_bar_y && y < lay.tab_bar_y + lay.tab_h {
-        let tab_total_w = 2 * lay.tab_w + lay.tab_gap;
+        let tab_total_w = 3 * lay.tab_w + 2 * lay.tab_gap;
         let tab_start_x = (lay.win_w - tab_total_w) / 2;
         let idx = if x >= tab_start_x && x < tab_start_x + lay.tab_w {
             Some(0usize)
-        } else if x >= tab_start_x + lay.tab_w + lay.tab_gap && x < tab_start_x + tab_total_w {
+        } else if x >= tab_start_x + lay.tab_w + lay.tab_gap && x < tab_start_x + 2 * lay.tab_w + lay.tab_gap {
             Some(1usize)
+        } else if x >= tab_start_x + 2 * (lay.tab_w + lay.tab_gap) && x < tab_start_x + tab_total_w {
+            Some(2usize)
         } else {
             None
         };
@@ -843,6 +847,7 @@ fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     match state.active_section {
         SettingsPage::General => hit_test_general(state, x, y),
         SettingsPage::Shortcuts => hit_test_shortcuts(state, x, y),
+        SettingsPage::Advanced => hit_test_advanced(state, x, y),
     }
 }
 
@@ -864,7 +869,7 @@ fn paint_general_page(
     }
     let mut app_wz = to_utf16_z("Appearance");
     let mut app_rc = RECT {
-        left: lay.content_x,
+        left: lay.pad,
         top: lay.appearance_y,
         right: lay.win_w - lay.pad,
         bottom: lay.appearance_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
@@ -879,9 +884,9 @@ fn paint_general_page(
     }
     let mut label_wz = to_utf16_z("Theme");
     let mut label_rc = RECT {
-        left: lay.content_x,
+        left: lay.pad,
         top: lay.combo_y,
-        right: lay.content_x + lay.label_w,
+        right: lay.pad + lay.label_w,
         bottom: lay.combo_y + 24,
     };
     unsafe {
@@ -984,7 +989,7 @@ fn paint_general_page(
     // ── Section divider ────────────────────────────────────────────
     let divider_y = lay.autostart_y - (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32 - (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
     draw_rounded_rect_in_buffer(bits, win_w, win_h,
-        RECT { left: lay.content_x, top: divider_y, right: win_w - lay.pad, bottom: divider_y + 1 },
+        RECT { left: lay.pad, top: divider_y, right: win_w - lay.pad, bottom: divider_y + 1 },
         0, theme.border);
 
     // ── Startup section header ──────────────────────────────────────
@@ -994,7 +999,7 @@ fn paint_general_page(
     }
     let mut startup_wz = to_utf16_z("Startup");
     let mut startup_rc = RECT {
-        left: lay.content_x,
+        left: lay.pad,
         top: divider_y + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2,
         right: win_w - lay.pad,
         bottom: lay.autostart_y,
@@ -1010,9 +1015,9 @@ fn paint_general_page(
     }
     let mut auto_label_wz = to_utf16_z("Autostart");
     let mut auto_label_rc = RECT {
-        left: lay.content_x,
+        left: lay.pad,
         top: lay.autostart_y,
-        right: lay.content_x + lay.label_w,
+        right: lay.pad + lay.label_w,
         bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
     };
     unsafe {
@@ -1195,7 +1200,7 @@ fn paint_shortcuts_page(
             bits,
             win_w,
             win_h,
-            lay.content_x,
+            lay.pad,
             row_y + (lay.row_h - lay.btn_h) / 2,
             (80.0 * lay.scale) as i32,
             lay.btn_h,
@@ -1427,7 +1432,7 @@ const ADVANCED_GROUPS: &[(&str, usize, usize, bool)] = &[
 
 fn hit_test_advanced(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     let lay = &state.layout;
-    let pad = lay.content_x;
+    let pad = lay.pad;
     let mut cur_y = lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
     let btn_h = (36.0 * lay.scale) as i32;
     let section_gap = (SECTION_GAP_BASE as f32 * lay.scale) as i32;
@@ -1467,7 +1472,7 @@ fn paint_advanced_page(
     }
     let mut adv_wz = to_utf16_z("Advanced");
     let mut adv_rc = RECT {
-        left: lay.content_x,
+        left: lay.pad,
         top: lay.shortcuts_y,
         right: win_w - lay.pad,
         bottom: lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
@@ -1476,7 +1481,7 @@ fn paint_advanced_page(
         let _ = DrawTextW(dib_dc, &mut adv_wz, &mut adv_rc, DT_LEFT | DT_SINGLELINE);
     }
 
-    let pad = lay.content_x;
+    let pad = lay.pad;
     let mut cur_y = lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
     let btn_h = (36.0 * lay.scale) as i32;
     let section_gap = (SECTION_GAP_BASE as f32 * lay.scale) as i32;
@@ -1580,19 +1585,13 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // ── Sidebar (vertical navigation on the left) ─────────────────
-    let sidebar_names = ["General", "Shortcuts", "Advanced"];
-    let sidebar_x = lay.pad;
-    let sidebar_w = lay.sidebar_w;
-    let item_h = lay.sidebar_item_h;
-    let item_start_y = lay.header_h + (8.0 * lay.scale) as i32;
-    // Draw sidebar background
-    draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h,
-        RECT { left: sidebar_x, top: item_start_y, right: sidebar_x + sidebar_w, bottom: item_start_y + 3 * item_h },
-        (6.0 * lay.scale) as i32, theme.surface.blend_over(theme.background));
+    // ── Tab bar (horizontal navigation at the top) ───────────────
+    let tab_names = ["General", "Shortcuts", "Advanced"];
+    let tab_total_w = 3 * lay.tab_w + 2 * lay.tab_gap;
+    let tab_start_x = (lay.win_w - tab_total_w) / 2;
 
-    for (ti, &name) in sidebar_names.iter().enumerate() {
-        let iy = item_start_y + (ti as i32) * item_h;
+    for (ti, &name) in tab_names.iter().enumerate() {
+        let tx = tab_start_x + ti as i32 * (lay.tab_w + lay.tab_gap);
         let is_active = (ti == 0 && state.active_section == SettingsPage::General)
             || (ti == 1 && state.active_section == SettingsPage::Shortcuts)
             || (ti == 2 && state.active_section == SettingsPage::Advanced);
@@ -1601,17 +1600,15 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             _ => false,
         };
 
-        let item_rect = RECT { left: sidebar_x, top: iy, right: sidebar_x + sidebar_w, bottom: iy + item_h };
+        let tab_rect = RECT { left: tx, top: lay.tab_bar_y, right: tx + lay.tab_w, bottom: lay.tab_bar_y + lay.tab_h };
         let bg = if is_active {
             theme.accent
         } else if is_hovered {
-            theme.accent.blend_over(theme.surface)
+            theme.hover.blend_over(theme.background)
         } else {
-            Argb::new(0, 0, 0, 0) // transparent
+            theme.surface.blend_over(theme.background)
         };
-        if bg.a > 0 {
-            draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, item_rect, (4.0 * lay.scale) as i32, bg);
-        }
+        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, tab_rect, (4.0 * lay.scale) as i32, bg);
 
         let fg = if is_active {
             if contrast_text_on(theme.accent) { Argb::new(255, 0, 0, 0) } else { Argb::new(255, 255, 255, 255) }
@@ -1622,12 +1619,22 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         };
         unsafe {
             let _ = SetTextColor(dib_dc, fg.to_colorref());
-            let _ = SelectObject(dib_dc, body_font);
+            let _ = SelectObject(dib_dc, small_font);
         }
         let mut label = to_utf16_z(name);
-        let mut label_rc = RECT { left: sidebar_x + 4, top: iy, right: sidebar_x + sidebar_w - 4, bottom: iy + item_h };
+        let mut label_rc = RECT {
+            left: tx,
+            top: lay.tab_bar_y,
+            right: tx + lay.tab_w,
+            bottom: lay.tab_bar_y + lay.tab_h,
+        };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut label, &mut label_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut label,
+                &mut label_rc,
+                DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 
@@ -3377,7 +3384,7 @@ fn draw_binding_row(
 ) {
     let lay = &state.layout;
     let row_rc = RECT {
-        left: lay.content_x,
+        left: lay.pad,
         top: y,
         right: lay.win_w - lay.pad,
         bottom: y + lay.row_h,
@@ -3402,7 +3409,7 @@ fn draw_binding_row(
     let trig_text = if binding.is_recording_trigger { "..." } else { &binding.trigger };
     let trig_color = if is_selected { theme.text } else { theme.text };
     let mut trig_wz = to_utf16_z(trig_text);
-    let mut trig_rc = RECT { left: lay.content_x + 8, top: y, right: lay.content_x + lay.trig_w, bottom: y + lay.row_h };
+    let mut trig_rc = RECT { left: lay.pad + 8, top: y, right: lay.pad + lay.trig_w, bottom: y + lay.row_h };
     unsafe {
         let _ = SelectObject(hdc, small_font);
         let _ = SetTextColor(hdc, trig_color.to_colorref());
@@ -3410,7 +3417,7 @@ fn draw_binding_row(
     }
 
     // Action label (middle)
-    let kind_x = lay.content_x + lay.trig_w + (8.0 * lay.scale) as i32;
+    let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
     let mut kind_wz = to_utf16_z(desc.label);
     let mut kind_rc = RECT { left: kind_x + 8, top: y, right: kind_x + lay.kind_w, bottom: y + lay.row_h };
     unsafe {
