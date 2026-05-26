@@ -724,6 +724,7 @@ fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
 }
 
 /// Hit-test the shortcut editor panel (shown when `selected_idx.is_some()`).
+/// Must match the geometry in `paint_shortcut_editor` exactly.
 fn hit_test_shortcut_editor(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     if state.selected_idx.is_none() {
         return SettingsHit::None;
@@ -734,61 +735,76 @@ fn hit_test_shortcut_editor(state: &SettingsState, x: i32, y: i32) -> SettingsHi
     };
     let lay = &state.layout;
 
-    // Panel bounds
-    let panel_x = lay.pad;
-    let panel_y = lay.shortcuts_y + (20.0 * lay.scale) as i32;
-    let panel_w = lay.win_w - lay.pad * 2;
-    let panel_h = (320.0 * lay.scale) as i32;
+    let gap = (8.0 * lay.scale) as i32;
+    let btn_h = (28.0 * lay.scale) as i32;
+
+    // Panel bounds — must match paint_shortcut_editor exactly
+    let panel_x = lay.pad + (10.0 * lay.scale) as i32;
+    let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
+    let panel_w = lay.win_w - panel_x * 2;
+    let panel_h = (300.0 * lay.scale) as i32;
 
     // Quick bounds check
     if x < panel_x || x > panel_x + panel_w || y < panel_y || y > panel_y + panel_h {
         return SettingsHit::None;
     }
 
-    let btn_h = (28.0 * lay.scale) as i32;
-    let gap = (8.0 * lay.scale) as i32;
-    let mut cur_y = panel_y + gap;
+    // Compute footer button Y using same progressive layout as paint
+    let px = panel_x + gap;
+    let pw = panel_w - gap * 2;
+    let mut cur_y = panel_y + (12.0 * lay.scale) as i32;
 
-    // Title bar
-    let title_h = (20.0 * lay.scale) as i32;
-    if y >= cur_y && y < cur_y + title_h {
-        let close_x = panel_x + panel_w - (18.0 * lay.scale) as i32;
-        if x >= close_x && x < close_x + (16.0 * lay.scale) as i32 {
-            return SettingsHit::EditCancel;
-        }
-    }
-    cur_y += title_h + gap;
+    // Title
+    cur_y += (20.0 * lay.scale) as i32 + gap;
 
-    // Trigger label + field
+    // Trigger label
     cur_y += (14.0 * lay.scale) as i32 + gap;
-    let field_x = panel_x + 4;
-    let field_w = panel_w - 8;
-    let record_btn_w = btn_h;
-    let trigger_field_w = field_w - record_btn_w - gap;
+
+    // Trigger field + record button
+    let field_x = px;
+    let field_w = pw - btn_h - gap;
+    let trigger_field_w = field_w;
 
     if y >= cur_y && y < cur_y + btn_h {
         let record_x = field_x + trigger_field_w + gap;
-        if x >= record_x && x < record_x + record_btn_w {
+        if x >= record_x && x < record_x + btn_h {
             return SettingsHit::EditRecord;
         }
     }
     cur_y += btn_h + gap;
 
-    // Action label + field
+    // Action label
     cur_y += (14.0 * lay.scale) as i32 + gap;
+
+    // Action selector button
     if y >= cur_y && y < cur_y + btn_h {
-        if x >= field_x && x < field_x + field_w {
+        if x >= field_x && x < field_x + field_w + btn_h + gap {
             return SettingsHit::EditAction;
         }
     }
-    // Footer buttons
-    let footer_y = panel_y + panel_h - btn_h - gap;
-    if y >= footer_y && y < footer_y + btn_h {
-        let btn_w = (70.0 * lay.scale) as i32;
-        let btn_gap = (8.0 * lay.scale) as i32;
-        let total_btns_w = btn_w * 3 + btn_gap * 2;
-        let btn_start_x = panel_x + (panel_w - total_btns_w) / 2;
+    cur_y += btn_h + gap;
 
+    // Options label
+    cur_y += (14.0 * lay.scale) as i32 + gap;
+
+    // Param display
+    cur_y += btn_h + gap;
+
+    // Error message (if present)
+    if state.save_error.is_some() {
+        cur_y += (16.0 * lay.scale) as i32 + gap;
+    }
+
+    // Extra spacing before footer
+    cur_y += gap;
+
+    // Footer buttons at computed Y
+    let btn_w = (70.0 * lay.scale) as i32;
+    let btn_gap = (8.0 * lay.scale) as i32;
+    let total_btns_w = btn_w * 3 + btn_gap * 2;
+    let btn_start_x = panel_x + (panel_w - total_btns_w) / 2;
+
+    if y >= cur_y && y < cur_y + btn_h {
         let save_x = btn_start_x;
         if x >= save_x && x < save_x + btn_w {
             return SettingsHit::EditSave;
@@ -1289,7 +1305,7 @@ fn paint_shortcut_editor(
     let panel_x = lay.pad + (10.0 * lay.scale) as i32;
     let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
     let panel_w = win_w - panel_x * 2;
-    let panel_h = (320.0 * lay.scale) as i32;
+    let panel_h = (300.0 * lay.scale) as i32;
     let radius = (8.0 * lay.scale) as i32;
 
     // Dim background
