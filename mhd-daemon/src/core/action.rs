@@ -317,6 +317,48 @@ fn parse_brightness_step(fields: &ActionRawFields, name: &str) -> Result<u32, St
     Ok(value)
 }
 
+/// Category group for an action variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionCategory {
+    Input,
+    Display,
+    AudioMedia,
+    Tools,
+    Automation,
+    System,
+}
+
+impl ActionCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ActionCategory::Input => "Input",
+            ActionCategory::Display => "Display",
+            ActionCategory::AudioMedia => "Audio / Media",
+            ActionCategory::Tools => "Tools",
+            ActionCategory::Automation => "Automation",
+            ActionCategory::System => "System",
+        }
+    }
+}
+
+/// Schema describing what kind of parameter an action expects.
+/// Used by the settings editor to render the correct input UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionParamSchema {
+    /// No parameter needed.
+    None,
+    /// Free‑form text input.
+    Text,
+    /// File path picker (exe, lnk, bat).
+    FilePath,
+    /// Key combination recording (for replace_key).
+    KeyMapping,
+    /// Numeric value with min/max/unit.
+    Number { unit: &'static str, min: i32, max: i32 },
+    /// Power action selector (shutdown, sleep, etc.).
+    PowerAction,
+}
+
 // ── Action registry (single source of truth for editor integration) ──
 
 /// Metadata for an action variant.
@@ -326,10 +368,12 @@ pub struct ActionDescriptor {
     pub name: &'static str,
     /// Human-readable label (e.g. "Replace Key").
     pub label: &'static str,
-    /// Category grouping name (e.g. "Media", "Display", "System").
-    pub category: &'static str,
+    /// Category grouping.
+    pub category: ActionCategory,
     /// TOML parameter key (e.g. "keys"), or `None` for parameterless actions.
     pub param_key: Option<&'static str>,
+    /// Parameter schema for editor UI.
+    pub param_schema: ActionParamSchema,
 }
 
 /// All action variants known to the system.
@@ -341,122 +385,142 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "replace_key",
         label: "Replace Key",
-        category: "General",
+        category: ActionCategory::Input,
         param_key: Some("keys"),
+        param_schema: ActionParamSchema::KeyMapping,
     },
     ActionDescriptor {
         name: "run_program",
         label: "Run Program",
-        category: "General",
+        category: ActionCategory::Automation,
         param_key: Some("path"),
+        param_schema: ActionParamSchema::FilePath,
     },
     ActionDescriptor {
         name: "run_ps",
         label: "PowerShell",
-        category: "General",
+        category: ActionCategory::Automation,
         param_key: Some("command"),
+        param_schema: ActionParamSchema::Text,
     },
     ActionDescriptor {
         name: "brightness_up",
         label: "Brightness Up",
-        category: "Display",
+        category: ActionCategory::Display,
         param_key: Some("value"),
+        param_schema: ActionParamSchema::Number { unit: "%", min: 1, max: 100 },
     },
     ActionDescriptor {
         name: "brightness_down",
         label: "Brightness Down",
-        category: "Display",
+        category: ActionCategory::Display,
         param_key: Some("value"),
+        param_schema: ActionParamSchema::Number { unit: "%", min: 1, max: 100 },
     },
     ActionDescriptor {
         name: "show_monitor_panel",
         label: "Monitor Control",
-        category: "General",
+        category: ActionCategory::Display,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "show_volume_mixer",
         label: "Volume Mixer",
-        category: "General",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_volume_up",
         label: "Volume Up",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_volume_down",
         label: "Volume Down",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_mute",
         label: "Mute",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_play_pause",
         label: "Play/Pause",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_stop",
         label: "Stop",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_last_track",
         label: "Last Track",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "media_next_track",
         label: "Next Track",
-        category: "Media",
+        category: ActionCategory::AudioMedia,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "toggle_topmost",
         label: "Toggle Always On Top",
-        category: "General",
+        category: ActionCategory::System,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "power_actions",
         label: "Power Control",
-        category: "General",
+        category: ActionCategory::System,
         param_key: None,
+        param_schema: ActionParamSchema::PowerAction,
     },
     ActionDescriptor {
         name: "quick_draw",
         label: "Quick Draw",
-        category: "General",
+        category: ActionCategory::Tools,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "quick_note",
         label: "Quick Note",
-        category: "General",
+        category: ActionCategory::Tools,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "pomodoro",
         label: "Pomodoro Timer",
-        category: "General",
+        category: ActionCategory::Tools,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
         name: "quit",
         label: "Quit mhd",
-        category: "General",
+        category: ActionCategory::System,
         param_key: None,
+        param_schema: ActionParamSchema::None,
     },
 ];
 
