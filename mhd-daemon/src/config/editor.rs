@@ -831,6 +831,20 @@ fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         return editor_hit;
     }
 
+    // If the editor panel is open, consume all clicks within its
+    // bounds so they don't fall through to controls behind.
+    if state.selected_idx.is_some() {
+        let panel_x = lay.pad + (10.0 * lay.scale) as i32;
+        let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
+        let panel_w = lay.win_w - panel_x * 2;
+        let panel_h = (300.0 * lay.scale) as i32;
+        if x >= panel_x && x < panel_x + panel_w
+            && y >= panel_y && y < panel_y + panel_h
+        {
+            return SettingsHit::None;
+        }
+    }
+
     // ── Footer buttons (always accessible) ──────────────────────
     if y >= lay.btn_y && y < lay.btn_y + lay.btn_h {
         if x >= lay.apply_x && x < lay.apply_x + lay.btn_w {
