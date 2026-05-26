@@ -63,7 +63,7 @@ unsafe fn with_run_key<R>(
 
 /// Install autostart by writing to `HKCU\…\Run`.
 pub fn install_autostart() -> Result<(), String> {
-    let exe_str = exe_path()?;
+    let exe_str = format!("\"{}\"", exe_path()?);
     let wide_value = to_wide(&exe_str);
     let wide_name = to_wide(VALUE_NAME);
 

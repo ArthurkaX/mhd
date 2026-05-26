@@ -2129,15 +2129,23 @@ unsafe extern "system" fn settings_wndproc(
                         toggle_combo_popup(state);
                     }
                     SettingsHit::AutostartToggle => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
                         state.autostart = !state.autostart;
                         if state.autostart {
                             if let Err(e) = crate::autostart::install_autostart() {
-                                eprintln!("mhd: failed to enable autostart: {e}");
+                                let msg = format!("Failed to enable autostart:\n{e}");
+                                let wz = to_utf16_z(&msg);
+                                let title = to_utf16_z("mhd Autostart Error");
+                                let _ = MessageBoxW(hwnd, PCWSTR::from_raw(wz.as_ptr()), PCWSTR::from_raw(title.as_ptr()), MB_OK | MB_ICONERROR);
                                 state.autostart = false;
                             }
                         } else {
                             if let Err(e) = crate::autostart::remove_autostart() {
-                                eprintln!("mhd: failed to disable autostart: {e}");
+                                let msg = format!("Failed to disable autostart:\n{e}");
+                                let wz = to_utf16_z(&msg);
+                                let title = to_utf16_z("mhd Autostart Error");
+                                let _ = MessageBoxW(hwnd, PCWSTR::from_raw(wz.as_ptr()), PCWSTR::from_raw(title.as_ptr()), MB_OK | MB_ICONERROR);
                             }
                         }
                         paint_settings(hwnd, state_ptr, &state.layout);
