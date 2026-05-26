@@ -163,17 +163,14 @@ enum SettingsHit {
     Scrollbar,
     /// Button on the Advanced page (index identifies the button).
     AdvancedButton(usize),
-    // ── Shortcut editor panel ───────────────────────────────────
-    /// Close / Cancel the editor panel.
-    EditCancel,
-    /// Save changes in the editor panel.
-    EditSave,
-    /// Delete the shortcut from the editor panel.
-    EditDelete,
-    /// Record trigger button in the editor.
-    EditRecord,
-    /// Action kind selector in the editor.
-    EditAction,
+    // ── Accordion editor (inline, expanded row) ──────────────
+    AccordionTriggerField,
+    AccordionRecordBtn,
+    AccordionActionBtn,
+    AccordionParamField,
+    AccordionSaveBtn,
+    AccordionCancelBtn,
+    AccordionDeleteBtn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,12 +187,14 @@ enum HoverTarget {
     Scrollbar,
     /// Hover target for a button on the Advanced page.
     AdvancedBtn(usize),
-    // ── Shortcut editor panel hovers ───────────────────────────
-    EditCancel,
-    EditSave,
-    EditDelete,
-    EditRecord,
-    EditAction,
+    // ── Accordion editor hovers ────────────────────────────────
+    AccordionTriggerField,
+    AccordionRecordBtn,
+    AccordionActionBtn,
+    AccordionParamField,
+    AccordionSaveBtn,
+    AccordionCancelBtn,
+    AccordionDeleteBtn,
 }
 
 unsafe impl Send for Layout {}
@@ -241,6 +240,7 @@ struct Layout {
     list_y: i32,
     list_h: i32,
     row_h: i32,
+    accordion_h: i32,
 
     // Footer buttons
     btn_h: i32,
@@ -280,10 +280,18 @@ struct SettingsState {
     bindings_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)
     recording_info: Option<(usize, bool)>,
-    /// Index of binding with the editor panel open (None = not editing)
-    selected_idx: Option<usize>,
-    /// Validation error message shown in the editor panel
-    save_error: Option<String>,
+    /// Index of binding with the accordion editor expanded (None = collapsed)
+    expanded_idx: Option<usize>,
+    /// Current trigger text in the accordion editor
+    acc_trigger: String,
+    /// Current action kind index in the accordion editor
+    acc_kind_idx: usize,
+    /// Current parameter text in the accordion editor
+    acc_param: String,
+    /// Whether the accordion is recording a trigger
+    acc_is_recording: bool,
+    /// Validation error shown in the accordion footer
+    acc_save_error: Option<String>,
     /// Index of binding being edited inline
     edit_idx: Option<usize>,
     /// Buffer for the inline-edited text (no HWND child control — layered window compat)
@@ -437,8 +445,12 @@ pub fn show_config_editor(handle: AppHandle) {
         general_scroll_y: 0,
         bindings_scroll_y: 0,
         recording_info: None,
-        selected_idx: None,
-        save_error: None,
+        expanded_idx: None,
+        acc_trigger: String::new(),
+        acc_kind_idx: 0,
+        acc_param: String::new(),
+        acc_is_recording: false,
+        acc_save_error: None,
         edit_idx: None,
         edit_text: String::new(),
         edit_cursor: 0,
@@ -508,6 +520,7 @@ fn compute_layout(scale: f32) -> Layout {
     let header_h = (HEADER_HEIGHT_BASE as f32 * scale) as i32;
     let footer_h = (FOOTER_HEIGHT_BASE as f32 * scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
+    let accordion_h = (160.0 * scale) as i32;
     let btn_h = (BTN_HEIGHT_BASE as f32 * scale) as i32;
     let btn_w = (BTN_WIDTH_BASE as f32 * scale) as i32;
     let win_w = (WIN_WIDTH_BASE as f32 * scale) as i32;
@@ -573,6 +586,7 @@ fn compute_layout(scale: f32) -> Layout {
         list_y,
         list_h,
         row_h,
+        accordion_h,
     }
 }
 
@@ -685,7 +699,7 @@ fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         return SettingsHit::None;
     }
 
-    let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+    let content_h = state.bindings.len() as i32 * lay.row_h + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 } + lay.row_h;
 
     // Scrollbar
     if content_h > lay.list_h {
@@ -710,6 +724,15 @@ fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
             return SettingsHit::RowClick(i);
         }
         row_y += lay.row_h;
+
+        // Accordion editor below expanded row
+        if Some(i) == state.expanded_idx {
+            let acc_hit = hit_test_accordion(state, x, y, lay.pad, row_y);
+            if acc_hit != SettingsHit::None {
+                return acc_hit;
+            }
+            row_y += lay.accordion_h;
+        }
     }
 
     // Add binding row (click only on the button)
@@ -723,127 +746,9 @@ fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     SettingsHit::None
 }
 
-/// Hit-test the shortcut editor panel (shown when `selected_idx.is_some()`).
-/// Must match the geometry in `paint_shortcut_editor` exactly.
-fn hit_test_shortcut_editor(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
-    if state.selected_idx.is_none() {
-        return SettingsHit::None;
-    }
-    let _sel_idx = match state.selected_idx {
-        Some(i) if i < state.bindings.len() => i,
-        _ => return SettingsHit::None,
-    };
-    let lay = &state.layout;
-
-    let gap = (8.0 * lay.scale) as i32;
-    let btn_h = (28.0 * lay.scale) as i32;
-
-    // Panel bounds — must match paint_shortcut_editor exactly
-    let panel_x = lay.pad + (10.0 * lay.scale) as i32;
-    let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
-    let panel_w = lay.win_w - panel_x * 2;
-    let panel_h = (300.0 * lay.scale) as i32;
-
-    // Quick bounds check
-    if x < panel_x || x > panel_x + panel_w || y < panel_y || y > panel_y + panel_h {
-        return SettingsHit::None;
-    }
-
-    // Compute footer button Y using same progressive layout as paint
-    let px = panel_x + gap;
-    let pw = panel_w - gap * 2;
-    let mut cur_y = panel_y + (12.0 * lay.scale) as i32;
-
-    // Title
-    cur_y += (20.0 * lay.scale) as i32 + gap;
-
-    // Trigger label
-    cur_y += (14.0 * lay.scale) as i32 + gap;
-
-    // Trigger field + record button
-    let field_x = px;
-    let field_w = pw - btn_h - gap;
-    let trigger_field_w = field_w;
-
-    if y >= cur_y && y < cur_y + btn_h {
-        let record_x = field_x + trigger_field_w + gap;
-        if x >= record_x && x < record_x + btn_h {
-            return SettingsHit::EditRecord;
-        }
-    }
-    cur_y += btn_h + gap;
-
-    // Action label
-    cur_y += (14.0 * lay.scale) as i32 + gap;
-
-    // Action selector button
-    if y >= cur_y && y < cur_y + btn_h {
-        if x >= field_x && x < field_x + field_w + btn_h + gap {
-            return SettingsHit::EditAction;
-        }
-    }
-    cur_y += btn_h + gap;
-
-    // Options label
-    cur_y += (14.0 * lay.scale) as i32 + gap;
-
-    // Param display
-    cur_y += btn_h + gap;
-
-    // Error message (if present)
-    if state.save_error.is_some() {
-        cur_y += (16.0 * lay.scale) as i32 + gap;
-    }
-
-    // Extra spacing before footer
-    cur_y += gap;
-
-    // Footer buttons at computed Y
-    let btn_w = (70.0 * lay.scale) as i32;
-    let btn_gap = (8.0 * lay.scale) as i32;
-    let total_btns_w = btn_w * 3 + btn_gap * 2;
-    let btn_start_x = panel_x + (panel_w - total_btns_w) / 2;
-
-    if y >= cur_y && y < cur_y + btn_h {
-        let save_x = btn_start_x;
-        if x >= save_x && x < save_x + btn_w {
-            return SettingsHit::EditSave;
-        }
-        let cancel_x = save_x + btn_w + btn_gap;
-        if x >= cancel_x && x < cancel_x + btn_w {
-            return SettingsHit::EditCancel;
-        }
-        let delete_x = cancel_x + btn_w + btn_gap;
-        if x >= delete_x && x < delete_x + btn_w {
-            return SettingsHit::EditDelete;
-        }
-    }
-
-    SettingsHit::None
-}
-
+/// Central hit‑test for the settings window.
 fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     let lay = &state.layout;
-
-    // ── Editor panel (takes priority when open) ──────────────────
-    let editor_hit = hit_test_shortcut_editor(state, x, y);
-    if editor_hit != SettingsHit::None {
-        return editor_hit;
-    }
-
-    // If the editor panel is open, consume all clicks within its
-    // bounds so they don't fall through to controls behind.
-    if state.selected_idx.is_some() {
-        let panel_x = lay.pad + (10.0 * lay.scale) as i32;
-        let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
-        let panel_w = lay.win_w - panel_x * 2;
-        let panel_h = (300.0 * lay.scale) as i32;
-        if x >= panel_x && x < panel_x + panel_w
-            && y >= panel_y && y < panel_y + panel_h
-        {
-            return SettingsHit::None;
-        }
-    }
 
     // ── Footer buttons (always accessible) ──────────────────────
     if y >= lay.btn_y && y < lay.btn_y + lay.btn_h {
@@ -1114,6 +1019,208 @@ fn paint_general_page(
     }
 }
 
+// ── Accordion editor (inline, below expanded row) ────────────────────
+
+fn draw_accordion_editor(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
+    theme: &NativeTheme,
+    lay: &Layout,
+    state: &SettingsState,
+    small_font: HFONT,
+    x: i32,
+    y: i32,
+) {
+    let idx = match state.expanded_idx {
+        Some(i) if i < state.bindings.len() => i,
+        _ => return,
+    };
+    let _binding = &state.bindings[idx];
+    let desc = editor_action_desc(state.acc_kind_idx);
+
+    let gap = (8.0 * lay.scale) as i32;
+    let btn_h = (28.0 * lay.scale) as i32;
+    let pw = lay.win_w - lay.pad * 2 - gap * 2;
+    let panel_w = pw + gap * 2;
+    let panel_h = lay.accordion_h;
+
+    // Background + border
+    let panel_bg = theme.surface.blend_over(theme.background);
+    draw_rounded_rect_in_buffer(bits, win_w, win_h,
+        RECT { left: x, top: y, right: x + panel_w, bottom: y + panel_h },
+        (6.0 * lay.scale) as i32, panel_bg);
+    draw_rounded_border_in_buffer(bits, win_w, win_h,
+        RECT { left: x, top: y, right: x + panel_w, bottom: y + panel_h },
+        (6.0 * lay.scale) as i32, 1, theme.border);
+
+    let mut cur_y = y + (12.0 * lay.scale) as i32;
+    let field_x = x + gap;
+    let _field_w_full = pw;
+
+    unsafe {
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+
+    // ── Row 1: Trigger field + Record button + Action button ──
+    let trigger_field_w = (pw - btn_h - gap) * 2 / 5;
+    let action_btn_w = pw - trigger_field_w - btn_h - gap * 2;
+
+    // Trigger field background
+    let is_tf_hovered = state.hovered_target == HoverTarget::AccordionTriggerField;
+    let tf_bg = if is_tf_hovered { theme.hover.blend_over(panel_bg) } else { theme.background.blend_over(panel_bg) };
+    let tf_rect = RECT { left: field_x, top: cur_y, right: field_x + trigger_field_w, bottom: cur_y + btn_h };
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, tf_rect, (4.0 * lay.scale) as i32, tf_bg);
+
+    let trigger_text = if state.acc_is_recording { "..." } else { &state.acc_trigger };
+    let mut trig_wz = to_utf16_z(trigger_text);
+    let mut trig_rc = RECT { left: field_x + 4, top: cur_y, right: field_x + trigger_field_w, bottom: cur_y + btn_h };
+    unsafe { let _ = DrawTextW(dib_dc, &mut trig_wz, &mut trig_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+
+    // Record button
+    let record_x = field_x + trigger_field_w + gap;
+    let is_rec_hovered = state.hovered_target == HoverTarget::AccordionRecordBtn;
+    draw_button(dib_dc, bits, win_w, win_h, record_x, cur_y, btn_h, btn_h,
+        if state.acc_is_recording { "\u{25a0}" } else { "\u{25cf}" },
+        theme, small_font, is_rec_hovered, ButtonStyle::Primary);
+
+    // Action button
+    let act_x = record_x + btn_h + gap;
+    let is_act_hovered = state.hovered_target == HoverTarget::AccordionActionBtn;
+    draw_button(dib_dc, bits, win_w, win_h, act_x, cur_y, action_btn_w, btn_h,
+        desc.label, theme, small_font, is_act_hovered, ButtonStyle::Secondary);
+
+    cur_y += btn_h + gap;
+
+    // ── Row 2: Parameter field ────────────────────────────────
+    match desc.param_schema {
+        crate::core::action::ActionParamSchema::None | crate::core::action::ActionParamSchema::PowerAction => {
+            unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+            let mut none_wz = to_utf16_z("No options required");
+            let mut none_rc = RECT { left: field_x, top: cur_y, right: field_x + pw, bottom: cur_y + btn_h };
+            unsafe { let _ = DrawTextW(dib_dc, &mut none_wz, &mut none_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+        }
+        _ => {
+            let param_text = if state.acc_param.is_empty() { "<not set>" } else { &state.acc_param };
+            let is_param_hovered = state.hovered_target == HoverTarget::AccordionParamField;
+            let p_bg = if is_param_hovered { theme.hover.blend_over(panel_bg) } else { theme.background.blend_over(panel_bg) };
+            let p_rect = RECT { left: field_x, top: cur_y, right: field_x + pw, bottom: cur_y + btn_h };
+            draw_rounded_rect_in_buffer(bits, win_w, win_h, p_rect, (4.0 * lay.scale) as i32, p_bg);
+            unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+            let mut pwz = to_utf16_z(param_text);
+            let mut prc = RECT { left: field_x + 4, top: cur_y, right: field_x + pw, bottom: cur_y + btn_h };
+            unsafe { let _ = DrawTextW(dib_dc, &mut pwz, &mut prc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+        }
+    }
+    cur_y += btn_h + gap;
+
+    // ── Error message ──────────────────────────────────────────
+    if let Some(ref err) = state.acc_save_error {
+        unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 220, 60, 60).to_colorref()); }
+        let mut err_wz = to_utf16_z(err);
+        let mut err_rc = RECT { left: field_x, top: cur_y, right: field_x + pw, bottom: cur_y + (16.0 * lay.scale) as i32 };
+        unsafe { let _ = DrawTextW(dib_dc, &mut err_wz, &mut err_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+        cur_y += (16.0 * lay.scale) as i32 + gap;
+    }
+
+    cur_y += gap;
+
+    // ── Footer buttons ─────────────────────────────────────────
+    let btn_w = (70.0 * lay.scale) as i32;
+    let btn_gap = (8.0 * lay.scale) as i32;
+    let total = btn_w * 3 + btn_gap * 2;
+    let start_x = x + (panel_w - total) / 2;
+
+    let is_save_hovered = state.hovered_target == HoverTarget::AccordionSaveBtn;
+    let is_cancel_hovered = state.hovered_target == HoverTarget::AccordionCancelBtn;
+    let is_delete_hovered = state.hovered_target == HoverTarget::AccordionDeleteBtn;
+
+    draw_button(dib_dc, bits, win_w, win_h, start_x, cur_y, btn_w, btn_h,
+        "Save", theme, small_font, is_save_hovered, ButtonStyle::Primary);
+    draw_button(dib_dc, bits, win_w, win_h, start_x + btn_w + btn_gap, cur_y, btn_w, btn_h,
+        "Cancel", theme, small_font, is_cancel_hovered, ButtonStyle::Secondary);
+    draw_button(dib_dc, bits, win_w, win_h, start_x + (btn_w + btn_gap) * 2, cur_y, btn_w, btn_h,
+        "Delete", theme, small_font, is_delete_hovered, ButtonStyle::DangerGhost);
+}
+
+fn hit_test_accordion(state: &SettingsState, x: i32, y: i32, accordion_x: i32, accordion_y: i32) -> SettingsHit {
+    let lay = &state.layout;
+    if state.expanded_idx.is_none() {
+        return SettingsHit::None;
+    }
+    let gap = (8.0 * lay.scale) as i32;
+    let btn_h = (28.0 * lay.scale) as i32;
+    let pw = lay.win_w - lay.pad * 2 - gap * 2;
+    let panel_w = pw + gap * 2;
+    let panel_h = lay.accordion_h;
+
+    if x < accordion_x || x >= accordion_x + panel_w || y < accordion_y || y >= accordion_y + panel_h {
+        return SettingsHit::None;
+    }
+
+    let field_x = accordion_x + gap;
+    let mut cur_y = accordion_y + (12.0 * lay.scale) as i32;
+    let trigger_field_w = (pw - btn_h - gap) * 2 / 5;
+    let action_btn_w = pw - trigger_field_w - btn_h - gap * 2;
+
+    // Row 1: trigger field, record btn, action btn
+    if y >= cur_y && y < cur_y + btn_h {
+        // Record button
+        let record_x = field_x + trigger_field_w + gap;
+        if x >= record_x && x < record_x + btn_h {
+            return SettingsHit::AccordionRecordBtn;
+        }
+        // Action button
+        let act_x = record_x + btn_h + gap;
+        if x >= act_x && x < act_x + action_btn_w {
+            return SettingsHit::AccordionActionBtn;
+        }
+        // Trigger field
+        if x >= field_x && x < field_x + trigger_field_w {
+            return SettingsHit::AccordionTriggerField;
+        }
+        return SettingsHit::AccordionTriggerField;
+    }
+    cur_y += btn_h + gap;
+
+    // Row 2: parameter field
+    if y >= cur_y && y < cur_y + btn_h {
+        return SettingsHit::AccordionParamField;
+    }
+    cur_y += btn_h + gap;
+
+    // Error message row
+    if state.acc_save_error.is_some() {
+        cur_y += (16.0 * lay.scale) as i32 + gap;
+    }
+    cur_y += gap;
+
+    // Footer buttons
+    if y >= cur_y && y < cur_y + btn_h {
+        let btn_w = (70.0 * lay.scale) as i32;
+        let btn_gap = (8.0 * lay.scale) as i32;
+        let total = btn_w * 3 + btn_gap * 2;
+        let start_x = accordion_x + (panel_w - total) / 2;
+
+        let save_x = start_x;
+        if x >= save_x && x < save_x + btn_w {
+            return SettingsHit::AccordionSaveBtn;
+        }
+        let cancel_x = save_x + btn_w + btn_gap;
+        if x >= cancel_x && x < cancel_x + btn_w {
+            return SettingsHit::AccordionCancelBtn;
+        }
+        let delete_x = cancel_x + btn_w + btn_gap;
+        if x >= delete_x && x < delete_x + btn_w {
+            return SettingsHit::AccordionDeleteBtn;
+        }
+    }
+
+    SettingsHit::None
+}
+
 fn paint_shortcuts_page(
     dib_dc: HDC,
     bits: *mut c_void,
@@ -1215,11 +1322,33 @@ fn paint_shortcuts_page(
     let mut row_y = lay.list_y - state.bindings_scroll_y;
     for (i, b) in state.bindings.iter().enumerate() {
         if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
+            // Highlight expanded row
+            let is_expanded = Some(i) == state.expanded_idx;
+            if is_expanded {
+                let row_rect = RECT {
+                    left: lay.pad,
+                    top: row_y,
+                    right: win_w - lay.pad,
+                    bottom: row_y + lay.row_h,
+                };
+                draw_rounded_rect_in_buffer(bits, win_w, win_h, row_rect, 0, theme.selected);
+            }
             draw_binding_row(
                 dib_dc, bits, i, b, row_y, state, theme, body_font, small_font,
             );
         }
         row_y += lay.row_h;
+
+        // Accordion editor below expanded row
+        if Some(i) == state.expanded_idx {
+            if row_y + lay.accordion_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
+                draw_accordion_editor(
+                    dib_dc, bits, win_w, win_h, theme, lay, state, small_font,
+                    lay.pad, row_y,
+                );
+            }
+            row_y += lay.accordion_h;
+        }
     }
 
     // "Add New" button
@@ -1249,7 +1378,7 @@ fn paint_shortcuts_page(
     }
 
     // ── Scrollbar (Shortcuts only) ────────────────────────────────────
-    let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+    let content_h = state.bindings.len() as i32 * lay.row_h + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 } + lay.row_h;
     if content_h > lay.list_h {
         let scroll_w = (6.0 * lay.scale) as i32;
         let scroll_x = win_w - lay.pad + (lay.pad - scroll_w) / 2;
@@ -1284,162 +1413,6 @@ fn paint_shortcuts_page(
         };
         draw_rounded_rect_in_buffer(bits, win_w, win_h, thumb_rect, scroll_w / 2, thumb_color);
     }
-
-    // ── Editor panel overlay ────────────────────────────────────────
-    if state.selected_idx.is_some() {
-        paint_shortcut_editor(
-            dib_dc, bits, win_w, win_h, theme, lay, state,
-            title_font, body_font, small_font,
-        );
-    }
-}
-
-// ── Shortcut editor panel ───────────────────────────────────────────────
-
-fn paint_shortcut_editor(
-    dib_dc: HDC,
-    bits: *mut c_void,
-    win_w: i32,
-    win_h: i32,
-    theme: &NativeTheme,
-    lay: &Layout,
-    state: &SettingsState,
-    _title_font: HFONT,
-    _body_font: HFONT,
-    small_font: HFONT,
-) {
-    let sel_idx = match state.selected_idx {
-        Some(i) if i < state.bindings.len() => i,
-        _ => return,
-    };
-    let binding = &state.bindings[sel_idx];
-    let desc = editor_action_desc(binding.kind_idx);
-
-    // Panel overlay
-    let panel_x = lay.pad + (10.0 * lay.scale) as i32;
-    let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
-    let panel_w = win_w - panel_x * 2;
-    let panel_h = (300.0 * lay.scale) as i32;
-    let radius = (8.0 * lay.scale) as i32;
-
-    // Dim background
-    let panel_bg = theme.surface.blend_over(theme.background);
-    draw_rounded_rect_in_buffer(bits, win_w, win_h,
-        RECT { left: panel_x, top: panel_y, right: panel_x + panel_w, bottom: panel_y + panel_h },
-        radius, panel_bg);
-    draw_rounded_border_in_buffer(bits, win_w, win_h,
-        RECT { left: panel_x, top: panel_y, right: panel_x + panel_w, bottom: panel_y + panel_h },
-        radius, 1, theme.border);
-
-    let mut y = panel_y + (12.0 * lay.scale) as i32;
-    let gap = (8.0 * lay.scale) as i32;
-    let btn_h = (28.0 * lay.scale) as i32;
-    let label_color = theme.text_muted;
-
-    // Title
-    unsafe {
-        let _ = SelectObject(dib_dc, small_font);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
-    }
-    let mut title_str = to_utf16_z("Edit Shortcut");
-    let mut title_rc = RECT { left: panel_x + gap, top: y, right: panel_x + panel_w - gap, bottom: y + (20.0 * lay.scale) as i32 };
-    unsafe { let _ = DrawTextW(dib_dc, &mut title_str, &mut title_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
-    y += (20.0 * lay.scale) as i32 + gap;
-
-    // Trigger label
-    unsafe { let _ = SetTextColor(dib_dc, label_color.to_colorref()); }
-    let mut trig_lbl = to_utf16_z("Trigger");
-    let mut trig_lbl_rc = RECT { left: panel_x + gap, top: y, right: panel_x + panel_w - gap, bottom: y + (14.0 * lay.scale) as i32 };
-    unsafe { let _ = DrawTextW(dib_dc, &mut trig_lbl, &mut trig_lbl_rc, DT_LEFT | DT_SINGLELINE); }
-    y += (14.0 * lay.scale) as i32 + gap;
-
-    // Trigger field + Record button
-    let field_x = panel_x + gap;
-    let field_w = panel_w - gap * 2 - btn_h - gap;
-    let is_recording = binding.is_recording_trigger;
-    let trigger_text = if is_recording { "..." } else { &binding.trigger };
-    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
-    let mut trig_wz = to_utf16_z(trigger_text);
-    let mut trig_rc = RECT { left: field_x, top: y, right: field_x + field_w, bottom: y + btn_h };
-    draw_rounded_rect_in_buffer(bits, win_w, win_h, trig_rc, (4.0 * lay.scale) as i32, theme.background.blend_over(panel_bg));
-    unsafe { let _ = DrawTextW(dib_dc, &mut trig_wz, &mut trig_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
-
-    // Record button
-    let record_x = field_x + field_w + gap;
-    let is_record_hovered = state.hovered_target == HoverTarget::EditRecord;
-    draw_button(dib_dc, bits, win_w, win_h, record_x, y, btn_h, btn_h,
-        if is_recording { "■" } else { "⚫" }, theme, small_font, is_record_hovered,
-        if is_recording { ButtonStyle::Primary } else { ButtonStyle::Primary });
-    y += btn_h + gap;
-
-    // Action label
-    unsafe { let _ = SetTextColor(dib_dc, label_color.to_colorref()); }
-    let mut act_lbl = to_utf16_z("Action");
-    let mut act_lbl_rc = RECT { left: panel_x + gap, top: y, right: panel_x + panel_w - gap, bottom: y + (14.0 * lay.scale) as i32 };
-    unsafe { let _ = DrawTextW(dib_dc, &mut act_lbl, &mut act_lbl_rc, DT_LEFT | DT_SINGLELINE); }
-    y += (14.0 * lay.scale) as i32 + gap;
-
-    // Action selector button
-    let is_action_hovered = state.hovered_target == HoverTarget::EditAction;
-    draw_button(dib_dc, bits, win_w, win_h, field_x, y, field_w + btn_h + gap, btn_h,
-        desc.label, theme, small_font, is_action_hovered, ButtonStyle::Secondary);
-    y += btn_h + gap;
-
-    // Options label
-    unsafe { let _ = SetTextColor(dib_dc, label_color.to_colorref()); }
-    let mut opt_lbl = to_utf16_z("Options");
-    let mut opt_lbl_rc = RECT { left: panel_x + gap, top: y, right: panel_x + panel_w - gap, bottom: y + (14.0 * lay.scale) as i32 };
-    unsafe { let _ = DrawTextW(dib_dc, &mut opt_lbl, &mut opt_lbl_rc, DT_LEFT | DT_SINGLELINE); }
-    y += (14.0 * lay.scale) as i32 + gap;
-
-    // Param display (schema-dependent)
-    match desc.param_schema {
-        crate::core::action::ActionParamSchema::None | crate::core::action::ActionParamSchema::PowerAction => {
-            unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
-            let mut none_wz = to_utf16_z("No options required");
-            let mut none_rc = RECT { left: field_x, top: y, right: field_x + panel_w - gap * 2, bottom: y + btn_h };
-            unsafe { let _ = DrawTextW(dib_dc, &mut none_wz, &mut none_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
-        }
-        _ => {
-            // Show current param value
-            let param_text = if binding.param.is_empty() { "<not set>" } else { &binding.param };
-            unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
-            let mut pwz = to_utf16_z(param_text);
-            let mut prc = RECT { left: field_x, top: y, right: field_x + panel_w - gap * 2, bottom: y + btn_h };
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, prc, (4.0 * lay.scale) as i32, theme.background.blend_over(panel_bg));
-            unsafe { let _ = DrawTextW(dib_dc, &mut pwz, &mut prc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
-        }
-    }
-    y += btn_h + gap * 2;
-
-    // Error message
-    if let Some(ref err) = state.save_error {
-        unsafe {
-            let _ = SetTextColor(dib_dc, Argb::new(255, 220, 60, 60).to_colorref());
-            let _ = SelectObject(dib_dc, small_font);
-        }
-        let mut err_wz = to_utf16_z(err);
-        let mut err_rc = RECT { left: field_x, top: y, right: field_x + panel_w - gap * 2, bottom: y + (16.0 * lay.scale) as i32 };
-        unsafe { let _ = DrawTextW(dib_dc, &mut err_wz, &mut err_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
-        y += (16.0 * lay.scale) as i32 + gap;
-    }
-
-    // Footer buttons
-    let btn_w = (70.0 * lay.scale) as i32;
-    let btn_gap = (8.0 * lay.scale) as i32;
-    let total_w = btn_w * 3 + btn_gap * 2;
-    let start_x = panel_x + (panel_w - total_w) / 2;
-
-    let is_save_hovered = state.hovered_target == HoverTarget::EditSave;
-    let is_cancel_hovered = state.hovered_target == HoverTarget::EditCancel;
-    let is_delete_hovered = state.hovered_target == HoverTarget::EditDelete;
-
-    draw_button(dib_dc, bits, win_w, win_h, start_x, y, btn_w, btn_h,
-        "Save", theme, small_font, is_save_hovered, ButtonStyle::Primary);
-    draw_button(dib_dc, bits, win_w, win_h, start_x + btn_w + btn_gap, y, btn_w, btn_h,
-        "Cancel", theme, small_font, is_cancel_hovered, ButtonStyle::Secondary);
-    draw_button(dib_dc, bits, win_w, win_h, start_x + (btn_w + btn_gap) * 2, y, btn_w, btn_h,
-        "Delete", theme, small_font, is_delete_hovered, ButtonStyle::DangerGhost);
 }
 
 // ── Advanced page ──────────────────────────────────────────────────────
@@ -2184,7 +2157,7 @@ unsafe extern "system" fn settings_wndproc(
                         let lay = state.layout;
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                        let content_h = state.bindings.len() as i32 * lay.row_h + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 } + lay.row_h;
                         let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
                         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
                         let max_scroll = content_h - lay.list_h;
@@ -2211,8 +2184,24 @@ unsafe extern "system" fn settings_wndproc(
                     SettingsHit::RowClick(i) => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        state.save_error = None;
-                        state.selected_idx = Some(i);
+                        if state.expanded_idx == Some(i) {
+                            // Collapse: discard accordion edits
+                            state.expanded_idx = None;
+                            state.acc_is_recording = false;
+                            crate::hook::set_recording_window(None);
+                        } else {
+                            // Save current accordion state before switching
+                            // Expand: load binding data into accordion buffers
+                            if i < state.bindings.len() {
+                                state.acc_trigger = state.bindings[i].trigger.clone();
+                                state.acc_kind_idx = state.bindings[i].kind_idx;
+                                state.acc_param = state.bindings[i].param.clone();
+                                state.acc_is_recording = false;
+                                state.acc_save_error = None;
+                                state.expanded_idx = Some(i);
+                                crate::hook::set_recording_window(None);
+                            }
+                        }
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     SettingsHit::RowDelete(i) => {
@@ -2225,6 +2214,7 @@ unsafe extern "system" fn settings_wndproc(
                     SettingsHit::AddBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
+                        let idx = state.bindings.len();
                         state.bindings.push(UIBinding {
                             trigger: "none".to_string(),
                             kind_idx: 0,
@@ -2232,6 +2222,13 @@ unsafe extern "system" fn settings_wndproc(
                             is_recording_trigger: false,
                             is_recording_param: false,
                         });
+                        // Open accordion for the new binding
+                        state.acc_trigger = "none".to_string();
+                        state.acc_kind_idx = 0;
+                        state.acc_param = String::new();
+                        state.acc_is_recording = false;
+                        state.acc_save_error = None;
+                        state.expanded_idx = Some(idx);
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     SettingsHit::ApplyBtn => {
@@ -2297,53 +2294,51 @@ unsafe extern "system" fn settings_wndproc(
                             _ => {}
                         }
                     }
-                    SettingsHit::EditSave => {
+                    SettingsHit::AccordionSaveBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        if let Some(idx) = state.selected_idx {
+                        if let Some(idx) = state.expanded_idx {
                             if idx < state.bindings.len() {
-                                state.bindings[idx].is_recording_trigger = false;
-                                state.bindings[idx].is_recording_param = false;
+                                state.acc_is_recording = false;
+                                crate::hook::set_recording_window(None);
                                 // Validate: no duplicate non-empty triggers
-                                let trigger = state.bindings[idx].trigger.trim().to_lowercase();
+                                let trigger = state.acc_trigger.trim().to_lowercase();
                                 if !trigger.is_empty() {
                                     let dup = state.bindings.iter().enumerate().any(|(j, b)|
                                         j != idx && b.trigger.trim().to_lowercase() == trigger
                                     );
                                     if dup {
-                                        state.save_error = Some("Duplicate trigger – each shortcut needs a unique key combination.".into());
+                                        state.acc_save_error = Some("Duplicate trigger – each shortcut needs a unique key combination.".into());
                                         paint_settings(hwnd, state_ptr, &state.layout);
                                         return LRESULT(0);
                                     }
                                 }
+                                // Apply values from accordion buffers to binding
+                                state.bindings[idx].trigger = state.acc_trigger.clone();
+                                state.bindings[idx].kind_idx = state.acc_kind_idx;
+                                state.bindings[idx].param = state.acc_param.clone();
+                                state.bindings[idx].is_recording_trigger = false;
+                                state.bindings[idx].is_recording_param = false;
                             }
                         }
-                        state.save_error = None;
-                        // Turn off any active recording
-                        if state.recording_info.is_some() {
-                            state.recording_info = None;
-                            crate::hook::set_recording_window(None);
-                        }
-                        state.selected_idx = None;
+                        state.expanded_idx = None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::EditCancel => {
+                    SettingsHit::AccordionCancelBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        // Turn off any active recording
-                        if state.recording_info.is_some() {
-                            state.recording_info = None;
-                            crate::hook::set_recording_window(None);
-                        }
-                        state.selected_idx = None;
+                        state.acc_is_recording = false;
+                        crate::hook::set_recording_window(None);
+                        state.expanded_idx = None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::EditDelete => {
+                    SettingsHit::AccordionDeleteBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        if let Some(idx) = state.selected_idx {
+                        if let Some(idx) = state.expanded_idx {
                             if idx < state.bindings.len() {
                                 state.bindings.remove(idx);
+                                // Adjust recording if it was on the removed binding
                                 if let Some((ri_idx, is_trig)) = state.recording_info {
                                     if ri_idx == idx {
                                         state.recording_info = None;
@@ -2354,33 +2349,70 @@ unsafe extern "system" fn settings_wndproc(
                                 }
                             }
                         }
-                        state.selected_idx = None;
+                        state.acc_is_recording = false;
+                        crate::hook::set_recording_window(None);
+                        state.expanded_idx = None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::EditRecord => {
+                    SettingsHit::AccordionRecordBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        if let Some(idx) = state.selected_idx {
-                            let is_recording = !state.bindings[idx].is_recording_trigger;
-                            for b in state.bindings.iter_mut() {
-                                b.is_recording_trigger = false;
-                                b.is_recording_param = false;
-                            }
-                            if is_recording {
-                                state.bindings[idx].is_recording_trigger = true;
-                                state.recording_info = Some((idx, true));
-                                crate::hook::set_recording_window(Some(state.hwnd));
-                            } else {
-                                state.recording_info = None;
-                                crate::hook::set_recording_window(None);
-                            }
-                            paint_settings(hwnd, state_ptr, &state.layout);
+                        state.acc_is_recording = !state.acc_is_recording;
+                        if state.acc_is_recording {
+                            crate::hook::set_recording_window(Some(state.hwnd));
+                        } else {
+                            crate::hook::set_recording_window(None);
                         }
+                        paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::EditAction => {
+                    SettingsHit::AccordionActionBtn => {
                         close_combo_popup(state);
-                        if let Some(idx) = state.selected_idx {
+                        if let Some(idx) = state.expanded_idx {
+                            // Save current accordion edits before opening kind menu
+                            state.bindings[idx].trigger = state.acc_trigger.clone();
+                            state.bindings[idx].kind_idx = state.acc_kind_idx;
+                            state.bindings[idx].param = state.acc_param.clone();
+                            // open_kind_menu uses bindings[idx] to set kind; it reads/writes bindings directly.
+                            // We use the expanded index to update accordion buffers after menu closes.
                             open_kind_menu(state, idx);
+                            // Sync accordion buffers from binding after kind change
+                            if idx < state.bindings.len() {
+                                state.acc_kind_idx = state.bindings[idx].kind_idx;
+                                state.acc_param = state.bindings[idx].param.clone();
+                            }
+                        }
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::AccordionTriggerField => {
+                        // Same as clicking Record button
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.acc_is_recording = !state.acc_is_recording;
+                        if state.acc_is_recording {
+                            crate::hook::set_recording_window(Some(state.hwnd));
+                        } else {
+                            crate::hook::set_recording_window(None);
+                        }
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::AccordionParamField => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        // Spawn inline edit for the param field
+                        if let Some(idx) = state.expanded_idx {
+                            let gap = (8.0 * state.layout.scale) as i32;
+                            let btn_h = (28.0 * state.layout.scale) as i32;
+                            let pw = state.layout.win_w - state.layout.pad * 2 - gap * 2;
+                            let accordion_y = state.layout.list_y - state.bindings_scroll_y
+                                + (idx as i32 + 1) * state.layout.row_h
+                                + (12.0 * state.layout.scale) as i32;
+                            let field_rect = RECT {
+                                left: state.layout.pad + gap,
+                                top: accordion_y + btn_h + gap,
+                                right: state.layout.pad + gap + pw,
+                                bottom: accordion_y + btn_h + gap + btn_h,
+                            };
+                            spawn_inline_edit(state, idx, field_rect);
                         }
                     }
                     SettingsHit::None => {
@@ -2414,7 +2446,7 @@ unsafe extern "system" fn settings_wndproc(
                     let lay = state.layout;
 
                     if state.is_dragging_scroll {
-                        let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                        let content_h = state.bindings.len() as i32 * lay.row_h + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 } + lay.row_h;
                         let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
                         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
                         let max_scroll = content_h - lay.list_h;
@@ -2437,11 +2469,13 @@ unsafe extern "system" fn settings_wndproc(
                             SettingsHit::RowDelete(i) => HoverTarget::RowDelete(i),
                             SettingsHit::AddBtn => HoverTarget::AddBtn,
                             SettingsHit::AdvancedButton(i) => HoverTarget::AdvancedBtn(i),
-                            SettingsHit::EditSave => HoverTarget::EditSave,
-                            SettingsHit::EditCancel => HoverTarget::EditCancel,
-                            SettingsHit::EditDelete => HoverTarget::EditDelete,
-                            SettingsHit::EditRecord => HoverTarget::EditRecord,
-                            SettingsHit::EditAction => HoverTarget::EditAction,
+                            SettingsHit::AccordionSaveBtn => HoverTarget::AccordionSaveBtn,
+                            SettingsHit::AccordionCancelBtn => HoverTarget::AccordionCancelBtn,
+                            SettingsHit::AccordionDeleteBtn => HoverTarget::AccordionDeleteBtn,
+                            SettingsHit::AccordionRecordBtn => HoverTarget::AccordionRecordBtn,
+                            SettingsHit::AccordionActionBtn => HoverTarget::AccordionActionBtn,
+                            SettingsHit::AccordionTriggerField => HoverTarget::AccordionTriggerField,
+                            SettingsHit::AccordionParamField => HoverTarget::AccordionParamField,
                             SettingsHit::None => HoverTarget::None,
                         };
 
@@ -2493,7 +2527,7 @@ unsafe extern "system" fn settings_wndproc(
                     let state = &mut *state_ptr;
                     if state.active_section == SettingsPage::Shortcuts {
                         let lay = state.layout;
-                        let content_h = (state.bindings.len() as i32 + 1) * lay.row_h;
+                        let content_h = state.bindings.len() as i32 * lay.row_h + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 } + lay.row_h;
                         let max_scroll = (content_h - lay.list_h).max(0);
                         state.bindings_scroll_y =
                             (state.bindings_scroll_y - (delta as i32 / 120) * 40).clamp(0, max_scroll);
@@ -2532,7 +2566,14 @@ unsafe extern "system" fn settings_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if let Some((idx, is_trigger)) = state.recording_info.take() {
+                    // Accordion recording: write to acc_trigger buffer
+                    if state.acc_is_recording {
+                        state.acc_trigger = trigger_str;
+                        state.acc_is_recording = false;
+                        state.recording_info = None;
+                        crate::hook::set_recording_window(None);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    } else if let Some((idx, is_trigger)) = state.recording_info.take() {
                         // Safety: idx must be valid after deletions/shifts.
                         if idx < state.bindings.len() {
                             if is_trigger {
@@ -3172,7 +3213,12 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                     let state = unsafe { &mut *state_ptr };
                     if let Some(idx) = state.param_edit_idx {
                         if idx < state.bindings.len() {
-                            state.bindings[idx].param = new_text;
+                            // If accordion is open for this idx, update acc_param instead
+                            if state.expanded_idx == Some(idx) {
+                                state.acc_param = new_text;
+                            } else {
+                                state.bindings[idx].param = new_text;
+                            }
                             paint_settings(state.hwnd, state_ptr, &state.layout);
                         }
                     }
@@ -3349,7 +3395,7 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
 
         // Position the menu at the kind button (or at the editor panel action button if row is not visible)
         let lay = state.layout;
-        let mut pt = if state.selected_idx == Some(idx) {
+        let mut pt = if state.expanded_idx == Some(idx) {
             // Position at the editor panel's action field
             let panel_x = lay.pad + (10.0 * lay.scale) as i32;
             let panel_y = lay.shortcuts_y + (10.0 * lay.scale) as i32;
@@ -3428,7 +3474,7 @@ fn draw_binding_row(
         bottom: y + lay.row_h,
     };
 
-    let is_selected = state.selected_idx == Some(idx);
+    let is_selected = state.expanded_idx == Some(idx);
     let is_hovered = state.hovered_target == HoverTarget::RowClick(idx);
 
     // Row background: zebra stripe + selected/hovered overlay
@@ -3516,7 +3562,7 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
                 state.recording_info = Some((ri_idx - 1, is_trig));
             }
         }
-        state.selected_idx = None;
+        state.expanded_idx = None;
         paint_settings(state.hwnd, state as *mut SettingsState, &lay);
         return;
     }
@@ -3607,7 +3653,12 @@ fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
 
 fn finish_inline_edit(state: &mut SettingsState) {
     if let Some(idx) = state.edit_idx.take() {
-        state.bindings[idx].param = std::mem::take(&mut state.edit_text);
+        // If accordion is open for this idx, write to acc_param instead
+        if state.expanded_idx == Some(idx) {
+            state.acc_param = std::mem::take(&mut state.edit_text);
+        } else {
+            state.bindings[idx].param = std::mem::take(&mut state.edit_text);
+        }
         state.edit_cursor = 0;
         state.edit_select_start = None;
         state.edit_old_value.clear();
@@ -3617,7 +3668,12 @@ fn finish_inline_edit(state: &mut SettingsState) {
 
 fn cancel_inline_edit(state: &mut SettingsState) {
     if let Some(idx) = state.edit_idx.take() {
-        state.bindings[idx].param = std::mem::take(&mut state.edit_old_value);
+        // If accordion is open for this idx, restore acc_param from binding
+        if state.expanded_idx == Some(idx) {
+            state.acc_param = std::mem::take(&mut state.edit_old_value);
+        } else {
+            state.bindings[idx].param = std::mem::take(&mut state.edit_old_value);
+        }
         state.edit_text.clear();
         state.edit_cursor = 0;
         state.edit_select_start = None;
