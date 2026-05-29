@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["blackbox"]
-blackbox = []
+blackbox = ["dep:rusqlite"]
 debug-dump = ["windows/Win32_System_Diagnostics_Debug", "windows/Win32_System_Kernel"]
 
 [[bin]]
@@ -13,6 +13,7 @@ name = "mhd"
 path = "src/main.rs"
 
 [dependencies]
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.0"
 serde_json = "1.0"
