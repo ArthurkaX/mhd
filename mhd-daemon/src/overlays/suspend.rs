@@ -6,7 +6,6 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
@@ -47,7 +46,7 @@ struct TargetProcess {
 
 #[derive(Default)]
 struct SuspendState {
-    targets: HashMap<u32, TargetProcess>,
+    target: Option<TargetProcess>,
     foreground_pid: Option<u32>,
     osd: Option<OsdHandle>,
 }
@@ -55,6 +54,19 @@ struct SuspendState {
 /// Toggle "suspend on blur" for the current foreground process.
 pub fn toggle_current(osd: &OsdHandle) {
     ensure_event_thread(osd.clone());
+
+    {
+        let mut st = STATE.lock().unwrap();
+        st.osd = Some(osd.clone());
+        if let Some(mut target) = st.target.take() {
+            if target.suspended {
+                let _ = set_process_suspended(target.pid, false);
+                target.suspended = false;
+            }
+            osd.show_notify(format!("{}: Normal", target.display_name), NOTIFY_MS);
+            return;
+        }
+    }
 
     let Some(info) = foreground_process_info() else {
         osd.show_notify("No foreground window", NOTIFY_MS);
@@ -69,24 +81,11 @@ pub fn toggle_current(osd: &OsdHandle) {
     let mut st = STATE.lock().unwrap();
     st.osd = Some(osd.clone());
     st.foreground_pid = Some(info.pid);
-
-    if let Some(mut target) = st.targets.remove(&info.pid) {
-        if target.suspended {
-            let _ = set_process_suspended(target.pid, false);
-            target.suspended = false;
-        }
-        osd.show_notify(format!("{}: Normal", info.display_name), NOTIFY_MS);
-        return;
-    }
-
-    st.targets.insert(
-        info.pid,
-        TargetProcess {
-            pid: info.pid,
-            display_name: info.display_name.clone(),
-            suspended: false,
-        },
-    );
+    st.target = Some(TargetProcess {
+        pid: info.pid,
+        display_name: info.display_name.clone(),
+        suspended: false,
+    });
     osd.show_notify(format!("{}: Suspend on blur", info.display_name), NOTIFY_MS);
 }
 
@@ -117,9 +116,12 @@ pub fn resume_if_window_at_point(pt: POINT) {
         let Ok(mut st) = STATE.try_lock() else {
             return;
         };
-        let Some(target) = st.targets.get_mut(&pid) else {
+        let Some(target) = st.target.as_mut() else {
             return;
         };
+        if target.pid != pid {
+            return;
+        }
         if !target.suspended {
             return;
         }
@@ -190,25 +192,22 @@ fn on_foreground_changed(pid: Option<u32>) {
         }
         st.foreground_pid = pid;
 
-        for target in st.targets.values_mut() {
+        if let Some(target) = st.target.as_mut() {
             let should_suspend = Some(target.pid) != pid;
-            if target.suspended == should_suspend {
-                continue;
-            }
-
-            match set_process_suspended(target.pid, should_suspend) {
-                Ok(()) => {
-                    target.suspended = should_suspend;
-                    notify = Some(if should_suspend {
-                        format!("{}: Suspended", target.display_name)
-                    } else {
-                        format!("{}: Resumed", target.display_name)
-                    });
+            if target.suspended != should_suspend {
+                match set_process_suspended(target.pid, should_suspend) {
+                    Ok(()) => {
+                        target.suspended = should_suspend;
+                        notify = Some(if should_suspend {
+                            format!("{}: Suspended", target.display_name)
+                        } else {
+                            format!("{}: Resumed", target.display_name)
+                        });
+                    }
+                    Err(_) => notify = Some(format!("{}: Access denied", target.display_name)),
                 }
-                Err(_) => notify = Some(format!("{}: Access denied", target.display_name)),
             }
         }
-
         st.osd.clone()
     };
 
