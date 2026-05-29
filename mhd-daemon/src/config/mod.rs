@@ -1,6 +1,10 @@
 pub mod path;
 pub mod raw;
 pub mod editor;
+pub mod editor_layout;
+pub mod editor_state;
+pub mod editor_hittest;
+pub mod editor_theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -234,5 +238,264 @@ impl AppConfig {
 
     pub fn quicknote_config(&self) -> &QuickNoteConfig {
         &self.quicknote
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ── Helpers ───────────────────────────────────────────────────
+
+    fn valid_config() -> &'static str {
+        r#"
+[[ binding ]]
+trigger = "ctrl+alt+1"
+action = "brightness_up"
+value = "10"
+
+[[ binding ]]
+trigger = "ctrl+alt+2"
+action = "brightness_down"
+value = "10"
+
+[[ binding ]]
+trigger = "ctrl+alt+q"
+action = "quit"
+        "#
+    }
+
+    fn parse(s: &str) -> AppConfig {
+        AppConfig::parse(s, Path::new("test.toml")).unwrap()
+    }
+
+    // ── Valid TOML ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_valid_config() {
+        let cfg = parse(valid_config());
+        assert_eq!(cfg.active_bindings().len(), 3);
+        assert_eq!(cfg.volume_step(), 1);
+        assert!(cfg.theme.is_none());
+    }
+
+    #[test]
+    fn parse_config_with_theme() {
+        let toml = format!(
+            r#"theme = "one_dark"
+{}
+        "#,
+            valid_config()
+        );
+        let cfg = parse(&toml);
+        assert_eq!(cfg.theme.as_deref(), Some("one_dark"));
+    }
+
+    #[test]
+    fn parse_config_with_volume_step() {
+        let toml = format!(
+            r#"volume_step = 5
+{}
+        "#,
+            valid_config()
+        );
+        let cfg = parse(&toml);
+        assert_eq!(cfg.volume_step(), 5);
+    }
+
+    #[test]
+    fn parse_config_with_autostart() {
+        let toml = format!(
+            r#"autostart = true
+{}
+        "#,
+            valid_config()
+        );
+        let cfg = parse(&toml);
+        assert!(cfg.autostart());
+    }
+
+    #[test]
+    fn parse_invalid_action_type() {
+        // An unknown action type causes the binding to be skipped
+        let toml = r#"
+[[ binding ]]
+trigger = "ctrl+alt+1"
+action = "nonexistent_action_type"
+        "#;
+        let cfg = AppConfig::parse(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(cfg.active_bindings().len(), 0);
+    }
+
+    #[test]
+    fn parse_invalid_trigger_skips_binding() {
+        // An invalid trigger causes the binding to be skipped
+        let toml = r#"
+[[ binding ]]
+trigger = ""
+action = "quit"
+        "#;
+        let cfg = AppConfig::parse(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(cfg.active_bindings().len(), 0);
+    }
+
+    #[test]
+    fn parse_missing_required_field() {
+        // replace_key requires 'keys' field
+        let toml = r#"
+[[ binding ]]
+trigger = "ctrl+alt+1"
+action = "replace_key"
+        "#;
+        let result = AppConfig::parse(toml, Path::new("test.toml"));
+        assert!(result.is_ok());
+        let cfg = result.unwrap();
+        assert_eq!(cfg.active_bindings().len(), 0);
+    }
+
+    #[test]
+    fn parse_with_scheme_switch() {
+        let toml = r#"
+active_scheme = "gaming"
+
+[[ binding ]]
+trigger = "ctrl+alt+1"
+action = "quit"
+scheme = "gaming"
+
+[[ binding ]]
+trigger = "ctrl+alt+1"
+action = "brightness_up"
+scheme = "default"
+        "#;
+        let mut cfg = parse(toml);
+        // Active scheme is "gaming", so only the gaming binding is active
+        assert_eq!(cfg.active_bindings().len(), 1);
+        assert_eq!(cfg.active_bindings()[0].action.name(), "quit");
+
+        // Switch to default scheme
+        assert!(cfg.switch_scheme("default"));
+        assert_eq!(cfg.active_bindings().len(), 1);
+        assert_eq!(cfg.active_bindings()[0].action.name(), "brightness_up");
+    }
+
+    #[test]
+    fn parse_switch_to_missing_scheme() {
+        let mut cfg = parse(valid_config());
+        assert!(!cfg.switch_scheme("nonexistent"));
+    }
+
+    #[test]
+    fn parse_invalid_toml() {
+        let result = AppConfig::parse("this is not toml [[[", Path::new("test.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_empty_config() {
+        let result = AppConfig::parse("", Path::new("test.toml"));
+        assert!(result.is_ok());
+        let cfg = result.unwrap();
+        assert_eq!(cfg.active_bindings().len(), 0);
+        assert_eq!(cfg.active_scheme(), "default");
+    }
+
+    #[test]
+    fn parse_duplicate_trigger_accepted() {
+        // Duplicate triggers produce a warning but parsing succeeds
+        let toml = r#"
+[[ binding ]]
+trigger = "ctrl+alt+q"
+action = "quit"
+
+[[ binding ]]
+trigger = "ctrl+alt+q"
+action = "brightness_up"
+        "#;
+        let cfg = parse(toml);
+        // Both bindings exist (2 total)
+        assert_eq!(cfg.active_bindings().len(), 2);
+        // build_trigger_map keeps the *first* occurrence for the active scheme
+        let trigger = crate::trigger::parse_trigger("ctrl+alt+q").unwrap().trigger;
+        assert_eq!(cfg.lookup_trigger(&trigger).unwrap().action.name(), "quit");
+    }
+
+    // ── Integration test ──────────────────────────────────────────
+
+    #[test]
+    fn integration_load_sample_config() {
+        let toml = r#"
+theme = "built-in dark"
+volume_step = 2
+active_scheme = "default"
+
+[[ binding ]]
+trigger = "ctrl+win+s"
+action = "replace_key"
+keys = "ctrl+shift+s"
+
+[[ binding ]]
+trigger = "alt+f4"
+action = "run_ps"
+command = "echo hello"
+
+[[ binding ]]
+trigger = "ctrl+alt+b"
+action = "brightness_up"
+value = "15"
+
+[[ binding ]]
+trigger = "ctrl+alt+v"
+action = "show_volume_mixer"
+
+[[ binding ]]
+trigger = "ctrl+alt+m"
+action = "media_mute"
+
+[[ binding ]]
+trigger = "ctrl+alt+t"
+action = "toggle_topmost"
+
+[[ binding ]]
+trigger = "ctrl+alt+p"
+action = "pomodoro"
+
+[[ binding ]]
+trigger = "ctrl+alt+q"
+action = "quit"
+        "#;
+
+        let cfg = AppConfig::parse(toml, Path::new("test.toml")).unwrap();
+
+        // Verify number of active bindings
+        assert_eq!(cfg.active_bindings().len(), 8);
+
+        // Verify volume_step
+        assert_eq!(cfg.volume_step(), 2);
+
+        // Verify theme
+        assert_eq!(cfg.theme.as_deref(), Some("built-in dark"));
+
+        // Verify action map lookups
+        let check = |trigger_str: &str, expected_action: &str| {
+            let t = crate::trigger::parse_trigger(trigger_str).unwrap().trigger;
+            let binding = cfg.lookup_trigger(&t);
+            assert!(binding.is_some(), "trigger '{}' not found", trigger_str);
+            assert_eq!(binding.unwrap().action.name(), expected_action);
+        };
+
+        check("ctrl+win+s", "replace_key");
+        check("alt+f4", "run_ps");
+        check("ctrl+alt+b", "brightness_up");
+        check("ctrl+alt+v", "show_volume_mixer");
+        check("ctrl+alt+m", "media_mute");
+        check("ctrl+alt+t", "toggle_topmost");
+        check("ctrl+alt+p", "pomodoro");
+        check("ctrl+alt+q", "quit");
+
+        // Test that unknown triggers return None
+        let unknown = crate::trigger::parse_trigger("ctrl+alt+z").unwrap().trigger;
+        assert!(cfg.lookup_trigger(&unknown).is_none());
     }
 }

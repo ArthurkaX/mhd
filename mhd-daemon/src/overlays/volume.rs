@@ -70,7 +70,7 @@ const LEAVE_HIDE_TIMEOUT_MS: u32 = 1000;
 const HIDE_TIMER_ID: usize = 2;
 const RADIUS_BASE: i32 = 14;
 const MASTER_GAP_BASE: i32 = 12;
-const WM_MOUSELEAVE: u32 = 0x02A3;
+use crate::constants::WM_MOUSELEAVE;
 
 // ── Global handle ──────────────────────────────────────────────────────
 

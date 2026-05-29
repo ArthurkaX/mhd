@@ -5,6 +5,8 @@
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
+use crate::constants::WM_MOUSELEAVE;
+
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
     WAIT_EVENT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -80,7 +82,6 @@ const TMR_BTN_GAP: i32 = 4;
 const TMR_LABEL_W: i32 = 70;
 
 const RADIUS: i32 = 8;
-const WM_MOUSELEAVE: u32 = 0x02A3;
 const TMR_ID: usize = 1;          // 1-second tick
 const CANCEL_MSG: u32 = WM_APP + 1;
 

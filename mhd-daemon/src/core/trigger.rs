@@ -363,6 +363,8 @@ pub fn vk_to_name(vk: u8) -> String {
 mod tests {
     use super::*;
 
+    // ── Modifier key detection ────────────────────────────────────
+
     #[test]
     fn test_is_modifier_vk() {
         assert!(is_modifier_vk(0x10)); // VK_SHIFT
@@ -372,6 +374,8 @@ mod tests {
         assert!(!is_modifier_vk(b'S' as u32));
     }
 
+    // ── Standard trigger parsing ──────────────────────────────────
+
     #[test]
     fn test_parse_trigger_win_shift_s() {
         let pt = parse_trigger("win+shift+s").unwrap();
@@ -379,6 +383,142 @@ mod tests {
         assert!(pt.trigger.modifiers.shift());
         assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(b'S'));
     }
+
+    #[test]
+    fn test_parse_trigger_ctrl_alt_1() {
+        let pt = parse_trigger("ctrl+alt+1").unwrap();
+        assert!(pt.trigger.modifiers.ctrl());
+        assert!(pt.trigger.modifiers.alt());
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(b'1'));
+    }
+
+    #[test]
+    fn test_parse_trigger_just_key() {
+        let pt = parse_trigger("f5").unwrap();
+        assert!(!pt.trigger.modifiers.ctrl());
+        assert!(!pt.trigger.modifiers.alt());
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(0x74)); // VK_F5
+    }
+
+    #[test]
+    fn test_parse_trigger_mouse_button() {
+        let pt = parse_trigger("mousebutton4").unwrap();
+        assert_eq!(pt.trigger.key, PhysicalKey::MouseButton(1));
+    }
+
+    #[test]
+    fn test_parse_trigger_wheel() {
+        let pt = parse_trigger("wheel_up").unwrap();
+        assert_eq!(pt.trigger.key, PhysicalKey::WheelUp);
+
+        let pt = parse_trigger("wheel_down").unwrap();
+        assert_eq!(pt.trigger.key, PhysicalKey::WheelDown);
+    }
+
+    #[test]
+    fn test_parse_trigger_special_keys() {
+        let cases = [
+            ("space", 0x20),
+            ("tab", 0x09),
+            ("enter", 0x0D),
+            ("esc", 0x1B),
+            ("backspace", 0x08),
+            ("delete", 0x2E),
+            ("insert", 0x2D),
+            ("home", 0x24),
+            ("end", 0x23),
+            ("pageup", 0x21),
+            ("pagedown", 0x22),
+            ("left", 0x25),
+            ("right", 0x27),
+            ("up", 0x26),
+            ("down", 0x28),
+        ];
+        for (name, vk) in &cases {
+            let pt = parse_trigger(name).unwrap();
+            assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(*vk), "failed for '{name}'");
+        }
+    }
+
+    #[test]
+    fn test_parse_trigger_numpad() {
+        let pt = parse_trigger("numpad0").unwrap();
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(0x60));
+
+        let pt = parse_trigger("numpad_plus").unwrap();
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(0x6B));
+    }
+
+    #[test]
+    fn test_parse_trigger_hex_key() {
+        let pt = parse_trigger("0x7B").unwrap();
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(0x7B));
+    }
+
+    // ── Edge cases / error handling ───────────────────────────────
+
+    #[test]
+    fn test_parse_trigger_empty_fails() {
+        assert!(parse_trigger("").is_err());
+        assert!(parse_trigger("   ").is_err());
+    }
+
+    #[test]
+    fn test_parse_trigger_modifier_only_fails() {
+        assert!(parse_trigger("ctrl+alt").is_err());
+        assert!(parse_trigger("win+shift").is_err());
+    }
+
+    #[test]
+    fn test_parse_trigger_duplicate_modifier_fails() {
+        assert!(parse_trigger("ctrl+ctrl+a").is_err());
+        assert!(parse_trigger("shift+alt+shift+x").is_err());
+    }
+
+    #[test]
+    fn test_parse_trigger_multiple_keys_fails() {
+        assert!(parse_trigger("a+b").is_err());
+        assert!(parse_trigger("ctrl+a+b").is_err());
+    }
+
+    #[test]
+    fn test_parse_trigger_unknown_key_fails() {
+        assert!(parse_trigger("ctrl+alt+foobar").is_err());
+    }
+
+    #[test]
+    fn test_parse_trigger_case_insensitive() {
+        let pt = parse_trigger("CTRL+ALT+S").unwrap();
+        assert!(pt.trigger.modifiers.ctrl());
+        assert!(pt.trigger.modifiers.alt());
+        assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(b'S'));
+
+        let pt = parse_trigger("Ctrl+Shift+F1").unwrap();
+        assert!(pt.trigger.modifiers.ctrl());
+        assert!(pt.trigger.modifiers.shift());
+    }
+
+    // ── Keys (modifier-only combos for replace_key) ─────────────────
+
+    #[test]
+    fn test_parse_keys_modifier_only() {
+        // Keys allows modifier-only combos
+        let kc = parse_keys("ctrl+alt+shift").unwrap();
+        assert!(kc.modifiers.ctrl());
+        assert!(kc.modifiers.alt());
+        assert!(kc.modifiers.shift());
+        assert!(kc.key.is_none());
+    }
+
+    #[test]
+    fn test_parse_keys_with_key() {
+        let kc = parse_keys("ctrl+win+z").unwrap();
+        assert!(kc.modifiers.ctrl());
+        assert!(kc.modifiers.win());
+        assert_eq!(kc.key, Some(PhysicalKey::Keyboard(b'Z')));
+    }
+
+    // ── keys_to_string round-trip ──────────────────────────────────
 
     #[test]
     fn test_keys_to_string_win_shift_s() {
@@ -390,8 +530,59 @@ mod tests {
     }
 
     #[test]
+    fn test_keys_to_string_no_modifiers() {
+        let keys = KeyCombo {
+            modifiers: Modifiers(0),
+            key: Some(PhysicalKey::Keyboard(b'A')),
+        };
+        assert_eq!(keys_to_string(&keys), "a");
+    }
+
+    #[test]
+    fn test_keys_to_string_mouse() {
+        let keys = KeyCombo {
+            modifiers: Modifiers(0),
+            key: Some(PhysicalKey::MouseButton(1)),
+        };
+        assert_eq!(keys_to_string(&keys), "mousebutton4");
+    }
+
+    #[test]
+    fn test_keys_to_string_wheel() {
+        let keys = KeyCombo {
+            modifiers: Modifiers(MOD_CTRL),
+            key: Some(PhysicalKey::WheelUp),
+        };
+        assert_eq!(keys_to_string(&keys), "ctrl+wheel_up");
+    }
+
+    #[test]
+    fn test_keys_to_string_modifier_only() {
+        let keys = KeyCombo {
+            modifiers: Modifiers(MOD_ALT | MOD_SHIFT),
+            key: None,
+        };
+        assert_eq!(keys_to_string(&keys), "alt+shift");
+    }
+
+    // ── vk_to_name round-trip for common cases ─────────────────────
+
+    #[test]
     fn test_vk_to_name_modifiers() {
         assert_eq!(vk_to_name(0xA0), "lshift");
         assert_eq!(vk_to_name(0x5B), "lwin");
+    }
+
+    #[test]
+    fn test_vk_to_name_function_keys() {
+        for i in 0..=12 {
+            let vk = 0x70 + i;
+            assert_eq!(vk_to_name(vk), format!("f{}", i + 1));
+        }
+    }
+
+    #[test]
+    fn test_vk_to_name_unknown_returns_hex() {
+        assert_eq!(vk_to_name(0xFF), "0xff");
     }
 }

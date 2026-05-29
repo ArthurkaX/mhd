@@ -4,6 +4,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod constants;
 mod core;
 #[cfg(feature = "blackbox")]
 pub(crate) mod blackbox;

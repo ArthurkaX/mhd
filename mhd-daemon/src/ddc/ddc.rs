@@ -6,6 +6,8 @@
 
 use std::mem::transmute;
 use std::sync::LazyLock;
+use std::thread::sleep;
+use std::time::Duration;
 
 use windows::Win32::Foundation::{BOOL, HANDLE, POINT};
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST};
@@ -96,6 +98,36 @@ impl Dxva2 {
     }
 }
 
+// ── Retry helper ────────────────────────────────────────────────────────
+
+/// Call a DDC operation with up to `crate::constants::DDC_MAX_RETRIES` retries.
+/// Logs failures via `eprintln!` with context.
+fn retry_ddc<F, T>(label: &str, mut f: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    let max = crate::constants::DDC_MAX_RETRIES;
+    let base_ms = crate::constants::DDC_RETRY_BASE_MS;
+    let mut last_err = String::new();
+    for attempt in 1..=max {
+        match f() {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                last_err = e;
+                if attempt < max {
+                    let delay = base_ms * (1u64 << (attempt - 1)); // 10, 20, 40ms
+                    eprintln!(
+                        "mhd: DDC/CI {} failed (attempt {}/{}): {}; retrying in {}ms",
+                        label, attempt, max, last_err, delay
+                    );
+                    sleep(Duration::from_millis(delay));
+                }
+            }
+        }
+    }
+    Err(format!("DDC/CI {} failed after {} attempts: {}", label, max, last_err))
+}
+
 // ── Monitor info ────────────────────────────────────────────────────────
 
 /// Information about a detected physical monitor.
@@ -113,56 +145,64 @@ impl PhysicalMonitorInfo {
     }
 
     /// Get brightness: (current, min, max).
+    /// Retries up to 3 times on transient DDC/CI failures.
     pub fn get_brightness(&self) -> Result<(u32, u32, u32), String> {
         let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
-        unsafe {
+        let handle = self.handle;
+        retry_ddc("get_brightness", || unsafe {
             let mut min = 0u32;
             let mut cur = 0u32;
             let mut max = 0u32;
-            if !(dxva2.get_brightness)(self.handle, &mut min, &mut cur, &mut max).as_bool() {
+            if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
                 return Err("cannot get brightness".to_string());
             }
             Ok((cur, min, max))
-        }
+        })
     }
 
     /// Set brightness (0-100).
+    /// Retries up to 3 times on transient DDC/CI failures.
     #[allow(dead_code)]
     pub fn set_brightness(&self, value: u32) -> Result<(), String> {
         let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
-        unsafe {
-            let v = value.min(100);
-            if !(dxva2.set_brightness)(self.handle, v).as_bool() {
+        let handle = self.handle;
+        let v = value.min(100);
+        retry_ddc("set_brightness", || unsafe {
+            if !(dxva2.set_brightness)(handle, v).as_bool() {
                 return Err("cannot set brightness".to_string());
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Get a VCP feature value: returns (vcp_type, current, max).
     /// vcp_type: 0=continuous, 1=non-continuous, 2=value-only.
+    /// Retries up to 3 times on transient DDC/CI failures.
     pub fn get_vcp(&self, code: u8) -> Result<VcpValue, String> {
         let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
-        unsafe {
+        let handle = self.handle;
+        retry_ddc(&format!("get_vcp(0x{code:02X})"), || unsafe {
             let mut vcp_type = 0u32;
             let mut cur = 0u32;
             let mut max = 0u32;
-            if !(dxva2.get_vcp)(self.handle, code, &mut vcp_type, &mut cur, &mut max).as_bool() {
-                return Err(format!("VCP feature 0x{:02X} not supported", code));
+            if !(dxva2.get_vcp)(handle, code, &mut vcp_type, &mut cur, &mut max).as_bool() {
+                return Err(format!("VCP feature 0x{code:02X} not supported"));
             }
             Ok(VcpValue { vcp_type, current: cur, max })
-        }
+        })
     }
 
     /// Set a VCP feature value.
+    /// Retries up to 3 times on transient DDC/CI failures.
     pub fn set_vcp(&self, code: u8, value: u32) -> Result<(), String> {
         let dxva2 = DXVA2.as_ref().map_err(|e| e.clone())?;
-        unsafe {
-            if !(dxva2.set_vcp)(self.handle, code, value).as_bool() {
-                return Err(format!("cannot set VCP feature 0x{:02X}", code));
+        let handle = self.handle;
+        retry_ddc(&format!("set_vcp(0x{code:02X})"), || unsafe {
+            if !(dxva2.set_vcp)(handle, code, value).as_bool() {
+                return Err(format!("cannot set VCP feature 0x{code:02X}"));
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -328,70 +368,76 @@ fn cursor_monitor_raw() -> Result<(&'static Dxva2, PhysicalMonitorHandle, String
 
 pub fn adjust_brightness(delta: i32) -> Result<(), String> {
     let (dxva2, handle, _) = cursor_monitor_raw()?;
-    unsafe {
+    // Use retry for the critical get+set sequence
+    let new = retry_ddc("adjust_brightness/get", || unsafe {
         let mut min = 0u32;
         let mut cur = 0u32;
         let mut max = 0u32;
         if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
             return Err("cannot get brightness".to_string());
         }
-        let new = (cur as i32 + delta).clamp(0, 100) as u32;
+        Ok((cur as i32 + delta).clamp(0, 100) as u32)
+    })?;
+    retry_ddc("adjust_brightness/set", || unsafe {
         if !(dxva2.set_brightness)(handle, new).as_bool() {
             return Err("cannot set brightness".to_string());
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn set_brightness_absolute(value: u32) -> Result<(), String> {
     let (dxva2, handle, _) = cursor_monitor_raw()?;
     let v = value.min(100);
-    unsafe {
+    retry_ddc("set_brightness_absolute", || unsafe {
         if !(dxva2.set_brightness)(handle, v).as_bool() {
             return Err("cannot set brightness".to_string());
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn get_brightness() -> Result<(u32, String), String> {
     let (dxva2, handle, name) = cursor_monitor_raw()?;
-    unsafe {
+    let value = retry_ddc("get_brightness", || unsafe {
         let mut min = 0u32;
         let mut cur = 0u32;
         let mut max = 0u32;
         if !(dxva2.get_brightness)(handle, &mut min, &mut cur, &mut max).as_bool() {
             return Err("cannot get brightness".to_string());
         }
-        Ok((cur, name))
-    }
+        Ok(cur)
+    })?;
+    Ok((value, name))
 }
 
 pub fn set_vcp_feature(code: u8, value: u32) -> Result<(), String> {
     let (dxva2, handle, _) = cursor_monitor_raw()?;
-    unsafe {
+    retry_ddc(&format!("set_vcp(0x{code:02X})"), || unsafe {
         if !(dxva2.set_vcp)(handle, code, value).as_bool() {
-            return Err(format!("cannot set VCP feature 0x{:02X}", code));
+            return Err(format!("cannot set VCP feature 0x{code:02X}"));
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn adjust_vcp_feature(code: u8, delta: i32) -> Result<(), String> {
     let (dxva2, handle, _) = cursor_monitor_raw()?;
-    unsafe {
+    let new = retry_ddc(&format!("adjust_vcp(0x{code:02X})/get"), || unsafe {
         let mut vcp_type = 0u32;
         let mut cur = 0u32;
         let mut max = 0u32;
         if !(dxva2.get_vcp)(handle, code, &mut vcp_type, &mut cur, &mut max).as_bool() {
-            return Err(format!("cannot get VCP feature 0x{:02X}", code));
+            return Err(format!("cannot get VCP feature 0x{code:02X}"));
         }
-        let new = (cur as i32 + delta).clamp(0, max as i32) as u32;
+        Ok((cur as i32 + delta).clamp(0, max as i32) as u32)
+    })?;
+    retry_ddc(&format!("adjust_vcp(0x{code:02X})/set"), || unsafe {
         if !(dxva2.set_vcp)(handle, code, new).as_bool() {
-            return Err(format!("cannot set VCP feature 0x{:02X}", code));
+            return Err(format!("cannot set VCP feature 0x{code:02X}"));
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 // ── Cursor-based enumeration for monitor panel ─────────────────────────

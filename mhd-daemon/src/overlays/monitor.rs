@@ -56,16 +56,10 @@ const HIDE_TIMEOUT_MS: u32 = 2000;
 const LEAVE_HIDE_TIMEOUT_MS: u32 = 1000;
 const HIDE_TIMER_ID: usize = 2;
 const RADIUS_BASE: i32 = 14;
-const WM_MOUSELEAVE: u32 = 0x02A3;
-
 /// Maximum panel height as a fraction of the work area height.
 const MAX_HEIGHT_RATIO: f32 = 0.85;
 
-// VCP codes
-const VCP_BRIGHTNESS: u8 = 0x10;
-const VCP_CONTRAST: u8 = 0x12;
-const VCP_AUDIO_VOLUME: u8 = 0x62;
-const VCP_INPUT_SOURCE: u8 = 0x60;
+use crate::constants::{VCP_BRIGHTNESS, VCP_CONTRAST, VCP_AUDIO_VOLUME, VCP_INPUT_SOURCE, WM_MOUSELEAVE};
 
 /// Thread-safe wrapper around `HANDLE`.
 #[derive(Clone)]

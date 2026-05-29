@@ -1,7 +1,7 @@
 use crate::trigger::{KeyCombo, parse_keys};
 
 /// An action to execute when a trigger fires.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     ReplaceKey { keys: KeyCombo },
     RunPs { command: String },
@@ -44,6 +44,7 @@ pub enum Action {
 }
 
 /// Raw fields for an action, used during parsing.
+#[derive(Debug, Clone)]
 pub struct ActionRawFields<'a> {
     pub keys: Option<&'a str>,
     pub command: Option<&'a str>,
@@ -528,4 +529,223 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
 /// Returns `None` if not found.
 pub fn find_action_index(name: &str) -> Option<usize> {
     ALL_ACTIONS.iter().position(|d| d.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trigger::Modifiers;
+
+    // ── Action name() stability ────────────────────────────────────
+
+    #[test]
+    fn test_action_name_stability() {
+        // Every action variant has a stable name that round-trips
+        let actions = [
+            Action::ReplaceKey { keys: KeyCombo { modifiers: Modifiers(0), key: None } },
+            Action::RunPs { command: "echo".into() },
+            Action::RunProgram { path: "notepad.exe".into() },
+            Action::SwitchScheme { target_scheme: "default".into() },
+            Action::SetBrightness { relative: true, value: 5 },
+            Action::BrightnessUp { value: 10 },
+            Action::BrightnessDown { value: 10 },
+            Action::Vcp { code: 0x10, relative: true, value: 5 },
+            Action::ShowMonitorPanel,
+            Action::ShowVolumeMixer,
+            Action::MediaVolumeUp,
+            Action::MediaVolumeDown,
+            Action::MediaMute,
+            Action::MediaPlayPause,
+            Action::MediaStop,
+            Action::MediaLastTrack,
+            Action::MediaNextTrack,
+            Action::ToggleTopmost,
+            Action::PowerActions,
+            Action::QuickDraw,
+            Action::QuickNote,
+            Action::Pomodoro,
+            Action::Quit,
+        ];
+
+        for (i, action) in actions.iter().enumerate() {
+            let name = action.name();
+            // Every name should be a non-empty ASCII string
+            assert!(!name.is_empty(), "action[{}] has empty name", i);
+            assert!(name.is_ascii(), "action[{}] name '{}' not ASCII", i, name);
+            // Round-trip: from_raw(name) with appropriate fields should succeed
+            let fields = match action {
+                Action::ReplaceKey { .. } => ActionRawFields {
+                    keys: Some("ctrl+alt+x"),
+                    command: None, path: None, target_scheme: None, value: None, code: None,
+                },
+                Action::RunPs { .. } => ActionRawFields {
+                    command: Some("echo test"),
+                    keys: None, path: None, target_scheme: None, value: None, code: None,
+                },
+                Action::RunProgram { .. } => ActionRawFields {
+                    path: Some("notepad.exe"),
+                    keys: None, command: None, target_scheme: None, value: None, code: None,
+                },
+                Action::SwitchScheme { .. } => ActionRawFields {
+                    target_scheme: Some("default"),
+                    keys: None, command: None, path: None, value: None, code: None,
+                },
+                Action::BrightnessUp { .. } | Action::BrightnessDown { .. } | Action::SetBrightness { .. } => ActionRawFields {
+                    value: Some("10"),
+                    keys: None, command: None, path: None, target_scheme: None, code: None,
+                },
+                Action::Vcp { .. } => ActionRawFields {
+                    code: Some("0x10"),
+                    value: Some("+5"),
+                    keys: None, command: None, path: None, target_scheme: None,
+                },
+                _ => ActionRawFields {
+                    keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+                },
+            };
+            let roundtrip = Action::from_raw(name, fields);
+            assert!(roundtrip.is_ok(), "action '{}' failed round-trip: {:?}", name, roundtrip);
+        }
+    }
+
+    // ── Action creation validation ─────────────────────────────────
+
+    #[test]
+    fn test_replace_key_requires_valid_keys() {
+        assert!(Action::new_replace_key("ctrl+alt+a").is_ok());
+        // Empty triggers are invalid
+        assert!(Action::new_replace_key("").is_err());
+        // Unknown key
+        assert!(Action::new_replace_key("ctrl+alt+foobar").is_err());
+    }
+
+    #[test]
+    fn test_run_ps_requires_command() {
+        assert!(Action::new_run_ps("echo hello").is_ok());
+        assert!(Action::new_run_ps("").is_err());
+        assert!(Action::new_run_ps("   ").is_err());
+    }
+
+    #[test]
+    fn test_run_program_requires_path() {
+        assert!(Action::new_run_program("notepad.exe").is_ok());
+        assert!(Action::new_run_program("").is_err());
+    }
+
+    #[test]
+    fn test_set_brightness_validation() {
+        // Relative positive
+        let a = Action::new_set_brightness("+5").unwrap();
+        assert_eq!(a, Action::SetBrightness { relative: true, value: 5 });
+
+        // Relative negative
+        let a = Action::new_set_brightness("-3").unwrap();
+        assert_eq!(a, Action::SetBrightness { relative: true, value: -3 });
+
+        // Absolute
+        let a = Action::new_set_brightness("75").unwrap();
+        assert_eq!(a, Action::SetBrightness { relative: false, value: 75 });
+
+        // Invalid
+        assert!(Action::new_set_brightness("").is_err());
+        assert!(Action::new_set_brightness("+0").is_err());
+        assert!(Action::new_set_brightness("101").is_err());
+        assert!(Action::new_set_brightness("abc").is_err());
+    }
+
+    #[test]
+    fn test_vcp_validation() {
+        // Relative positive
+        let a = Action::new_vcp("0x10", "+5").unwrap();
+        assert_eq!(a, Action::Vcp { code: 0x10, relative: true, value: 5 });
+
+        // Absolute
+        let a = Action::new_vcp("0x60", "3").unwrap();
+        assert_eq!(a, Action::Vcp { code: 0x60, relative: false, value: 3 });
+
+        // Invalid code format
+        assert!(Action::new_vcp("xyz", "5").is_err());
+        assert!(Action::new_vcp("", "5").is_err());
+
+        // Invalid value
+        assert!(Action::new_vcp("0x10", "").is_err());
+        assert!(Action::new_vcp("0x10", "abc").is_err());
+    }
+
+    #[test]
+    fn test_switch_scheme_validation() {
+        assert!(Action::new_switch_scheme("gaming").is_ok());
+        assert!(Action::new_switch_scheme("").is_err());
+    }
+
+    // ── Unknown action names ───────────────────────────────────────
+
+    #[test]
+    fn test_unknown_action_name() {
+        let fields = ActionRawFields {
+            keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+        };
+        let result = Action::from_raw("nonexistent_action", fields);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown action"));
+    }
+
+    #[test]
+    fn test_missing_required_field() {
+        // replace_key without 'keys' field
+        let fields = ActionRawFields {
+            keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+        };
+        let result = Action::from_raw("replace_key", fields);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("replace_key action requires 'keys' field"));
+
+        // run_program without 'path' field
+        let fields = ActionRawFields {
+            keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+        };
+        let result = Action::from_raw("run_program", fields);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("run_program action requires 'path' field"));
+    }
+
+    // ── Action descriptor registry ─────────────────────────────────
+
+    #[test]
+    fn test_find_action_index_found() {
+        assert_eq!(find_action_index("quit"), Some(19));
+        assert_eq!(find_action_index("replace_key"), Some(0));
+        assert_eq!(find_action_index("brightness_up"), Some(3));
+    }
+
+    #[test]
+    fn test_find_action_index_not_found() {
+        assert_eq!(find_action_index("does_not_exist"), None);
+        assert_eq!(find_action_index(""), None);
+    }
+
+    #[test]
+    fn test_all_action_descriptors_unique_names() {
+        let mut names: Vec<&str> = ALL_ACTIONS.iter().map(|d| d.name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), ALL_ACTIONS.len(), "duplicate names in ALL_ACTIONS");
+    }
+
+    #[test]
+    fn test_all_action_descriptors_match_from_raw() {
+        // Every descriptor name should be parseable by from_raw if given appropriate fields
+        for desc in ALL_ACTIONS {
+            let fields = ActionRawFields {
+                keys: Some("ctrl+alt+x"),
+                command: Some("echo"),
+                path: Some("notepad.exe"),
+                target_scheme: Some("default"),
+                value: Some("10"),
+                code: Some("0x10"),
+            };
+            let result = Action::from_raw(desc.name, fields);
+            assert!(result.is_ok(), "descriptor '{}' cannot be parsed: {:?}", desc.name, result);
+        }
+    }
 }
