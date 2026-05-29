@@ -8,6 +8,7 @@ pub mod draw;
 pub mod note;
 pub mod pomodoro;
 pub mod topmost;
+pub mod throttle;
 pub mod tray;
 pub mod volume;
 pub mod cpu_plan;

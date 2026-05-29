@@ -32,6 +32,8 @@ pub enum Action {
     MediaNextTrack,
     /// Toggle always‑on‑top for the currently focused window.
     ToggleTopmost,
+    /// Toggle aggressive power throttling for the current process when it loses focus.
+    ToggleThrottleOnBlur,
     /// Show the Power Control overlay (awake/sleep/shutdown).
     PowerActions,
     /// Show the Quick Draw overlay (drawing tools).
@@ -119,6 +121,7 @@ impl Action {
             "media_stop" => Ok(Action::MediaStop),
             "media_last_track" => Ok(Action::MediaLastTrack),
             "toggle_topmost" => Ok(Action::ToggleTopmost),
+            "toggle_throttle_on_blur" => Ok(Action::ToggleThrottleOnBlur),
             "media_next_track" => Ok(Action::MediaNextTrack),
             "quick_draw" => Ok(Action::QuickDraw),
             "quick_note" => Ok(Action::QuickNote),
@@ -265,6 +268,7 @@ impl Action {
             Action::MediaLastTrack => "media_last_track",
             Action::MediaNextTrack => "media_next_track",
             Action::ToggleTopmost => "toggle_topmost",
+            Action::ToggleThrottleOnBlur => "toggle_throttle_on_blur",
             Action::PowerActions => "power_actions",
             Action::QuickDraw => "quick_draw",
             Action::QuickNote => "quick_note",
@@ -310,6 +314,7 @@ impl Action {
             | Action::MediaLastTrack
             | Action::MediaNextTrack
             | Action::ToggleTopmost
+            | Action::ToggleThrottleOnBlur
             | Action::PowerActions
             | Action::QuickDraw
             | Action::QuickNote
@@ -505,6 +510,13 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
+        name: "toggle_throttle_on_blur",
+        label: "Throttle On Blur",
+        category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
         name: "power_actions",
         label: "Power Control",
         category: ActionCategory::System,
@@ -590,6 +602,7 @@ mod tests {
             Action::MediaLastTrack,
             Action::MediaNextTrack,
             Action::ToggleTopmost,
+            Action::ToggleThrottleOnBlur,
             Action::PowerActions,
             Action::QuickDraw,
             Action::QuickNote,
@@ -748,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(21)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
+        assert_eq!(find_action_index("quit"), Some(22)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

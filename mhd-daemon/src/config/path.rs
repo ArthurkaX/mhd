@@ -123,6 +123,11 @@ action = "quit"
 # action = "run_ps"
 # command = "Start-Process wt"
 
+# Toggle aggressive Windows power throttling + one-CPU affinity for the current app when it loses focus.
+# [[binding]]
+# trigger = "ctrl+alt+f10"
+# action = "toggle_throttle_on_blur"
+
 # ── Media keys ────────────────────────────────────────────────────
 
 # Volume Up.
@@ -229,6 +234,11 @@ action = "quit"
 # trigger = "ctrl+alt+t"
 # action = "run_ps"
 # command = "Start-Process wt"
+
+# Toggle aggressive Windows power throttling + one-CPU affinity for the current app when it loses focus.
+# [[binding]]
+# trigger = "ctrl+alt+f10"
+# action = "toggle_throttle_on_blur"
 
 # ── Media keys ────────────────────────────────────────────────────
 

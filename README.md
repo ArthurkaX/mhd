@@ -191,6 +191,7 @@ All keys are optional — missing values fall back to the built-in dark theme.
 | `media_last_track` | — | Go to previous track |
 | `media_next_track` | — | Go to next track |
 | `toggle_topmost` | — | Toggle always‑on‑top for the currently focused window |
+| `toggle_throttle_on_blur` | — | Toggle Windows power throttling + one-CPU affinity for the focused process when it loses focus |
 | `quit` | — | Gracefully shut down mhd |
 
 The config editor exposes actions grouped by category (General, Display, Media,
@@ -226,6 +227,11 @@ value = "5"
 [[binding]]
 trigger = "ctrl+alt+numpad_star"
 action = "show_volume_mixer"
+
+# Throttle the focused game/app when it loses focus
+[[binding]]
+trigger = "ctrl+alt+f10"
+action = "toggle_throttle_on_blur"
 
 # Open Windows Terminal
 [[binding]]

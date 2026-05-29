@@ -58,7 +58,7 @@ mod crash_dump;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
 pub use core::{action, hook, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
-pub use overlays::{about, autostart, draw, monitor, note, power, topmost, tray, volume, cpu_plan};
+pub use overlays::{about, autostart, draw, monitor, note, power, topmost, throttle, tray, volume, cpu_plan};
 // Re-export config/editor as config_editor for backward compat.
 pub use config::editor as config_editor;
 
