@@ -20,10 +20,6 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
-#[cfg(test)]
-use windows::Win32::System::Time::GetTimeZoneInformation;
-#[cfg(test)]
-use windows::Win32::System::Time::TIME_ZONE_ID_INVALID;
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
@@ -120,44 +116,11 @@ fn db_path() -> PathBuf {
     blackbox_dir().join("blackbox.db")
 }
 
-/// Timezone bias from UTC in seconds (positive = east of UTC, i.e. local time = utc + bias).
-#[cfg(test)]
-fn timezone_bias_secs() -> i64 {
-    unsafe {
-        let mut tzi = std::mem::zeroed();
-        let ret = GetTimeZoneInformation(&mut tzi);
-        if ret == TIME_ZONE_ID_INVALID {
-            0
-        } else {
-            // Bias is minutes WEST of UTC -> we want seconds EAST
-            -(tzi.Bias as i64) * 60
-        }
-    }
-}
-
-/// Convert a UTC epoch second to local epoch second (accounting for DST).
-#[cfg(test)]
-fn utc_to_local(utc: u64) -> u64 {
-    let bias = timezone_bias_secs();
-    if bias >= 0 {
-        utc + bias as u64
-    } else {
-        utc.saturating_sub(bias.unsigned_abs())
-    }
-}
-
 fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-/// Time-of-day string (HH:MM:SS) for a given LOCAL epoch second.
-#[cfg(test)]
-fn time_str(ts_local: u64) -> String {
-    let s = (ts_local % 86400) as i64;
-    format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
 // ── Batch constants (same as old txt-based flush logic) ─────────────────
@@ -270,9 +233,23 @@ fn get_app_name() -> Option<String> {
 }
 
 /// Serialize key-value pairs into a compact payload string.
+///
+/// Values containing spaces or `=` are shell-style quoted: `key="val ue"`.
+/// Backslashes and double-quotes inside values are escaped.
+///
+/// Only used internally for `LogCustom` events (pomodoro) where keys/values
+/// are controlled — but this ensures correct round-tripping regardless.
 fn kv_payload(kv: &[(String, String)]) -> String {
     kv.iter()
-        .map(|(k, v)| format!("{k}={v}"))
+        .map(|(k, v)| {
+            let needs_quote = v.contains(' ') || v.contains('"') || v.contains('\\') || v.contains('=') || v.is_empty();
+            if needs_quote {
+                let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("{k}=\"{escaped}\"")
+            } else {
+                format!("{k}={v}")
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -604,15 +581,4 @@ mod tests {
         assert!(!s.active);
     }
 
-    #[test]
-    fn test_time_str() {
-        let ts = 9*3600 + 5*60 + 3; // 09:05:03
-        assert_eq!(time_str(ts), "09:05:03");
-    }
-
-    #[test]
-    fn test_time_str_midnight() {
-        assert_eq!(time_str(0), "00:00:00");
-        assert_eq!(time_str(86399), "23:59:59");
-    }
 }
