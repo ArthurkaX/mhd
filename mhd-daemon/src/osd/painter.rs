@@ -2,7 +2,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
     SelectObject, SetBkMode, SetTextColor,
-    DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
+    DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
     TRANSPARENT,
 };
 
@@ -138,6 +138,63 @@ pub fn paint_osd(
         let _ = SelectObject(frame.dc(), old_font);
         let _ = DeleteObject(hfont);
         let _ = DeleteObject(hfont_small);
+    }
+
+    frame.fix_gdi_alpha(theme.background);
+
+    let pos_x = work.left + (work.right - work.left - width) / 2;
+    let pos_y = work.top + (work.bottom - work.top - height) / 2;
+    frame.present_layered(hwnd, pos_x, pos_y, 255);
+}
+
+pub fn paint_notify(
+    hwnd: HWND,
+    text: &str,
+    work: &RECT,
+    width: i32,
+    height: i32,
+    scale: f32,
+    theme: &NativeTheme,
+) {
+    let mut frame = match DibFrame::new(width, height) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let radius = (14.0 * scale) as i32;
+    draw_rounded_rect(frame.pixels_mut(), width, height, radius, theme.background);
+
+    let font_h = -(14.0 * scale) as i32;
+    let hfont = create_font(font_h, false, "Segoe UI");
+    let old_font = unsafe { SelectObject(frame.dc(), hfont) };
+
+    unsafe {
+        let _ = SetBkMode(frame.dc(), TRANSPARENT);
+        let _ = SetTextColor(frame.dc(), theme.text.to_colorref());
+    }
+
+    let pad = (20.0 * scale) as i32;
+
+    // Centered single line of text
+    let mut text_rc = RECT {
+        left: pad,
+        top: 0,
+        right: width - pad,
+        bottom: height,
+    };
+    let mut text_wz = to_utf16_z(text);
+    unsafe {
+        let _ = DrawTextW(
+            frame.dc(),
+            &mut text_wz,
+            &mut text_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+    }
+
+    unsafe {
+        let _ = SelectObject(frame.dc(), old_font);
+        let _ = DeleteObject(hfont);
     }
 
     frame.fix_gdi_alpha(theme.background);

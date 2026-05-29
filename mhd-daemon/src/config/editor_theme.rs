@@ -282,7 +282,7 @@ pub fn draw_button(
             (bg, fg, theme.border)
         }
         ButtonStyle::Secondary => {
-            let mut bg = theme.surface;
+            let mut bg = theme.surface.blend_over(theme.background);
             if is_hovered {
                 bg = theme.hover.blend_over(bg);
             }
@@ -291,7 +291,7 @@ pub fn draw_button(
         }
         ButtonStyle::DangerGhost => {
             let mut bg = Argb::new(0, 0, 0, 0);
-            let mut fg = theme.text_muted;
+            let mut fg = theme.text_muted.with_alpha(255);
             if is_hovered {
                 bg = Argb::new(40, 255, 0, 0);
                 fg = Argb::new(255, 255, 80, 80);
@@ -320,7 +320,7 @@ pub fn draw_button(
 
     unsafe {
         let _ = SelectObject(dib_dc, font);
-        let _ = SetTextColor(dib_dc, text_color.to_colorref());
+        let _ = SetTextColor(dib_dc, text_color.with_alpha(255).to_colorref());
     }
     let mut lbl_wz = to_utf16_z(label);
     let mut lbl_rc = RECT {

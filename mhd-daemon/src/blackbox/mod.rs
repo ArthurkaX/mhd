@@ -116,7 +116,7 @@ fn db_path() -> PathBuf {
     blackbox_dir().join("blackbox.db")
 }
 
-fn epoch_secs() -> u64 {
+pub fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -309,6 +309,10 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
             let mut events_since_flush: u32 = 0;
             let mut last_flush_ts: u64 = epoch_secs();
 
+            // Heartbeat tracking
+            let mut last_heartbeat_ts: u64 = epoch_secs();
+            const HEARTBEAT_SECS: u64 = 300; // 5 minutes
+
             // Snapshot initial context
             let now = epoch_secs();
             let initial_title = get_foreground_title();
@@ -353,6 +357,16 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         if enabled {
                             check_app_and_title(&db, &mut session,
                                 &mut events_since_flush, &mut last_flush_ts);
+
+                            // Heartbeat
+                            let now = epoch_secs();
+                            if now.saturating_sub(last_heartbeat_ts) >= HEARTBEAT_SECS {
+                                last_heartbeat_ts = now;
+                                ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
+                                let _ = db.insert_event(now, "heartbeat", None, None, None);
+                                events_since_flush += 1;
+                                check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
+                            }
                         }
                         check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
                         continue;
@@ -498,6 +512,7 @@ fn end_session_and_insert(
     last_flush_ts: &mut u64,
 ) {
     if let Some(data) = session.end_session(ts, reason) {
+        ensure_tx(db, events_since_flush, last_flush_ts);
         if let Ok(event_id) = db.insert_event(ts, "ses_end",
             session.last_app_name.as_deref(),
             session.last_window_title.as_deref(),
@@ -513,33 +528,37 @@ fn end_session_and_insert(
     }
 }
 
-/// Check both app name and window title, log changes.
+/// Check both app name and window title, log a single combined "win" event.
 fn check_app_and_title(
     db: &Db,
     session: &mut SessionState,
     events_since_flush: &mut u32,
     last_flush_ts: &mut u64,
 ) {
-    // App name
-    if let Some(app) = get_app_name() {
-        let prev = session.last_app_name.as_deref().unwrap_or("");
-        if app != prev {
-            let ts = epoch_secs();
-            session.last_app_name = Some(app.clone());
-            ensure_tx(db, events_since_flush, last_flush_ts);
-            let _ = db.insert_event(ts, "app", Some(&app), None, None);
-            *events_since_flush += 1;
-        }
-    }
-    // Window title
+    let app   = get_app_name();
     let title = get_foreground_title();
-    let prev = session.last_window_title.as_deref().unwrap_or("");
-    if title != prev {
+
+    let app_changed   = app.as_deref() != session.last_app_name.as_deref();
+    let title_changed = title != session.last_window_title.as_deref().unwrap_or("");
+
+    if app_changed || title_changed {
         let ts = epoch_secs();
-        session.last_window_title = Some(title.clone());
+        // Update cached state first — unconditionally so get_app_name() returning
+        // None (privileged process) clears last_app_name and stops spurious events.
+        session.last_app_name = app.clone();
         if !title.is_empty() {
+            session.last_window_title = Some(title.clone());
+        }
+
+        // Emit single combined event carrying both fields
+        if app.is_some() || !title.is_empty() {
             ensure_tx(db, events_since_flush, last_flush_ts);
-            let _ = db.insert_event(ts, "win", None, Some(&title), None);
+            let _ = db.insert_event(
+                ts, "win",
+                app.as_deref(),
+                if title.is_empty() { None } else { Some(title.as_str()) },
+                None,
+            );
             *events_since_flush += 1;
         }
     }

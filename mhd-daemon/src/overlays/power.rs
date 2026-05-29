@@ -693,7 +693,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
 
     for i in 0..AW_COUNT {
         let bx = sx + i as i32 * (bw + gap);
-        let (bc, tc) = (dim, fg);  // no highlighting — user request
+        let (bc, tc) = (dim, dim.contrasting_text_color());  // no highlighting — user request
         fill_rect(mem, bx, by, bx + bw, by + bh, bc);
         tcol(mem, tc);
         dw(mem, &mut to_utf16_z(AWAKE_NAMES[i]),
@@ -734,7 +734,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
     for i in 0..3 {
         let bx = sx + i as i32 * (abw + agap);
         fill_rect(mem, bx, aby, bx + abw, aby + abh, dim);
-        tcol(mem, fg);
+        tcol(mem, dim.contrasting_text_color());
         dw(mem, &mut to_utf16_z(albls[i]),
            &mut rct(bx, aby, bx + abw, aby + abh),
            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -763,7 +763,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
         for bi in 0..4 {
             let bx = tsx + bi as i32 * (tbw + tgap);
             fill_rect(mem, bx, ry, bx + tbw, ry + tbh, dim);
-            tcol(mem, fg);
+            tcol(mem, dim.contrasting_text_color());
             dw(mem, &mut to_utf16_z(tvals[bi]),
                &mut rct(bx, ry, bx + tbw, ry + tbh),
                DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -790,7 +790,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
         let cbx = w - (PAD as f32 * sc) as i32 - cbw;
         let cby = py + (ph - cbh) / 2;
         fill_rect(mem, cbx, cby, cbx + cbw, cby + cbh, dim);
-        tcol(mem, fg);
+        tcol(mem, dim.contrasting_text_color());
         dw(mem, &mut to_utf16_z("Cancel"),
            &mut rct(cbx, cby, cbx + cbw, cby + cbh),
            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -849,7 +849,7 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
     let bx = (w - bw) / 2;
     let by = (84.0 * sc) as i32;
     fill_rect(mem, bx, by, bx + bw, by + bh, dim);
-    tcol(mem, fg);
+    tcol(mem, dim.contrasting_text_color());
     dw(mem, &mut to_utf16_z("Cancel"),
        &mut rct(bx, by, bx + bw, by + bh),
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);

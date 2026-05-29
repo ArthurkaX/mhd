@@ -55,6 +55,8 @@ pub struct AppConfig {
     pub blackbox: BlackboxConfig,
     /// Quick Note config.
     pub quicknote: QuickNoteConfig,
+    /// Ordered list of power plan names for rotation.
+    pub power_plans: Vec<String>,
 }
 
 impl AppConfig {
@@ -101,6 +103,7 @@ impl AppConfig {
                     target_scheme: raw_b.target_scheme.as_deref(),
                     value: raw_b.value.as_deref(),
                     code: raw_b.code.as_deref(),
+                    target: raw_b.target.as_deref(),
                 },
             ) {
                 Ok(a) => a,
@@ -162,6 +165,7 @@ impl AppConfig {
                 notes_dir: raw.quicknote.as_ref().and_then(|q| q.notes_dir.as_ref()).map(PathBuf::from).unwrap_or_else(default_notes_dir),
             },
             autostart: raw.autostart.unwrap_or(false),
+            power_plans: raw.power_plans,
         })
     }
 

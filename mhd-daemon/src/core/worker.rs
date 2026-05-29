@@ -7,6 +7,7 @@ use crate::platform;
 use crate::monitor;
 use crate::volume;
 use crate::power;
+use crate::cpu_plan;
 
 /// Messages sent from hook callbacks to the worker thread.
 #[derive(Debug)]
@@ -189,6 +190,13 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::MediaLastTrack => platform::send_media_key(0xB1),
         Action::MediaNextTrack => platform::send_media_key(0xB0),
         Action::ToggleTopmost => crate::topmost::toggle(),
+        Action::SwitchPowerPlan { target } => {
+            let plans = { handle.config.lock().unwrap().power_plans.clone() };
+            cpu_plan::switch_plan(target, &plans, &handle.osd);
+        }
+        Action::ShowCpuPanel => {
+            cpu_plan::show_panel(handle.theme());
+        }
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}

@@ -40,6 +40,10 @@ pub enum Action {
     QuickNote,
     /// Show the Pomodoro timer overlay.
     Pomodoro,
+    /// Switch active Windows power plan. target = plan name or "next".
+    SwitchPowerPlan { target: String },
+    /// Show the CPU power plan settings panel.
+    ShowCpuPanel,
     Quit,
 }
 
@@ -52,6 +56,7 @@ pub struct ActionRawFields<'a> {
     pub target_scheme: Option<&'a str>,
     pub value: Option<&'a str>,
     pub code: Option<&'a str>,
+    pub target: Option<&'a str>,
 }
 
 impl Action {
@@ -118,6 +123,13 @@ impl Action {
             "quick_draw" => Ok(Action::QuickDraw),
             "quick_note" => Ok(Action::QuickNote),
             "pomodoro" => Ok(Action::Pomodoro),
+            "switch_power_plan" => {
+                let target = fields.target.ok_or_else(|| {
+                    "switch_power_plan requires 'target' field".to_string()
+                })?;
+                Ok(Action::SwitchPowerPlan { target: target.to_string() })
+            }
+            "show_cpu_panel" => Ok(Action::ShowCpuPanel),
             "power_actions" => Ok(Action::PowerActions),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
@@ -256,6 +268,8 @@ impl Action {
             Action::PowerActions => "power_actions",
             Action::QuickDraw => "quick_draw",
             Action::QuickNote => "quick_note",
+            Action::SwitchPowerPlan { .. } => "switch_power_plan",
+            Action::ShowCpuPanel => "show_cpu_panel",
             Action::Pomodoro => "pomodoro",
             Action::Quit => "quit",
         }
@@ -299,6 +313,8 @@ impl Action {
             | Action::PowerActions
             | Action::QuickDraw
             | Action::QuickNote
+            | Action::SwitchPowerPlan { .. }
+            | Action::ShowCpuPanel
             | Action::Pomodoro
             | Action::Quit => self.name().to_string(),
         }
@@ -517,6 +533,20 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
+        name: "switch_power_plan",
+        label: "Switch Power Plan",
+        category: ActionCategory::System,
+        param_key: Some("target"),
+        param_schema: ActionParamSchema::Text,
+    },
+    ActionDescriptor {
+        name: "show_cpu_panel",
+        label: "CPU Power Panel",
+        category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
         name: "quit",
         label: "Quit mhd",
         category: ActionCategory::System,
@@ -563,7 +593,8 @@ mod tests {
             Action::PowerActions,
             Action::QuickDraw,
             Action::QuickNote,
-            Action::Pomodoro,
+            Action::SwitchPowerPlan { target: "next".into() },
+            Action::ShowCpuPanel,
             Action::Quit,
         ];
 
@@ -576,31 +607,35 @@ mod tests {
             let fields = match action {
                 Action::ReplaceKey { .. } => ActionRawFields {
                     keys: Some("ctrl+alt+x"),
-                    command: None, path: None, target_scheme: None, value: None, code: None,
+                    command: None, path: None, target_scheme: None, value: None, code: None, target: None,
                 },
                 Action::RunPs { .. } => ActionRawFields {
                     command: Some("echo test"),
-                    keys: None, path: None, target_scheme: None, value: None, code: None,
+                    keys: None, path: None, target_scheme: None, value: None, code: None, target: None,
                 },
                 Action::RunProgram { .. } => ActionRawFields {
                     path: Some("notepad.exe"),
-                    keys: None, command: None, target_scheme: None, value: None, code: None,
+                    keys: None, command: None, target_scheme: None, value: None, code: None, target: None,
                 },
                 Action::SwitchScheme { .. } => ActionRawFields {
                     target_scheme: Some("default"),
-                    keys: None, command: None, path: None, value: None, code: None,
+                    keys: None, command: None, path: None, value: None, code: None, target: None,
                 },
                 Action::BrightnessUp { .. } | Action::BrightnessDown { .. } | Action::SetBrightness { .. } => ActionRawFields {
                     value: Some("10"),
-                    keys: None, command: None, path: None, target_scheme: None, code: None,
+                    keys: None, command: None, path: None, target_scheme: None, code: None, target: None,
                 },
                 Action::Vcp { .. } => ActionRawFields {
                     code: Some("0x10"),
                     value: Some("+5"),
-                    keys: None, command: None, path: None, target_scheme: None,
+                    keys: None, command: None, path: None, target_scheme: None, target: None,
+                },
+                Action::SwitchPowerPlan { .. } => ActionRawFields {
+                    target: Some("next"),
+                    keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
                 },
                 _ => ActionRawFields {
-                    keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+                    keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
                 },
             };
             let roundtrip = Action::from_raw(name, fields);
@@ -683,7 +718,7 @@ mod tests {
     #[test]
     fn test_unknown_action_name() {
         let fields = ActionRawFields {
-            keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+            keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
         };
         let result = Action::from_raw("nonexistent_action", fields);
         assert!(result.is_err());
@@ -694,7 +729,7 @@ mod tests {
     fn test_missing_required_field() {
         // replace_key without 'keys' field
         let fields = ActionRawFields {
-            keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+            keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
         };
         let result = Action::from_raw("replace_key", fields);
         assert!(result.is_err());
@@ -702,7 +737,7 @@ mod tests {
 
         // run_program without 'path' field
         let fields = ActionRawFields {
-            keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+            keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
         };
         let result = Action::from_raw("run_program", fields);
         assert!(result.is_err());
@@ -713,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(19));
+        assert_eq!(find_action_index("quit"), Some(21)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }
@@ -743,6 +778,7 @@ mod tests {
                 target_scheme: Some("default"),
                 value: Some("10"),
                 code: Some("0x10"),
+                target: Some("next"),
             };
             let result = Action::from_raw(desc.name, fields);
             assert!(result.is_ok(), "descriptor '{}' cannot be parsed: {:?}", desc.name, result);

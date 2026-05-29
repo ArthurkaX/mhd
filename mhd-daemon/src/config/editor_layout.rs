@@ -65,6 +65,8 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "quick_draw",
     "quick_note",
     "pomodoro",
+    "switch_power_plan",
+    "show_cpu_panel",
     "quit",
 ];
 

@@ -32,7 +32,9 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+use windows::Win32::UI::Shell::{IFileOpenDialog, FileOpenDialog, SIGDN_FILESYSPATH, ShellExecuteW};
+use windows::Win32::UI::Shell::FOS_PICKFOLDERS;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -72,6 +74,26 @@ pub use crate::config::editor_theme::{
     draw_button, clear_rect_in_buffer, to_utf16_z,
 };
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// Folder browser (IFileOpenDialog, Vista+)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn browse_for_folder(hwnd: HWND) -> Option<std::path::PathBuf> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = dialog.GetOptions().ok()?;
+        let _ = dialog.SetOptions(opts | FOS_PICKFOLDERS);
+        let title: Vec<u16> = "Select Quick Note save folder\0".encode_utf16().collect();
+        let _ = dialog.SetTitle(PCWSTR::from_raw(title.as_ptr()));
+        dialog.Show(hwnd).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let s = pwstr.to_string().ok()?;
+        Some(std::path::PathBuf::from(s))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Public API
@@ -182,6 +204,7 @@ pub fn show_config_editor(handle: AppHandle) {
         combo_open,
         active_section: SettingsPage::General,
         autostart: crate::autostart::is_autostart_enabled(),
+        notes_dir: handle.config.lock().unwrap().quicknote_config().notes_dir.clone(),
         bindings,
         general_scroll_y: 0,
         bindings_scroll_y: 0,
@@ -430,6 +453,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         };
         unsafe {
             let _ = SetTextColor(dib_dc, fg.to_colorref());
+            let _ = SetBkColor(dib_dc, bg.to_colorref());
             let _ = SelectObject(dib_dc, small_font);
         }
         let mut label = to_utf16_z(name);
@@ -714,6 +738,63 @@ fn paint_general_page(
         right: win_w - lay.pad, bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
     };
     unsafe { let _ = DrawTextW(dib_dc, &mut auto_help_wz, &mut auto_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+
+    // ── Quick Note section ─────────────────────────────────────────
+    let notes_divider_y = lay.autostart_y + (20.0 * lay.scale) as i32 + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    draw_rounded_rect_in_buffer(bits, win_w, win_h,
+        RECT { left: lay.pad, top: notes_divider_y, right: win_w - lay.pad, bottom: notes_divider_y + 1 },
+        0, theme.border);
+
+    let notes_header_y = notes_divider_y + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    unsafe {
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
+    let mut qn_hdr_wz = to_utf16_z("Quick Note");
+    let mut qn_hdr_rc = RECT {
+        left: lay.pad, top: notes_header_y,
+        right: win_w - lay.pad, bottom: notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
+    };
+    unsafe { let _ = DrawTextW(dib_dc, &mut qn_hdr_wz, &mut qn_hdr_rc, DT_LEFT | DT_SINGLELINE); }
+
+    let notes_path_y = notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
+    let notes_row_h = (28.0 * lay.scale) as i32;
+
+    unsafe {
+        let _ = SelectObject(dib_dc, body_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let mut path_lbl_wz = to_utf16_z("Save path");
+    let mut path_lbl_rc = RECT {
+        left: lay.pad, top: notes_path_y,
+        right: lay.pad + lay.label_w, bottom: notes_path_y + notes_row_h,
+    };
+    unsafe { let _ = DrawTextW(dib_dc, &mut path_lbl_wz, &mut path_lbl_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+
+    let browse_btn_w = (80.0 * lay.scale) as i32;
+    let browse_x = lay.combo_x + lay.combo_w - browse_btn_w;
+    let is_browse_hovered = state.hovered_target == HoverTarget::NotesDirBrowseBtn;
+    draw_button(dib_dc, bits, win_w, win_h, browse_x, notes_path_y, browse_btn_w, notes_row_h,
+        "Browse\u{2026}", theme, small_font, is_browse_hovered, ButtonStyle::Secondary);
+
+    let path_field_w = browse_x - lay.combo_x - (4.0 * lay.scale) as i32;
+    let path_field_rc = RECT {
+        left: lay.combo_x, top: notes_path_y,
+        right: lay.combo_x + path_field_w, bottom: notes_path_y + notes_row_h,
+    };
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, path_field_rc, (4.0 * lay.scale) as i32, theme.surface.blend_over(theme.background));
+    draw_rounded_border_in_buffer(bits, win_w, win_h, path_field_rc, (4.0 * lay.scale) as i32, 1, theme.border);
+    unsafe {
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let path_str = state.notes_dir.to_string_lossy();
+    let mut path_wz = to_utf16_z(&path_str);
+    let mut path_rc = RECT {
+        left: lay.combo_x + (6.0 * lay.scale) as i32, top: notes_path_y,
+        right: lay.combo_x + path_field_w - (4.0 * lay.scale) as i32, bottom: notes_path_y + notes_row_h,
+    };
+    unsafe { let _ = DrawTextW(dib_dc, &mut path_wz, &mut path_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
 }
 
 
@@ -781,7 +862,7 @@ fn draw_accordion_editor(
     let record_x = field_x + trigger_field_w + gap;
     let is_rec_hovered = state.hovered_target == HoverTarget::AccordionRecordBtn;
     draw_button(dib_dc, bits, win_w, win_h, record_x, cur_y, btn_h, btn_h,
-        if state.acc_is_recording { "\u{25a0}" } else { "\u{25cf}" },
+        if state.acc_is_recording { "Rec" } else { "Bind" },
         theme, small_font, is_rec_hovered, ButtonStyle::Primary);
 
     // Action button
@@ -995,7 +1076,7 @@ fn paint_advanced_page(
     state: &SettingsState,
     title_font: HFONT,
     body_font: HFONT,
-    small_font: HFONT,
+    _small_font: HFONT,
 ) {
     unsafe {
         let _ = SelectObject(dib_dc, title_font);
@@ -1011,37 +1092,16 @@ fn paint_advanced_page(
     let pad = lay.pad;
     let mut cur_y = lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
     let btn_h = (36.0 * lay.scale) as i32;
-    let section_gap = (SECTION_GAP_BASE as f32 * lay.scale) as i32;
     let btn_gap = (8.0 * lay.scale) as i32;
     let btn_w = (260.0 * lay.scale) as i32;
-    let section_header_h = (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
 
-    for &(group_name, start, end, is_danger) in ADVANCED_GROUPS {
-        let header_y = cur_y + section_header_h + btn_gap;
-        unsafe {
-            let _ = SelectObject(dib_dc, small_font);
-            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
-        }
-        let mut hdr_wz = to_utf16_z(group_name);
-        let mut hdr_rc = RECT { left: pad, top: cur_y, right: win_w - lay.pad, bottom: cur_y + section_header_h };
-        unsafe { let _ = DrawTextW(dib_dc, &mut hdr_wz, &mut hdr_rc, DT_LEFT | DT_SINGLELINE); }
-
-        let divider_y = cur_y + section_header_h + (4.0 * lay.scale) as i32;
-        draw_rounded_rect_in_buffer(bits, win_w, win_h,
-            RECT { left: pad, top: divider_y, right: win_w - lay.pad, bottom: divider_y + 1 },
-            0, theme.border);
-
-        cur_y = header_y;
-
-        for i in start..end {
-            let is_hovered = state.hovered_target == HoverTarget::AdvancedBtn(i);
-            let label = ADVANCED_BUTTONS[i].0;
-            let style = if is_danger { ButtonStyle::DangerGhost } else { ButtonStyle::Secondary };
-            draw_button(dib_dc, bits, win_w, win_h, pad, cur_y, btn_w, btn_h,
-                label, theme, body_font, is_hovered, style);
-            cur_y += btn_h + btn_gap;
-        }
-        cur_y += section_gap;
+    for (i, &(label, _desc)) in ADVANCED_BUTTONS.iter().enumerate() {
+        let is_hovered = state.hovered_target == HoverTarget::AdvancedBtn(i);
+        let is_danger = i >= 4;
+        let style = if is_danger { ButtonStyle::DangerGhost } else { ButtonStyle::Secondary };
+        draw_button(dib_dc, bits, win_w, win_h, pad, cur_y, btn_w, btn_h,
+            label, theme, body_font, is_hovered, style);
+        cur_y += btn_h + btn_gap;
     }
 }
 
@@ -1253,7 +1313,7 @@ fn apply_settings(state: &mut SettingsState) {
         if found.is_empty() { theme_name.clone() } else { found }
     };
 
-    if let Err(e) = save_config(&state.handle.config_path, &config_name, &state.bindings, state.autostart, &state.handle) {
+    if let Err(e) = save_config(&state.handle.config_path, &config_name, &state.bindings, state.autostart, &state.notes_dir, &state.handle) {
         eprintln!("mhd: settings error: {e}");
         return;
     }
@@ -1271,6 +1331,7 @@ fn save_config(
     theme: &str,
     bindings: &[UIBinding],
     autostart: bool,
+    notes_dir: &std::path::Path,
     handle: &AppHandle,
 ) -> Result<(), String> {
     {
@@ -1304,6 +1365,14 @@ fn save_config(
             table.insert("autostart".to_string(), toml::Value::Boolean(true));
         } else {
             table.remove("autostart");
+        }
+
+        {
+            let qn = table.entry("quicknote".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+            if let Some(qn_table) = qn.as_table_mut() {
+                qn_table.insert("notes_dir".to_string(), toml::Value::String(notes_dir.to_string_lossy().into_owned()));
+            }
         }
 
         let mut new_bindings = Vec::new();
@@ -1477,6 +1546,14 @@ unsafe extern "system" fn settings_wndproc(
                         state.acc_save_error = None;
                         state.expanded_idx = Some(idx);
                         paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::NotesDirBrowseBtn => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if let Some(path) = browse_for_folder(hwnd) {
+                            state.notes_dir = path;
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
                     }
                     SettingsHit::ApplyBtn => {
                         close_combo_popup(state);
@@ -1733,6 +1810,7 @@ unsafe extern "system" fn settings_wndproc(
                             SettingsHit::RowDelete(i) => HoverTarget::RowDelete(i),
                             SettingsHit::AddBtn => HoverTarget::AddBtn,
                             SettingsHit::AdvancedButton(i) => HoverTarget::AdvancedBtn(i),
+                            SettingsHit::NotesDirBrowseBtn => HoverTarget::NotesDirBrowseBtn,
                             SettingsHit::AccordionSaveBtn => HoverTarget::AccordionSaveBtn,
                             SettingsHit::AccordionCancelBtn => HoverTarget::AccordionCancelBtn,
                             SettingsHit::AccordionDeleteBtn => HoverTarget::AccordionDeleteBtn,
@@ -2431,7 +2509,6 @@ fn close_kind_popup(_state: &mut SettingsState) {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn open_kind_menu(state: &mut SettingsState, idx: usize) {
-    let lay = state.layout;
     unsafe {
         let main_menu = CreatePopupMenu();
         let Ok(main_menu) = main_menu else { return };
@@ -2460,17 +2537,8 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
             let _ = AppendMenuW(main_menu, MF_POPUP | MF_STRING, sub.0 as usize, PCWSTR::from_raw(cat_label.as_ptr()));
         }
 
-        let mut pt = if state.expanded_idx == Some(idx) {
-            POINT {
-                x: lay.pad + (10.0 * lay.scale) as i32,
-                y: lay.shortcuts_y + (10.0 * lay.scale) as i32,
-            }
-        } else {
-            let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
-            let btn_y_in_row = lay.list_y - state.bindings_scroll_y + (idx as i32) * lay.row_h + (lay.row_h - lay.btn_h) / 2;
-            POINT { x: kind_x, y: btn_y_in_row }
-        };
-        let _ = ClientToScreen(state.hwnd, &mut pt);
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
 
         let chosen = TrackPopupMenu(main_menu, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y, 0, state.hwnd, None);
         let chosen = chosen.0 as usize;

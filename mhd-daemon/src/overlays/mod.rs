@@ -10,3 +10,4 @@ pub mod pomodoro;
 pub mod topmost;
 pub mod tray;
 pub mod volume;
+pub mod cpu_plan;

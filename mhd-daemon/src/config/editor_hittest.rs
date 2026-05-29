@@ -5,7 +5,7 @@
 
 use crate::config::editor_layout::{
     COMBO_HIT_HEIGHT, SECTION_HEADER_HEIGHT_BASE,
-    SECTION_GAP_BASE, ADVANCED_GROUPS,
+    SECTION_GAP_BASE, ADVANCED_BUTTONS,
     editor_action_desc,
 };
 use crate::config::editor_state::{SettingsHit, SettingsPage, SettingsState};
@@ -32,6 +32,17 @@ fn hit_test_general(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         && x < lay.combo_x + (36.0 * lay.scale) as i32
     {
         return SettingsHit::AutostartToggle;
+    }
+
+    // Quick Note browse button
+    let notes_divider_y = lay.autostart_y + (20.0 * lay.scale) as i32 + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    let notes_header_y = notes_divider_y + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    let notes_path_y = notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
+    let notes_row_h = (28.0 * lay.scale) as i32;
+    let browse_btn_w = (80.0 * lay.scale) as i32;
+    let browse_x = lay.combo_x + lay.combo_w - browse_btn_w;
+    if y >= notes_path_y && y < notes_path_y + notes_row_h && x >= browse_x && x < browse_x + browse_btn_w {
+        return SettingsHit::NotesDirBrowseBtn;
     }
 
     SettingsHit::None
@@ -100,21 +111,14 @@ fn hit_test_advanced(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     let pad = lay.pad;
     let mut cur_y = lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
     let btn_h = (36.0 * lay.scale) as i32;
-    let section_gap = (SECTION_GAP_BASE as f32 * lay.scale) as i32;
     let btn_gap = (8.0 * lay.scale) as i32;
     let btn_w = (260.0 * lay.scale) as i32;
-    let section_header_h = (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
 
-    for &(_name, start, end, _danger) in ADVANCED_GROUPS {
-        cur_y += section_header_h + btn_gap; // section header + gap
-        for i in start..end {
-            let by = cur_y;
-            if x >= pad && x < pad + btn_w && y >= by && y < by + btn_h {
-                return SettingsHit::AdvancedButton(i);
-            }
-            cur_y += btn_h + btn_gap;
+    for i in 0..ADVANCED_BUTTONS.len() {
+        if x >= pad && x < pad + btn_w && y >= cur_y && y < cur_y + btn_h {
+            return SettingsHit::AdvancedButton(i);
         }
-        cur_y += section_gap; // space between groups
+        cur_y += btn_h + btn_gap;
     }
     SettingsHit::None
 }

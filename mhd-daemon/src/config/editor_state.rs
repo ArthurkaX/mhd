@@ -1,5 +1,6 @@
 //! State types and transitions for the settings editor.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -50,6 +51,8 @@ pub enum SettingsHit {
     Scrollbar,
     /// Button on the Advanced page (index identifies the button).
     AdvancedButton(usize),
+    /// Browse button for Quick Note save path.
+    NotesDirBrowseBtn,
     // ── Accordion editor (inline, expanded row) ──────────────
     AccordionTriggerField,
     AccordionRecordBtn,
@@ -77,6 +80,7 @@ pub enum HoverTarget {
     Scrollbar,
     /// Hover target for a button on the Advanced page.
     AdvancedBtn(usize),
+    NotesDirBrowseBtn,
     // ── Accordion editor hovers ────────────────────────────────
     AccordionTriggerField,
     AccordionRecordBtn,
@@ -136,6 +140,9 @@ pub struct SettingsState {
 
     /// Autostart at user logon (via scheduled task)
     pub autostart: bool,
+
+    /// Quick Note save directory
+    pub notes_dir: PathBuf,
 
     /// List of bindings being edited
     pub bindings: Vec<UIBinding>,

@@ -3,7 +3,7 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
     WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
     WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
@@ -293,14 +293,9 @@ unsafe extern "system" fn keyboard_hook_proc(
         #[cfg(feature = "blackbox")]
         if is_key_down && !is_modifier_vk(vk) {
             use crate::blackbox::{self, BlackboxEvent, InputKind};
-
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
             blackbox::send_event(BlackboxEvent::Input {
                 kind: InputKind::Keyboard,
-                ts,
+                ts: blackbox::epoch_secs(),
             });
         }
 
@@ -349,16 +344,19 @@ unsafe extern "system" fn mouse_hook_proc(
         let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         let msg_type = w_param.0 as u32;
 
-        // Helper to send counted action to blackbox.
+        // Skip injected mouse events to avoid feedback loops with our own SendInput
+        if (ms_struct.flags & LLMHF_INJECTED) != 0 {
+            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+        }
+
+        // Helper to send event to blackbox.
         #[cfg(feature = "blackbox")]
         let bb_input = |kind: crate::blackbox::InputKind| {
             use crate::blackbox::{self, BlackboxEvent};
-
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            blackbox::send_event(BlackboxEvent::Input { kind, ts });
+            blackbox::send_event(BlackboxEvent::Input {
+                kind,
+                ts: blackbox::epoch_secs(),
+            });
         };
 
         match msg_type {

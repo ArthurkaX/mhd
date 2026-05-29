@@ -20,7 +20,13 @@ use windows::Win32::System::Power::{
     PowerEnumerate, PowerGetActiveScheme, PowerSetActiveScheme,
     PowerReadFriendlyName, PowerReadACValueIndex, PowerWriteACValueIndex,
     PowerReadDCValueIndex, PowerWriteDCValueIndex,
+    CallNtPowerInformation, ProcessorInformation, PROCESSOR_POWER_INFORMATION,
     ACCESS_SCHEME,
+};
+use windows::Win32::System::Performance::{
+    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData,
+    PdhGetFormattedCounterValue, PdhOpenQueryW, PDH_CSTATUS_NEW_DATA,
+    PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE,
 };
 use windows::Win32::System::SystemInformation::{
     GetLogicalProcessorInformationEx, GetSystemCpuSetInformation,
@@ -52,7 +58,7 @@ use crate::osd::{to_utf16_z, OsdHandle};
 use crate::constants::WM_MOUSELEAVE;
 
 // ── Layout (unscaled, 96 DPI) ────────────────────────────────────────
-const W: i32 = 340;
+const W: i32 = 380;
 const PAD: i32 = 14;
 const HDR_H: i32 = 32;
 const PLAN_H: i32 = 28;
@@ -60,7 +66,9 @@ const SEP_H: i32 = 1;
 const SEC_H: i32 = 22;        // section header height
 const ROW_H: i32 = 26;        // settings row height
 const MON_HDR_H: i32 = 26;    // monitor section header
-const BAR_H: i32 = 12;        // per-core bar height
+const LOAD_ROW_H: i32 = 24;   // stress load controls row
+const BAR_H: i32 = 18;        // per-core monitor row height
+const CORE_BAR_H: i32 = 8;    // compact load bar inside each monitor row
 const BAR_GAP: i32 = 3;       // gap between bars
 const SUMMARY_H: i32 = 18;    // group summary line
 const BTN_W: i32 = 80;        // apply button width
@@ -79,13 +87,16 @@ const GUID_PARKING_MIN: GUID = GUID::from_u128(0x0cc5b647_c1df_4637_891a_dec35c3
 const GUID_PARKING_MAX: GUID = GUID::from_u128(0xea062031_0e34_4ff1_9b6d_eb1059334028);
 // Minimum processor performance state (% of max frequency the CPU can drop to)
 const GUID_MIN_PROC_STATE: GUID = GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d0929964c);
+const GUID_MIN_PROC_STATE_CLASS1: GUID = GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d0929964d);
+const GUID_MIN_PROC_STATE_CLASS2: GUID = GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d0929964e);
 // Maximum processor performance state (% of max frequency the CPU can go to)
 const GUID_MAX_PROC_STATE: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ec);
-// Perf increase/decrease policy — 0=none, 1=adaptive → freq scaling on/off
-const GUID_PERF_INC_POLICY: GUID = GUID::from_u128(0x465e1f50_b610_423a_ab85_6130a94f0b9d);
-const GUID_PERF_DEC_POLICY: GUID = GUID::from_u128(0x75b0ae3f_bce0_45a7_8c89_c9611c25e100);
-// Turbo boost policy — 0=disabled, 100=enabled
-const GUID_PERF_BOOST_POLICY: GUID = GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
+const GUID_MAX_PROC_STATE_CLASS1: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ed);
+const GUID_MAX_PROC_STATE_CLASS2: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ee);
+// Processor performance autonomous mode — 0=disabled, 1=enabled.
+const GUID_PERF_AUTONOMOUS_MODE: GUID = GUID::from_u128(0x8baa4a8a_14c6_4451_8e8b_14bdbd197537);
+// Processor performance boost mode — 0=disabled, 1=enabled, 2=aggressive, etc.
+const GUID_PERF_BOOST_MODE: GUID = GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
 
 // ── Win32 error constant ─────────────────────────────────────────────
 const ERROR_NO_MORE_ITEMS: u32 = 259;
@@ -118,15 +129,18 @@ struct PerfInfo {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
-    AcMaxParked, DcMaxParked,
+    AcMinCores,  DcMinCores,
+    AcMaxCores,  DcMaxCores,
     AcMinFreq,   DcMinFreq,
     AcMaxFreq,   DcMaxFreq,
 }
 
 #[derive(Clone, Copy)]
 struct PlanValues {
-    /// 0–100: core parking max cores (%)
-    max_parked: u32,
+    /// 0–100: core parking minimum unparked cores (%)
+    min_cores: u32,
+    /// 0–100: core parking maximum unparked cores (%)
+    max_cores: u32,
     /// 0–100: minimum processor performance state %
     min_freq: u32,
     /// 0–100: maximum processor performance state %
@@ -138,11 +152,16 @@ struct PlanValues {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum StressLevel { Off, Half, Full }
+enum StressLevel {
+    Off,
+    Threads(usize),
+}
 
 struct MonitorState {
     core_load: Vec<f32>,            // 0.0–1.0 per logical core
     core_parked: Vec<bool>,         // parked status per logical core
+    core_freq_mhz: Vec<u32>,        // current MHz per logical core when available
+    freq_sampler: Option<PdhFreqSampler>,
     p_cores: Vec<usize>,            // logical indices of P-cores
     e_cores: Vec<usize>,            // logical indices of E-cores
     stress_level: StressLevel,
@@ -479,6 +498,133 @@ fn read_parked_state() -> Vec<bool> {
     parked
 }
 
+// ── Per-core frequency sampling via powrprof ────────────────────────
+
+/// Read current per-logical-processor MHz using standard Windows power APIs.
+fn read_processor_frequencies(count_hint: usize) -> Option<Vec<u32>> {
+    let count = count_hint
+        .max(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    let mut info = vec![PROCESSOR_POWER_INFORMATION::default(); count];
+    let byte_len = (info.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32;
+    let status = unsafe {
+        CallNtPowerInformation(
+            ProcessorInformation,
+            None,
+            0,
+            Some(info.as_mut_ptr() as *mut std::ffi::c_void),
+            byte_len,
+        )
+    };
+    if status.0 < 0 {
+        return None;
+    }
+
+    Some(info.into_iter().map(|p| p.CurrentMhz).collect())
+}
+
+fn read_processor_base_mhz(count_hint: usize) -> Option<u32> {
+    let count = count_hint
+        .max(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    let mut info = vec![PROCESSOR_POWER_INFORMATION::default(); count];
+    let byte_len = (info.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32;
+    let status = unsafe {
+        CallNtPowerInformation(
+            ProcessorInformation,
+            None,
+            0,
+            Some(info.as_mut_ptr() as *mut std::ffi::c_void),
+            byte_len,
+        )
+    };
+    if status.0 < 0 {
+        return None;
+    }
+
+    info.iter()
+        .find_map(|p| (p.MaxMhz > 0).then_some(p.MaxMhz))
+        .or_else(|| info.iter().find_map(|p| (p.CurrentMhz > 0).then_some(p.CurrentMhz)))
+}
+
+struct PdhFreqSampler {
+    query: isize,
+    counters: Vec<isize>,
+    base_mhz: u32,
+}
+
+impl PdhFreqSampler {
+    fn new(count: usize, base_mhz: u32) -> Option<Self> {
+        if count == 0 || base_mhz == 0 {
+            return None;
+        }
+
+        let mut query = 0isize;
+        if unsafe { PdhOpenQueryW(PCWSTR::null(), 0, &mut query) } != 0 {
+            return None;
+        }
+
+        let mut counters = Vec::with_capacity(count);
+        for i in 0..count {
+            let path = to_utf16_z(&format!("\\Processor Information(0,{i})\\% Processor Performance"));
+            let mut counter = 0isize;
+            let status = unsafe {
+                PdhAddEnglishCounterW(query, PCWSTR::from_raw(path.as_ptr()), 0, &mut counter)
+            };
+            if status == 0 {
+                counters.push(counter);
+            }
+        }
+
+        if counters.is_empty() {
+            unsafe { let _ = PdhCloseQuery(query); }
+            return None;
+        }
+
+        let sampler = Self { query, counters, base_mhz };
+        let _ = sampler.collect();
+        Some(sampler)
+    }
+
+    fn collect(&self) -> Option<Vec<u32>> {
+        let status = unsafe { PdhCollectQueryData(self.query) };
+        if status != 0 {
+            return None;
+        }
+
+        let mut freqs = Vec::with_capacity(self.counters.len());
+        for counter in &self.counters {
+            let mut value = PDH_FMT_COUNTERVALUE::default();
+            let status = unsafe {
+                PdhGetFormattedCounterValue(*counter, PDH_FMT_DOUBLE, None, &mut value)
+            };
+            if status != 0
+                || !matches!(value.CStatus, PDH_CSTATUS_VALID_DATA | PDH_CSTATUS_NEW_DATA)
+            {
+                freqs.push(0);
+                continue;
+            }
+
+            let perf_percent = unsafe { value.Anonymous.doubleValue }.max(0.0);
+            let mhz = (self.base_mhz as f64 * perf_percent / 100.0).round() as u32;
+            freqs.push(mhz);
+        }
+
+        Some(freqs)
+    }
+}
+
+impl Drop for PdhFreqSampler {
+    fn drop(&mut self) {
+        unsafe { let _ = PdhCloseQuery(self.query); }
+    }
+}
+
+fn read_effective_processor_frequencies(mon: &MonitorState) -> Option<Vec<u32>> {
+    mon.freq_sampler
+        .as_ref()
+        .and_then(PdhFreqSampler::collect)
+        .or_else(|| read_processor_frequencies(mon.core_freq_mhz.len()))
+}
+
 // ── Stress threads ─────────────────────────────────────────────────
 
 fn spawn_stress_threads(count: usize, stop: Arc<AtomicBool>) -> Vec<std::thread::JoinHandle<()>> {
@@ -654,47 +800,114 @@ fn write_dc_value(scheme: &GUID, sub: &GUID, setting: &GUID, value: u32) {
 
 fn read_current_plan_values() -> (PlanValues, PlanValues) {
     let guid = get_active_scheme_guid();
+    let min_freq_settings = [
+        GUID_MIN_PROC_STATE,
+        GUID_MIN_PROC_STATE_CLASS1,
+        GUID_MIN_PROC_STATE_CLASS2,
+    ];
+    let max_freq_settings = [
+        GUID_MAX_PROC_STATE,
+        GUID_MAX_PROC_STATE_CLASS1,
+        GUID_MAX_PROC_STATE_CLASS2,
+    ];
 
     let ac = PlanValues {
-        max_parked: read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
-        min_freq:   read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MIN_PROC_STATE),
-        max_freq:   read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MAX_PROC_STATE),
-        freq_scale: read_boost_or_scaling_ac(&guid, &GUID_PERF_INC_POLICY) != 0,
-        turbo:      read_boost_or_scaling_ac(&guid, &GUID_PERF_BOOST_POLICY) >= 50,
+        min_cores:  read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN),
+        max_cores:  read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
+        min_freq:   read_ac_setting_max(&guid, &min_freq_settings),
+        max_freq:   read_ac_setting_min_nonzero(&guid, &max_freq_settings),
+        freq_scale: read_power_setting_ac(&guid, &GUID_PERF_AUTONOMOUS_MODE) != 0,
+        turbo:      read_power_setting_ac(&guid, &GUID_PERF_BOOST_MODE) != 0,
     };
     let dc = PlanValues {
-        max_parked: read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
-        min_freq:   read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MIN_PROC_STATE),
-        max_freq:   read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MAX_PROC_STATE),
-        freq_scale: read_boost_or_scaling_dc(&guid, &GUID_PERF_INC_POLICY) != 0,
-        turbo:      read_boost_or_scaling_dc(&guid, &GUID_PERF_BOOST_POLICY) >= 50,
+        min_cores:  read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN),
+        max_cores:  read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
+        min_freq:   read_dc_setting_max(&guid, &min_freq_settings),
+        max_freq:   read_dc_setting_min_nonzero(&guid, &max_freq_settings),
+        freq_scale: read_power_setting_dc(&guid, &GUID_PERF_AUTONOMOUS_MODE) != 0,
+        turbo:      read_power_setting_dc(&guid, &GUID_PERF_BOOST_MODE) != 0,
     };
     (ac, dc)
 }
 
 fn write_plan_values(ac: &PlanValues, dc: &PlanValues) {
     let guid = get_active_scheme_guid();
-    // parking_min always 0
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN, 0);
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX, ac.max_parked);
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MIN_PROC_STATE, ac.min_freq);
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MAX_PROC_STATE, ac.max_freq);
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_INC_POLICY, if ac.freq_scale { 1 } else { 0 });
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_DEC_POLICY, if ac.freq_scale { 1 } else { 0 });
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_BOOST_POLICY, if ac.turbo { 100 } else { 0 });
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN, ac.min_cores);
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX, ac.max_cores);
+    write_ac_values(&guid, &[
+        GUID_MIN_PROC_STATE,
+        GUID_MIN_PROC_STATE_CLASS1,
+        GUID_MIN_PROC_STATE_CLASS2,
+    ], ac.min_freq);
+    write_ac_values(&guid, &[
+        GUID_MAX_PROC_STATE,
+        GUID_MAX_PROC_STATE_CLASS1,
+        GUID_MAX_PROC_STATE_CLASS2,
+    ], ac.max_freq);
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_AUTONOMOUS_MODE, if ac.freq_scale { 1 } else { 0 });
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_BOOST_MODE, if ac.turbo { 1 } else { 0 });
 
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN, 0);
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX, dc.max_parked);
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MIN_PROC_STATE, dc.min_freq);
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_MAX_PROC_STATE, dc.max_freq);
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_INC_POLICY, if dc.freq_scale { 1 } else { 0 });
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_DEC_POLICY, if dc.freq_scale { 1 } else { 0 });
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_BOOST_POLICY, if dc.turbo { 100 } else { 0 });
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN, dc.min_cores);
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX, dc.max_cores);
+    write_dc_values(&guid, &[
+        GUID_MIN_PROC_STATE,
+        GUID_MIN_PROC_STATE_CLASS1,
+        GUID_MIN_PROC_STATE_CLASS2,
+    ], dc.min_freq);
+    write_dc_values(&guid, &[
+        GUID_MAX_PROC_STATE,
+        GUID_MAX_PROC_STATE_CLASS1,
+        GUID_MAX_PROC_STATE_CLASS2,
+    ], dc.max_freq);
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_AUTONOMOUS_MODE, if dc.freq_scale { 1 } else { 0 });
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_BOOST_MODE, if dc.turbo { 1 } else { 0 });
 
     unsafe { let _ = PowerSetActiveScheme(None, Some(&guid as *const GUID)); }
 }
 
-fn read_boost_or_scaling_ac(scheme: &GUID, setting: &GUID) -> u32 {
+fn read_ac_setting_max(scheme: &GUID, settings: &[GUID]) -> u32 {
+    settings.iter()
+        .map(|setting| read_ac_value(scheme, &GUID_PROCESSOR_SUBGROUP, setting))
+        .max()
+        .unwrap_or(0)
+}
+
+fn read_dc_setting_max(scheme: &GUID, settings: &[GUID]) -> u32 {
+    settings.iter()
+        .map(|setting| read_dc_value(scheme, &GUID_PROCESSOR_SUBGROUP, setting))
+        .max()
+        .unwrap_or(0)
+}
+
+fn read_ac_setting_min_nonzero(scheme: &GUID, settings: &[GUID]) -> u32 {
+    settings.iter()
+        .map(|setting| read_ac_value(scheme, &GUID_PROCESSOR_SUBGROUP, setting))
+        .filter(|value| *value > 0)
+        .min()
+        .unwrap_or(0)
+}
+
+fn read_dc_setting_min_nonzero(scheme: &GUID, settings: &[GUID]) -> u32 {
+    settings.iter()
+        .map(|setting| read_dc_value(scheme, &GUID_PROCESSOR_SUBGROUP, setting))
+        .filter(|value| *value > 0)
+        .min()
+        .unwrap_or(0)
+}
+
+fn write_ac_values(scheme: &GUID, settings: &[GUID], value: u32) {
+    for setting in settings {
+        write_ac_value(scheme, &GUID_PROCESSOR_SUBGROUP, setting, value);
+    }
+}
+
+fn write_dc_values(scheme: &GUID, settings: &[GUID], value: u32) {
+    for setting in settings {
+        write_dc_value(scheme, &GUID_PROCESSOR_SUBGROUP, setting, value);
+    }
+}
+
+fn read_power_setting_ac(scheme: &GUID, setting: &GUID) -> u32 {
     unsafe {
         let mut val: u32 = 0;
         let _ = PowerReadACValueIndex(
@@ -708,7 +921,7 @@ fn read_boost_or_scaling_ac(scheme: &GUID, setting: &GUID) -> u32 {
     }
 }
 
-fn read_boost_or_scaling_dc(scheme: &GUID, setting: &GUID) -> u32 {
+fn read_power_setting_dc(scheme: &GUID, setting: &GUID) -> u32 {
     unsafe {
         let mut val: u32 = 0;
         let _ = PowerReadDCValueIndex(
@@ -740,13 +953,14 @@ fn sc_from_hwnd(hwnd: HWND) -> f32 {
 fn compute_total_h(sc: f32, p_count: usize, e_count: usize) -> i32 {
     let mut h = HDR_H + PLAN_H; // header + plan row
     // Settings section
-    h += SEC_H + ROW_H; // CORES header + Max Parked
+    h += SEC_H + ROW_H + ROW_H; // CORES header + Min/Max Cores
     h += SEC_H + ROW_H + ROW_H; // FREQUENCY header + Min Speed + Max Speed
     h += SEC_H + ROW_H + ROW_H; // POWER FEATURES header + Freq Scaling + Turbo
     h += SEP_H; // separator
 
     // Monitor section
     h += MON_HDR_H; // monitor header
+    h += LOAD_ROW_H; // load controls
 
     // P-core group
     if p_count > 0 {
@@ -828,6 +1042,8 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
     let (ac, dc) = read_current_plan_values();
 
     let stress_stop = Arc::new(AtomicBool::new(false));
+    let freq_sampler = read_processor_base_mhz(total_cores.max(1))
+        .and_then(|base_mhz| PdhFreqSampler::new(total_cores.max(1), base_mhz));
 
     let mut st = PanelState {
         theme,
@@ -843,6 +1059,8 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
         monitor: MonitorState {
             core_load: vec![0.0; total_cores.max(1)],
             core_parked: vec![false; total_cores.max(1)],
+            core_freq_mhz: vec![0; total_cores.max(1)],
+            freq_sampler,
             p_cores,
             e_cores,
             stress_level: StressLevel::Off,
@@ -859,6 +1077,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
     // Sample initial perf info
     if let Some(perf) = read_perf_info() {
         st.monitor.prev_perf = Some(perf);
+    }
+    if let Some(freqs) = read_effective_processor_frequencies(&st.monitor) {
+        update_vec_prefix(&mut st.monitor.core_freq_mhz, &freqs);
     }
 
     paint_panel(hwnd, &st, win_w, win_h, sc);
@@ -907,6 +1128,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                     }
                     st.monitor.core_load.fill(0.0);
                     st.monitor.core_parked = read_parked_state();
+                    if let Some(freqs) = read_effective_processor_frequencies(&st.monitor) {
+                        update_vec_prefix(&mut st.monitor.core_freq_mhz, &freqs);
+                    }
 
                     paint_panel(hwnd, &st, win_w, win_h, sc);
                     unsafe { let _ = ShowWindow(hwnd, SW_SHOW); }
@@ -984,10 +1208,16 @@ fn handle_monitor_timer(st: &mut PanelState) {
 
     // Read parked state
     let parked = read_parked_state();
-    let n = st.monitor.core_parked.len().min(parked.len());
-    for i in 0..n {
-        st.monitor.core_parked[i] = parked[i];
+    update_vec_prefix(&mut st.monitor.core_parked, &parked);
+
+    if let Some(freqs) = read_effective_processor_frequencies(&st.monitor) {
+        update_vec_prefix(&mut st.monitor.core_freq_mhz, &freqs);
     }
+}
+
+fn update_vec_prefix<T: Copy>(dst: &mut [T], src: &[T]) {
+    let n = dst.len().min(src.len());
+    dst[..n].copy_from_slice(&src[..n]);
 }
 
 // ── Key handling ─────────────────────────────────────────────────────
@@ -1016,9 +1246,11 @@ fn handle_key(msg: &MSG, st: &mut PanelState, hidden: &mut bool) -> bool {
         0x09 => { // Tab — cycle focus through editable fields
             flush_edit(st);
             let field = match st.focused {
-                None | Some(Field::DcMaxFreq) => Field::AcMaxParked,
-                Some(Field::AcMaxParked) => Field::DcMaxParked,
-                Some(Field::DcMaxParked) => Field::AcMinFreq,
+                None | Some(Field::DcMaxFreq) => Field::AcMinCores,
+                Some(Field::AcMinCores) => Field::DcMinCores,
+                Some(Field::DcMinCores) => Field::AcMaxCores,
+                Some(Field::AcMaxCores) => Field::DcMaxCores,
+                Some(Field::DcMaxCores) => Field::AcMinFreq,
                 Some(Field::AcMinFreq) => Field::DcMinFreq,
                 Some(Field::DcMinFreq) => Field::AcMaxFreq,
                 Some(Field::AcMaxFreq) => Field::DcMaxFreq,
@@ -1081,8 +1313,10 @@ fn handle_wheel(msg: &MSG, st: &mut PanelState, _sc: f32) -> bool {
     if let Some(field) = st.focused {
         flush_edit(st);
         let val = match field {
-            Field::AcMaxParked => &mut st.ac.max_parked,
-            Field::DcMaxParked => &mut st.dc.max_parked,
+            Field::AcMinCores => &mut st.ac.min_cores,
+            Field::DcMinCores => &mut st.dc.min_cores,
+            Field::AcMaxCores => &mut st.ac.max_cores,
+            Field::DcMaxCores => &mut st.dc.max_cores,
             Field::AcMinFreq => &mut st.ac.min_freq,
             Field::DcMinFreq => &mut st.dc.min_freq,
             Field::AcMaxFreq => &mut st.ac.max_freq,
@@ -1102,8 +1336,10 @@ fn handle_wheel(msg: &MSG, st: &mut PanelState, _sc: f32) -> bool {
 /// Get current value for a field (as u32)
 fn get_field_value(st: &PanelState, field: Field) -> u32 {
     match field {
-        Field::AcMaxParked => st.ac.max_parked,
-        Field::DcMaxParked => st.dc.max_parked,
+        Field::AcMinCores => st.ac.min_cores,
+        Field::DcMinCores => st.dc.min_cores,
+        Field::AcMaxCores => st.ac.max_cores,
+        Field::DcMaxCores => st.dc.max_cores,
         Field::AcMinFreq => st.ac.min_freq,
         Field::DcMinFreq => st.dc.min_freq,
         Field::AcMaxFreq => st.ac.max_freq,
@@ -1127,8 +1363,10 @@ fn flush_edit(st: &mut PanelState) {
     if let Ok(v) = st.edit_text.parse::<u32>() {
         let v = v.min(100);
         match st.focused.unwrap() {
-            Field::AcMaxParked => st.ac.max_parked = v,
-            Field::DcMaxParked => st.dc.max_parked = v,
+            Field::AcMinCores => st.ac.min_cores = v,
+            Field::DcMinCores => st.dc.min_cores = v,
+            Field::AcMaxCores => st.ac.max_cores = v,
+            Field::DcMaxCores => st.dc.max_cores = v,
             Field::AcMinFreq => st.ac.min_freq = v,
             Field::DcMinFreq => st.dc.min_freq = v,
             Field::AcMaxFreq => st.ac.max_freq = v,
@@ -1291,7 +1529,9 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
     // CORES section
     let cores_sec_y = y;
     y += SEC_H;
-    let max_parked_y = y;
+    let min_cores_y = y;
+    y += ROW_H;
+    let max_cores_y = y;
     y += ROW_H;
     let _cores_sec_bot = y;
 
@@ -1322,7 +1562,8 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
 
     SettingsYRanges {
         cores_sec_y: (cores_sec_y as f32 * s) as i32,
-        max_parked_y: (max_parked_y as f32 * s) as i32,
+        min_cores_y: (min_cores_y as f32 * s) as i32,
+        max_cores_y: (max_cores_y as f32 * s) as i32,
         freq_sec_y: (freq_sec_y as f32 * s) as i32,
         min_freq_y: (min_freq_y as f32 * s) as i32,
         max_freq_y: (max_freq_y as f32 * s) as i32,
@@ -1336,7 +1577,8 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
 
 struct SettingsYRanges {
     cores_sec_y: i32,
-    max_parked_y: i32,
+    min_cores_y: i32,
+    max_cores_y: i32,
     freq_sec_y: i32,
     min_freq_y: i32,
     max_freq_y: i32,
@@ -1354,10 +1596,16 @@ fn hit_value_cell(x: i32, y: i32, sc: f32) -> Option<Field> {
     let gap = (PAD_INNER as f32 * sc) as i32;
     let row_h = (ROW_H as f32 * sc) as i32;
 
-    // Max Parked row
-    if y >= ranges.max_parked_y && y < ranges.max_parked_y + row_h {
-        if x >= sx && x < sx + vw { return Some(Field::AcMaxParked); }
-        if x >= sx + vw + gap && x < sx + vw + gap + vw { return Some(Field::DcMaxParked); }
+    // Core parking min cores row
+    if y >= ranges.min_cores_y && y < ranges.min_cores_y + row_h {
+        if x >= sx && x < sx + vw { return Some(Field::AcMinCores); }
+        if x >= sx + vw + gap && x < sx + vw + gap + vw { return Some(Field::DcMinCores); }
+    }
+
+    // Core parking max cores row
+    if y >= ranges.max_cores_y && y < ranges.max_cores_y + row_h {
+        if x >= sx && x < sx + vw { return Some(Field::AcMaxCores); }
+        if x >= sx + vw + gap && x < sx + vw + gap + vw { return Some(Field::DcMaxCores); }
     }
 
     // Min Freq row
@@ -1428,53 +1676,23 @@ fn toggle_rects(sx: i32, _ry: i32, vw: i32, _row_h: i32, sc: f32) -> ((i32, i32)
 }
 
 fn hit_stress_button(x: i32, y: i32, sc: f32, mon: &mut MonitorState, handles: &mut Vec<std::thread::JoinHandle<()>>) -> bool {
-    let btn_w = (36.0 * sc) as i32;
-    let btn_h = (18.0 * sc) as i32;
-    let gap = (4.0 * sc) as i32;
-    let total_w = btn_w * 3 + gap * 2;
-
     let ranges = settings_y_ranges(sc);
-    let mon_hdr_y = ranges.mon_hdr_y;
-    let mon_hdr_h = (MON_HDR_H as f32 * sc) as i32;
-
-    // Stress buttons are on the right side of the monitor header
+    let load_y = ranges.mon_hdr_y + (MON_HDR_H as f32 * sc) as i32;
+    let load_h = (LOAD_ROW_H as f32 * sc) as i32;
     let win_w = (W as f32 * sc) as i32;
-    let bx = win_w - (PAD as f32 * sc) as i32 - total_w;
-    let by = mon_hdr_y + (mon_hdr_h - btn_h) / 2;
 
-    if y < by || y >= by + btn_h { return false; }
-
-    // OFF button
-    if x >= bx && x < bx + btn_w {
-        // Stop all stress
-        stop_stress_threads(&mon.stress_stop, handles);
-        mon.stress_stop = Arc::new(AtomicBool::new(false));
-        mon.stress_level = StressLevel::Off;
-        return true;
-    }
-
-    // HALF button
-    let bx_half = bx + btn_w + gap;
-    if x >= bx_half && x < bx_half + btn_w {
-        stop_stress_threads(&mon.stress_stop, handles);
-        let stop = Arc::new(AtomicBool::new(false));
-        mon.stress_stop = stop.clone();
-        let count = (mon.core_load.len() / 2).max(1);
-        *handles = spawn_stress_threads(count, stop);
-        mon.stress_level = StressLevel::Half;
-        return true;
-    }
-
-    // FULL button
-    let bx_full = bx_half + btn_w + gap;
-    if x >= bx_full && x < bx_full + btn_w {
-        stop_stress_threads(&mon.stress_stop, handles);
-        let stop = Arc::new(AtomicBool::new(false));
-        mon.stress_stop = stop.clone();
-        let count = mon.core_load.len().max(1);
-        *handles = spawn_stress_threads(count, stop);
-        mon.stress_level = StressLevel::Full;
-        return true;
+    for (level, x1, x2, y1, y2) in stress_button_rects(win_w, load_y, load_h, sc, mon.core_load.len()) {
+        if x >= x1 && x < x2 && y >= y1 && y < y2 {
+            stop_stress_threads(&mon.stress_stop, handles);
+            mon.stress_stop = Arc::new(AtomicBool::new(false));
+            mon.stress_level = level;
+            if let StressLevel::Threads(count) = level {
+                let stop = Arc::new(AtomicBool::new(false));
+                mon.stress_stop = stop.clone();
+                *handles = spawn_stress_threads(count, stop);
+            }
+            return true;
+        }
     }
 
     false
@@ -1482,7 +1700,7 @@ fn hit_stress_button(x: i32, y: i32, sc: f32, mon: &mut MonitorState, handles: &
 
 fn hit_apply(x: i32, y: i32, sc: f32, st: &PanelState) -> bool {
     let ranges = settings_y_ranges(sc);
-    let mut content_y = ranges.mon_hdr_y + (MON_HDR_H as f32 * sc) as i32;
+    let mut content_y = ranges.mon_hdr_y + ((MON_HDR_H + LOAD_ROW_H) as f32 * sc) as i32;
 
     // Add core group bars and summary heights
     if !st.monitor.p_cores.is_empty() {
@@ -1510,7 +1728,7 @@ fn hit_apply(x: i32, y: i32, sc: f32, st: &PanelState) -> bool {
 
 // ── Layout constant re-exports for paint ─────────────────────────────
 
-const LABEL_W: i32 = 120;
+const LABEL_W: i32 = 140;
 const VAL_W: i32 = 56;
 
 // ── Painting ─────────────────────────────────────────────────────────
@@ -1579,26 +1797,45 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
 
     // ── CORES section ──
     draw_section_header(mem, pad_sc, ranges.cores_sec_y, w, s, "CORES", fg, dim);
-    let ry = ranges.max_parked_y;
     let row_h = (ROW_H as f32 * s) as i32;
-    // Label
+
+    // Min Cores %
+    let ry = ranges.min_cores_y;
     tcol(mem, fg);
-    dw(mem, &mut to_utf16_z("Max Parked %"),
+    dw(mem, &mut to_utf16_z("Min Cores %"),
        &mut rct(pad_sc, ry, pad_sc + (LABEL_W as f32 * s) as i32, ry + row_h),
        DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    // Values
-    let ac_str = if st.focused == Some(Field::AcMaxParked) {
+    let ac_str = if st.focused == Some(Field::AcMinCores) {
         edit_display(st)
     } else {
-        format!("{}%", st.ac.max_parked)
+        format!("{}%", st.ac.min_cores)
     };
-    draw_value_cell(mem, sx, ry, vw, row_h, s, &ac_str, Field::AcMaxParked, st.focused, st.dirty, fg, dim, accent);
-    let dc_str = if st.focused == Some(Field::DcMaxParked) {
+    draw_value_cell(mem, sx, ry, vw, row_h, s, &ac_str, Field::AcMinCores, st.focused, st.dirty, fg, dim, accent);
+    let dc_str = if st.focused == Some(Field::DcMinCores) {
         edit_display(st)
     } else {
-        format!("{}%", st.dc.max_parked)
+        format!("{}%", st.dc.min_cores)
     };
-    draw_value_cell(mem, sx + vw + gap, ry, vw, row_h, s, &dc_str, Field::DcMaxParked, st.focused, st.dirty, fg, dim, accent);
+    draw_value_cell(mem, sx + vw + gap, ry, vw, row_h, s, &dc_str, Field::DcMinCores, st.focused, st.dirty, fg, dim, accent);
+
+    // Max Cores %
+    let ry = ranges.max_cores_y;
+    tcol(mem, fg);
+    dw(mem, &mut to_utf16_z("Max Cores %"),
+       &mut rct(pad_sc, ry, pad_sc + (LABEL_W as f32 * s) as i32, ry + row_h),
+       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    let ac_str = if st.focused == Some(Field::AcMaxCores) {
+        edit_display(st)
+    } else {
+        format!("{}%", st.ac.max_cores)
+    };
+    draw_value_cell(mem, sx, ry, vw, row_h, s, &ac_str, Field::AcMaxCores, st.focused, st.dirty, fg, dim, accent);
+    let dc_str = if st.focused == Some(Field::DcMaxCores) {
+        edit_display(st)
+    } else {
+        format!("{}%", st.dc.max_cores)
+    };
+    draw_value_cell(mem, sx + vw + gap, ry, vw, row_h, s, &dc_str, Field::DcMaxCores, st.focused, st.dirty, fg, dim, accent);
 
     // ── FREQUENCY section ──
     draw_section_header(mem, pad_sc, ranges.freq_sec_y, w, s, "FREQUENCY", fg, dim);
@@ -1675,11 +1912,12 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
        &mut rct(pad_sc, mon_y, (W as f32 * s / 2.0) as i32, mon_y + mon_h),
        DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-    // Stress buttons on the right side of monitor header
-    draw_stress_buttons(mem, w, mon_y, mon_h, s, &st.monitor, &st.theme);
+    let load_y = mon_y + mon_h;
+    let load_h = (LOAD_ROW_H as f32 * s) as i32;
+    draw_stress_buttons(mem, w, load_y, load_h, s, &st.monitor, &st.theme);
 
     // ── Core bars ──
-    let mut content_y = mon_y + mon_h;
+    let mut content_y = load_y + load_h;
 
     // Bar area width
     let bar_area_w = w - pad_sc * 2;
@@ -1697,7 +1935,7 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
         let bar_h = (BAR_H as f32 * s) as i32;
         let bar_gap = (BAR_GAP as f32 * s) as i32;
 
-        for (_i, &core_idx) in st.monitor.p_cores.iter().enumerate() {
+        for (i, &core_idx) in st.monitor.p_cores.iter().enumerate() {
             let load = if core_idx < st.monitor.core_load.len() {
                 st.monitor.core_load[core_idx]
             } else {
@@ -1708,7 +1946,8 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
             } else {
                 false
             };
-            draw_core_bar(mem, pad_sc, content_y, bar_area_w, bar_h, s, load, parked, &st.theme);
+            let freq_mhz = st.monitor.core_freq_mhz.get(core_idx).copied().unwrap_or(0);
+            draw_core_row(mem, pad_sc, content_y, bar_area_w, bar_h, s, &format!("P{}", i), load, freq_mhz, parked, &st.theme);
             content_y += bar_h + bar_gap;
         }
         content_y -= bar_gap; // remove last gap
@@ -1740,7 +1979,7 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
         let bar_h = (BAR_H as f32 * s) as i32;
         let bar_gap = (BAR_GAP as f32 * s) as i32;
 
-        for (_i, &core_idx) in st.monitor.e_cores.iter().enumerate() {
+        for (i, &core_idx) in st.monitor.e_cores.iter().enumerate() {
             let load = if core_idx < st.monitor.core_load.len() {
                 st.monitor.core_load[core_idx]
             } else {
@@ -1751,7 +1990,8 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
             } else {
                 false
             };
-            draw_core_bar(mem, pad_sc, content_y, bar_area_w, bar_h, s, load, parked, &st.theme);
+            let freq_mhz = st.monitor.core_freq_mhz.get(core_idx).copied().unwrap_or(0);
+            draw_core_row(mem, pad_sc, content_y, bar_area_w, bar_h, s, &format!("E{}", i), load, freq_mhz, parked, &st.theme);
             content_y += bar_h + bar_gap;
         }
         content_y -= bar_gap;
@@ -1786,7 +2026,7 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     let bx = (w - btn_w) / 2;
     let btn_color = if st.dirty { accent } else { dim };
     fill_rect(mem, bx, btn_y, bx + btn_w, btn_y + btn_h_actual, btn_color);
-    tcol(mem, if st.dirty { fg } else { st.theme.background.with_alpha(dim.a) });
+    tcol(mem, fg);
     dw(mem, &mut to_utf16_z("Apply"),
        &mut rct(bx, btn_y, bx + btn_w, btn_y + btn_h_actual),
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -1873,7 +2113,54 @@ fn draw_toggle(mem: HDC, col_x: i32, row_y: i32, vw: i32, row_h: i32, sc: f32, e
     fill_rect(mem, knob_x, ty + knob_m, knob_x + knob_d, ty + knob_m + knob_d, theme.text);
 }
 
-fn draw_core_bar(mem: HDC, x: i32, y: i32, w: i32, h: i32, _sc: f32, load: f32, parked: bool, theme: &NativeTheme) {
+fn draw_core_row(
+    mem: HDC,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    _sc: f32,
+    label: &str,
+    load: f32,
+    freq_mhz: u32,
+    parked: bool,
+    theme: &NativeTheme,
+) {
+    let label_w = (34.0 * _sc) as i32;
+    let load_w = (44.0 * _sc) as i32;
+    let freq_w = (48.0 * _sc) as i32;
+    let gap = (8.0 * _sc) as i32;
+    let bar_x = x + label_w + load_w + freq_w + gap * 3;
+    let bar_w = (w - (bar_x - x)).max(20);
+    let text_col = if parked { theme.text_muted } else { theme.text };
+    let load_text = if parked {
+        "PARK".to_string()
+    } else {
+        format!("{:>3}%", (load * 100.0).round() as u32)
+    };
+    let freq_text = if freq_mhz > 0 {
+        format!("{:.1}G", freq_mhz as f32 / 1000.0)
+    } else {
+        "-.-G".to_string()
+    };
+
+    tcol(mem, text_col);
+    dw(mem, &mut to_utf16_z(label),
+       &mut rct(x, y, x + label_w, y + h),
+       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    dw(mem, &mut to_utf16_z(&load_text),
+       &mut rct(x + label_w + gap, y, x + label_w + gap + load_w, y + h),
+       DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+    dw(mem, &mut to_utf16_z(&freq_text),
+       &mut rct(x + label_w + load_w + gap * 2, y, bar_x - gap, y + h),
+       DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+
+    let bar_h = (CORE_BAR_H as f32 * _sc) as i32;
+    let bar_y = y + (h - bar_h) / 2;
+    draw_core_bar(mem, bar_x, bar_y, bar_w, bar_h, load, parked, theme);
+}
+
+fn draw_core_bar(mem: HDC, x: i32, y: i32, w: i32, h: i32, load: f32, parked: bool, theme: &NativeTheme) {
     if parked {
         // Entire bar dim/charcoal
         fill_rect(mem, x, y, x + w, y + h, theme.bar_background);
@@ -1910,26 +2197,75 @@ fn draw_core_bar(mem: HDC, x: i32, y: i32, w: i32, h: i32, _sc: f32, load: f32, 
 }
 
 fn draw_stress_buttons(mem: HDC, win_w: i32, y: i32, h: i32, sc: f32, mon: &MonitorState, theme: &NativeTheme) {
-    let btn_w = (36.0 * sc) as i32;
-    let btn_h = (18.0 * sc) as i32;
-    let gap = (4.0 * sc) as i32;
-    let total_w = btn_w * 3 + gap * 2;
+    let rects = stress_button_rects(win_w, y, h, sc, mon.core_load.len());
+    let pad_sc = (PAD as f32 * sc) as i32;
+    tcol(mem, theme.text_muted);
+    dw(mem, &mut to_utf16_z("LOAD"),
+       &mut rct(pad_sc, y, pad_sc + (54.0 * sc) as i32, y + h),
+       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-    let bx = win_w - (PAD as f32 * sc) as i32 - total_w;
-    let by = y + (h - btn_h) / 2;
-
-    let labels = ["OFF", "HALF", "FULL"];
-    let levels = [StressLevel::Off, StressLevel::Half, StressLevel::Full];
-
-    for (i, label) in labels.iter().enumerate() {
-        let bxi = bx + i as i32 * (btn_w + gap);
-        let is_active = mon.stress_level == levels[i];
+    for (level, x1, x2, y1, y2) in rects {
+        let label = stress_label(level);
+        let is_active = mon.stress_level == level;
         let btn_color = if is_active { theme.accent } else { theme.text_muted };
-        fill_rect(mem, bxi, by, bxi + btn_w, by + btn_h, btn_color);
-        tcol(mem, if is_active { theme.text } else { theme.background.with_alpha(theme.text_muted.a) });
-        dw(mem, &mut to_utf16_z(label),
-           &mut rct(bxi, by, bxi + btn_w, by + btn_h),
+        fill_rect(mem, x1, y1, x2, y2, btn_color);
+        tcol(mem, btn_color.contrasting_text_color());
+        dw(mem, &mut to_utf16_z(&label),
+           &mut rct(x1, y1, x2, y2),
            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    }
+}
+
+fn stress_button_rects(win_w: i32, y: i32, h: i32, sc: f32, core_count: usize) -> Vec<(StressLevel, i32, i32, i32, i32)> {
+    let levels = stress_levels(core_count);
+    let gap = (4.0 * sc) as i32;
+    let btn_h = (18.0 * sc) as i32;
+    let by = y + (h - btn_h) / 2;
+    let widths: Vec<i32> = levels.iter()
+        .map(|level| match level {
+            StressLevel::Off => (36.0 * sc) as i32,
+            StressLevel::Threads(n) if *n >= 100 => (38.0 * sc) as i32,
+            StressLevel::Threads(n) if *n >= 10 => (30.0 * sc) as i32,
+            StressLevel::Threads(_) => (24.0 * sc) as i32,
+        })
+        .collect();
+    let total_w: i32 = widths.iter().sum::<i32>() + gap * (levels.len() as i32 - 1);
+    let mut x = win_w - (PAD as f32 * sc) as i32 - total_w;
+    let mut rects = Vec::with_capacity(levels.len());
+    for (level, width) in levels.into_iter().zip(widths) {
+        rects.push((level, x, x + width, by, by + btn_h));
+        x += width + gap;
+    }
+    rects
+}
+
+fn stress_levels(core_count: usize) -> Vec<StressLevel> {
+    let core_count = core_count.max(1);
+    const MAX_NUMERIC_BUTTONS: usize = 6;
+    let mut levels = Vec::with_capacity(MAX_NUMERIC_BUTTONS + 1);
+    levels.push(StressLevel::Off);
+
+    if core_count == 1 {
+        levels.push(StressLevel::Threads(1));
+        return levels;
+    }
+
+    let step = ((core_count - 1) + (MAX_NUMERIC_BUTTONS - 2)) / (MAX_NUMERIC_BUTTONS - 1);
+    let mut value = 1usize;
+    while value < core_count && levels.len() < MAX_NUMERIC_BUTTONS {
+        levels.push(StressLevel::Threads(value));
+        value = (value + step).min(core_count);
+    }
+    if levels.last().copied() != Some(StressLevel::Threads(core_count)) {
+        levels.push(StressLevel::Threads(core_count));
+    }
+    levels
+}
+
+fn stress_label(level: StressLevel) -> String {
+    match level {
+        StressLevel::Off => "OFF".to_string(),
+        StressLevel::Threads(count) => count.to_string(),
     }
 }
 

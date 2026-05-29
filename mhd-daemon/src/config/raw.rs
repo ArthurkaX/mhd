@@ -19,6 +19,8 @@ pub struct RawBinding {
     pub value: Option<String>,
     #[serde(default)]
     pub code: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 /// Raw TOML `[blackbox]` section.
@@ -63,6 +65,9 @@ pub struct RawConfig {
     pub blackbox: Option<RawBlackbox>,
     #[serde(default)]
     pub quicknote: Option<RawQuickNote>,
+    /// Ordered list of power plan names for `switch_power_plan` with target="next".
+    #[serde(default)]
+    pub power_plans: Vec<String>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }

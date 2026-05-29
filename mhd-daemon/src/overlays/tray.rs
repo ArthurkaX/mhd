@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, InsertMenuW, LoadImageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG,
+    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
     WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
@@ -30,6 +30,7 @@ use crate::monitor;
 use crate::volume;
 use crate::draw;
 use crate::note;
+use crate::cpu_plan;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
@@ -41,6 +42,8 @@ const CMD_VOLUME: usize = 3;
 const CMD_MONITOR: usize = 4;
 const CMD_NOTE: usize = 5;
 const CMD_DRAW: usize = 6;
+const CMD_CPU_PANEL: usize = 10;
+const CMD_POWER_PLAN_BASE: usize = 100;
 const CMD_ABOUT: usize = 7;
 const CMD_QUIT: usize = 8;
 
@@ -151,30 +154,53 @@ fn show_menu(hwnd: HWND) {
         let mon_text: Vec<u16> = "Monitor\0".encode_utf16().collect();
         let _ = InsertMenuW(menu, 4, MF_BYPOSITION | MF_STRING, CMD_MONITOR, PCWSTR::from_raw(mon_text.as_ptr()));
 
+        // CPU Power
+        let cpu_text: Vec<u16> = "CPU Power\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 5, MF_BYPOSITION | MF_STRING, CMD_CPU_PANEL, PCWSTR::from_raw(cpu_text.as_ptr()));
+
         // Separator
-        let _ = InsertMenuW(menu, 5, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
 
         // ── Actions group ──────────────────────────────────────────
 
         let note_text: Vec<u16> = "Note\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_STRING, CMD_NOTE, PCWSTR::from_raw(note_text.as_ptr()));
+        let _ = InsertMenuW(menu, 7, MF_BYPOSITION | MF_STRING, CMD_NOTE, PCWSTR::from_raw(note_text.as_ptr()));
 
         let draw_text: Vec<u16> = "Draw\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 7, MF_BYPOSITION | MF_STRING, CMD_DRAW, PCWSTR::from_raw(draw_text.as_ptr()));
+        let _ = InsertMenuW(menu, 8, MF_BYPOSITION | MF_STRING, CMD_DRAW, PCWSTR::from_raw(draw_text.as_ptr()));
 
         // Separator
-        let _ = InsertMenuW(menu, 8, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+
+        // ── Power Plan submenu ─────────────────────────────────────
+        let schemes = crate::cpu_plan::enumerate_schemes();
+        let active_guid = crate::cpu_plan::get_active_scheme_guid();
+        let pp_menu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        for (i, (guid, name)) in schemes.iter().enumerate() {
+            let flags = if *guid == active_guid {
+                MF_BYPOSITION | MF_STRING | MF_CHECKED
+            } else {
+                MF_BYPOSITION | MF_STRING
+            };
+            let item_text: Vec<u16> = format!("{}\0", name).encode_utf16().collect();
+            let _ = InsertMenuW(pp_menu, i as u32, flags, CMD_POWER_PLAN_BASE + i, PCWSTR::from_raw(item_text.as_ptr()));
+        }
+        let pp_label: Vec<u16> = "Power Plan\0".encode_utf16().collect();
+        let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_POPUP, pp_menu.0 as usize, PCWSTR::from_raw(pp_label.as_ptr()));
 
         // ── Bottom section ─────────────────────────────────────────
 
         let settings_text: Vec<u16> = "Settings\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, PCWSTR::from_raw(settings_text.as_ptr()));
+        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, PCWSTR::from_raw(settings_text.as_ptr()));
 
         let about_text: Vec<u16> = "About\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
+        let _ = InsertMenuW(menu, 12, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
 
         let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
+        let _ = InsertMenuW(menu, 13, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
 
         let _ = SetForegroundWindow(hwnd);
 
@@ -268,6 +294,13 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_EDIT_CONFIG => {
                         crate::config_editor::show_config_editor(state.app.clone());
+                    }
+                    CMD_CPU_PANEL => {
+                        cpu_plan::show_panel(state.app.theme());
+                    }
+                    cmd if cmd >= CMD_POWER_PLAN_BASE && cmd < CMD_POWER_PLAN_BASE + 20 => {
+                        let index = cmd - CMD_POWER_PLAN_BASE;
+                        cpu_plan::switch_plan_by_index(index, &state.app.osd);
                     }
                     CMD_ABOUT => {
                         crate::about::show_about(state.app.theme());

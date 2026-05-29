@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
 use windows::core::PCWSTR;
 
 use crate::native_theme::NativeTheme;
-use self::painter::paint_osd;
+use self::painter::{paint_osd, paint_notify};
 /// Re-export shared renderer primitives for backward compatibility.
 /// All overlay windows access these via `crate::osd::*`.
 pub use crate::renderer::{draw_rounded_rect, to_utf16_z, create_font,
@@ -41,6 +41,7 @@ struct OsdInner {
 
 enum OsdCommand {
     Show { value: u32, monitor_name: String },
+    Notify { text: String, duration_ms: u32 },
     SetTheme(NativeTheme),
     Shutdown,
 }
@@ -49,6 +50,14 @@ impl OsdHandle {
     pub fn show_brightness(&self, value: u32, monitor_name: String) {
         let mut inner = self.inner.lock().unwrap();
         inner.queue.push(OsdCommand::Show { value, monitor_name });
+        unsafe {
+            let _ = SetEvent(inner.event.raw());
+        }
+    }
+
+    pub fn show_notify(&self, text: impl Into<String>, duration_ms: u32) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.queue.push(OsdCommand::Notify { text: text.into(), duration_ms });
         unsafe {
             let _ = SetEvent(inner.event.raw());
         }
@@ -176,6 +185,24 @@ fn osd_thread(inner: Arc<Mutex<OsdInner>>) {
                                 hwnd,
                                 _value,
                                 &_monitor_name,
+                                &work,
+                                osd_w,
+                                osd_h,
+                                scale,
+                                &theme,
+                            );
+                            unsafe {
+                                let _ = ShowWindow(hwnd, SW_SHOWNA);
+                            }
+                        }
+                        OsdCommand::Notify { text, duration_ms } => {
+                            _value = 0;
+                            unsafe {
+                                let _ = SetTimer(hwnd, HIDE_TIMER_ID, duration_ms, None);
+                            }
+                            paint_notify(
+                                hwnd,
+                                &text,
                                 &work,
                                 osd_w,
                                 osd_h,
