@@ -191,6 +191,7 @@ All keys are optional — missing values fall back to the built-in dark theme.
 | `media_last_track` | — | Go to previous track |
 | `media_next_track` | — | Go to next track |
 | `toggle_topmost` | — | Toggle always‑on‑top for the currently focused window |
+| `toggle_suspend_on_blur` | — | Toggle full process suspension for the focused process when it loses focus |
 | `toggle_throttle_on_blur` | — | Toggle Windows power throttling + one-CPU affinity for the focused process when it loses focus |
 | `quit` | — | Gracefully shut down mhd |
 
@@ -232,6 +233,11 @@ action = "show_volume_mixer"
 [[binding]]
 trigger = "ctrl+alt+f10"
 action = "toggle_throttle_on_blur"
+
+# Suspend the focused game/app when it loses focus
+[[binding]]
+trigger = "ctrl+alt+f9"
+action = "toggle_suspend_on_blur"
 
 # Open Windows Terminal
 [[binding]]

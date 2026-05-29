@@ -128,6 +128,11 @@ action = "quit"
 # trigger = "ctrl+alt+f10"
 # action = "toggle_throttle_on_blur"
 
+# Toggle full process suspension for the current app when it loses focus.
+# [[binding]]
+# trigger = "ctrl+alt+f9"
+# action = "toggle_suspend_on_blur"
+
 # ── Media keys ────────────────────────────────────────────────────
 
 # Volume Up.
@@ -239,6 +244,11 @@ action = "quit"
 # [[binding]]
 # trigger = "ctrl+alt+f10"
 # action = "toggle_throttle_on_blur"
+
+# Toggle full process suspension for the current app when it loses focus.
+# [[binding]]
+# trigger = "ctrl+alt+f9"
+# action = "toggle_suspend_on_blur"
 
 # ── Media keys ────────────────────────────────────────────────────
 

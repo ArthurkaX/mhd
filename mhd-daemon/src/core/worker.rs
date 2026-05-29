@@ -190,6 +190,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::MediaLastTrack => platform::send_media_key(0xB1),
         Action::MediaNextTrack => platform::send_media_key(0xB0),
         Action::ToggleTopmost => crate::topmost::toggle(),
+        Action::ToggleSuspendOnBlur => crate::suspend::toggle_current(&handle.osd),
         Action::ToggleThrottleOnBlur => crate::throttle::toggle_current(&handle.osd),
         Action::SwitchPowerPlan { target } => {
             let plans = { handle.config.lock().unwrap().power_plans.clone() };

@@ -61,6 +61,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "media_last_track",
     "media_next_track",
     "toggle_topmost",
+    "toggle_suspend_on_blur",
     "toggle_throttle_on_blur",
     "power_actions",
     "quick_draw",

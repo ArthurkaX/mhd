@@ -32,6 +32,8 @@ pub enum Action {
     MediaNextTrack,
     /// Toggle always‑on‑top for the currently focused window.
     ToggleTopmost,
+    /// Toggle full process suspension for the current process when it loses focus.
+    ToggleSuspendOnBlur,
     /// Toggle aggressive power throttling for the current process when it loses focus.
     ToggleThrottleOnBlur,
     /// Show the Power Control overlay (awake/sleep/shutdown).
@@ -121,6 +123,7 @@ impl Action {
             "media_stop" => Ok(Action::MediaStop),
             "media_last_track" => Ok(Action::MediaLastTrack),
             "toggle_topmost" => Ok(Action::ToggleTopmost),
+            "toggle_suspend_on_blur" => Ok(Action::ToggleSuspendOnBlur),
             "toggle_throttle_on_blur" => Ok(Action::ToggleThrottleOnBlur),
             "media_next_track" => Ok(Action::MediaNextTrack),
             "quick_draw" => Ok(Action::QuickDraw),
@@ -268,6 +271,7 @@ impl Action {
             Action::MediaLastTrack => "media_last_track",
             Action::MediaNextTrack => "media_next_track",
             Action::ToggleTopmost => "toggle_topmost",
+            Action::ToggleSuspendOnBlur => "toggle_suspend_on_blur",
             Action::ToggleThrottleOnBlur => "toggle_throttle_on_blur",
             Action::PowerActions => "power_actions",
             Action::QuickDraw => "quick_draw",
@@ -314,6 +318,7 @@ impl Action {
             | Action::MediaLastTrack
             | Action::MediaNextTrack
             | Action::ToggleTopmost
+            | Action::ToggleSuspendOnBlur
             | Action::ToggleThrottleOnBlur
             | Action::PowerActions
             | Action::QuickDraw
@@ -510,6 +515,13 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
+        name: "toggle_suspend_on_blur",
+        label: "Suspend On Blur",
+        category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
         name: "toggle_throttle_on_blur",
         label: "Throttle On Blur",
         category: ActionCategory::System,
@@ -602,6 +614,7 @@ mod tests {
             Action::MediaLastTrack,
             Action::MediaNextTrack,
             Action::ToggleTopmost,
+            Action::ToggleSuspendOnBlur,
             Action::ToggleThrottleOnBlur,
             Action::PowerActions,
             Action::QuickDraw,
@@ -761,7 +774,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(22)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
+        assert_eq!(find_action_index("quit"), Some(23)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

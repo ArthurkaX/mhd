@@ -7,6 +7,7 @@ pub mod power;
 pub mod draw;
 pub mod note;
 pub mod pomodoro;
+pub mod suspend;
 pub mod topmost;
 pub mod throttle;
 pub mod tray;
