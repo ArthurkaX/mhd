@@ -361,6 +361,7 @@ unsafe extern "system" fn mouse_hook_proc(
 
         match msg_type {
             WM_XBUTTONDOWN => {
+                crate::suspend::resume_if_window_at_point(ms_struct.pt);
                 let xbutton = (ms_struct.mouseData >> 16) as u8;
                 if xbutton == 1 || xbutton == 2 {
                     #[cfg(feature = "blackbox")]
@@ -385,10 +386,12 @@ unsafe extern "system" fn mouse_hook_proc(
                 }
             }
             WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+                crate::suspend::resume_if_window_at_point(ms_struct.pt);
                 #[cfg(feature = "blackbox")]
                 bb_input(crate::blackbox::InputKind::MouseButton);
             }
             WM_MBUTTONDOWN => {
+                crate::suspend::resume_if_window_at_point(ms_struct.pt);
                 #[cfg(feature = "blackbox")]
                 bb_input(crate::blackbox::InputKind::MouseButton);
                 // Middle button

@@ -11,15 +11,16 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, POINT};
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SUSPEND_RESUME,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowTextW, GetWindowThreadProcessId,
-    TranslateMessage, EVENT_SYSTEM_FOREGROUND, MSG, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    DispatchMessageW, GetAncestor, GetForegroundWindow, GetMessageW, GetWindowTextW,
+    GetWindowThreadProcessId, TranslateMessage, WindowFromPoint, EVENT_SYSTEM_FOREGROUND, GA_ROOT,
+    MSG, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::osd::OsdHandle;
@@ -87,6 +88,53 @@ pub fn toggle_current(osd: &OsdHandle) {
         },
     );
     osd.show_notify(format!("{}: Suspend on blur", info.display_name), NOTIFY_MS);
+}
+
+/// Resume a suspended target under the mouse before Windows finishes activation.
+///
+/// A suspended GUI process may not process the normal focus activation path, so
+/// relying only on EVENT_SYSTEM_FOREGROUND can leave it asleep when clicked.
+pub fn resume_if_window_at_point(pt: POINT) {
+    let hwnd = unsafe {
+        let hwnd = WindowFromPoint(pt);
+        if hwnd == HWND::default() {
+            return;
+        }
+        let root = GetAncestor(hwnd, GA_ROOT);
+        if root == HWND::default() {
+            hwnd
+        } else {
+            root
+        }
+    };
+
+    let Some(pid) = window_pid(hwnd) else {
+        return;
+    };
+
+    let mut notify: Option<String> = None;
+    let osd = {
+        let Ok(mut st) = STATE.try_lock() else {
+            return;
+        };
+        let Some(target) = st.targets.get_mut(&pid) else {
+            return;
+        };
+        if !target.suspended {
+            return;
+        }
+
+        if set_process_suspended(target.pid, false).is_ok() {
+            target.suspended = false;
+            notify = Some(format!("{}: Resumed", target.display_name));
+        }
+
+        st.osd.clone()
+    };
+
+    if let (Some(osd), Some(text)) = (osd, notify) {
+        osd.show_notify(text, NOTIFY_MS);
+    }
 }
 
 fn ensure_event_thread(osd: OsdHandle) {
