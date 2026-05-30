@@ -74,6 +74,7 @@ pub enum InputKind {
     Keyboard,
     MouseButton,
     Wheel,
+    Move,
 }
 
 // ── Global sender for hook → blackbox ───────────────────────────────────
@@ -135,10 +136,22 @@ struct SessionState {
     started_ts: u64,
     last_action_at: u64,
     keyboard_count: u64,
-    mouse_count: u64,
+    click_count: u64,
+    wheel_count: u64,
+    move_count: u64,
     last_window_title: Option<String>,
     /// Last app name (exe without path).
     last_app_name: Option<String>,
+    // Current span (valid only while `active`):
+    span_started_ts: u64,
+    span_app: Option<String>,
+    span_win: Option<String>,
+    span_keyboard: u64,
+    span_clicks: u64,
+    span_wheel: u64,
+    span_moves: u64,
+    /// Completed spans waiting for session-end event id.
+    closed_spans: Vec<SpanData>,
 }
 
 impl SessionState {
@@ -148,9 +161,19 @@ impl SessionState {
             started_ts: 0,
             last_action_at: 0,
             keyboard_count: 0,
-            mouse_count: 0,
+            click_count: 0,
+            wheel_count: 0,
+            move_count: 0,
             last_window_title: None,
             last_app_name: None,
+            span_started_ts: 0,
+            span_app: None,
+            span_win: None,
+            span_keyboard: 0,
+            span_clicks: 0,
+            span_wheel: 0,
+            span_moves: 0,
+            closed_spans: Vec::new(),
         }
     }
 
@@ -160,38 +183,91 @@ impl SessionState {
             self.started_ts = ts;
             self.last_action_at = ts;
             self.keyboard_count = 0;
-            self.mouse_count = 0;
+            self.click_count = 0;
+            self.wheel_count = 0;
+            self.move_count = 0;
+            // Start first span
+            self.span_started_ts = ts;
+            self.span_app = self.last_app_name.clone();
+            self.span_win = self.last_window_title.clone();
+            self.span_keyboard = 0;
+            self.span_clicks = 0;
+            self.span_wheel = 0;
+            self.span_moves = 0;
         } else {
             self.last_action_at = ts;
         }
         match kind {
-            InputKind::Keyboard => self.keyboard_count += 1,
-            InputKind::MouseButton | InputKind::Wheel => self.mouse_count += 1,
+            InputKind::Keyboard => { self.keyboard_count += 1; self.span_keyboard += 1; }
+            InputKind::MouseButton => { self.click_count += 1; self.span_clicks += 1; }
+            InputKind::Wheel => { self.wheel_count += 1; self.span_wheel += 1; }
+            InputKind::Move => { self.move_count += 1; self.span_moves += 1; }
         }
     }
 
     fn end_session(&mut self, ts: u64, reason: Option<&str>) -> Option<SessionEndData> {
         if !self.active { return None; }
         let duration = ts.saturating_sub(self.started_ts);
+        let active_sec = self.last_action_at.saturating_sub(self.started_ts);
         let data = SessionEndData {
             started_ts: self.started_ts,
             duration_sec: duration,
+            active_sec,
             keyboard: self.keyboard_count,
-            mouse: self.mouse_count,
+            clicks: self.click_count,
+            wheel: self.wheel_count,
+            moves: self.move_count,
             end_reason: reason.map(|s| s.to_string()),
         };
         self.active = false;
         Some(data)
     }
+
+    /// Snapshot the current span, reset for a fresh span, and return the data.
+    fn take_span(&mut self, end_ts: u64) -> Option<SpanData> {
+        if !self.active { return None; }
+        let data = SpanData {
+            app: self.span_app.clone(),
+            win: self.span_win.clone(),
+            started_ts: self.span_started_ts,
+            duration_sec: end_ts.saturating_sub(self.span_started_ts),
+            keyboard: self.span_keyboard,
+            clicks: self.span_clicks,
+            wheel: self.span_wheel,
+            moves: self.span_moves,
+        };
+        // Reset for a new span
+        self.span_started_ts = end_ts;
+        self.span_keyboard = 0;
+        self.span_clicks = 0;
+        self.span_wheel = 0;
+        self.span_moves = 0;
+        self.span_app = self.last_app_name.clone();
+        self.span_win = self.last_window_title.clone();
+        Some(data)
+    }
 }
 
-#[allow(dead_code)]
 struct SessionEndData {
     started_ts: u64,
     duration_sec: u64,
+    active_sec: u64,
     keyboard: u64,
-    mouse: u64,
+    clicks: u64,
+    wheel: u64,
+    moves: u64,
     end_reason: Option<String>,
+}
+
+struct SpanData {
+    app: Option<String>,
+    win: Option<String>,
+    started_ts: u64,
+    duration_sec: u64,
+    keyboard: u64,
+    clicks: u64,
+    wheel: u64,
+    moves: u64,
 }
 
 // ── Foreground window helpers ────────────────────────────────────────────
@@ -324,12 +400,13 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 session.last_app_name = Some(app.clone());
             }
 
-            // Write daemon_start event with current context
+            // Write daemon_start event with current context + version stamp
             ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
+            let payload = format!("v={} schema=2", env!("CARGO_PKG_VERSION"));
             if let Err(e) = db.insert_event(now, "daemon_start",
                 initial_app.as_deref(),
                 if initial_title.is_empty() { None } else { Some(initial_title.as_str()) },
-                None,
+                Some(&payload),
             ) {
                 eprintln!("mhd: blackbox: insert daemon_start: {e}");
             } else {
@@ -350,7 +427,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         if enabled && session.active {
                             let now = epoch_secs();
                             if now >= session.last_action_at + idle_seconds {
-                                end_session_and_insert(&db, &mut session, now, None,
+                                end_session_and_insert(&db, &mut session, now, Some("idle"),
                                     &mut events_since_flush, &mut last_flush_ts);
                             }
                         }
@@ -358,12 +435,16 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             check_app_and_title(&db, &mut session,
                                 &mut events_since_flush, &mut last_flush_ts);
 
-                            // Heartbeat
+                            // Heartbeat with foreground app + idle flag
                             let now = epoch_secs();
                             if now.saturating_sub(last_heartbeat_ts) >= HEARTBEAT_SECS {
                                 last_heartbeat_ts = now;
+                                let hb_app = get_app_name();
+                                let idle_flag = if session.active { 0 } else { 1 };
+                                let payload = format!("idle={idle_flag}");
                                 ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
-                                let _ = db.insert_event(now, "heartbeat", None, None, None);
+                                let _ = db.insert_event(now, "heartbeat",
+                                    hb_app.as_deref(), None, Some(&payload));
                                 events_since_flush += 1;
                                 check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
                             }
@@ -502,7 +583,7 @@ fn check_flush_inner(db: &Db, events_since_flush: &mut u32, last_flush_ts: &mut 
     }
 }
 
-/// End the current session and insert a sessions row + ses_end event.
+/// End the current session, flush all spans, and insert ses_end + sessions rows.
 fn end_session_and_insert(
     db: &Db,
     session: &mut SessionState,
@@ -511,24 +592,58 @@ fn end_session_and_insert(
     events_since_flush: &mut u32,
     last_flush_ts: &mut u64,
 ) {
-    if let Some(data) = session.end_session(ts, reason) {
-        ensure_tx(db, events_since_flush, last_flush_ts);
-        if let Ok(event_id) = db.insert_event(ts, "ses_end",
-            session.last_app_name.as_deref(),
-            session.last_window_title.as_deref(),
-            None,
-        ) {
-            *events_since_flush += 1;
-            let _ = db.insert_session(
-                event_id, data.started_ts, data.duration_sec, data.keyboard, data.mouse,
-                reason,
-            );
+    // 1. Snapshot the still-open span BEFORE ending the session
+    let final_span = session.take_span(ts);
+
+    // 2. End the session (sets active=false)
+    let Some(data) = session.end_session(ts, reason) else { return };
+
+    // 3. Begin transaction if needed
+    ensure_tx(db, events_since_flush, last_flush_ts);
+
+    // 4. Insert the ses_end event — this owns all spans
+    let event_id = match db.insert_event(ts, "ses_end",
+        session.last_app_name.as_deref(),
+        session.last_window_title.as_deref(),
+        None,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("mhd: blackbox: insert ses_end: {e}");
+            return;
         }
-        check_flush_inner(db, events_since_flush, last_flush_ts);
+    };
+    *events_since_flush += 1;
+
+    // 5. Insert the session row (new split counters)
+    let _ = db.insert_session(
+        event_id, data.started_ts, data.duration_sec, data.active_sec,
+        data.keyboard, data.clicks, data.wheel, data.moves,
+        data.end_reason.as_deref(),
+    );
+
+    // 6. Flush all buffered spans + the final one, all referencing event_id
+    for sp in session.closed_spans.drain(..).chain(final_span.into_iter()) {
+        let _ = db.insert_app_span(
+            event_id,
+            sp.app.as_deref(),
+            sp.win.as_deref(),
+            sp.started_ts,
+            sp.duration_sec,
+            sp.keyboard,
+            sp.clicks,
+            sp.wheel,
+            sp.moves,
+        );
+        *events_since_flush += 1;
     }
+
+    // 7. Maybe flush batch
+    check_flush_inner(db, events_since_flush, last_flush_ts);
 }
 
 /// Check both app name and window title, log a single combined "win" event.
+/// On app change inside an active session, split the span.
 fn check_app_and_title(
     db: &Db,
     session: &mut SessionState,
@@ -543,11 +658,30 @@ fn check_app_and_title(
 
     if app_changed || title_changed {
         let ts = epoch_secs();
-        // Update cached state first — unconditionally so get_app_name() returning
-        // None (privileged process) clears last_app_name and stops spurious events.
+
+        // If app changed inside an active session, split the current span
+        if app_changed && session.active {
+            let span_end = ts;
+            if let Some(sp) = session.take_span(span_end) {
+                session.closed_spans.push(sp);
+            }
+            // The new span has already been started by take_span (fields reset)
+            // Re-point the fresh span to the new app/title
+            session.span_app = app.clone();
+            session.span_win = if title.is_empty() { None } else { Some(title.clone()) };
+        }
+
+        // Update cached state
         session.last_app_name = app.clone();
         if !title.is_empty() {
             session.last_window_title = Some(title.clone());
+        }
+
+        // Ensure the app has a category row
+        if let Some(ref a) = app {
+            if let Err(e) = db.ensure_app_category(a) {
+                eprintln!("mhd: blackbox: ensure_app_category: {e}");
+            }
         }
 
         // Emit single combined event carrying both fields
@@ -575,7 +709,6 @@ fn clear_sender() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blackbox::db::Db;
 
     #[test]
     fn test_session_smoke() {
@@ -584,19 +717,26 @@ mod tests {
         s.on_input(InputKind::Keyboard, 1000);
         assert!(s.active);
         assert_eq!(s.keyboard_count, 1);
-        assert_eq!(s.mouse_count, 0);
+        assert_eq!(s.click_count, 0);
+        assert_eq!(s.wheel_count, 0);
+        assert_eq!(s.move_count, 0);
         s.on_input(InputKind::MouseButton, 1005);
-        assert_eq!(s.mouse_count, 1);
+        assert_eq!(s.click_count, 1);
         s.on_input(InputKind::Wheel, 1010);
-        assert_eq!(s.mouse_count, 2);
+        assert_eq!(s.wheel_count, 1);
+        s.on_input(InputKind::Move, 1012);
+        assert_eq!(s.move_count, 1);
 
-        let data = s.end_session(1005, None);
+        let data = s.end_session(1014, None);
         assert!(data.is_some());
         let data = data.unwrap();
         assert_eq!(data.started_ts, 1000);
-        assert_eq!(data.duration_sec, 5);
+        assert_eq!(data.duration_sec, 14);
+        assert_eq!(data.active_sec, 12); // last_action_at 1012 - started_ts 1000
         assert_eq!(data.keyboard, 1);
-        assert_eq!(data.mouse, 2);
+        assert_eq!(data.clicks, 1);
+        assert_eq!(data.wheel, 1);
+        assert_eq!(data.moves, 1);
         assert!(!s.active);
     }
 

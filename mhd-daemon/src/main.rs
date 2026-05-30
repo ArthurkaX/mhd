@@ -29,6 +29,7 @@ pub(crate) mod blackbox {
         Keyboard,
         MouseButton,
         Wheel,
+        Move,
     }
 
     #[derive(Debug)]

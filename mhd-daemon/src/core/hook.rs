@@ -2,17 +2,22 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
     WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::action::Action;
 use crate::app::{AppHandle, DaemonControl};
 use crate::platform::get_pressed_modifiers;
 use crate::trigger::{PhysicalKey, Trigger, is_modifier_vk};
+
+/// Throttle for mouse-move forwarding to blackbox (max one per 500 ms).
+#[cfg(feature = "blackbox")]
+static LAST_MOVE_FWD_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 use crate::worker::{ActionMessage, ActionSender};
 
 pub const WM_BINDING_CAPTURED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 100;
@@ -431,6 +436,17 @@ unsafe extern "system" fn mouse_hook_proc(
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
                     return LRESULT(1);
+                }
+            }
+            WM_MOUSEMOVE => {
+                #[cfg(feature = "blackbox")]
+                {
+                    let now_ms = unsafe { GetTickCount64() };
+                    let last = LAST_MOVE_FWD_MS.load(std::sync::atomic::Ordering::Relaxed);
+                    if now_ms.saturating_sub(last) >= 500 {
+                        LAST_MOVE_FWD_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                        bb_input(crate::blackbox::InputKind::Move);
+                    }
                 }
             }
             _ => {}
