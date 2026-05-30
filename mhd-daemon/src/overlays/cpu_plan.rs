@@ -97,6 +97,14 @@ const GUID_MAX_PROC_STATE_CLASS2: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96
 const GUID_PERF_AUTONOMOUS_MODE: GUID = GUID::from_u128(0x8baa4a8a_14c6_4451_8e8b_14bdbd197537);
 // Processor performance boost mode — 0=disabled, 1=enabled, 2=aggressive, etc.
 const GUID_PERF_BOOST_MODE: GUID = GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
+// Processor performance increase policy — 0=Ideal (gradual), 2=Rocket (instant max).
+const GUID_INCREASE_POLICY: GUID = GUID::from_u128(0x465e1f50_b610_473a_ab58_00d1077dc418);
+// Heterogeneous processor scheduling policy — 0=All, 2=PreferPerf, 4=PreferEff, 5=Auto.
+const GUID_HETEROGENEOUS_POLICY: GUID = GUID::from_u128(0x7f2f5cfa_f10c_4823_b5e1_e93ae85f46b5);
+// Performance state of parked cores — 0=NoPref, 1=Deepest, 2=Lightest.
+const GUID_PARKED_CORE_PERF: GUID = GUID::from_u128(0x447235c7_6a8d_4cc0_8e24_9eaf70b96e2b);
+// System cooling policy — 0=Passive (reduce freq), 1=Active (spin fans).
+const GUID_COOLING_POLICY: GUID = GUID::from_u128(0x94d3a615_a899_4ac5_ae2b_e4d8f634367f);
 
 // ── Win32 error constant ─────────────────────────────────────────────
 const ERROR_NO_MORE_ITEMS: u32 = 259;
@@ -145,16 +153,39 @@ struct PlanValues {
     min_freq: u32,
     /// 0–100: maximum processor performance state %
     max_freq: u32,
-    /// Adaptive frequency scaling on/off
-    freq_scale: bool,
+    /// Autonomous mode — CPU self-manages frequencies (GUID_PERF_AUTONOMOUS_MODE)
+    autonomous_mode: bool,
     /// Turbo boost on/off
     turbo: bool,
+    /// System cooling policy — 0=Passive, 1=Active
+    cooling_policy: u32,
+    /// Performance increase policy — 0=Ideal, 2=Rocket
+    increase_policy: u32,
+    /// Heterogeneous scheduling — 0=All, 2=PreferPerf, 4=PreferEff, 5=Auto
+    hetero_policy: u32,
+    /// Parked core performance state — 0=NoPref, 1=Deepest, 2=Lightest
+    parked_perf: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum StressLevel {
     Off,
     Threads(usize),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum HoverRow {
+    PlanRow,
+    MinCores,
+    MaxCores,
+    MinFreq,
+    MaxFreq,
+    AutonomousMode,
+    TurboBoost,
+    CoolingPolicy,
+    IncreasePolicy,
+    HeteroScheduling,
+    ParkedPerf,
 }
 
 struct MonitorState {
@@ -183,6 +214,10 @@ struct PanelState {
     pos: POINT,
     monitor: MonitorState,
     stress_handles: Vec<std::thread::JoinHandle<()>>,
+    hover_row: Option<HoverRow>,
+    hover_pos: POINT,
+    /// When the current hover_row was first entered — used to delay the tooltip.
+    hover_since: Option<std::time::Instant>,
 }
 
 // ── Thread control ───────────────────────────────────────────────────
@@ -812,20 +847,28 @@ fn read_current_plan_values() -> (PlanValues, PlanValues) {
     ];
 
     let ac = PlanValues {
-        min_cores:  read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN),
-        max_cores:  read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
-        min_freq:   read_ac_setting_max(&guid, &min_freq_settings),
-        max_freq:   read_ac_setting_min_nonzero(&guid, &max_freq_settings),
-        freq_scale: read_power_setting_ac(&guid, &GUID_PERF_AUTONOMOUS_MODE) != 0,
-        turbo:      read_power_setting_ac(&guid, &GUID_PERF_BOOST_MODE) != 0,
+        min_cores:       read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN),
+        max_cores:       read_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
+        min_freq:        read_ac_setting_max(&guid, &min_freq_settings),
+        max_freq:        read_ac_setting_min_nonzero(&guid, &max_freq_settings),
+        autonomous_mode: read_power_setting_ac(&guid, &GUID_PERF_AUTONOMOUS_MODE) != 0,
+        turbo:           read_power_setting_ac(&guid, &GUID_PERF_BOOST_MODE) != 0,
+        cooling_policy:  read_power_setting_ac(&guid, &GUID_COOLING_POLICY),
+        increase_policy: read_power_setting_ac(&guid, &GUID_INCREASE_POLICY),
+        hetero_policy:   read_power_setting_ac(&guid, &GUID_HETEROGENEOUS_POLICY),
+        parked_perf:     read_power_setting_ac(&guid, &GUID_PARKED_CORE_PERF),
     };
     let dc = PlanValues {
-        min_cores:  read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN),
-        max_cores:  read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
-        min_freq:   read_dc_setting_max(&guid, &min_freq_settings),
-        max_freq:   read_dc_setting_min_nonzero(&guid, &max_freq_settings),
-        freq_scale: read_power_setting_dc(&guid, &GUID_PERF_AUTONOMOUS_MODE) != 0,
-        turbo:      read_power_setting_dc(&guid, &GUID_PERF_BOOST_MODE) != 0,
+        min_cores:       read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN),
+        max_cores:       read_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX),
+        min_freq:        read_dc_setting_max(&guid, &min_freq_settings),
+        max_freq:        read_dc_setting_min_nonzero(&guid, &max_freq_settings),
+        autonomous_mode: read_power_setting_dc(&guid, &GUID_PERF_AUTONOMOUS_MODE) != 0,
+        turbo:           read_power_setting_dc(&guid, &GUID_PERF_BOOST_MODE) != 0,
+        cooling_policy:  read_power_setting_dc(&guid, &GUID_COOLING_POLICY),
+        increase_policy: read_power_setting_dc(&guid, &GUID_INCREASE_POLICY),
+        hetero_policy:   read_power_setting_dc(&guid, &GUID_HETEROGENEOUS_POLICY),
+        parked_perf:     read_power_setting_dc(&guid, &GUID_PARKED_CORE_PERF),
     };
     (ac, dc)
 }
@@ -844,8 +887,12 @@ fn write_plan_values(ac: &PlanValues, dc: &PlanValues) {
         GUID_MAX_PROC_STATE_CLASS1,
         GUID_MAX_PROC_STATE_CLASS2,
     ], ac.max_freq);
-    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_AUTONOMOUS_MODE, if ac.freq_scale { 1 } else { 0 });
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_AUTONOMOUS_MODE, if ac.autonomous_mode { 1 } else { 0 });
     write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_BOOST_MODE, if ac.turbo { 1 } else { 0 });
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_COOLING_POLICY, ac.cooling_policy);
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_INCREASE_POLICY, ac.increase_policy);
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_HETEROGENEOUS_POLICY, ac.hetero_policy);
+    write_ac_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKED_CORE_PERF, ac.parked_perf);
 
     write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MIN, dc.min_cores);
     write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKING_MAX, dc.max_cores);
@@ -859,8 +906,12 @@ fn write_plan_values(ac: &PlanValues, dc: &PlanValues) {
         GUID_MAX_PROC_STATE_CLASS1,
         GUID_MAX_PROC_STATE_CLASS2,
     ], dc.max_freq);
-    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_AUTONOMOUS_MODE, if dc.freq_scale { 1 } else { 0 });
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_AUTONOMOUS_MODE, if dc.autonomous_mode { 1 } else { 0 });
     write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PERF_BOOST_MODE, if dc.turbo { 1 } else { 0 });
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_COOLING_POLICY, dc.cooling_policy);
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_INCREASE_POLICY, dc.increase_policy);
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_HETEROGENEOUS_POLICY, dc.hetero_policy);
+    write_dc_value(&guid, &GUID_PROCESSOR_SUBGROUP, &GUID_PARKED_CORE_PERF, dc.parked_perf);
 
     unsafe { let _ = PowerSetActiveScheme(None, Some(&guid as *const GUID)); }
 }
@@ -953,9 +1004,10 @@ fn sc_from_hwnd(hwnd: HWND) -> f32 {
 fn compute_total_h(sc: f32, p_count: usize, e_count: usize) -> i32 {
     let mut h = HDR_H + PLAN_H; // header + plan row
     // Settings section
-    h += SEC_H + ROW_H + ROW_H; // CORES header + Min/Max Cores
-    h += SEC_H + ROW_H + ROW_H; // FREQUENCY header + Min Speed + Max Speed
-    h += SEC_H + ROW_H + ROW_H; // POWER FEATURES header + Freq Scaling + Turbo
+    h += SEC_H + ROW_H + ROW_H;           // CORES header + Min/Max Cores
+    h += SEC_H + ROW_H + ROW_H;           // FREQUENCY header + Min Speed + Max Speed
+    h += SEC_H + ROW_H * 4;               // POWER FEATURES header + 4 rows
+    h += SEC_H + ROW_H + ROW_H;           // CORE MANAGEMENT header + 2 rows
     h += SEP_H; // separator
 
     // Monitor section
@@ -1068,6 +1120,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
             prev_perf: None,
         },
         stress_handles: Vec::new(),
+        hover_row: None,
+        hover_since: None,
+        hover_pos: POINT::default(),
     };
 
     if dying.load(Ordering::Acquire) {
@@ -1147,9 +1202,10 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                         // Translate keyboard messages so WM_KEYDOWN → WM_CHAR for digit input
                         let _ = windows::Win32::UI::WindowsAndMessaging::TranslateMessage(&msg);
                         if msg.hwnd == hwnd {
-                            if !matches!(msg.message, WM_MOUSEMOVE | WM_MOUSELEAVE) {
-                                repaint = true;
-                            }
+                            // Always repaint — including on MOUSEMOVE — so the
+                            // hover tooltip / highlight and live monitoring data are
+                            // visible even while the mouse is in motion over the panel.
+                            repaint = true;
                             if msg.message == WM_KEYDOWN || msg.message == WM_CHAR {
                                 if handle_key(&msg, &mut st, &mut hidden) {
                                     repaint = true;
@@ -1443,6 +1499,12 @@ fn msg_handler(
             return true;
         }
 
+        // Try to hit a dropdown
+        if hit_dropdown(x, y, sc, &mut st.ac, &mut st.dc, &mut st.dirty) {
+            flush_edit(st);
+            return true;
+        }
+
         // Stress buttons
         if hit_stress_button(x, y, sc, &mut st.monitor, &mut st.stress_handles) {
             flush_edit(st);
@@ -1484,6 +1546,9 @@ fn msg_handler(
     }
 
     if msg.message == WM_MOUSEMOVE {
+        let mx = (msg.lParam.0 as i32) & 0xFFFF;
+        let my = ((msg.lParam.0 as i32) >> 16) & 0xFFFF;
+
         if let Some((grab_x, grab_y)) = *drag {
             let mut cursor = POINT::default();
             unsafe { let _ = GetCursorPos(&mut cursor); }
@@ -1502,11 +1567,26 @@ fn msg_handler(
             unsafe { let _ = TrackMouseEvent(&mut tm); }
             *mouse_tracked = true;
         }
+        // Update hover state. Do NOT call InvalidateRect here: paint_panel
+        // renders via UpdateLayeredWindow and never validates the update region,
+        // so a posted WM_PAINT would stay pending forever and trap the PeekMessageW
+        // drain loop in a busy spin. The message loop already repaints on every
+        // message from this hwnd, so hover changes are reflected automatically.
+        let new_hover = hit_hover_row(mx, my, sc);
+        if new_hover != st.hover_row {
+            st.hover_row = new_hover;
+            // Restart the dwell timer whenever the hovered row changes, so the
+            // tooltip only appears after the cursor rests on one row.
+            st.hover_since = new_hover.map(|_| std::time::Instant::now());
+        }
+        st.hover_pos = POINT { x: mx, y: my };
         return true;
     }
 
     if msg.message == WM_MOUSELEAVE {
         *mouse_tracked = false;
+        st.hover_row = None;
+        st.hover_since = None;
         return true;
     }
 
@@ -1547,11 +1627,24 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
     // POWER FEATURES section
     let pf_sec_y = y;
     y += SEC_H;
-    let freq_scale_y = y;
+    let autonomous_mode_y = y;
     y += ROW_H;
     let turbo_y = y;
     y += ROW_H;
+    let cooling_policy_y = y;
+    y += ROW_H;
+    let increase_policy_y = y;
+    y += ROW_H;
     let pf_sec_bot = y;
+
+    // CORE MANAGEMENT section
+    let cm_sec_y = y;
+    y += SEC_H;
+    let hetero_policy_y = y;
+    y += ROW_H;
+    let parked_perf_y = y;
+    y += ROW_H;
+    let cm_sec_bot = y;
 
     // Separator after settings
     y += SEP_H;
@@ -1561,17 +1654,23 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
     let _ = y + MON_HDR_H;
 
     SettingsYRanges {
-        cores_sec_y: (cores_sec_y as f32 * s) as i32,
-        min_cores_y: (min_cores_y as f32 * s) as i32,
-        max_cores_y: (max_cores_y as f32 * s) as i32,
-        freq_sec_y: (freq_sec_y as f32 * s) as i32,
-        min_freq_y: (min_freq_y as f32 * s) as i32,
-        max_freq_y: (max_freq_y as f32 * s) as i32,
-        pf_sec_y: (pf_sec_y as f32 * s) as i32,
-        freq_scale_y: (freq_scale_y as f32 * s) as i32,
-        turbo_y: (turbo_y as f32 * s) as i32,
-        pf_sec_bot: (pf_sec_bot as f32 * s) as i32,
-        mon_hdr_y: (mon_hdr_y as f32 * s) as i32,
+        cores_sec_y:       (cores_sec_y as f32 * s) as i32,
+        min_cores_y:       (min_cores_y as f32 * s) as i32,
+        max_cores_y:       (max_cores_y as f32 * s) as i32,
+        freq_sec_y:        (freq_sec_y as f32 * s) as i32,
+        min_freq_y:        (min_freq_y as f32 * s) as i32,
+        max_freq_y:        (max_freq_y as f32 * s) as i32,
+        pf_sec_y:          (pf_sec_y as f32 * s) as i32,
+        autonomous_mode_y: (autonomous_mode_y as f32 * s) as i32,
+        turbo_y:           (turbo_y as f32 * s) as i32,
+        cooling_policy_y:  (cooling_policy_y as f32 * s) as i32,
+        increase_policy_y: (increase_policy_y as f32 * s) as i32,
+        pf_sec_bot:        (pf_sec_bot as f32 * s) as i32,
+        cm_sec_y:          (cm_sec_y as f32 * s) as i32,
+        hetero_policy_y:   (hetero_policy_y as f32 * s) as i32,
+        parked_perf_y:     (parked_perf_y as f32 * s) as i32,
+        cm_sec_bot:        (cm_sec_bot as f32 * s) as i32,
+        mon_hdr_y:         (mon_hdr_y as f32 * s) as i32,
     }
 }
 
@@ -1583,9 +1682,16 @@ struct SettingsYRanges {
     min_freq_y: i32,
     max_freq_y: i32,
     pf_sec_y: i32,
-    freq_scale_y: i32,
+    autonomous_mode_y: i32,
     turbo_y: i32,
+    cooling_policy_y: i32,
+    increase_policy_y: i32,
+    #[allow(dead_code)]
     pf_sec_bot: i32,
+    cm_sec_y: i32,
+    hetero_policy_y: i32,
+    parked_perf_y: i32,
+    cm_sec_bot: i32,
     mon_hdr_y: i32,
 }
 
@@ -1630,16 +1736,16 @@ fn hit_toggle(x: i32, y: i32, sc: f32, ac: &mut PlanValues, dc: &mut PlanValues,
     let vw = (VAL_W as f32 * sc) as i32;
     let _gap = (PAD_INNER as f32 * sc) as i32;
 
-    // Freq Scaling row
-    if y >= ranges.freq_scale_y && y < ranges.freq_scale_y + row_h {
-        let toggle_rects = toggle_rects(sx, ranges.freq_scale_y, vw, row_h, sc);
+    // Autonomous Mode row
+    if y >= ranges.autonomous_mode_y && y < ranges.autonomous_mode_y + row_h {
+        let toggle_rects = toggle_rects(sx, ranges.autonomous_mode_y, vw, row_h, sc);
         if x >= toggle_rects.0 .0 && x < toggle_rects.0 .1 {
-            ac.freq_scale = !ac.freq_scale;
+            ac.autonomous_mode = !ac.autonomous_mode;
             *dirty = true;
             return true;
         }
         if x >= toggle_rects.1 .0 && x < toggle_rects.1 .1 {
-            dc.freq_scale = !dc.freq_scale;
+            dc.autonomous_mode = !dc.autonomous_mode;
             *dirty = true;
             return true;
         }
@@ -1662,6 +1768,43 @@ fn hit_toggle(x: i32, y: i32, sc: f32, ac: &mut PlanValues, dc: &mut PlanValues,
 
     false
 }
+
+fn hit_dropdown(x: i32, y: i32, sc: f32, ac: &mut PlanValues, dc: &mut PlanValues, dirty: &mut bool) -> bool {
+    let ranges = settings_y_ranges(sc);
+    let row_h = (ROW_H as f32 * sc) as i32;
+    let sx = (PAD as f32 * sc + (LABEL_W as f32 * sc)) as i32;
+    let vw = (VAL_W as f32 * sc) as i32;
+    let gap = (PAD_INNER as f32 * sc) as i32;
+
+    macro_rules! hit_dd {
+        ($row_y:expr, $ac_field:expr, $dc_field:expr, $cycle_fn:expr) => {
+            if y >= $row_y && y < $row_y + row_h {
+                if x >= sx && x < sx + vw {
+                    $ac_field = $cycle_fn($ac_field);
+                    *dirty = true;
+                    return true;
+                }
+                if x >= sx + vw + gap && x < sx + vw + gap + vw {
+                    $dc_field = $cycle_fn($dc_field);
+                    *dirty = true;
+                    return true;
+                }
+            }
+        };
+    }
+
+    hit_dd!(ranges.cooling_policy_y, ac.cooling_policy, dc.cooling_policy, cycle_cooling_policy);
+    hit_dd!(ranges.increase_policy_y, ac.increase_policy, dc.increase_policy, cycle_increase_policy);
+    hit_dd!(ranges.hetero_policy_y,   ac.hetero_policy,   dc.hetero_policy,   cycle_hetero_policy);
+    hit_dd!(ranges.parked_perf_y,     ac.parked_perf,     dc.parked_perf,     cycle_parked_perf);
+
+    false
+}
+
+fn cycle_cooling_policy(v: u32) -> u32 { if v == 0 { 1 } else { 0 } }
+fn cycle_increase_policy(v: u32) -> u32 { if v == 0 { 2 } else { 0 } }
+fn cycle_hetero_policy(v: u32) -> u32 { match v { 0 => 2, 2 => 4, 4 => 5, _ => 0 } }
+fn cycle_parked_perf(v: u32) -> u32 { match v { 0 => 1, 1 => 2, _ => 0 } }
 
 fn toggle_rects(sx: i32, _ry: i32, vw: i32, _row_h: i32, sc: f32) -> ((i32, i32), (i32, i32)) {
     let tog_w = (36.0 * sc) as i32;
@@ -1881,26 +2024,53 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     // ── POWER FEATURES section ──
     draw_section_header(mem, pad_sc, ranges.pf_sec_y, w, s, "POWER FEATURES", fg, dim);
 
-    // Freq Scaling toggle
-    let ry_fs = ranges.freq_scale_y;
-    tcol(mem, fg);
-    dw(mem, &mut to_utf16_z("Freq Scaling"),
-       &mut rct(pad_sc, ry_fs, pad_sc + (LABEL_W as f32 * s) as i32, ry_fs + row_h),
-       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    draw_toggle(mem, sx, ry_fs, vw, row_h, s, st.ac.freq_scale, &st.theme);
-    draw_toggle(mem, sx + vw + gap, ry_fs, vw, row_h, s, st.dc.freq_scale, &st.theme);
+    // Autonomous Mode toggle
+    let ry_am = ranges.autonomous_mode_y;
+    draw_settings_label(mem, pad_sc, ry_am, row_h, s, "Autonomous Mode",
+                        st.hover_row == Some(HoverRow::AutonomousMode), fg, accent);
+    draw_toggle(mem, sx, ry_am, vw, row_h, s, st.ac.autonomous_mode, &st.theme);
+    draw_toggle(mem, sx + vw + gap, ry_am, vw, row_h, s, st.dc.autonomous_mode, &st.theme);
 
     // Turbo Boost toggle
     let ry_tb = ranges.turbo_y;
-    tcol(mem, fg);
-    dw(mem, &mut to_utf16_z("Turbo Boost"),
-       &mut rct(pad_sc, ry_tb, pad_sc + (LABEL_W as f32 * s) as i32, ry_tb + row_h),
-       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    draw_settings_label(mem, pad_sc, ry_tb, row_h, s, "Turbo Boost",
+                        st.hover_row == Some(HoverRow::TurboBoost), fg, accent);
     draw_toggle(mem, sx, ry_tb, vw, row_h, s, st.ac.turbo, &st.theme);
     draw_toggle(mem, sx + vw + gap, ry_tb, vw, row_h, s, st.dc.turbo, &st.theme);
 
+    // Cooling Policy dropdown
+    let ry_cp = ranges.cooling_policy_y;
+    draw_settings_label(mem, pad_sc, ry_cp, row_h, s, "Cooling Policy",
+                        st.hover_row == Some(HoverRow::CoolingPolicy), fg, accent);
+    draw_dropdown_cell(mem, sx, ry_cp, vw, row_h, s, cooling_policy_label(st.ac.cooling_policy), &st.theme);
+    draw_dropdown_cell(mem, sx + vw + gap, ry_cp, vw, row_h, s, cooling_policy_label(st.dc.cooling_policy), &st.theme);
+
+    // Increase Policy dropdown
+    let ry_ip = ranges.increase_policy_y;
+    draw_settings_label(mem, pad_sc, ry_ip, row_h, s, "Increase Policy",
+                        st.hover_row == Some(HoverRow::IncreasePolicy), fg, accent);
+    draw_dropdown_cell(mem, sx, ry_ip, vw, row_h, s, increase_policy_label(st.ac.increase_policy), &st.theme);
+    draw_dropdown_cell(mem, sx + vw + gap, ry_ip, vw, row_h, s, increase_policy_label(st.dc.increase_policy), &st.theme);
+
+    // ── CORE MANAGEMENT section ──
+    draw_section_header(mem, pad_sc, ranges.cm_sec_y, w, s, "CORE MANAGEMENT", fg, dim);
+
+    // Heterogeneous Scheduling dropdown
+    let ry_hp = ranges.hetero_policy_y;
+    draw_settings_label(mem, pad_sc, ry_hp, row_h, s, "Hetero Sched",
+                        st.hover_row == Some(HoverRow::HeteroScheduling), fg, accent);
+    draw_dropdown_cell(mem, sx, ry_hp, vw, row_h, s, hetero_policy_label(st.ac.hetero_policy), &st.theme);
+    draw_dropdown_cell(mem, sx + vw + gap, ry_hp, vw, row_h, s, hetero_policy_label(st.dc.hetero_policy), &st.theme);
+
+    // Parked Core Performance dropdown
+    let ry_pp = ranges.parked_perf_y;
+    draw_settings_label(mem, pad_sc, ry_pp, row_h, s, "Parked Perf",
+                        st.hover_row == Some(HoverRow::ParkedPerf), fg, accent);
+    draw_dropdown_cell(mem, sx, ry_pp, vw, row_h, s, parked_perf_label(st.ac.parked_perf), &st.theme);
+    draw_dropdown_cell(mem, sx + vw + gap, ry_pp, vw, row_h, s, parked_perf_label(st.dc.parked_perf), &st.theme);
+
     // ── Separator before monitor section ──
-    let sep2_y = ranges.pf_sec_bot;
+    let sep2_y = ranges.cm_sec_bot;
     fill_rect(mem, pad_sc, sep2_y, w - pad_sc, sep2_y + 1, border);
 
     // ── LIVE MONITOR section ──
@@ -2031,6 +2201,15 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
        &mut rct(bx, btn_y, bx + btn_w, btn_y + btn_h_actual),
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
+    // Draw tooltip on top of everything else, but only after the cursor has
+    // rested on the row for a short dwell delay (the 500ms monitor timer tick
+    // triggers the repaint that makes it appear).
+    if let (Some(hover_row), Some(since)) = (st.hover_row, st.hover_since) {
+        if since.elapsed() >= std::time::Duration::from_millis(350) {
+            draw_tooltip(mem, hover_row, st.hover_pos, w, h, s, &st.theme);
+        }
+    }
+
     frame.fix_gdi_alpha(st.theme.background);
 
     unsafe {
@@ -2111,6 +2290,183 @@ fn draw_toggle(mem: HDC, col_x: i32, row_y: i32, vw: i32, row_h: i32, sc: f32, e
     let knob_d = tog_h - knob_m * 2;
     let knob_x = if enabled { tx + tog_w - knob_d - knob_m } else { tx + knob_m };
     fill_rect(mem, knob_x, ty + knob_m, knob_x + knob_d, ty + knob_m + knob_d, theme.text);
+}
+
+// Draw a settings row label; if hovered show it in accent color.
+fn draw_settings_label(mem: HDC, pad_sc: i32, ry: i32, row_h: i32, sc: f32, label: &str, hovered: bool, fg: Argb, accent: Argb) {
+    let label_w = (LABEL_W as f32 * sc) as i32;
+    tcol(mem, if hovered { accent } else { fg });
+    dw(mem, &mut to_utf16_z(label),
+       &mut rct(pad_sc, ry, pad_sc + label_w, ry + row_h),
+       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+}
+
+// Draw a cycling dropdown cell (shows current value with ▼ indicator).
+fn draw_dropdown_cell(mem: HDC, x: i32, y: i32, w: i32, h: i32, sc: f32, label: &str, theme: &NativeTheme) {
+    let bw = (1.0 * sc) as i32;
+    let border = theme.text_muted;
+    fill_rect(mem, x, y, x + w, y + bw, border);
+    fill_rect(mem, x, y + h - bw, x + w, y + h, border);
+    fill_rect(mem, x, y, x + bw, y + h, border);
+    fill_rect(mem, x + w - bw, y, x + w, y + h, border);
+    tcol(mem, theme.text);
+    let text = format!("{}▾", label);
+    dw(mem, &mut to_utf16_z(&text),
+       &mut rct(x + 2, y, x + w - 2, y + h),
+       DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+}
+
+fn cooling_policy_label(v: u32) -> &'static str { if v == 0 { "Pass" } else { "Act" } }
+fn increase_policy_label(v: u32) -> &'static str { if v == 0 { "Ideal" } else { "Rkt" } }
+fn hetero_policy_label(v: u32) -> &'static str {
+    match v { 2 => "Perf", 4 => "Eff", 5 => "Auto", _ => "All" }
+}
+fn parked_perf_label(v: u32) -> &'static str {
+    match v { 1 => "Deep", 2 => "Light", _ => "NoPrf" }
+}
+
+fn hit_hover_row(x: i32, y: i32, sc: f32) -> Option<HoverRow> {
+    let ranges = settings_y_ranges(sc);
+    let row_h = (ROW_H as f32 * sc) as i32;
+    let win_w = (W as f32 * sc) as i32;
+    if x < 0 || x >= win_w { return None; }
+
+    if hit_plan_row(y, sc) { return Some(HoverRow::PlanRow); }
+
+    macro_rules! chk {
+        ($ry:expr, $row:expr) => {
+            if y >= $ry && y < $ry + row_h { return Some($row); }
+        };
+    }
+    chk!(ranges.min_cores_y, HoverRow::MinCores);
+    chk!(ranges.max_cores_y, HoverRow::MaxCores);
+    chk!(ranges.min_freq_y, HoverRow::MinFreq);
+    chk!(ranges.max_freq_y, HoverRow::MaxFreq);
+    chk!(ranges.autonomous_mode_y, HoverRow::AutonomousMode);
+    chk!(ranges.turbo_y, HoverRow::TurboBoost);
+    chk!(ranges.cooling_policy_y, HoverRow::CoolingPolicy);
+    chk!(ranges.increase_policy_y, HoverRow::IncreasePolicy);
+    chk!(ranges.hetero_policy_y, HoverRow::HeteroScheduling);
+    chk!(ranges.parked_perf_y, HoverRow::ParkedPerf);
+    None
+}
+
+fn tooltip_lines(row: HoverRow) -> &'static [&'static str] {
+    match row {
+        HoverRow::PlanRow => &[
+            "Active Power Plan",
+            "Click to cycle through the",
+            "available Windows power plans.",
+        ],
+        HoverRow::MinCores => &[
+            "Minimum Processor Cores",
+            "Lowest % of cores kept unparked.",
+            "Lower: more parking, less power.",
+            "Left = AC (plugged), right = DC.",
+        ],
+        HoverRow::MaxCores => &[
+            "Maximum Processor Cores",
+            "Highest % of cores allowed active.",
+            "Lower: caps parallelism / heat.",
+            "Left = AC (plugged), right = DC.",
+        ],
+        HoverRow::MinFreq => &[
+            "Minimum Processor State",
+            "Lowest CPU frequency, as % of max.",
+            "Lower: cooler/quieter idle.",
+            "Left = AC (plugged), right = DC.",
+        ],
+        HoverRow::MaxFreq => &[
+            "Maximum Processor State",
+            "Highest CPU frequency, as % of max.",
+            "Lower: caps clocks, heat & noise.",
+            "Left = AC (plugged), right = DC.",
+        ],
+        HoverRow::AutonomousMode => &[
+            "Autonomous Mode",
+            "OFF: OS manages CPU frequencies",
+            "ON:  CPU self-manages (faster)",
+        ],
+        HoverRow::TurboBoost => &[
+            "Turbo / Boost",
+            "OFF: CPU stays at base clock",
+            "ON:  Allows burst above base",
+        ],
+        HoverRow::CoolingPolicy => &[
+            "System Cooling Policy",
+            "Passive: Lower freq instead of fans",
+            "  -> Quieter, slightly slower",
+            "Active:  Keep freq, spin fans",
+            "  -> Faster, noisier",
+        ],
+        HoverRow::IncreasePolicy => &[
+            "Performance Increase Policy",
+            "Ideal:  Gradual boost (cooler/quiet)",
+            "Rocket: Instant max (responsive)",
+        ],
+        HoverRow::HeteroScheduling => &[
+            "Heterogeneous Thread Scheduling",
+            "All (0):        Any core",
+            "Perf first (2): P-cores priority",
+            "Eff first (4):  E-cores (quiet)",
+            "Auto (5):       System decides",
+        ],
+        HoverRow::ParkedPerf => &[
+            "Parked Core Performance State",
+            "No Pref (0): Default behavior",
+            "Deepest (1): Max power savings",
+            "Lightest (2): Quick wake-up",
+        ],
+    }
+}
+
+// Draw tooltip for the hovered row (floats over panel at cursor position).
+fn draw_tooltip(mem: HDC, hover_row: HoverRow, hover_pos: POINT, win_w: i32, win_h: i32, sc: f32, theme: &NativeTheme) {
+    let lines = tooltip_lines(hover_row);
+    let line_h = (16.0 * sc) as i32;
+    let pad = (6.0 * sc) as i32;
+    let tip_w = (200.0 * sc) as i32;
+    let tip_h = line_h * lines.len() as i32 + pad * 2;
+
+    // Position: right of cursor, fully clamped inside the window so no edge
+    // clips it (the tooltip lives in the panel's own layered surface).
+    let mut tx = hover_pos.x + (10.0 * sc) as i32;
+    let mut ty = hover_pos.y - tip_h / 2;
+    if tx + tip_w > win_w { tx = hover_pos.x - tip_w - (6.0 * sc) as i32; }
+    if tx + tip_w > win_w { tx = win_w - tip_w; }
+    if tx < 0 { tx = 0; }
+    if ty + tip_h > win_h { ty = win_h - tip_h; }
+    if ty < 0 { ty = 0; }
+
+    // Background + border. Use `surface` (not `background`): fix_gdi_alpha
+    // intentionally leaves background-coloured pixels at the alpha they had
+    // before GDI overwrote them — which for a GDI FillRect is 0 (transparent).
+    // A surface colour distinct from the background is restored to full alpha.
+    let bg = if theme.surface.to_colorref() == theme.background.to_colorref() {
+        theme.bar_background
+    } else {
+        theme.surface
+    };
+    fill_rect(mem, tx, ty, tx + tip_w, ty + tip_h, bg);
+    let bw = (1.0 * sc).max(1.0) as i32;
+    fill_rect(mem, tx, ty, tx + tip_w, ty + bw, theme.accent);
+    fill_rect(mem, tx, ty + tip_h - bw, tx + tip_w, ty + tip_h, theme.accent);
+    fill_rect(mem, tx, ty, tx + bw, ty + tip_h, theme.accent);
+    fill_rect(mem, tx + tip_w - bw, ty, tx + tip_w, ty + tip_h, theme.accent);
+
+    let font = crate::osd::create_font(-(11.0 * sc) as i32, false, "Segoe UI");
+    let prev_font = unsafe { SelectObject(mem, font) };
+
+    for (i, line) in lines.iter().enumerate() {
+        let lx = tx + pad;
+        let ly = ty + pad + i as i32 * line_h;
+        tcol(mem, if i == 0 { theme.text } else { theme.text_muted });
+        dw(mem, &mut to_utf16_z(line),
+           &mut rct(lx, ly, tx + tip_w - pad, ly + line_h),
+           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    unsafe { SelectObject(mem, prev_font); let _ = DeleteObject(font); }
 }
 
 fn draw_core_row(
