@@ -10,9 +10,9 @@ use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
     WAIT_EVENT, WAIT_OBJECT_0, WPARAM, LocalFree, WIN32_ERROR, HLOCAL};
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetMonitorInfoW, InvalidateRect,
-    MonitorFromWindow, SelectObject, SetBkMode, SetTextColor,
+    IntersectClipRect, MonitorFromWindow, SelectClipRgn, SelectObject, SetBkMode, SetTextColor,
     DRAW_TEXT_FORMAT, DT_CENTER, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
-    HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    HDC, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -45,7 +45,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
     RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow,
     CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOW,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
     WM_ACTIVATE, WM_CHAR, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_TIMER,
     WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -58,7 +58,7 @@ use crate::osd::{to_utf16_z, OsdHandle};
 use crate::constants::WM_MOUSELEAVE;
 
 // ── Layout (unscaled, 96 DPI) ────────────────────────────────────────
-const W: i32 = 380;
+const W: i32 = 430;
 const PAD: i32 = 14;
 const HDR_H: i32 = 32;
 const PLAN_H: i32 = 28;
@@ -192,6 +192,8 @@ struct MonitorState {
     core_load: Vec<f32>,            // 0.0–1.0 per logical core
     core_parked: Vec<bool>,         // parked status per logical core
     core_freq_mhz: Vec<u32>,        // current MHz per logical core when available
+    base_mhz: u32,                  // nominal (base) max frequency, 0 if unknown
+    freq_scale_mhz: u32,            // bar full-scale freq (>= base, grows with turbo)
     freq_sampler: Option<PdhFreqSampler>,
     p_cores: Vec<usize>,            // logical indices of P-cores
     e_cores: Vec<usize>,            // logical indices of E-cores
@@ -207,6 +209,11 @@ struct PanelState {
     active_plan_name: String,
     ac: PlanValues,
     dc: PlanValues,
+    /// Original values of the active plan when it was opened/switched to.
+    /// Live edits are previewed immediately but reverted to this on an unsaved
+    /// plan switch or unsaved close; Save promotes the current values here.
+    baseline_ac: PlanValues,
+    baseline_dc: PlanValues,
     dirty: bool,
     focused: Option<Field>,
     edit_text: String,
@@ -214,6 +221,12 @@ struct PanelState {
     pos: POINT,
     monitor: MonitorState,
     stress_handles: Vec<std::thread::JoinHandle<()>>,
+    /// Collapsed state of the monitor core groups.
+    p_collapsed: bool,
+    e_collapsed: bool,
+    /// Vertical scroll offset (px) of the monitor core list when it exceeds
+    /// the available (screen-capped) height.
+    scroll: i32,
     hover_row: Option<HoverRow>,
     hover_pos: POINT,
     /// When the current hover_row was first entered — used to delay the tooltip.
@@ -1001,41 +1014,75 @@ fn sc_from_hwnd(hwnd: HWND) -> f32 {
     unsafe { GetDpiForWindow(hwnd) as f32 / 96.0 }
 }
 
+// Unscaled height of everything above the monitor core groups (up to and
+// including the PACKAGE line). The core list scrolls below this point.
+fn top_block_h() -> i32 {
+    HDR_H + PLAN_H
+        + SEC_H + ROW_H * 2          // CORES
+        + SEC_H + ROW_H * 2          // FREQUENCY
+        + SEC_H + ROW_H * 4          // POWER FEATURES
+        + SEC_H + ROW_H * 2          // CORE MANAGEMENT
+        + BTN_ROW_H + SEP_H          // Save row + separator
+        + MON_HDR_H + LOAD_ROW_H + SUMMARY_H // monitor header + load + PACKAGE
+}
+
+fn group_bars_h(count: usize) -> i32 {
+    (BAR_H + BAR_GAP) * count as i32 - BAR_GAP
+}
+
+fn group_block_h(count: usize, collapsed: bool) -> i32 {
+    if count == 0 { return 0; }
+    SEC_H + if collapsed { 0 } else { group_bars_h(count) }
+}
+
+// Unscaled height of the scrollable core-list content.
+fn list_content_h(p_count: usize, e_count: usize, p_col: bool, e_col: bool) -> i32 {
+    if p_count == 0 && e_count == 0 { return ROW_H; }
+    group_block_h(p_count, p_col) + group_block_h(e_count, e_col)
+}
+
 fn compute_total_h(sc: f32, p_count: usize, e_count: usize) -> i32 {
-    let mut h = HDR_H + PLAN_H; // header + plan row
-    // Settings section
-    h += SEC_H + ROW_H + ROW_H;           // CORES header + Min/Max Cores
-    h += SEC_H + ROW_H + ROW_H;           // FREQUENCY header + Min Speed + Max Speed
-    h += SEC_H + ROW_H * 4;               // POWER FEATURES header + 4 rows
-    h += SEC_H + ROW_H + ROW_H;           // CORE MANAGEMENT header + 2 rows
-    h += SEP_H; // separator
-
-    // Monitor section
-    h += MON_HDR_H; // monitor header
-    h += LOAD_ROW_H; // load controls
-
-    // P-core group
-    if p_count > 0 {
-        h += SEC_H; // group header
-        h += (BAR_H + BAR_GAP) * p_count as i32 - BAR_GAP; // bars
-        h += SUMMARY_H; // summary
-    }
-
-    // E-core group
-    if e_count > 0 {
-        h += SEC_H; // group header
-        h += (BAR_H + BAR_GAP) * e_count as i32 - BAR_GAP; // bars
-        h += SUMMARY_H; // summary
-    }
-
-    // If no cores at all
-    if p_count == 0 && e_count == 0 {
-        h += ROW_H; // "No cores detected" message
-    }
-
-    h += BTN_ROW_H; // Apply row
-
+    let h = top_block_h() + list_content_h(p_count, e_count, false, false);
     (h as f32 * sc) as i32
+}
+
+// On-screen Y (scaled) where the monitor core list begins.
+fn list_top(sc: f32) -> i32 {
+    (top_block_h() as f32 * sc) as i32
+}
+
+// Actual window height: natural height capped to the work area so it always
+// fits on screen; the core list scrolls when capped.
+fn current_win_h(sc: f32, st: &PanelState) -> i32 {
+    let p = st.monitor.p_cores.len();
+    let e = st.monitor.e_cores.len();
+    let natural = top_block_h() + list_content_h(p, e, st.p_collapsed, st.e_collapsed);
+    let natural = (natural as f32 * sc) as i32;
+    let wa = work_area();
+    let max_h = (wa.bottom - wa.top) - (24.0 * sc) as i32;
+    let min_h = list_top(sc) + (BAR_H as f32 * sc) as i32; // top block + ≥1 bar
+    natural.min(max_h).max(min_h)
+}
+
+// Maximum scroll offset (scaled) for the given window height.
+fn scroll_max(sc: f32, st: &PanelState, win_h: i32) -> i32 {
+    let p = st.monitor.p_cores.len();
+    let e = st.monitor.e_cores.len();
+    let content = (list_content_h(p, e, st.p_collapsed, st.e_collapsed) as f32 * sc) as i32;
+    let viewport = win_h - list_top(sc);
+    (content - viewport).max(0)
+}
+
+// Recompute the (collapse-aware, screen-capped) window height, resize the
+// window if it changed, clamp the scroll offset, then paint.
+fn render_panel(hwnd: HWND, st: &mut PanelState, win_w: i32, sc: f32, win_h: &mut i32) {
+    let new_h = current_win_h(sc, st);
+    if new_h != *win_h {
+        *win_h = new_h;
+        unsafe { let _ = SetWindowPos(hwnd, HWND::default(), 0, 0, win_w, new_h, SWP_NOMOVE | SWP_NOZORDER); }
+    }
+    st.scroll = st.scroll.clamp(0, scroll_max(sc, st, *win_h));
+    paint_panel(hwnd, st, win_w, *win_h, sc);
 }
 
 // ── Thread entry point ───────────────────────────────────────────────
@@ -1075,7 +1122,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
 
     let sc = sc_from_hwnd(hwnd);
     let win_w = (W as f32 * sc) as i32;
-    let win_h = compute_total_h(sc, p_cores.len(), e_cores.len());
+    // Cap to the work area so many-core systems still fit on screen.
+    let max_h = { let wa = work_area(); (wa.bottom - wa.top) - (24.0 * sc) as i32 };
+    let mut win_h = compute_total_h(sc, p_cores.len(), e_cores.len()).min(max_h);
 
     let wa = work_area();
     let pos = POINT {
@@ -1094,8 +1143,10 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
     let (ac, dc) = read_current_plan_values();
 
     let stress_stop = Arc::new(AtomicBool::new(false));
-    let freq_sampler = read_processor_base_mhz(total_cores.max(1))
-        .and_then(|base_mhz| PdhFreqSampler::new(total_cores.max(1), base_mhz));
+    let base_mhz = read_processor_base_mhz(total_cores.max(1)).unwrap_or(0);
+    let freq_sampler = (base_mhz > 0)
+        .then(|| PdhFreqSampler::new(total_cores.max(1), base_mhz))
+        .flatten();
 
     let mut st = PanelState {
         theme,
@@ -1103,6 +1154,8 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
         active_plan_name,
         ac,
         dc,
+        baseline_ac: ac,
+        baseline_dc: dc,
         dirty: false,
         focused: None,
         edit_text: String::new(),
@@ -1112,6 +1165,8 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
             core_load: vec![0.0; total_cores.max(1)],
             core_parked: vec![false; total_cores.max(1)],
             core_freq_mhz: vec![0; total_cores.max(1)],
+            base_mhz,
+            freq_scale_mhz: base_mhz.max(1),
             freq_sampler,
             p_cores,
             e_cores,
@@ -1120,6 +1175,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
             prev_perf: None,
         },
         stress_handles: Vec::new(),
+        p_collapsed: false,
+        e_collapsed: false,
+        scroll: 0,
         hover_row: None,
         hover_since: None,
         hover_pos: POINT::default(),
@@ -1137,7 +1195,7 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
         update_vec_prefix(&mut st.monitor.core_freq_mhz, &freqs);
     }
 
-    paint_panel(hwnd, &st, win_w, win_h, sc);
+    render_panel(hwnd, &mut st, win_w, sc, &mut win_h);
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         // Start monitor timer
@@ -1159,6 +1217,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
             WAIT_OBJECT_0 => {
                 hidden = !hidden;
                 if hidden {
+                    // Hotkey-hide without Save discards live-preview edits.
+                    flush_edit(&mut st);
+                    revert_if_dirty(&mut st);
                     unsafe { let _ = ReleaseCapture(); _ = ShowWindow(hwnd, SW_HIDE); _ = InvalidateRect(hwnd, None, false); }
                     // Kill timer when hidden
                     unsafe { let _ = KillTimer(hwnd, TIMER_MONITOR); }
@@ -1167,6 +1228,8 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                     let (ac_new, dc_new) = read_current_plan_values();
                     st.ac = ac_new;
                     st.dc = dc_new;
+                    st.baseline_ac = ac_new;
+                    st.baseline_dc = dc_new;
                     st.dirty = false;
                     st.focused = None;
                     st.edit_select_all = false;
@@ -1186,8 +1249,9 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                     if let Some(freqs) = read_effective_processor_frequencies(&st.monitor) {
                         update_vec_prefix(&mut st.monitor.core_freq_mhz, &freqs);
                     }
+                    update_freq_scale(&mut st.monitor);
 
-                    paint_panel(hwnd, &st, win_w, win_h, sc);
+                    render_panel(hwnd, &mut st, win_w, sc, &mut win_h);
                     unsafe { let _ = ShowWindow(hwnd, SW_SHOW); }
                     // Restart timer
                     unsafe { let _ = SetTimer(hwnd, TIMER_MONITOR, 500, None); }
@@ -1228,7 +1292,7 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                     }
                 }
                 if repaint && !hidden {
-                    paint_panel(hwnd, &st, win_w, win_h, sc);
+                    render_panel(hwnd, &mut st, win_w, sc, &mut win_h);
                 }
             }
             _ => break,
@@ -1269,6 +1333,18 @@ fn handle_monitor_timer(st: &mut PanelState) {
     if let Some(freqs) = read_effective_processor_frequencies(&st.monitor) {
         update_vec_prefix(&mut st.monitor.core_freq_mhz, &freqs);
     }
+    update_freq_scale(&mut st.monitor);
+}
+
+// Grow the bar full-scale so it always covers observed turbo peaks. Rounded up
+// to the next 100 MHz; never shrinks within a session to keep bars stable.
+fn update_freq_scale(mon: &mut MonitorState) {
+    let peak = mon.core_freq_mhz.iter().copied().max().unwrap_or(0);
+    let want = mon.base_mhz.max(peak);
+    let want = ((want + 99) / 100) * 100; // round up to 100 MHz
+    if want > mon.freq_scale_mhz {
+        mon.freq_scale_mhz = want;
+    }
 }
 
 fn update_vec_prefix<T: Copy>(dst: &mut [T], src: &[T]) {
@@ -1281,23 +1357,23 @@ fn update_vec_prefix<T: Copy>(dst: &mut [T], src: &[T]) {
 fn handle_key(msg: &MSG, st: &mut PanelState, hidden: &mut bool) -> bool {
     let vk = msg.wParam.0 as u32;
     match vk {
-        0x1B => { // Escape
+        0x1B => { // Escape — cancel: discard unsaved live-preview edits
+            flush_edit(st);
+            revert_if_dirty(st);
             *hidden = true;
             st.focused = None;
             st.edit_select_all = false;
             unsafe { let _ = ReleaseCapture(); }
             return true;
         }
-        0x0D => { // Enter — apply
-            if st.dirty {
-                flush_edit(st);
-                write_plan_values(&st.ac, &st.dc);
-                st.dirty = false;
-                st.focused = None;
-                st.edit_select_all = false;
-                unsafe { let _ = ReleaseCapture(); }
-                return true;
-            }
+        0x0D => { // Enter — Save: commit live-preview edits as baseline
+            flush_edit(st);
+            apply_now(st);
+            commit_baseline(st);
+            st.focused = None;
+            st.edit_select_all = false;
+            unsafe { let _ = ReleaseCapture(); }
+            return true;
         }
         0x09 => { // Tab — cycle focus through editable fields
             flush_edit(st);
@@ -1384,9 +1460,14 @@ fn handle_wheel(msg: &MSG, st: &mut PanelState, _sc: f32) -> bool {
             *val = val.saturating_sub((-steps) as u32);
         }
         st.dirty = true;
+        apply_now(st);
         return true;
     }
-    false
+    // No field focused → scroll the monitor core list (~3 rows per notch).
+    // render_panel clamps the offset to the valid range afterwards.
+    let step = ((3 * (BAR_H + BAR_GAP)) as f32 * _sc) as i32;
+    st.scroll = (st.scroll - steps as i32 * step).max(0);
+    true
 }
 
 /// Get current value for a field (as u32)
@@ -1416,21 +1497,50 @@ fn clear_focus(st: &mut PanelState) {
 
 fn flush_edit(st: &mut PanelState) {
     if st.edit_text.is_empty() || st.focused.is_none() { return; }
+    let mut changed = false;
     if let Ok(v) = st.edit_text.parse::<u32>() {
         let v = v.min(100);
-        match st.focused.unwrap() {
-            Field::AcMinCores => st.ac.min_cores = v,
-            Field::DcMinCores => st.dc.min_cores = v,
-            Field::AcMaxCores => st.ac.max_cores = v,
-            Field::DcMaxCores => st.dc.max_cores = v,
-            Field::AcMinFreq => st.ac.min_freq = v,
-            Field::DcMinFreq => st.dc.min_freq = v,
-            Field::AcMaxFreq => st.ac.max_freq = v,
-            Field::DcMaxFreq => st.dc.max_freq = v,
-        }
+        let slot: &mut u32 = match st.focused.unwrap() {
+            Field::AcMinCores => &mut st.ac.min_cores,
+            Field::DcMinCores => &mut st.dc.min_cores,
+            Field::AcMaxCores => &mut st.ac.max_cores,
+            Field::DcMaxCores => &mut st.dc.max_cores,
+            Field::AcMinFreq => &mut st.ac.min_freq,
+            Field::DcMinFreq => &mut st.dc.min_freq,
+            Field::AcMaxFreq => &mut st.ac.max_freq,
+            Field::DcMaxFreq => &mut st.dc.max_freq,
+        };
+        if *slot != v { *slot = v; changed = true; }
     }
     st.edit_text.clear();
     st.edit_select_all = false;
+    // Apply numeric edits to the live power scheme immediately (preview),
+    // marking them unsaved until the user clicks Save.
+    if changed { st.dirty = true; apply_now(st); }
+}
+
+// Write the current values to the active power scheme right away, so edits take
+// effect live (visible in the monitor) without waiting for a Save click.
+fn apply_now(st: &mut PanelState) {
+    write_plan_values(&st.ac, &st.dc);
+}
+
+// Promote the current (live-previewed) values to the saved baseline.
+fn commit_baseline(st: &mut PanelState) {
+    st.baseline_ac = st.ac;
+    st.baseline_dc = st.dc;
+    st.dirty = false;
+}
+
+// Restore the active scheme to its pre-edit baseline. Used when the user
+// switches plans or closes without saving. Writes to whatever scheme is
+// currently active, so call this *before* changing the active scheme.
+fn revert_if_dirty(st: &mut PanelState) {
+    if !st.dirty { return; }
+    st.ac = st.baseline_ac;
+    st.dc = st.baseline_dc;
+    write_plan_values(&st.ac, &st.dc);
+    st.dirty = false;
 }
 
 // ── Message handler ─────────────────────────────────────────────────
@@ -1441,6 +1551,8 @@ fn msg_handler(
     hidden: &mut bool, sc: f32,
 ) -> bool {
     if msg.message == WM_ACTIVATE && msg.wParam.0 as u32 == 0 {
+        flush_edit(st);
+        revert_if_dirty(st); // closing without Save discards live-preview edits
         *hidden = true;
         clear_focus(st);
         unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); _ = KillTimer(hwnd, TIMER_MONITOR); }
@@ -1455,6 +1567,8 @@ fn msg_handler(
         if y < (HDR_H as f32 * sc) as i32 {
             let cx = (W as f32 * sc) as i32 - (PAD as f32 * sc) as i32 - (20.0 * sc) as i32;
             if x >= cx && x <= cx + (20.0 * sc) as i32 {
+                flush_edit(st);
+                revert_if_dirty(st); // close without Save discards live-preview edits
                 *hidden = true;
                 clear_focus(st);
                 unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); _ = KillTimer(hwnd, TIMER_MONITOR); }
@@ -1467,6 +1581,9 @@ fn msg_handler(
 
         // Plan row: click cycles to next power plan
         if hit_plan_row(y, sc) {
+            flush_edit(st);
+            // Unsaved edits to the current plan are reverted before leaving it.
+            revert_if_dirty(st);
             let cur = st.schemes.iter().position(|(_, n)| n == &st.active_plan_name).unwrap_or(0);
             let next = (cur + 1) % st.schemes.len().max(1);
             if let Some((guid, name)) = st.schemes.get(next) {
@@ -1475,7 +1592,8 @@ fn msg_handler(
                 let (ac_new, dc_new) = read_current_plan_values();
                 st.ac = ac_new;
                 st.dc = dc_new;
-                st.dirty = false;
+                // New plan becomes the baseline; nothing to save yet.
+                commit_baseline(st);
                 clear_focus(st);
             }
             return true;
@@ -1496,12 +1614,14 @@ fn msg_handler(
         // Try to hit a toggle
         if hit_toggle(x, y, sc, &mut st.ac, &mut st.dc, &mut st.dirty) {
             flush_edit(st);
+            apply_now(st);
             return true;
         }
 
         // Try to hit a dropdown
         if hit_dropdown(x, y, sc, &mut st.ac, &mut st.dc, &mut st.dirty) {
             flush_edit(st);
+            apply_now(st);
             return true;
         }
 
@@ -1512,25 +1632,31 @@ fn msg_handler(
             return true;
         }
 
-        // Apply button
+        // Save button — commit the live-previewed edits as the new baseline so
+        // they are kept. The panel stays open.
         if hit_apply(x, y, sc, st) {
             flush_edit(st);
-            if st.dirty {
-                write_plan_values(&st.ac, &st.dc);
-                st.dirty = false;
-                clear_focus(st);
-            }
-            *hidden = true;
+            apply_now(st);
+            commit_baseline(st);
             clear_focus(st);
-            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); _ = ReleaseCapture(); _ = KillTimer(hwnd, TIMER_MONITOR); }
-            return false;
+            return true;
         }
 
-        // Click outside editable fields → apply current edit and clear focus
+        // Monitor group header → collapse/expand that core group.
+        if let Some(g) = hit_core_group_header(y, sc, st) {
+            flush_edit(st);
+            clear_focus(st);
+            match g {
+                'p' => st.p_collapsed = !st.p_collapsed,
+                _ => st.e_collapsed = !st.e_collapsed,
+            }
+            return true;
+        }
+
+        // Click outside editable fields → commit current edit (applied live)
         if st.focused.is_some() {
             flush_edit(st);
             clear_focus(st);
-            st.dirty = true;
             unsafe { let _ = ReleaseCapture(); }
         }
 
@@ -1644,7 +1770,10 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
     y += ROW_H;
     let parked_perf_y = y;
     y += ROW_H;
-    let cm_sec_bot = y;
+
+    // Save button row — sits directly under the parameters.
+    let save_row_y = y;
+    y += BTN_ROW_H;
 
     // Separator after settings
     y += SEP_H;
@@ -1669,7 +1798,7 @@ fn settings_y_ranges(sc: f32) -> SettingsYRanges {
         cm_sec_y:          (cm_sec_y as f32 * s) as i32,
         hetero_policy_y:   (hetero_policy_y as f32 * s) as i32,
         parked_perf_y:     (parked_perf_y as f32 * s) as i32,
-        cm_sec_bot:        (cm_sec_bot as f32 * s) as i32,
+        save_row_y:        (save_row_y as f32 * s) as i32,
         mon_hdr_y:         (mon_hdr_y as f32 * s) as i32,
     }
 }
@@ -1691,7 +1820,7 @@ struct SettingsYRanges {
     cm_sec_y: i32,
     hetero_policy_y: i32,
     parked_perf_y: i32,
-    cm_sec_bot: i32,
+    save_row_y: i32,
     mon_hdr_y: i32,
 }
 
@@ -1841,29 +1970,37 @@ fn hit_stress_button(x: i32, y: i32, sc: f32, mon: &mut MonitorState, handles: &
     false
 }
 
-fn hit_apply(x: i32, y: i32, sc: f32, st: &PanelState) -> bool {
+// Which monitor group header (if any) is under the click, accounting for the
+// current scroll offset and collapse state. Returns 'p' or 'e'.
+fn hit_core_group_header(y: i32, sc: f32, st: &PanelState) -> Option<char> {
+    let lt = list_top(sc);
+    if y < lt { return None; }
+    let hdr_h = (SEC_H as f32 * sc) as i32;
+    let bar_h = (BAR_H as f32 * sc) as i32;
+    let bar_gap = (BAR_GAP as f32 * sc) as i32;
+    let block = |count: usize, collapsed: bool| -> i32 {
+        if count == 0 { return 0; }
+        hdr_h + if collapsed { 0 } else { (bar_h + bar_gap) * count as i32 - bar_gap }
+    };
+    let p = st.monitor.p_cores.len();
+    let e = st.monitor.e_cores.len();
+    let mut gy = lt - st.scroll;
+    if p > 0 {
+        if y >= gy && y < gy + hdr_h { return Some('p'); }
+        gy += block(p, st.p_collapsed);
+    }
+    if e > 0 && y >= gy && y < gy + hdr_h {
+        return Some('e');
+    }
+    None
+}
+
+fn hit_apply(x: i32, y: i32, sc: f32, _st: &PanelState) -> bool {
     let ranges = settings_y_ranges(sc);
-    let mut content_y = ranges.mon_hdr_y + ((MON_HDR_H + LOAD_ROW_H) as f32 * sc) as i32;
-
-    // Add core group bars and summary heights
-    if !st.monitor.p_cores.is_empty() {
-        content_y += (SEC_H as f32 * sc) as i32;
-        content_y += ((BAR_H + BAR_GAP) * st.monitor.p_cores.len() as i32 - BAR_GAP) as f32 as i32;
-        content_y += (SUMMARY_H as f32 * sc) as i32;
-    }
-    if !st.monitor.e_cores.is_empty() {
-        content_y += (SEC_H as f32 * sc) as i32;
-        content_y += ((BAR_H + BAR_GAP) * st.monitor.e_cores.len() as i32 - BAR_GAP) as f32 as i32;
-        content_y += (SUMMARY_H as f32 * sc) as i32;
-    }
-    if st.monitor.p_cores.is_empty() && st.monitor.e_cores.is_empty() {
-        content_y += (ROW_H as f32 * sc) as i32;
-    }
-
     let win_w = (W as f32 * sc) as i32;
     let btn_w = (BTN_W as f32 * sc) as i32;
     let btn_h = (BTN_H as f32 * sc) as i32;
-    let btn_y = content_y + ((BTN_ROW_H - BTN_H) as f32 * sc / 2.0) as i32;
+    let btn_y = ranges.save_row_y + ((BTN_ROW_H - BTN_H) as f32 * sc / 2.0) as i32;
     let bx = (win_w - btn_w) / 2;
 
     y >= btn_y && y < btn_y + btn_h && x >= bx && x < bx + btn_w
@@ -1871,8 +2008,8 @@ fn hit_apply(x: i32, y: i32, sc: f32, st: &PanelState) -> bool {
 
 // ── Layout constant re-exports for paint ─────────────────────────────
 
-const LABEL_W: i32 = 140;
-const VAL_W: i32 = 56;
+const LABEL_W: i32 = 150;
+const VAL_W: i32 = 114;
 
 // ── Painting ─────────────────────────────────────────────────────────
 
@@ -2069,8 +2206,24 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     draw_dropdown_cell(mem, sx, ry_pp, vw, row_h, s, parked_perf_label(st.ac.parked_perf), &st.theme);
     draw_dropdown_cell(mem, sx + vw + gap, ry_pp, vw, row_h, s, parked_perf_label(st.dc.parked_perf), &st.theme);
 
+    // ── Save button (under the parameters; edits apply live, this commits) ──
+    {
+        let btn_w = (BTN_W as f32 * s) as i32;
+        let btn_h_actual = (BTN_H as f32 * s) as i32;
+        let btn_row_h = (BTN_ROW_H as f32 * s) as i32;
+        let btn_y = ranges.save_row_y + (btn_row_h - btn_h_actual) / 2;
+        let bx = (w - btn_w) / 2;
+        // Highlight Save only when there are unsaved edits to commit.
+        let btn_color = if st.dirty { accent } else { dim };
+        fill_rect(mem, bx, btn_y, bx + btn_w, btn_y + btn_h_actual, btn_color);
+        tcol(mem, btn_color.contrasting_text_color());
+        dw(mem, &mut to_utf16_z("Save"),
+           &mut rct(bx, btn_y, bx + btn_w, btn_y + btn_h_actual),
+           DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    }
+
     // ── Separator before monitor section ──
-    let sep2_y = ranges.cm_sec_bot;
+    let sep2_y = ranges.mon_hdr_y - (SEP_H as f32 * s) as i32;
     fill_rect(mem, pad_sc, sep2_y, w - pad_sc, sep2_y + 1, border);
 
     // ── LIVE MONITOR section ──
@@ -2092,114 +2245,65 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     // Bar area width
     let bar_area_w = w - pad_sc * 2;
 
-    // P-CORES group
+    // Shared frequency scale + Max-Processor-State ceiling (AC value, % of scale).
+    let scale_mhz = st.monitor.freq_scale_mhz;
+    let cap_mhz = (scale_mhz as u64 * st.ac.max_freq.min(100) as u64 / 100) as u32;
+
+    // ── PACKAGE summary line ──
+    {
+        let active = st.monitor.core_parked.iter().filter(|&&p| !p).count();
+        let total = st.monitor.core_parked.len();
+        let avg_mhz = package_avg_freq_mhz(&st.monitor);
+        let pkg = if st.monitor.base_mhz > 0 {
+            format!("PACKAGE  avg {:.1}G / base {:.1}G    active {}/{}",
+                avg_mhz as f32 / 1000.0, st.monitor.base_mhz as f32 / 1000.0, active, total)
+        } else {
+            format!("PACKAGE  avg {:.1}G    active {}/{}", avg_mhz as f32 / 1000.0, active, total)
+        };
+        tcol(mem, fg);
+        let pkg_h = (SUMMARY_H as f32 * s) as i32;
+        dw(mem, &mut to_utf16_z(&pkg),
+           &mut rct(pad_sc, content_y, w - pad_sc, content_y + pkg_h),
+           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        content_y += pkg_h;
+    }
+
+    // ── Scrollable core-list viewport ──
+    // The groups below the PACKAGE line scroll within [lt, h]; clip so partial
+    // rows don't bleed into the fixed area above or the window edge below.
+    let lt = list_top(s);
+    let _ = content_y; // content_y == lt here; groups are positioned via scroll
+    unsafe { let _ = IntersectClipRect(mem, 0, lt, w, h); }
+    let mut gy = lt - st.scroll;
+
     if !st.monitor.p_cores.is_empty() {
-        tcol(mem, dim);
-        let pc_hdr = content_y;
-        let pc_hdr_h = (SEC_H as f32 * s) as i32;
-        dw(mem, &mut to_utf16_z(&format!("P-CORES ({})", st.monitor.p_cores.len())),
-           &mut rct(pad_sc, pc_hdr, w - pad_sc, pc_hdr + pc_hdr_h),
-           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        content_y = pc_hdr + pc_hdr_h;
-
-        let bar_h = (BAR_H as f32 * s) as i32;
-        let bar_gap = (BAR_GAP as f32 * s) as i32;
-
-        for (i, &core_idx) in st.monitor.p_cores.iter().enumerate() {
-            let load = if core_idx < st.monitor.core_load.len() {
-                st.monitor.core_load[core_idx]
-            } else {
-                0.0
-            };
-            let parked = if core_idx < st.monitor.core_parked.len() {
-                st.monitor.core_parked[core_idx]
-            } else {
-                false
-            };
-            let freq_mhz = st.monitor.core_freq_mhz.get(core_idx).copied().unwrap_or(0);
-            draw_core_row(mem, pad_sc, content_y, bar_area_w, bar_h, s, &format!("P{}", i), load, freq_mhz, parked, &st.theme);
-            content_y += bar_h + bar_gap;
-        }
-        content_y -= bar_gap; // remove last gap
-
-        // Summary line
-        let avg_load = avg_load_for_cores(&st.monitor, &st.monitor.p_cores);
-        let parked_count = st.monitor.p_cores.iter()
-            .filter(|&&i| i < st.monitor.core_parked.len() && st.monitor.core_parked[i])
-            .count();
-        let summary = format!("Load: {:.0}%   Parked: {}/{}", avg_load * 100.0, parked_count, st.monitor.p_cores.len());
-        tcol(mem, dim);
-        let sum_h = (SUMMARY_H as f32 * s) as i32;
-        dw(mem, &mut to_utf16_z(&summary),
-           &mut rct(pad_sc, content_y, w - pad_sc, content_y + sum_h),
-           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        content_y += sum_h;
+        gy = draw_core_group(mem, "P", &st.monitor.p_cores, pad_sc, gy,
+            bar_area_w, w, s, scale_mhz, cap_mhz, st.p_collapsed, &st.monitor, &st.theme, fg, dim);
     }
-
-    // E-CORES group
     if !st.monitor.e_cores.is_empty() {
-        tcol(mem, dim);
-        let ec_hdr = content_y;
-        let ec_hdr_h = (SEC_H as f32 * s) as i32;
-        dw(mem, &mut to_utf16_z(&format!("E-CORES ({})", st.monitor.e_cores.len())),
-           &mut rct(pad_sc, ec_hdr, w - pad_sc, ec_hdr + ec_hdr_h),
-           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        content_y = ec_hdr + ec_hdr_h;
-
-        let bar_h = (BAR_H as f32 * s) as i32;
-        let bar_gap = (BAR_GAP as f32 * s) as i32;
-
-        for (i, &core_idx) in st.monitor.e_cores.iter().enumerate() {
-            let load = if core_idx < st.monitor.core_load.len() {
-                st.monitor.core_load[core_idx]
-            } else {
-                0.0
-            };
-            let parked = if core_idx < st.monitor.core_parked.len() {
-                st.monitor.core_parked[core_idx]
-            } else {
-                false
-            };
-            let freq_mhz = st.monitor.core_freq_mhz.get(core_idx).copied().unwrap_or(0);
-            draw_core_row(mem, pad_sc, content_y, bar_area_w, bar_h, s, &format!("E{}", i), load, freq_mhz, parked, &st.theme);
-            content_y += bar_h + bar_gap;
-        }
-        content_y -= bar_gap;
-
-        // Summary line
-        let avg_load = avg_load_for_cores(&st.monitor, &st.monitor.e_cores);
-        let parked_count = st.monitor.e_cores.iter()
-            .filter(|&&i| i < st.monitor.core_parked.len() && st.monitor.core_parked[i])
-            .count();
-        let summary = format!("Load: {:.0}%   Parked: {}/{}", avg_load * 100.0, parked_count, st.monitor.e_cores.len());
-        tcol(mem, dim);
-        let sum_h = (SUMMARY_H as f32 * s) as i32;
-        dw(mem, &mut to_utf16_z(&summary),
-           &mut rct(pad_sc, content_y, w - pad_sc, content_y + sum_h),
-           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        content_y += sum_h;
+        gy = draw_core_group(mem, "E", &st.monitor.e_cores, pad_sc, gy,
+            bar_area_w, w, s, scale_mhz, cap_mhz, st.e_collapsed, &st.monitor, &st.theme, fg, dim);
     }
-
     if st.monitor.p_cores.is_empty() && st.monitor.e_cores.is_empty() {
         tcol(mem, dim);
         dw(mem, &mut to_utf16_z("No cores detected"),
-           &mut rct(pad_sc, content_y, w - pad_sc, content_y + (ROW_H as f32 * s) as i32),
+           &mut rct(pad_sc, gy, w - pad_sc, gy + (ROW_H as f32 * s) as i32),
            DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        content_y += (ROW_H as f32 * s) as i32;
     }
+    unsafe { let _ = SelectClipRgn(mem, HRGN::default()); }
 
-    // ── Apply button ──
-    let btn_w = (BTN_W as f32 * s) as i32;
-    let btn_h_actual = (BTN_H as f32 * s) as i32;
-    let btn_row_h = (BTN_ROW_H as f32 * s) as i32;
-    let btn_y = content_y + (btn_row_h - btn_h_actual) / 2;
-    let bx = (w - btn_w) / 2;
-    let btn_color = if st.dirty { accent } else { dim };
-    fill_rect(mem, bx, btn_y, bx + btn_w, btn_y + btn_h_actual, btn_color);
-    tcol(mem, fg);
-    dw(mem, &mut to_utf16_z("Apply"),
-       &mut rct(bx, btn_y, bx + btn_w, btn_y + btn_h_actual),
-       DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    // ── Scrollbar indicator (only when the list overflows) ──
+    let smax = scroll_max(s, st, h);
+    if smax > 0 {
+        let track_x = w - (3.0 * s) as i32;
+        let track_top = lt;
+        let track_h = h - lt;
+        fill_rect(mem, track_x, track_top, track_x + (2.0 * s) as i32, track_top + track_h, st.theme.bar_background);
+        let content = (list_content_h(st.monitor.p_cores.len(), st.monitor.e_cores.len(), st.p_collapsed, st.e_collapsed) as f32 * s) as i32;
+        let thumb_h = ((track_h as i64 * track_h as i64) / content.max(1) as i64).max((12.0 * s) as i64) as i32;
+        let thumb_y = track_top + ((track_h - thumb_h) as i64 * st.scroll as i64 / smax as i64) as i32;
+        fill_rect(mem, track_x, thumb_y, track_x + (2.0 * s) as i32, thumb_y + thumb_h, st.theme.text_muted);
+    }
 
     // Draw tooltip on top of everything else, but only after the cursor has
     // rested on the row for a short dwell delay (the 500ms monitor timer tick
@@ -2221,16 +2325,19 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     unsafe { let _ = DeleteObject(font); }
 }
 
-fn avg_load_for_cores(mon: &MonitorState, cores: &[usize]) -> f32 {
-    let mut sum = 0.0;
-    let mut count = 0;
-    for &ci in cores {
-        if ci < mon.core_load.len() {
-            sum += mon.core_load[ci];
+// Average current frequency across non-parked cores (MHz). Falls back to all
+// cores if every core happens to be parked.
+fn package_avg_freq_mhz(mon: &MonitorState) -> u32 {
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    for (i, &f) in mon.core_freq_mhz.iter().enumerate() {
+        let parked = mon.core_parked.get(i).copied().unwrap_or(false);
+        if !parked && f > 0 {
+            sum += f as u64;
             count += 1;
         }
     }
-    if count > 0 { sum / count as f32 } else { 0.0 }
+    if count > 0 { (sum / count) as u32 } else { 0 }
 }
 
 fn draw_section_header(mem: HDC, x: i32, y: i32, w: i32, _sc: f32, label: &str, fg: Argb, _dim: Argb) {
@@ -2316,13 +2423,13 @@ fn draw_dropdown_cell(mem: HDC, x: i32, y: i32, w: i32, h: i32, sc: f32, label: 
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
 
-fn cooling_policy_label(v: u32) -> &'static str { if v == 0 { "Pass" } else { "Act" } }
-fn increase_policy_label(v: u32) -> &'static str { if v == 0 { "Ideal" } else { "Rkt" } }
+fn cooling_policy_label(v: u32) -> &'static str { if v == 0 { "Passive" } else { "Active" } }
+fn increase_policy_label(v: u32) -> &'static str { if v == 0 { "Ideal" } else { "Rocket" } }
 fn hetero_policy_label(v: u32) -> &'static str {
-    match v { 2 => "Perf", 4 => "Eff", 5 => "Auto", _ => "All" }
+    match v { 2 => "Prefer Perf", 4 => "Prefer Eff", 5 => "Auto", _ => "All cores" }
 }
 fn parked_perf_label(v: u32) -> &'static str {
-    match v { 1 => "Deep", 2 => "Light", _ => "NoPrf" }
+    match v { 1 => "Deepest", 2 => "Lightest", _ => "No Pref" }
 }
 
 fn hit_hover_row(x: i32, y: i32, sc: f32) -> Option<HoverRow> {
@@ -2469,6 +2576,51 @@ fn draw_tooltip(mem: HDC, hover_row: HoverRow, hover_pos: POINT, win_w: i32, win
     unsafe { SelectObject(mem, prev_font); let _ = DeleteObject(font); }
 }
 
+// Draw a core group: header line ("P-CORES (8)        Parked 2/8") plus one bar
+// per core. Parked cores contribute 0 load (their perf counters are stale while
+// parked). Returns the new content_y below the group.
+#[allow(clippy::too_many_arguments)]
+fn draw_core_group(
+    mem: HDC, prefix: &str, cores: &[usize], x: i32, y: i32,
+    bar_area_w: i32, w: i32, s: f32, scale_mhz: u32, cap_mhz: u32,
+    collapsed: bool, mon: &MonitorState, theme: &NativeTheme, _fg: Argb, dim: Argb,
+) -> i32 {
+    let hdr_h = (SEC_H as f32 * s) as i32;
+    let parked_count = cores.iter()
+        .filter(|&&i| mon.core_parked.get(i).copied().unwrap_or(false))
+        .count();
+
+    let arrow = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
+    tcol(mem, dim);
+    dw(mem, &mut to_utf16_z(&format!("{}  {}-CORES ({})", arrow, prefix, cores.len())),
+       &mut rct(x, y, w - x, y + hdr_h),
+       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    dw(mem, &mut to_utf16_z(&format!("Parked {}/{}", parked_count, cores.len())),
+       &mut rct(x, y, w - x, y + hdr_h),
+       DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+
+    if collapsed {
+        return y + hdr_h;
+    }
+
+    let bar_h = (BAR_H as f32 * s) as i32;
+    let bar_gap = (BAR_GAP as f32 * s) as i32;
+    let mut cy = y + hdr_h;
+    for (i, &ci) in cores.iter().enumerate() {
+        let parked = mon.core_parked.get(ci).copied().unwrap_or(false);
+        let load = if parked { 0.0 } else { mon.core_load.get(ci).copied().unwrap_or(0.0) };
+        let freq_mhz = mon.core_freq_mhz.get(ci).copied().unwrap_or(0);
+        draw_core_row(mem, x, cy, bar_area_w, bar_h, s, &format!("{}{}", prefix, i),
+            load, freq_mhz, parked, scale_mhz, cap_mhz, theme);
+        cy += bar_h + bar_gap;
+    }
+    cy - bar_gap
+}
+
+// One per-core row: label | freq | freq-bar (with cap marker) | load%.
+// The bar length encodes frequency on the shared `scale_mhz` scale, so lowering
+// Max Processor State or cooling throttling visibly shortens it; the colour
+// encodes load. `cap_mhz` draws a vertical marker at the configured ceiling.
 fn draw_core_row(
     mem: HDC,
     x: i32,
@@ -2480,21 +2632,25 @@ fn draw_core_row(
     load: f32,
     freq_mhz: u32,
     parked: bool,
+    scale_mhz: u32,
+    cap_mhz: u32,
     theme: &NativeTheme,
 ) {
     let label_w = (34.0 * _sc) as i32;
     let load_w = (44.0 * _sc) as i32;
     let freq_w = (48.0 * _sc) as i32;
     let gap = (8.0 * _sc) as i32;
-    let bar_x = x + label_w + load_w + freq_w + gap * 3;
-    let bar_w = (w - (bar_x - x)).max(20);
+    let bar_x = x + label_w + freq_w + gap * 2;
+    let bar_w = (w - (bar_x - x) - load_w - gap).max(20);
     let text_col = if parked { theme.text_muted } else { theme.text };
     let load_text = if parked {
         "PARK".to_string()
     } else {
         format!("{:>3}%", (load * 100.0).round() as u32)
     };
-    let freq_text = if freq_mhz > 0 {
+    let freq_text = if parked {
+        "—".to_string()
+    } else if freq_mhz > 0 {
         format!("{:.1}G", freq_mhz as f32 / 1000.0)
     } else {
         "-.-G".to_string()
@@ -2504,26 +2660,34 @@ fn draw_core_row(
     dw(mem, &mut to_utf16_z(label),
        &mut rct(x, y, x + label_w, y + h),
        DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    dw(mem, &mut to_utf16_z(&load_text),
-       &mut rct(x + label_w + gap, y, x + label_w + gap + load_w, y + h),
-       DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
     dw(mem, &mut to_utf16_z(&freq_text),
-       &mut rct(x + label_w + load_w + gap * 2, y, bar_x - gap, y + h),
+       &mut rct(x + label_w + gap, y, x + label_w + gap + freq_w, y + h),
+       DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+    dw(mem, &mut to_utf16_z(&load_text),
+       &mut rct(bar_x + bar_w + gap, y, bar_x + bar_w + gap + load_w, y + h),
        DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
 
     let bar_h = (CORE_BAR_H as f32 * _sc) as i32;
     let bar_y = y + (h - bar_h) / 2;
-    draw_core_bar(mem, bar_x, bar_y, bar_w, bar_h, load, parked, theme);
+    let scale = scale_mhz.max(1) as f32;
+    let freq_frac = (freq_mhz as f32 / scale).clamp(0.0, 1.0);
+    let cap_frac = if cap_mhz > 0 { (cap_mhz as f32 / scale).clamp(0.0, 1.0) } else { 1.0 };
+    draw_core_bar(mem, bar_x, bar_y, bar_w, bar_h, freq_frac, load, cap_frac, parked, theme);
 }
 
-fn draw_core_bar(mem: HDC, x: i32, y: i32, w: i32, h: i32, load: f32, parked: bool, theme: &NativeTheme) {
+// Bar fill length = `freq_frac`; colour by `load`; vertical ceiling marker at
+// `cap_frac`. Track always drawn so empty space reads as headroom.
+fn draw_core_bar(mem: HDC, x: i32, y: i32, w: i32, h: i32, freq_frac: f32, load: f32, cap_frac: f32, parked: bool, theme: &NativeTheme) {
+    // Track background for the full bar.
+    fill_rect(mem, x, y, x + w, y + h, theme.bar_background);
+
     if parked {
-        // Entire bar dim/charcoal
-        fill_rect(mem, x, y, x + w, y + h, theme.bar_background);
+        // Cap marker still useful, but no fill for parked cores.
+        draw_cap_marker(mem, x, y, w, h, cap_frac, theme);
         return;
     }
 
-    let fill_w = (w as f32 * load) as i32;
+    let fill_w = (w as f32 * freq_frac) as i32;
     // Fill portion: interpolate between dim and accent based on load
     let fill_color = if load > 0.7 {
         theme.accent
@@ -2546,10 +2710,17 @@ fn draw_core_bar(mem: HDC, x: i32, y: i32, w: i32, h: i32, load: f32, parked: bo
     if fill_w > 0 {
         fill_rect(mem, x, y, x + fill_w, y + h, fill_color);
     }
-    // Remainder (idle portion)
-    if fill_w < w {
-        fill_rect(mem, x + fill_w, y, x + w, y + h, theme.bar_background);
-    }
+    draw_cap_marker(mem, x, y, w, h, cap_frac, theme);
+}
+
+// Vertical ceiling marker at `cap_frac` of the bar width (Max Processor State).
+// Drawn slightly taller than the bar so it stands out against the fill.
+fn draw_cap_marker(mem: HDC, x: i32, y: i32, w: i32, h: i32, cap_frac: f32, theme: &NativeTheme) {
+    if cap_frac >= 0.999 { return; } // ceiling at full scale — nothing to show
+    let cx = x + (w as f32 * cap_frac) as i32;
+    let mw = (h / 8).max(1); // marker width scales with bar height
+    let over = (h / 4).max(1);
+    fill_rect(mem, cx, y - over, cx + mw, y + h + over, theme.text);
 }
 
 fn draw_stress_buttons(mem: HDC, win_w: i32, y: i32, h: i32, sc: f32, mon: &MonitorState, theme: &NativeTheme) {

@@ -94,6 +94,17 @@ pub fn toggle_current(osd: &OsdHandle) {
 /// A suspended GUI process may not process the normal focus activation path, so
 /// relying only on EVENT_SYSTEM_FOREGROUND can leave it asleep when clicked.
 pub fn resume_if_window_at_point(pt: POINT) {
+    // Fast path: if there is no suspended target, do nothing.
+    // Acquire the lock early so we avoid WindowFromPoint in the common
+    // case where suspend-on-blur is not active at all.
+    let has_active_target = {
+        let Ok(st) = STATE.try_lock() else { return };
+        st.target.as_ref().is_some_and(|t| t.suspended)
+    };
+    if !has_active_target {
+        return;
+    }
+
     let hwnd = unsafe {
         let hwnd = WindowFromPoint(pt);
         if hwnd == HWND::default() {
