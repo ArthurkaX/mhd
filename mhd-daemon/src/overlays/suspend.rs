@@ -9,18 +9,18 @@
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
-use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, POINT};
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SUSPEND_RESUME,
+    GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SUSPEND_RESUME,
+    QueryFullProcessImageNameW,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetAncestor, GetForegroundWindow, GetMessageW, GetWindowTextW,
-    GetWindowThreadProcessId, TranslateMessage, WindowFromPoint, EVENT_SYSTEM_FOREGROUND, GA_ROOT,
-    MSG, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GetAncestor, GetForegroundWindow,
+    GetMessageW, GetWindowTextW, GetWindowThreadProcessId, MSG, TranslateMessage,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WindowFromPoint,
 };
+use windows::core::PWSTR;
 
 use crate::osd::OsdHandle;
 
@@ -111,11 +111,7 @@ pub fn resume_if_window_at_point(pt: POINT) {
             return;
         }
         let root = GetAncestor(hwnd, GA_ROOT);
-        if root == HWND::default() {
-            hwnd
-        } else {
-            root
-        }
+        if root == HWND::default() { hwnd } else { root }
     };
 
     let Some(pid) = window_pid(hwnd) else {

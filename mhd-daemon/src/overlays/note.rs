@@ -7,16 +7,18 @@
 //! If blackbox is active, logs the note text.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::PCWSTR;
 
 use crate::app::SendHwnd;
 use crate::config::path::home_dir;
@@ -81,12 +83,24 @@ pub fn is_active() -> bool {
 }
 
 pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
-    qn_log(format!("show() theme={} notes_dir={}", theme.name, notes_dir.display()));
-    let Ok(mut guard) = CTRL.lock() else { qn_log("show(): CTRL lock poisoned"); return; };
+    qn_log(format!(
+        "show() theme={} notes_dir={}",
+        theme.name,
+        notes_dir.display()
+    ));
+    let Ok(mut guard) = CTRL.lock() else {
+        qn_log("show(): CTRL lock poisoned");
+        return;
+    };
     if let Some(sh) = guard.as_ref() {
-        qn_log(format!("show(): already open, posting WM_CLOSE to {:?}", sh.0));
+        qn_log(format!(
+            "show(): already open, posting WM_CLOSE to {:?}",
+            sh.0
+        ));
         // Second press while window is open → close it (no save)
-        unsafe { let _ = PostMessageW(sh.0, WM_CLOSE, WPARAM(0), LPARAM(0)); }
+        unsafe {
+            let _ = PostMessageW(sh.0, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
         return;
     }
     // Mark as pending before spawning to prevent double-launch
@@ -97,8 +111,12 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
         .name("quicknote".into())
         .spawn(move || {
             qn_log("thread start");
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(theme, notes_dir, bb)));
-            if r.is_err() { qn_log("thread panic caught"); }
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(theme, notes_dir, bb)
+            }));
+            if r.is_err() {
+                qn_log("thread panic caught");
+            }
             qn_log("thread end");
         })
         .ok();
@@ -142,12 +160,27 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
             PCWSTR::from_raw(cls.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
-            0, 0, W, H,
-            None, None, hi, None,
+            0,
+            0,
+            W,
+            H,
+            None,
+            None,
+            hi,
+            None,
         )
     } {
-        Ok(h) => { qn_log(format!("run(): parent hwnd={h:?}")); h },
-        Err(e) => { qn_log(format!("run(): CreateWindowEx parent failed: {e}")); if let Ok(mut g) = CTRL.lock() { *g = None; } return; }
+        Ok(h) => {
+            qn_log(format!("run(): parent hwnd={h:?}"));
+            h
+        }
+        Err(e) => {
+            qn_log(format!("run(): CreateWindowEx parent failed: {e}"));
+            if let Ok(mut g) = CTRL.lock() {
+                *g = None;
+            }
+            return;
+        }
     };
 
     // Apply background alpha as uniform window opacity. Standard child EDIT
@@ -168,42 +201,62 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
     let text_host = TextHost::create(
         TextHostKind::RichEdit,
         hwnd,
-        PAD, HEADER_H + PAD,
+        PAD,
+        HEADER_H + PAD,
         W - 2 * PAD,
         H - HEADER_H - HINT_H - 2 * PAD,
         (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32,
         edit_wndproc,
         brush_color,
-    ).expect("TextHost::create failed");
+    )
+    .expect("TextHost::create failed");
     text_host.set_margins(8, 8);
     // Larger font for comfortable editing
     let edit_font = crate::osd::create_font(-16, false, "Segoe UI");
     text_host.set_font(edit_font);
     // Set text colour directly (RichEdit ignores SetTextColor from WM_CTLCOLOREDIT)
-    let surface_for_color = if theme.surface.a == 255 { theme.surface } else { theme.surface.blend_over(theme.background) };
+    let surface_for_color = if theme.surface.a == 255 {
+        theme.surface
+    } else {
+        theme.surface.blend_over(theme.background)
+    };
     text_host.set_default_text_color(surface_for_color.contrasting_text_color());
     qn_log(format!("run(): edit hwnd={:?}", text_host.hwnd()));
 
     // ── State ──────────────────────────────────────────────────────
-    let mut st = WndState { notes_dir, bb, text_host, edit_font, theme };
+    let mut st = WndState {
+        notes_dir,
+        bb,
+        text_host,
+        edit_font,
+        theme,
+    };
     let state_ptr: *mut WndState = &mut st;
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize); }
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+    }
 
     // ── Publish HWND so show() can find and close us ───────────────
     qn_log("run(): publishing hwnd");
-    if let Ok(mut g) = CTRL.lock() { *g = Some(SendHwnd(hwnd)); }
+    if let Ok(mut g) = CTRL.lock() {
+        *g = Some(SendHwnd(hwnd));
+    }
 
     // ── Centre ─────────────────────────────────────────────────────
     let wa = work_area();
     let x = wa.left + (wa.right - wa.left - W) / 2;
     let y = wa.top + (wa.bottom - wa.top - H) / 2;
-    unsafe { let _ = SetWindowPos(hwnd, HWND::default(), x, y, W, H, SWP_NOZORDER); }
+    unsafe {
+        let _ = SetWindowPos(hwnd, HWND::default(), x, y, W, H, SWP_NOZORDER);
+    }
 
     // ── Title ──────────────────────────────────────────────────────
     let today = date_str();
     let title = format!("Quick Note — {today}\0");
     let tw: Vec<u16> = title.encode_utf16().collect();
-    unsafe { let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(tw.as_ptr())); }
+    unsafe {
+        let _ = SetWindowTextW(hwnd, PCWSTR::from_raw(tw.as_ptr()));
+    }
 
     // ── Show + focus ───────────────────────────────────────────────
     unsafe {
@@ -224,7 +277,9 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
 
     // ── Thread exit cleanup ────────────────────────────────────────
     qn_log("run(): message loop exited, clearing CTRL");
-    if let Ok(mut g) = CTRL.lock() { *g = None; }
+    if let Ok(mut g) = CTRL.lock() {
+        *g = None;
+    }
 }
 
 // ─── Window proc ───────────────────────────────────────────────────────
@@ -240,7 +295,11 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let s = || -> Option<&'static mut WndState> {
         unsafe {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if ptr == 0 { None } else { Some(&mut *(ptr as *mut WndState)) }
+            if ptr == 0 {
+                None
+            } else {
+                Some(&mut *(ptr as *mut WndState))
+            }
         }
     };
 
@@ -250,7 +309,9 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 x: (lp.0 as i16) as i32,
                 y: ((lp.0 >> 16) as i16) as i32,
             };
-            unsafe { let _ = ScreenToClient(hwnd, &mut pt); }
+            unsafe {
+                let _ = ScreenToClient(hwnd, &mut pt);
+            }
             if pt.y >= 0 && pt.y < HEADER_H {
                 return LRESULT(HTCAPTION as isize);
             }
@@ -264,21 +325,27 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let text = st.text_host.get_text();
                 save(&st.notes_dir, &text, st.bb);
             }
-            unsafe { let _ = DestroyWindow(hwnd); }
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
             LRESULT(0)
         }
 
         // ── Cancel (Escape pressed in EDIT) ────────────────────────
         WM_APP_CANCEL => {
             qn_log("wndproc: WM_APP_CANCEL");
-            unsafe { let _ = DestroyWindow(hwnd); }
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
             LRESULT(0)
         }
 
         // ── User clicked X, Alt+F4, or second hotkey press ─────────
         WM_CLOSE => {
             qn_log("wndproc: WM_CLOSE");
-            unsafe { let _ = DestroyWindow(hwnd); }
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
             LRESULT(0)
         }
 
@@ -287,16 +354,22 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             qn_log("wndproc: WM_DESTROY");
             // Mark inactive immediately. This avoids a stale HWND if the hotkey
             // is pressed again while the window thread is still unwinding.
-            if let Ok(mut g) = CTRL.lock() { *g = None; }
+            if let Ok(mut g) = CTRL.lock() {
+                *g = None;
+            }
             // TextHost::drop will clean up the EDIT background brush.
             // The EDIT child is destroyed automatically by DestroyWindow.
             // Clean up the GDI font we created.
             if let Some(st) = s() {
                 if !st.edit_font.is_invalid() {
-                    unsafe { let _ = DeleteObject(st.edit_font); }
+                    unsafe {
+                        let _ = DeleteObject(st.edit_font);
+                    }
                 }
             }
-            unsafe { PostQuitMessage(0); }
+            unsafe {
+                PostQuitMessage(0);
+            }
             LRESULT(0)
         }
 
@@ -411,17 +484,33 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
             right: rc.right - PAD + 1,
             bottom: rc.bottom - HINT_H - PAD + 1,
         };
-        let _ = Rectangle(hdc, edit_rc.left, edit_rc.top, edit_rc.right, edit_rc.bottom);
+        let _ = Rectangle(
+            hdc,
+            edit_rc.left,
+            edit_rc.top,
+            edit_rc.right,
+            edit_rc.bottom,
+        );
         let _ = SelectObject(hdc, old_brush);
         let _ = SelectObject(hdc, old_pen);
         let _ = DeleteObject(pen);
 
         let _ = SetBkMode(hdc, TRANSPARENT);
 
-        let mut title_rc = RECT { left: PAD, top: 0, right: rc.right - PAD, bottom: HEADER_H };
+        let mut title_rc = RECT {
+            left: PAD,
+            top: 0,
+            right: rc.right - PAD,
+            bottom: HEADER_H,
+        };
         let title_color = st.theme.background.contrasting_text_color();
         let _ = SetTextColor(hdc, title_color.to_colorref());
-        draw_text(hdc, "Quick Note", &mut title_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        draw_text(
+            hdc,
+            "Quick Note",
+            &mut title_rc,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
 
         let mut hint_rc = RECT {
             left: rc.left + PAD,
@@ -431,8 +520,12 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
         };
         let hint_color = st.theme.background.contrasting_text_color().with_alpha(160);
         let _ = SetTextColor(hdc, hint_color.to_colorref());
-        draw_text(hdc, "Enter saves   ·   Shift+Enter newline   ·   Esc cancels", &mut hint_rc,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        draw_text(
+            hdc,
+            "Enter saves   ·   Shift+Enter newline   ·   Esc cancels",
+            &mut hint_rc,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
     }
 }
 
@@ -440,7 +533,9 @@ fn paint(hwnd: HWND, hdc: HDC, st: &WndState) {
 
 fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
     let mut wz: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe { let _ = DrawTextW(hdc, &mut wz, rc as *mut RECT, fmt); }
+    unsafe {
+        let _ = DrawTextW(hdc, &mut wz, rc as *mut RECT, fmt);
+    }
 }
 
 // get_edit_text moved to crate::win32::text_host::get_edit_text
@@ -449,15 +544,24 @@ fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
 
 fn save(notes_dir: &PathBuf, text: &str, bb: bool) {
     let text = text.trim();
-    if text.is_empty() { return; }
+    if text.is_empty() {
+        return;
+    }
+    #[cfg(not(feature = "blackbox"))]
+    let _ = bb;
     if let Err(e) = std::fs::create_dir_all(notes_dir) {
-        eprintln!("mhd: quicknote — cannot create notes dir: {e}"); return;
+        eprintln!("mhd: quicknote — cannot create notes dir: {e}");
+        return;
     }
     let today = date_str();
     let path = notes_dir.join(format!("{today}.md"));
     let (h, m, s) = time_hms();
     let entry = format!("## {today} {h:02}:{m:02}:{s:02}\n{text}\n\n");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         use std::io::Write;
         let _ = f.write_all(entry.as_bytes());
     }
@@ -474,7 +578,10 @@ fn save(notes_dir: &PathBuf, text: &str, bb: bool) {
 // ─── UTC helpers ───────────────────────────────────────────────────────
 
 fn epoch_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn date_str() -> String {
@@ -484,11 +591,25 @@ fn date_str() -> String {
     let mut rem = days;
     loop {
         let diy = if is_leap(y) { 366 } else { 365 };
-        if rem < diy { break; } rem -= diy; y += 1;
+        if rem < diy {
+            break;
+        }
+        rem -= diy;
+        y += 1;
     }
-    let mdays = if is_leap(y) { [31,29,31,30,31,30,31,31,30,31,30,31] } else { [31,28,31,30,31,30,31,31,30,31,30,31] };
+    let mdays = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
     let mut m = 1u32;
-    for &md in &mdays { if rem < md { break; } rem -= md; m += 1; }
+    for &md in &mdays {
+        if rem < md {
+            break;
+        }
+        rem -= md;
+        m += 1;
+    }
     format!("{y:04}-{m:02}-{:02}", (rem + 1) as u32)
 }
 
@@ -506,7 +627,12 @@ fn is_leap(y: i64) -> bool {
 fn work_area() -> RECT {
     unsafe {
         let mut r = std::mem::zeroed();
-        let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut r as *mut _ as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
+        let _ = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut r as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
         r
     }
 }
@@ -517,9 +643,16 @@ fn work_area() -> RECT {
 mod tests {
     use super::*;
     #[test]
-    fn test_date_str_format() { let s = date_str(); assert_eq!(s.len(), 10); assert_eq!(&s[4..5], "-"); assert_eq!(&s[7..8], "-"); }
+    fn test_date_str_format() {
+        let s = date_str();
+        assert_eq!(s.len(), 10);
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[7..8], "-");
+    }
     #[test]
-    fn test_date_epoch_0() { assert_eq!(date_str_from_epoch(0), "1970-01-01"); }
+    fn test_date_epoch_0() {
+        assert_eq!(date_str_from_epoch(0), "1970-01-01");
+    }
     #[test]
     fn test_get_edit_text_empty() {
         assert!(crate::win32::text_host::get_edit_text(HWND::default()).is_empty());
@@ -529,10 +662,27 @@ mod tests {
         let days = (secs / 86400) as i64;
         let mut y = 1970i64;
         let mut rem = days;
-        loop { let diy = if is_leap(y) { 366 } else { 365 }; if rem < diy { break; } rem -= diy; y += 1; }
-        let mdays = if is_leap(y) { [31,29,31,30,31,30,31,31,30,31,30,31] } else { [31,28,31,30,31,30,31,31,30,31,30,31] };
+        loop {
+            let diy = if is_leap(y) { 366 } else { 365 };
+            if rem < diy {
+                break;
+            }
+            rem -= diy;
+            y += 1;
+        }
+        let mdays = if is_leap(y) {
+            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        } else {
+            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        };
         let mut m = 1u32;
-        for &md in &mdays { if rem < md { break; } rem -= md; m += 1; }
+        for &md in &mdays {
+            if rem < md {
+                break;
+            }
+            rem -= md;
+            m += 1;
+        }
         format!("{y:04}-{m:02}-{:02}", (rem + 1) as u32)
     }
 }

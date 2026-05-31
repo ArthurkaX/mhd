@@ -8,9 +8,9 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::*;
 
-use crate::core::native_theme::{Argb, NativeTheme};
-use crate::config::editor_state::ButtonStyle;
 use crate::config::editor_layout::WIN_WIDTH_BASE;
+use crate::config::editor_state::ButtonStyle;
+use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── Colour blending ───────────────────────────────────────────────
 
@@ -35,10 +35,7 @@ fn blend_pixels_premultiplied(original: u32, overlay: Argb, opacity: f32) -> u32
     let out_g = (src_g * overlay_a + dest_g * (255 - overlay_a) + 127) / 255;
     let out_b = (src_b * overlay_a + dest_b * (255 - overlay_a) + 127) / 255;
 
-    (out_a.min(255) << 24)
-        | (out_r.min(255) << 16)
-        | (out_g.min(255) << 8)
-        | out_b.min(255)
+    (out_a.min(255) << 24) | (out_r.min(255) << 16) | (out_g.min(255) << 8) | out_b.min(255)
 }
 
 // ── Rounded rectangle fill ────────────────────────────────────────
@@ -55,7 +52,8 @@ pub fn draw_rounded_rect_in_buffer(
     if bits.is_null() || win_w <= 0 || win_h <= 0 {
         return;
     }
-    let pixels = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
+    let pixels =
+        unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
 
     let x1 = rect.left.clamp(0, win_w);
     let x2 = rect.right.clamp(0, win_w);
@@ -132,7 +130,8 @@ pub fn draw_rounded_border_in_buffer(
     if bits.is_null() || win_w <= 0 || win_h <= 0 {
         return;
     }
-    let pixels = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
+    let pixels =
+        unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
 
     let x1 = rect.left.clamp(0, win_w);
     let x2 = rect.right.clamp(0, win_w);
@@ -185,7 +184,9 @@ pub fn draw_rounded_border_in_buffer(
                 let dist = (dx * dx + dy * dy).sqrt();
                 let dist_from_outer = cr as f32 - dist;
                 let dist_from_inner = dist - (cr as f32 - bw);
-                let edge_opacity = dist_from_outer.clamp(0.0, 1.0).min(dist_from_inner.clamp(0.0, 1.0));
+                let edge_opacity = dist_from_outer
+                    .clamp(0.0, 1.0)
+                    .min(dist_from_inner.clamp(0.0, 1.0));
                 opacity = edge_opacity;
             } else {
                 let dl = (x - rect.left) as f32;
@@ -227,7 +228,8 @@ pub fn clear_rect_in_buffer(bits: *mut c_void, win_w: i32, win_h: i32, rect: REC
     if bits.is_null() || win_w <= 0 || win_h <= 0 {
         return;
     }
-    let pixels = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
+    let pixels =
+        unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, (win_w * win_h) as usize) };
     let x1 = rect.left.clamp(0, win_w);
     let x2 = rect.right.clamp(0, win_w);
     let y1 = rect.top.clamp(0, win_h);

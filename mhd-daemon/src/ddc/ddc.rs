@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{BOOL, HANDLE, POINT};
-use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
 use windows::Win32::System::LibraryLoader::GetProcAddress;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
@@ -24,12 +24,10 @@ type GetPhysicalMonitorsFromHMONITORFn =
     unsafe extern "system" fn(HMONITOR, u32, *mut PhysicalMonitor) -> BOOL;
 type GetMonitorBrightnessFn =
     unsafe extern "system" fn(PhysicalMonitorHandle, *mut u32, *mut u32, *mut u32) -> BOOL;
-type SetMonitorBrightnessFn =
-    unsafe extern "system" fn(PhysicalMonitorHandle, u32) -> BOOL;
+type SetMonitorBrightnessFn = unsafe extern "system" fn(PhysicalMonitorHandle, u32) -> BOOL;
 type GetVCPFeatureAndVCPFeatureReplyFn =
     unsafe extern "system" fn(PhysicalMonitorHandle, u8, *mut u32, *mut u32, *mut u32) -> BOOL;
-type SetVCPFeatureFn =
-    unsafe extern "system" fn(PhysicalMonitorHandle, u8, u32) -> BOOL;
+type SetVCPFeatureFn = unsafe extern "system" fn(PhysicalMonitorHandle, u8, u32) -> BOOL;
 type GetCapabilitiesStringLengthFn =
     unsafe extern "system" fn(PhysicalMonitorHandle, *mut u32) -> BOOL;
 type CapabilitiesRequestAndCapabilitiesReplyFn =
@@ -66,14 +64,13 @@ impl Dxva2 {
 
             macro_rules! load {
                 ($fn_name:literal, $type:ty) => {{
-                    let addr: unsafe extern "system" fn() -> isize =
-                        GetProcAddress(
-                            module,
-                            windows::core::PCSTR::from_raw(
-                                concat!($fn_name, "\0").as_ptr() as *const u8
-                            ),
-                        )
-                        .ok_or_else(|| format!("cannot find {} in dxva2.dll", $fn_name))?;
+                    let addr: unsafe extern "system" fn() -> isize = GetProcAddress(
+                        module,
+                        windows::core::PCSTR::from_raw(
+                            concat!($fn_name, "\0").as_ptr() as *const u8
+                        ),
+                    )
+                    .ok_or_else(|| format!("cannot find {} in dxva2.dll", $fn_name))?;
                     transmute::<unsafe extern "system" fn() -> isize, $type>(addr)
                 }};
             }
@@ -89,10 +86,16 @@ impl Dxva2 {
                 ),
                 get_brightness: load!("GetMonitorBrightness", GetMonitorBrightnessFn),
                 set_brightness: load!("SetMonitorBrightness", SetMonitorBrightnessFn),
-                get_vcp: load!("GetVCPFeatureAndVCPFeatureReply", GetVCPFeatureAndVCPFeatureReplyFn),
+                get_vcp: load!(
+                    "GetVCPFeatureAndVCPFeatureReply",
+                    GetVCPFeatureAndVCPFeatureReplyFn
+                ),
                 set_vcp: load!("SetVCPFeature", SetVCPFeatureFn),
                 caps_length: load!("GetCapabilitiesStringLength", GetCapabilitiesStringLengthFn),
-                caps_reply: load!("CapabilitiesRequestAndCapabilitiesReply", CapabilitiesRequestAndCapabilitiesReplyFn),
+                caps_reply: load!(
+                    "CapabilitiesRequestAndCapabilitiesReply",
+                    CapabilitiesRequestAndCapabilitiesReplyFn
+                ),
             })
         }
     }
@@ -125,7 +128,10 @@ where
             }
         }
     }
-    Err(format!("DDC/CI {} failed after {} attempts: {}", label, max, last_err))
+    Err(format!(
+        "DDC/CI {} failed after {} attempts: {}",
+        label, max, last_err
+    ))
 }
 
 // ── Monitor info ────────────────────────────────────────────────────────
@@ -188,7 +194,11 @@ impl PhysicalMonitorInfo {
             if !(dxva2.get_vcp)(handle, code, &mut vcp_type, &mut cur, &mut max).as_bool() {
                 return Err(format!("VCP feature 0x{code:02X} not supported"));
             }
-            Ok(VcpValue { vcp_type, current: cur, max })
+            Ok(VcpValue {
+                vcp_type,
+                current: cur,
+                max,
+            })
         })
     }
 
@@ -532,7 +542,10 @@ fn get_physical_monitors_for_hmon(
         let handle = monitors[0].handle;
 
         let desc_u16 = &monitors[0].description;
-        let len = desc_u16.iter().position(|&c| c == 0).unwrap_or(desc_u16.len());
+        let len = desc_u16
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(desc_u16.len());
         let name = String::from_utf16_lossy(&desc_u16[..len]);
 
         std::mem::forget(monitors); // leak — OS owns the structs

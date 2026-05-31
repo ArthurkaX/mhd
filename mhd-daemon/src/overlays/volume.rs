@@ -7,50 +7,44 @@
 
 use std::sync::{Arc, Mutex};
 
-
-use windows::core::{GUID, PCWSTR};
 use windows::Win32::Foundation::{
-    HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_EVENT, WAIT_OBJECT_0, WPARAM,
-    CloseHandle,
+    CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_EVENT, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, MonitorFromWindow, GetMonitorInfoW,
-    SelectObject, SetBkMode, SetTextColor,
-    DT_END_ELLIPSIS, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
-    MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    TRANSPARENT,
-};
-use windows::Win32::Media::Audio::{
-    eMultimedia, eRender, IAudioSessionControl, IAudioSessionControl2,
-    IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator, ISimpleAudioVolume,
+    CreateSolidBrush, DT_END_ELLIPSIS, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteObject,
+    DrawTextW, FillRect, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+use windows::Win32::Media::Audio::{
+    IAudioSessionControl, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
+    IMMDeviceEnumerator, ISimpleAudioVolume, eMultimedia, eRender,
+};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
-    CreateEventW, SetEvent, QueryFullProcessImageNameW, INFINITE, OpenProcess,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_NAME_WIN32,
+    CreateEventW, INFINITE, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, SetEvent,
 };
 use windows::Win32::UI::HiDpi::{
-    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDesktopWindow,
-    GetWindowRect, KillTimer, LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW,
-    RegisterClassW, SetCursor, SetTimer, ShowWindow, TranslateMessage,
-    CS_HREDRAW, CS_VREDRAW, IDC_ARROW, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNA,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_ACTIVATE, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR,
-    WM_TIMER,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WNDCLASSW, MSG,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetDesktopWindow, GetWindowRect, IDC_ARROW, KillTimer, LoadCursorW, MSG,
+    MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassW, SW_HIDE,
+    SW_SHOWNA, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer, SetWindowPos, ShowWindow,
+    TranslateMessage, WM_ACTIVATE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::Interface;
+use windows::core::{GUID, PCWSTR};
 
 use crate::native_theme::NativeTheme;
 
@@ -93,7 +87,9 @@ struct MixerThreadControl {
 impl Drop for MixerThreadControl {
     fn drop(&mut self) {
         self.dying.store(true, std::sync::atomic::Ordering::Release);
-        unsafe { let _ = SetEvent(self.event.0); }
+        unsafe {
+            let _ = SetEvent(self.event.0);
+        }
     }
 }
 
@@ -221,7 +217,10 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
 
     // Check if we should die before even starting
     if dying.load(std::sync::atomic::Ordering::Acquire) {
-        unsafe { let _ = DestroyWindow(hwnd); CoUninitialize(); }
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+            CoUninitialize();
+        }
         return;
     }
 
@@ -243,9 +242,8 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
         }
 
         let wait_handles = [event];
-        let res = unsafe {
-            MsgWaitForMultipleObjects(Some(&wait_handles), false, INFINITE, QS_ALLINPUT)
-        };
+        let res =
+            unsafe { MsgWaitForMultipleObjects(Some(&wait_handles), false, INFINITE, QS_ALLINPUT) };
 
         // WAIT_OBJECT_0 + nhandles = messages available (same constant
         // as OSD's MSG_ARRIVED = WAIT_EVENT(1) for 1 handle).
@@ -293,7 +291,9 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
                             match msg.message {
                                 WM_ACTIVATE => {
                                     // Window lost focus — close immediately
-                                    if msg.wParam.0 as u32 == 0 /* WA_INACTIVE */ {
+                                    if msg.wParam.0 as u32 == 0
+                                    /* WA_INACTIVE */
+                                    {
                                         dragging_row = None;
                                         dragging_window = None;
                                         mouse_tracked = false;
@@ -306,13 +306,9 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
                                 }
                                 WM_LBUTTONDOWN => {
                                     let (x, y) = point_from_lparam(msg.lParam);
-                                    if let Some((row, volume)) = hit_test_volume_bar(
-                                        &state,
-                                        x,
-                                        y,
-                                        mixer_w,
-                                        scale,
-                                    ) {
+                                    if let Some((row, volume)) =
+                                        hit_test_volume_bar(&state, x, y, mixer_w, scale)
+                                    {
                                         dragging_row = Some(row);
                                         dragging_window = None;
                                         let _ = SetCapture(hwnd);
@@ -349,12 +345,19 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
                                 WM_MOUSELEAVE => {
                                     mouse_tracked = false;
                                     if dragging_row.is_none() && dragging_window.is_none() {
-                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, LEAVE_HIDE_TIMEOUT_MS, None);
+                                        let _ = SetTimer(
+                                            hwnd,
+                                            HIDE_TIMER_ID,
+                                            LEAVE_HIDE_TIMEOUT_MS,
+                                            None,
+                                        );
                                     }
                                     continue;
                                 }
                                 WM_LBUTTONUP => {
-                                    if dragging_row.take().is_some() || dragging_window.take().is_some() {
+                                    if dragging_row.take().is_some()
+                                        || dragging_window.take().is_some()
+                                    {
                                         let _ = ReleaseCapture();
                                         continue;
                                     }
@@ -362,14 +365,11 @@ fn mixer_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
                                 WM_MOUSEWHEEL => {
                                     begin_mouse_tracking(hwnd, &mut mouse_tracked);
                                     let _ = KillTimer(hwnd, HIDE_TIMER_ID);
-                                    let pt = screen_point_to_client(hwnd, point_from_lparam(msg.lParam));
-                                    if let Some(row) = hit_test_volume_row(
-                                        &state,
-                                        pt.0,
-                                        pt.1,
-                                        mixer_w,
-                                        scale,
-                                    ) {
+                                    let pt =
+                                        screen_point_to_client(hwnd, point_from_lparam(msg.lParam));
+                                    if let Some(row) =
+                                        hit_test_volume_row(&state, pt.0, pt.1, mixer_w, scale)
+                                    {
                                         let delta = wheel_delta_from_wparam(msg.wParam);
                                         let step = (delta as f32 / 120.0) * 0.02;
                                         let current = state.sessions[row].volume;
@@ -450,8 +450,11 @@ fn refresh_sessions(state: &mut MixerState) {
 
     // Sort (Master first, then alphabetically)
     if state.sessions.len() > 1 {
-        let mut zipped: Vec<(SessionInfo, Option<ISimpleAudioVolume>)> =
-            state.sessions.drain(1..).zip(state.volume_controls.drain(1..)).collect();
+        let mut zipped: Vec<(SessionInfo, Option<ISimpleAudioVolume>)> = state
+            .sessions
+            .drain(1..)
+            .zip(state.volume_controls.drain(1..))
+            .collect();
         zipped.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
         for (info, ctrl) in zipped {
             state.sessions.push(info);
@@ -480,7 +483,12 @@ fn add_session_from_control(control: &IAudioSessionControl) -> Result<SessionDat
         let muted = volume_control.GetMute().map_err(|_| ())?;
 
         Ok(SessionData {
-            info: SessionInfo { name, volume, muted: muted.into(), pid },
+            info: SessionInfo {
+                name,
+                volume,
+                muted: muted.into(),
+                pid,
+            },
             control: Some(volume_control),
         })
     }
@@ -497,18 +505,27 @@ fn get_endpoint_mute(ev: &IAudioEndpointVolume) -> Result<bool, ()> {
 fn get_default_render_device() -> Result<IMMDevice, ()> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|_| ())?;
-        enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).map_err(|_| ())
+            CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|_| ())?;
+        enumerator
+            .GetDefaultAudioEndpoint(eRender, eMultimedia)
+            .map_err(|_| ())
     }
 }
 
 fn get_endpoint_volume(device: &IMMDevice) -> Option<IAudioEndpointVolume> {
-    unsafe { device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None).ok() }
+    unsafe {
+        device
+            .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
+            .ok()
+    }
 }
 
 fn get_session_manager(device: &IMMDevice) -> Result<IAudioSessionManager2, ()> {
-    unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None).map_err(|_| ()) }
+    unsafe {
+        device
+            .Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
+            .map_err(|_| ())
+    }
 }
 
 fn get_session_display_name(control2: &IAudioSessionControl2, pid: u32) -> String {
@@ -561,13 +578,7 @@ fn monitor_work_rect() -> RECT {
 
 // ── Painting ───────────────────────────────────────────────────────────
 
-fn paint_mixer(
-    hwnd: HWND,
-    state: &mut MixerState,
-    work: &RECT,
-    width: i32,
-    scale: f32,
-) {
+fn paint_mixer(hwnd: HWND, state: &mut MixerState, work: &RECT, width: i32, scale: f32) {
     let row_count = state.sessions.len() as i32;
     let pad = (PAD_BASE as f32 * scale) as i32;
     let font_h = -(14.0 * scale) as i32;
@@ -612,7 +623,9 @@ fn paint_mixer(
     let mut header_wz = crate::osd::to_utf16_z("Volume Mixer");
     unsafe {
         let _ = DrawTextW(
-            frame.dc(), &mut header_wz, &mut header_rc,
+            frame.dc(),
+            &mut header_wz,
+            &mut header_rc,
             DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
     }
@@ -625,7 +638,9 @@ fn paint_mixer(
     let mut count_wz = crate::osd::to_utf16_z(&count_str);
     unsafe {
         let _ = DrawTextW(
-            frame.dc(), &mut count_wz, &mut header_rc,
+            frame.dc(),
+            &mut count_wz,
+            &mut header_rc,
             DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
     }
@@ -635,7 +650,10 @@ fn paint_mixer(
     {
         let sep_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
         let sep_rc = RECT {
-            left: pad, top: sep_y, right: width - pad, bottom: sep_y + 1,
+            left: pad,
+            top: sep_y,
+            right: width - pad,
+            bottom: sep_y + 1,
         };
         unsafe {
             let _ = FillRect(frame.dc(), &sep_rc, sep_brush);
@@ -671,17 +689,26 @@ fn paint_mixer(
         let mut name_wz = crate::osd::to_utf16_z(&session.name);
         unsafe {
             let _ = DrawTextW(
-                frame.dc(), &mut name_wz, &mut name_rc,
+                frame.dc(),
+                &mut name_wz,
+                &mut name_rc,
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
             );
         }
 
         // Volume bar track
         let bar_y = mid_y - bar_h / 2;
-        let track_color = if session.muted { theme.text_muted } else { theme.bar_background };
+        let track_color = if session.muted {
+            theme.text_muted
+        } else {
+            theme.bar_background
+        };
         let track_brush = unsafe { CreateSolidBrush(track_color.to_colorref()) };
         let track_rc = RECT {
-            left: bar_x, top: bar_y, right: bar_x + bar_max_w, bottom: bar_y + bar_h,
+            left: bar_x,
+            top: bar_y,
+            right: bar_x + bar_max_w,
+            bottom: bar_y + bar_h,
         };
         unsafe {
             let _ = FillRect(frame.dc(), &track_rc, track_brush);
@@ -690,10 +717,17 @@ fn paint_mixer(
 
         // Volume bar fill
         let fill_w = (bar_max_w as f32 * session.volume).max(1.0) as i32;
-        let fill_color = if session.muted { theme.text_muted } else { theme.accent };
+        let fill_color = if session.muted {
+            theme.text_muted
+        } else {
+            theme.accent
+        };
         let fill_brush = unsafe { CreateSolidBrush(fill_color.to_colorref()) };
         let fill_rc = RECT {
-            left: bar_x, top: bar_y, right: bar_x + fill_w, bottom: bar_y + bar_h,
+            left: bar_x,
+            top: bar_y,
+            right: bar_x + fill_w,
+            bottom: bar_y + bar_h,
         };
         unsafe {
             let _ = FillRect(frame.dc(), &fill_rc, fill_brush);
@@ -704,7 +738,10 @@ fn paint_mixer(
         let pct = format!("{}%", (session.volume * 100.0) as u32);
         let pct_x = bar_x + bar_max_w + 8;
         let mut pct_rc = RECT {
-            left: pct_x, top: row_y, right: pct_x + 44, bottom: row_y + row_h,
+            left: pct_x,
+            top: row_y,
+            right: pct_x + 44,
+            bottom: row_y + row_h,
         };
         unsafe {
             let _ = SetTextColor(frame.dc(), theme.text_muted.to_colorref());
@@ -712,7 +749,9 @@ fn paint_mixer(
         let mut pct_wz = crate::osd::to_utf16_z(&pct);
         unsafe {
             let _ = DrawTextW(
-                frame.dc(), &mut pct_wz, &mut pct_rc,
+                frame.dc(),
+                &mut pct_wz,
+                &mut pct_rc,
                 DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
             );
         }
@@ -816,8 +855,7 @@ fn hit_test_volume_bar(
     if x < bar_x || x > bar_x + bar_max_w {
         return None;
     }
-    hit_test_volume_row(state, x, y, width, scale)
-        .map(|row| (row, volume_from_x(x, width, scale)))
+    hit_test_volume_row(state, x, y, width, scale).map(|row| (row, volume_from_x(x, width, scale)))
 }
 
 fn hit_test_volume_row(
@@ -851,11 +889,22 @@ fn wheel_delta_from_wparam(wparam: WPARAM) -> i16 {
 }
 
 fn row_y_for_index(sep_y: i32, index: usize, row_h: i32, scale: f32) -> i32 {
-    sep_y + 8 + (index as i32) * row_h + if index > 0 { master_gap_for_scale(scale) } else { 0 }
+    sep_y
+        + 8
+        + (index as i32) * row_h
+        + if index > 0 {
+            master_gap_for_scale(scale)
+        } else {
+            0
+        }
 }
 
 fn master_gap(sessions: &[SessionInfo], scale: f32) -> i32 {
-    if sessions.len() > 1 { master_gap_for_scale(scale) } else { 0 }
+    if sessions.len() > 1 {
+        master_gap_for_scale(scale)
+    } else {
+        0
+    }
 }
 
 fn master_gap_for_scale(scale: f32) -> i32 {
@@ -900,12 +949,7 @@ fn set_row_volume(state: &mut MixerState, row: usize, volume: f32) {
 
 // ── Window procedure ───────────────────────────────────────────────────
 
-extern "system" fn mixer_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+extern "system" fn mixer_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_SETCURSOR {
         if let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
             unsafe { SetCursor(cursor) };

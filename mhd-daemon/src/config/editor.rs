@@ -20,23 +20,27 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{
-    HINSTANCE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM, HGLOBAL,
+    HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::Shell::{IFileOpenDialog, FileOpenDialog, SIGDN_FILESYSPATH, ShellExecuteW};
 use windows::Win32::UI::Shell::FOS_PICKFOLDERS;
-use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::UI::Shell::{
+    FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH, ShellExecuteW,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::{PCWSTR, PWSTR};
 
 // RichEdit constants used by the param edit popup.
 use windows::Win32::UI::Controls::RichEdit::{
@@ -51,29 +55,24 @@ use crate::hook::WM_BINDING_CAPTURED;
 
 // Import editor layout constants for local use
 use crate::config::editor_layout::{
-    editor_action_desc, editor_index_for_action_name,
-    EDITOR_ACTION_NAMES, ID_ACTION_BASE,
+    EDITOR_ACTION_NAMES, ID_ACTION_BASE, editor_action_desc, editor_index_for_action_name,
 };
 // Re‑exports for backward compatibility (used by other modules)
+pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
-    Layout, compute_layout,
-    WIN_WIDTH_BASE, WIN_HEIGHT_BASE,
-    COMBO_HIT_HEIGHT, COMBO_POPUP_WIDTH, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE,
-    SECTION_HEADER_HEIGHT_BASE, SECTION_GAP_BASE,
-    FONT_TITLE_SIZE, FONT_BODY_SIZE, FONT_SMALL_SIZE,
-    ADVANCED_BUTTONS, ADVANCED_GROUPS,
-    WM_PARAM_EDIT_COMMIT, WM_MOUSELEAVE,
+    ADVANCED_BUTTONS, ADVANCED_GROUPS, COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT,
+    COMBO_POPUP_MAX_VISIBLE, COMBO_POPUP_WIDTH, FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE,
+    Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE, WIN_HEIGHT_BASE, WIN_WIDTH_BASE,
+    WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_state::{
-    SettingsState, UIBinding, SettingsPage,
-    SettingsHit, HoverTarget, ButtonStyle, ParamEditCreateInfo,
+    ButtonStyle, HoverTarget, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState,
+    UIBinding,
 };
-pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_theme::{
-    draw_rounded_rect_in_buffer, draw_rounded_border_in_buffer,
-    draw_button, clear_rect_in_buffer, to_utf16_z,
+    clear_rect_in_buffer, draw_button, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
+    to_utf16_z,
 };
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Folder browser (IFileOpenDialog, Vista+)
@@ -82,7 +81,8 @@ pub use crate::config::editor_theme::{
 fn browse_for_folder(hwnd: HWND) -> Option<std::path::PathBuf> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let opts = dialog.GetOptions().ok()?;
         let _ = dialog.SetOptions(opts | FOS_PICKFOLDERS);
         let title: Vec<u16> = "Select Quick Note save folder\0".encode_utf16().collect();
@@ -204,7 +204,13 @@ pub fn show_config_editor(handle: AppHandle) {
         combo_open,
         active_section: SettingsPage::General,
         autostart: crate::autostart::is_autostart_enabled(),
-        notes_dir: handle.config.lock().unwrap().quicknote_config().notes_dir.clone(),
+        notes_dir: handle
+            .config
+            .lock()
+            .unwrap()
+            .quicknote_config()
+            .notes_dir
+            .clone(),
         bindings,
         general_scroll_y: 0,
         bindings_scroll_y: 0,
@@ -277,7 +283,6 @@ pub fn show_config_editor(handle: AppHandle) {
         }
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Theme list & bindings loading
@@ -354,7 +359,6 @@ fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
         .collect()
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // Top‑level paint dispatch
 // ═══════════════════════════════════════════════════════════════════════
@@ -372,16 +376,34 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     let bits = frame.pixels_mut().as_mut_ptr() as *mut c_void;
 
     // ── Background rounded rect ────────────────────────────────────
-    crate::osd::draw_rounded_rect(frame.pixels_mut(), lay.win_w, lay.win_h, lay.radius, theme.background);
+    crate::osd::draw_rounded_rect(
+        frame.pixels_mut(),
+        lay.win_w,
+        lay.win_h,
+        lay.radius,
+        theme.background,
+    );
 
     // ── GDI painting helpers ───────────────────────────────────────
     unsafe {
         let _ = SetBkMode(dib_dc, TRANSPARENT);
     }
 
-    let title_font = create_font(-(FONT_TITLE_SIZE as f32 * lay.scale) as i32, true, "Segoe UI Variable");
-    let body_font = create_font(-(FONT_BODY_SIZE as f32 * lay.scale) as i32, false, "Segoe UI Variable");
-    let small_font = create_font(-(FONT_SMALL_SIZE as f32 * lay.scale) as i32, false, "Segoe UI Variable");
+    let title_font = create_font(
+        -(FONT_TITLE_SIZE as f32 * lay.scale) as i32,
+        true,
+        "Segoe UI Variable",
+    );
+    let body_font = create_font(
+        -(FONT_BODY_SIZE as f32 * lay.scale) as i32,
+        false,
+        "Segoe UI Variable",
+    );
+    let small_font = create_font(
+        -(FONT_SMALL_SIZE as f32 * lay.scale) as i32,
+        false,
+        "Segoe UI Variable",
+    );
 
     // ── Header: title ──────────────────────────────────────────────
     let old_font = unsafe { SelectObject(dib_dc, title_font) };
@@ -434,7 +456,12 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             _ => false,
         };
 
-        let tab_rect = RECT { left: tx, top: lay.tab_bar_y, right: tx + lay.tab_w, bottom: lay.tab_bar_y + lay.tab_h };
+        let tab_rect = RECT {
+            left: tx,
+            top: lay.tab_bar_y,
+            right: tx + lay.tab_w,
+            bottom: lay.tab_bar_y + lay.tab_h,
+        };
         let bg = if is_active {
             theme.accent
         } else if is_hovered {
@@ -442,10 +469,21 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         } else {
             theme.surface.blend_over(theme.background)
         };
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, tab_rect, (4.0 * lay.scale) as i32, bg);
+        draw_rounded_rect_in_buffer(
+            bits,
+            lay.win_w,
+            lay.win_h,
+            tab_rect,
+            (4.0 * lay.scale) as i32,
+            bg,
+        );
 
         let fg = if is_active {
-            if contrast_text_on(theme.accent) { Argb::new(255, 0, 0, 0) } else { Argb::new(255, 255, 255, 255) }
+            if contrast_text_on(theme.accent) {
+                Argb::new(255, 0, 0, 0)
+            } else {
+                Argb::new(255, 255, 255, 255)
+            }
         } else if is_hovered {
             theme.text
         } else {
@@ -475,17 +513,26 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
 
     // ── General page ───────────────────────────────────────────────
     if state.active_section == SettingsPage::General {
-        paint_general_page(dib_dc, bits, lay.win_w, lay.win_h, theme, lay, state, title_font, body_font, small_font);
+        paint_general_page(
+            dib_dc, bits, lay.win_w, lay.win_h, theme, lay, state, title_font, body_font,
+            small_font,
+        );
     }
 
     // ── Shortcuts page ────────────────────────────────────────────────
     if state.active_section == SettingsPage::Shortcuts {
-        paint_shortcuts_page(dib_dc, bits, lay.win_w, lay.win_h, theme, lay, state, title_font, body_font, small_font);
+        paint_shortcuts_page(
+            dib_dc, bits, lay.win_w, lay.win_h, theme, lay, state, title_font, body_font,
+            small_font,
+        );
     }
 
     // ── Advanced page ──────────────────────────────────────────────────
     if state.active_section == SettingsPage::Advanced {
-        paint_advanced_page(dib_dc, bits, lay.win_w, lay.win_h, theme, lay, state, title_font, body_font, small_font);
+        paint_advanced_page(
+            dib_dc, bits, lay.win_w, lay.win_h, theme, lay, state, title_font, body_font,
+            small_font,
+        );
     }
 
     unsafe {
@@ -513,16 +560,36 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     // ── Buttons ────────────────────────────────────────────────────
     let is_apply_hovered = state.hovered_target == HoverTarget::ApplyBtn;
     draw_button(
-        dib_dc, bits, lay.win_w, lay.win_h,
-        lay.apply_x, lay.btn_y, lay.btn_w, lay.btn_h,
-        "Apply", theme, body_font, is_apply_hovered, ButtonStyle::Primary,
+        dib_dc,
+        bits,
+        lay.win_w,
+        lay.win_h,
+        lay.apply_x,
+        lay.btn_y,
+        lay.btn_w,
+        lay.btn_h,
+        "Apply",
+        theme,
+        body_font,
+        is_apply_hovered,
+        ButtonStyle::Primary,
     );
 
     let is_close_hovered = state.hovered_target == HoverTarget::CloseBtn;
     draw_button(
-        dib_dc, bits, lay.win_w, lay.win_h,
-        lay.close_x, lay.btn_y, lay.btn_w, lay.btn_h,
-        "Close", theme, body_font, is_close_hovered, ButtonStyle::Secondary,
+        dib_dc,
+        bits,
+        lay.win_w,
+        lay.win_h,
+        lay.close_x,
+        lay.btn_y,
+        lay.btn_w,
+        lay.btn_h,
+        "Close",
+        theme,
+        body_font,
+        is_close_hovered,
+        ButtonStyle::Secondary,
     );
 
     // ── Cleanup GDI objects ────────────────────────────────────────
@@ -545,7 +612,6 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     frame.present_layered(hwnd, cur_pos.0, cur_pos.1, 255);
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // Contrast helper (inline to keep paint dispatch self‑contained)
 // ═══════════════════════════════════════════════════════════════════════
@@ -557,7 +623,6 @@ fn contrast_text_on(bg: Argb) -> bool {
     let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     lum < 0.5
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // General page painting
@@ -603,7 +668,9 @@ fn paint_general_page(
     };
     unsafe {
         let _ = DrawTextW(
-            dib_dc, &mut label_wz, &mut label_rc,
+            dib_dc,
+            &mut label_wz,
+            &mut label_rc,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER,
         );
     }
@@ -611,8 +678,10 @@ fn paint_general_page(
     // ── Combo box surface ──────────────────────────────────────────
     let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32);
     let combo_rc = RECT {
-        left: lay.combo_x, top: lay.combo_y,
-        right: lay.combo_x + lay.combo_w, bottom: lay.combo_y + combo_h,
+        left: lay.combo_x,
+        top: lay.combo_y,
+        right: lay.combo_x + lay.combo_w,
+        bottom: lay.combo_y + combo_h,
     };
     let is_combo_hovered = state.hovered_target == HoverTarget::ThemeCombo;
     let mut combo_color = theme.surface;
@@ -622,8 +691,20 @@ fn paint_general_page(
     let combo_radius = (4.0 * lay.scale) as i32;
     draw_rounded_rect_in_buffer(bits, win_w, win_h, combo_rc, combo_radius, combo_color);
 
-    let combo_border_color = if is_combo_hovered { theme.text } else { theme.border };
-    draw_rounded_border_in_buffer(bits, win_w, win_h, combo_rc, combo_radius, 1, combo_border_color);
+    let combo_border_color = if is_combo_hovered {
+        theme.text
+    } else {
+        theme.border
+    };
+    draw_rounded_border_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        combo_rc,
+        combo_radius,
+        1,
+        combo_border_color,
+    );
 
     // Selected theme name
     let sel_name = state
@@ -634,26 +715,43 @@ fn paint_general_page(
     let mut sel_wz = to_utf16_z(sel_name);
     let text_x = lay.combo_x + 8;
     let mut text_rc = RECT {
-        left: text_x, top: lay.combo_y,
-        right: lay.arrow_x - 4, bottom: lay.combo_y + combo_h,
+        left: text_x,
+        top: lay.combo_y,
+        right: lay.arrow_x - 4,
+        bottom: lay.combo_y + combo_h,
     };
     unsafe {
         let _ = DrawTextW(
-            dib_dc, &mut sel_wz, &mut text_rc,
+            dib_dc,
+            &mut sel_wz,
+            &mut text_rc,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
     }
 
     // Arrow ▼
-    let arrow_color = if is_combo_hovered { theme.text } else { theme.text_muted };
-    unsafe { let _ = SetTextColor(dib_dc, arrow_color.to_colorref()); }
-    let mut arrow_wz = to_utf16_z("▼");
-    let mut arrow_rc = RECT {
-        left: lay.arrow_x, top: lay.combo_y,
-        right: lay.arrow_x + lay.arrow_w, bottom: lay.combo_y + combo_h,
+    let arrow_color = if is_combo_hovered {
+        theme.text
+    } else {
+        theme.text_muted
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut arrow_wz, &mut arrow_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = SetTextColor(dib_dc, arrow_color.to_colorref());
+    }
+    let mut arrow_wz = to_utf16_z("▼");
+    let mut arrow_rc = RECT {
+        left: lay.arrow_x,
+        top: lay.combo_y,
+        right: lay.arrow_x + lay.arrow_w,
+        bottom: lay.combo_y + combo_h,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut arrow_wz,
+            &mut arrow_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Help text next to theme selector
@@ -663,18 +761,37 @@ fn paint_general_page(
     }
     let mut theme_help_wz = to_utf16_z("Set the colour theme for mhd UI elements.");
     let mut theme_help_rc = RECT {
-        left: lay.combo_x + lay.combo_w + lay.pad, top: lay.combo_y,
-        right: win_w - lay.pad, bottom: lay.combo_y + combo_h,
+        left: lay.combo_x + lay.combo_w + lay.pad,
+        top: lay.combo_y,
+        right: win_w - lay.pad,
+        bottom: lay.combo_y + combo_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut theme_help_wz, &mut theme_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut theme_help_wz,
+            &mut theme_help_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // ── Section divider ────────────────────────────────────────────
-    let divider_y = lay.autostart_y - (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32 - (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
-    draw_rounded_rect_in_buffer(bits, win_w, win_h,
-        RECT { left: lay.pad, top: divider_y, right: win_w - lay.pad, bottom: divider_y + 1 },
-        0, theme.border);
+    let divider_y = lay.autostart_y
+        - (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32
+        - (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    draw_rounded_rect_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        RECT {
+            left: lay.pad,
+            top: divider_y,
+            right: win_w - lay.pad,
+            bottom: divider_y + 1,
+        },
+        0,
+        theme.border,
+    );
 
     // ── Startup section header ──────────────────────────────────────
     unsafe {
@@ -688,7 +805,14 @@ fn paint_general_page(
         right: win_w - lay.pad,
         bottom: lay.autostart_y,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut startup_wz, &mut startup_rc, DT_LEFT | DT_SINGLELINE); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut startup_wz,
+            &mut startup_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
+    }
 
     // ── Autostart toggle ───────────────────────────────────────────
     unsafe {
@@ -697,53 +821,113 @@ fn paint_general_page(
     }
     let mut auto_label_wz = to_utf16_z("Autostart");
     let mut auto_label_rc = RECT {
-        left: lay.pad, top: lay.autostart_y,
-        right: lay.pad + lay.label_w, bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
+        left: lay.pad,
+        top: lay.autostart_y,
+        right: lay.pad + lay.label_w,
+        bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut auto_label_wz, &mut auto_label_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut auto_label_wz,
+            &mut auto_label_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     let toggle_h = (18.0 * lay.scale) as i32;
     let toggle_w = (36.0 * lay.scale) as i32;
     let toggle_y = lay.autostart_y + ((20.0 * lay.scale) as i32 - toggle_h) / 2;
     let toggle_rc = RECT {
-        left: lay.combo_x, top: toggle_y,
-        right: lay.combo_x + toggle_w, bottom: toggle_y + toggle_h,
+        left: lay.combo_x,
+        top: toggle_y,
+        right: lay.combo_x + toggle_w,
+        bottom: toggle_y + toggle_h,
     };
     let is_auto_hovered = state.hovered_target == HoverTarget::AutostartToggle;
     let auto_on = state.autostart;
 
-    let toggle_bg = if auto_on { theme.accent } else { theme.surface.blend_over(theme.background) };
-    let toggle_bg2 = if is_auto_hovered { theme.hover.blend_over(toggle_bg) } else { toggle_bg };
+    let toggle_bg = if auto_on {
+        theme.accent
+    } else {
+        theme.surface.blend_over(theme.background)
+    };
+    let toggle_bg2 = if is_auto_hovered {
+        theme.hover.blend_over(toggle_bg)
+    } else {
+        toggle_bg
+    };
     let toggle_radius = toggle_h / 2;
     draw_rounded_rect_in_buffer(bits, win_w, win_h, toggle_rc, toggle_radius, toggle_bg2);
 
     let knob_margin = (2.0 * lay.scale) as i32;
     let knob_diam = toggle_h - knob_margin * 2;
-    let knob_left = if auto_on { toggle_rc.right - knob_diam - knob_margin } else { toggle_rc.left + knob_margin };
-    let knob_color = if auto_on { theme.text } else { theme.text_muted };
+    let knob_left = if auto_on {
+        toggle_rc.right - knob_diam - knob_margin
+    } else {
+        toggle_rc.left + knob_margin
+    };
+    let knob_color = if auto_on {
+        theme.text
+    } else {
+        theme.text_muted
+    };
     draw_rounded_rect_in_buffer(
-        bits, win_w, win_h,
-        RECT { left: knob_left, top: toggle_rc.top + knob_margin, right: knob_left + knob_diam, bottom: toggle_rc.bottom - knob_margin },
-        knob_diam / 2, knob_color,
+        bits,
+        win_w,
+        win_h,
+        RECT {
+            left: knob_left,
+            top: toggle_rc.top + knob_margin,
+            right: knob_left + knob_diam,
+            bottom: toggle_rc.bottom - knob_margin,
+        },
+        knob_diam / 2,
+        knob_color,
     );
 
     unsafe {
         let _ = SelectObject(dib_dc, small_font);
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
-    let auto_status = if auto_on { "Enabled (runs at logon with highest privileges)" } else { "Start mhd automatically when you log on" };
+    let auto_status = if auto_on {
+        "Enabled (runs at logon with highest privileges)"
+    } else {
+        "Start mhd automatically when you log on"
+    };
     let mut auto_help_wz = to_utf16_z(auto_status);
     let mut auto_help_rc = RECT {
-        left: lay.combo_x + toggle_w + lay.pad, top: lay.autostart_y,
-        right: win_w - lay.pad, bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
+        left: lay.combo_x + toggle_w + lay.pad,
+        top: lay.autostart_y,
+        right: win_w - lay.pad,
+        bottom: lay.autostart_y + (20.0 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut auto_help_wz, &mut auto_help_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut auto_help_wz,
+            &mut auto_help_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     // ── Quick Note section ─────────────────────────────────────────
-    let notes_divider_y = lay.autostart_y + (20.0 * lay.scale) as i32 + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
-    draw_rounded_rect_in_buffer(bits, win_w, win_h,
-        RECT { left: lay.pad, top: notes_divider_y, right: win_w - lay.pad, bottom: notes_divider_y + 1 },
-        0, theme.border);
+    let notes_divider_y = lay.autostart_y
+        + (20.0 * lay.scale) as i32
+        + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    draw_rounded_rect_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        RECT {
+            left: lay.pad,
+            top: notes_divider_y,
+            right: win_w - lay.pad,
+            bottom: notes_divider_y + 1,
+        },
+        0,
+        theme.border,
+    );
 
     let notes_header_y = notes_divider_y + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
     unsafe {
@@ -752,10 +936,19 @@ fn paint_general_page(
     }
     let mut qn_hdr_wz = to_utf16_z("Quick Note");
     let mut qn_hdr_rc = RECT {
-        left: lay.pad, top: notes_header_y,
-        right: win_w - lay.pad, bottom: notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
+        left: lay.pad,
+        top: notes_header_y,
+        right: win_w - lay.pad,
+        bottom: notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut qn_hdr_wz, &mut qn_hdr_rc, DT_LEFT | DT_SINGLELINE); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut qn_hdr_wz,
+            &mut qn_hdr_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
+    }
 
     let notes_path_y = notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
     let notes_row_h = (28.0 * lay.scale) as i32;
@@ -766,24 +959,63 @@ fn paint_general_page(
     }
     let mut path_lbl_wz = to_utf16_z("Save path");
     let mut path_lbl_rc = RECT {
-        left: lay.pad, top: notes_path_y,
-        right: lay.pad + lay.label_w, bottom: notes_path_y + notes_row_h,
+        left: lay.pad,
+        top: notes_path_y,
+        right: lay.pad + lay.label_w,
+        bottom: notes_path_y + notes_row_h,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut path_lbl_wz, &mut path_lbl_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut path_lbl_wz,
+            &mut path_lbl_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     let browse_btn_w = (80.0 * lay.scale) as i32;
     let browse_x = lay.combo_x + lay.combo_w - browse_btn_w;
     let is_browse_hovered = state.hovered_target == HoverTarget::NotesDirBrowseBtn;
-    draw_button(dib_dc, bits, win_w, win_h, browse_x, notes_path_y, browse_btn_w, notes_row_h,
-        "Browse\u{2026}", theme, small_font, is_browse_hovered, ButtonStyle::Secondary);
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        browse_x,
+        notes_path_y,
+        browse_btn_w,
+        notes_row_h,
+        "Browse\u{2026}",
+        theme,
+        small_font,
+        is_browse_hovered,
+        ButtonStyle::Secondary,
+    );
 
     let path_field_w = browse_x - lay.combo_x - (4.0 * lay.scale) as i32;
     let path_field_rc = RECT {
-        left: lay.combo_x, top: notes_path_y,
-        right: lay.combo_x + path_field_w, bottom: notes_path_y + notes_row_h,
+        left: lay.combo_x,
+        top: notes_path_y,
+        right: lay.combo_x + path_field_w,
+        bottom: notes_path_y + notes_row_h,
     };
-    draw_rounded_rect_in_buffer(bits, win_w, win_h, path_field_rc, (4.0 * lay.scale) as i32, theme.surface.blend_over(theme.background));
-    draw_rounded_border_in_buffer(bits, win_w, win_h, path_field_rc, (4.0 * lay.scale) as i32, 1, theme.border);
+    draw_rounded_rect_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        path_field_rc,
+        (4.0 * lay.scale) as i32,
+        theme.surface.blend_over(theme.background),
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        path_field_rc,
+        (4.0 * lay.scale) as i32,
+        1,
+        theme.border,
+    );
     unsafe {
         let _ = SelectObject(dib_dc, small_font);
         let _ = SetTextColor(dib_dc, theme.text.to_colorref());
@@ -791,12 +1023,20 @@ fn paint_general_page(
     let path_str = state.notes_dir.to_string_lossy();
     let mut path_wz = to_utf16_z(&path_str);
     let mut path_rc = RECT {
-        left: lay.combo_x + (6.0 * lay.scale) as i32, top: notes_path_y,
-        right: lay.combo_x + path_field_w - (4.0 * lay.scale) as i32, bottom: notes_path_y + notes_row_h,
+        left: lay.combo_x + (6.0 * lay.scale) as i32,
+        top: notes_path_y,
+        right: lay.combo_x + path_field_w - (4.0 * lay.scale) as i32,
+        bottom: notes_path_y + notes_row_h,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut path_wz, &mut path_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut path_wz,
+            &mut path_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+    }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Accordion editor (inline, below expanded row)
@@ -829,12 +1069,33 @@ fn draw_accordion_editor(
 
     // Background + border
     let panel_bg = theme.surface.blend_over(theme.background);
-    draw_rounded_rect_in_buffer(bits, win_w, win_h,
-        RECT { left: x, top: y, right: x + panel_w, bottom: y + panel_h },
-        (6.0 * lay.scale) as i32, panel_bg);
-    draw_rounded_border_in_buffer(bits, win_w, win_h,
-        RECT { left: x, top: y, right: x + panel_w, bottom: y + panel_h },
-        (6.0 * lay.scale) as i32, 1, theme.border);
+    draw_rounded_rect_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        RECT {
+            left: x,
+            top: y,
+            right: x + panel_w,
+            bottom: y + panel_h,
+        },
+        (6.0 * lay.scale) as i32,
+        panel_bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        win_w,
+        win_h,
+        RECT {
+            left: x,
+            top: y,
+            right: x + panel_w,
+            bottom: y + panel_h,
+        },
+        (6.0 * lay.scale) as i32,
+        1,
+        theme.border,
+    );
 
     let mut cur_y = y + (12.0 * lay.scale) as i32;
     let field_x = x + gap;
@@ -849,76 +1110,228 @@ fn draw_accordion_editor(
     let action_btn_w = pw - trigger_field_w - btn_h - gap * 2;
 
     let is_tf_hovered = state.hovered_target == HoverTarget::AccordionTriggerField;
-    let tf_bg = if is_tf_hovered { theme.hover.blend_over(panel_bg) } else { theme.background.blend_over(panel_bg) };
-    let tf_rect = RECT { left: field_x, top: cur_y, right: field_x + trigger_field_w, bottom: cur_y + btn_h };
+    let tf_bg = if is_tf_hovered {
+        theme.hover.blend_over(panel_bg)
+    } else {
+        theme.background.blend_over(panel_bg)
+    };
+    let tf_rect = RECT {
+        left: field_x,
+        top: cur_y,
+        right: field_x + trigger_field_w,
+        bottom: cur_y + btn_h,
+    };
     draw_rounded_rect_in_buffer(bits, win_w, win_h, tf_rect, (4.0 * lay.scale) as i32, tf_bg);
 
-    let trigger_text = if state.acc_is_recording { "..." } else { &state.acc_trigger };
+    let trigger_text = if state.acc_is_recording {
+        "..."
+    } else {
+        &state.acc_trigger
+    };
     let mut trig_wz = to_utf16_z(trigger_text);
-    let mut trig_rc = RECT { left: field_x + 4, top: cur_y, right: field_x + trigger_field_w, bottom: cur_y + btn_h };
-    unsafe { let _ = DrawTextW(dib_dc, &mut trig_wz, &mut trig_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+    let mut trig_rc = RECT {
+        left: field_x + 4,
+        top: cur_y,
+        right: field_x + trigger_field_w,
+        bottom: cur_y + btn_h,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut trig_wz,
+            &mut trig_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+    }
 
     // Record button
     let record_x = field_x + trigger_field_w + gap;
     let is_rec_hovered = state.hovered_target == HoverTarget::AccordionRecordBtn;
-    draw_button(dib_dc, bits, win_w, win_h, record_x, cur_y, btn_h, btn_h,
-        if state.acc_is_recording { "Rec" } else { "Bind" },
-        theme, small_font, is_rec_hovered, ButtonStyle::Primary);
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        record_x,
+        cur_y,
+        btn_h,
+        btn_h,
+        if state.acc_is_recording {
+            "Rec"
+        } else {
+            "Bind"
+        },
+        theme,
+        small_font,
+        is_rec_hovered,
+        ButtonStyle::Primary,
+    );
 
     // Action button
     let act_x = record_x + btn_h + gap;
     let is_act_hovered = state.hovered_target == HoverTarget::AccordionActionBtn;
-    draw_button(dib_dc, bits, win_w, win_h, act_x, cur_y, action_btn_w, btn_h,
-        desc.label, theme, small_font, is_act_hovered, ButtonStyle::Secondary);
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        act_x,
+        cur_y,
+        action_btn_w,
+        btn_h,
+        desc.label,
+        theme,
+        small_font,
+        is_act_hovered,
+        ButtonStyle::Secondary,
+    );
 
     cur_y += btn_h + gap;
 
     // ── Row 2: Parameter field ────────────────────────────────
     match desc.param_schema {
         ActionParamSchema::None | ActionParamSchema::PowerAction => {
-            unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+            unsafe {
+                let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            }
             let mut none_wz = to_utf16_z("No options required");
-            let mut none_rc = RECT { left: field_x, top: cur_y, right: field_x + pw, bottom: cur_y + btn_h };
-            unsafe { let _ = DrawTextW(dib_dc, &mut none_wz, &mut none_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+            let mut none_rc = RECT {
+                left: field_x,
+                top: cur_y,
+                right: field_x + pw,
+                bottom: cur_y + btn_h,
+            };
+            unsafe {
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut none_wz,
+                    &mut none_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
+            }
         }
         ActionParamSchema::KeyMapping => {
             let param_field_w = pw - btn_h - gap;
-            let param_text = if state.acc_param.is_empty() { "<not set>" } else { &state.acc_param };
+            let param_text = if state.acc_param.is_empty() {
+                "<not set>"
+            } else {
+                &state.acc_param
+            };
             let is_param_hovered = state.hovered_target == HoverTarget::AccordionParamField;
-            let p_bg = if is_param_hovered { theme.hover.blend_over(panel_bg) } else { theme.background.blend_over(panel_bg) };
-            let p_rect = RECT { left: field_x, top: cur_y, right: field_x + param_field_w, bottom: cur_y + btn_h };
+            let p_bg = if is_param_hovered {
+                theme.hover.blend_over(panel_bg)
+            } else {
+                theme.background.blend_over(panel_bg)
+            };
+            let p_rect = RECT {
+                left: field_x,
+                top: cur_y,
+                right: field_x + param_field_w,
+                bottom: cur_y + btn_h,
+            };
             draw_rounded_rect_in_buffer(bits, win_w, win_h, p_rect, (4.0 * lay.scale) as i32, p_bg);
-            unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+            unsafe {
+                let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            }
             let mut pwz = to_utf16_z(param_text);
-            let mut prc = RECT { left: field_x + 4, top: cur_y, right: field_x + param_field_w, bottom: cur_y + btn_h };
-            unsafe { let _ = DrawTextW(dib_dc, &mut pwz, &mut prc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+            let mut prc = RECT {
+                left: field_x + 4,
+                top: cur_y,
+                right: field_x + param_field_w,
+                bottom: cur_y + btn_h,
+            };
+            unsafe {
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut pwz,
+                    &mut prc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
 
             let param_record_x = field_x + param_field_w + gap;
             let is_param_rec_hovered = state.hovered_target == HoverTarget::AccordionParamRecordBtn;
-            draw_button(dib_dc, bits, win_w, win_h, param_record_x, cur_y, btn_h, btn_h,
-                if state.acc_is_recording_param { "Rec" } else { "Bind" },
-                theme, small_font, is_param_rec_hovered, ButtonStyle::Primary);
+            draw_button(
+                dib_dc,
+                bits,
+                win_w,
+                win_h,
+                param_record_x,
+                cur_y,
+                btn_h,
+                btn_h,
+                if state.acc_is_recording_param {
+                    "Rec"
+                } else {
+                    "Bind"
+                },
+                theme,
+                small_font,
+                is_param_rec_hovered,
+                ButtonStyle::Primary,
+            );
         }
         _ => {
-            let param_text = if state.acc_param.is_empty() { "<not set>" } else { &state.acc_param };
+            let param_text = if state.acc_param.is_empty() {
+                "<not set>"
+            } else {
+                &state.acc_param
+            };
             let is_param_hovered = state.hovered_target == HoverTarget::AccordionParamField;
-            let p_bg = if is_param_hovered { theme.hover.blend_over(panel_bg) } else { theme.background.blend_over(panel_bg) };
-            let p_rect = RECT { left: field_x, top: cur_y, right: field_x + pw, bottom: cur_y + btn_h };
+            let p_bg = if is_param_hovered {
+                theme.hover.blend_over(panel_bg)
+            } else {
+                theme.background.blend_over(panel_bg)
+            };
+            let p_rect = RECT {
+                left: field_x,
+                top: cur_y,
+                right: field_x + pw,
+                bottom: cur_y + btn_h,
+            };
             draw_rounded_rect_in_buffer(bits, win_w, win_h, p_rect, (4.0 * lay.scale) as i32, p_bg);
-            unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+            unsafe {
+                let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            }
             let mut pwz = to_utf16_z(param_text);
-            let mut prc = RECT { left: field_x + 4, top: cur_y, right: field_x + pw, bottom: cur_y + btn_h };
-            unsafe { let _ = DrawTextW(dib_dc, &mut pwz, &mut prc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+            let mut prc = RECT {
+                left: field_x + 4,
+                top: cur_y,
+                right: field_x + pw,
+                bottom: cur_y + btn_h,
+            };
+            unsafe {
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut pwz,
+                    &mut prc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
         }
     }
     cur_y += btn_h + gap;
 
     // ── Error message ──────────────────────────────────────────
     if let Some(ref err) = state.acc_save_error {
-        unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 220, 60, 60).to_colorref()); }
+        unsafe {
+            let _ = SetTextColor(dib_dc, Argb::new(255, 220, 60, 60).to_colorref());
+        }
         let mut err_wz = to_utf16_z(err);
-        let mut err_rc = RECT { left: field_x, top: cur_y, right: field_x + pw, bottom: cur_y + (16.0 * lay.scale) as i32 };
-        unsafe { let _ = DrawTextW(dib_dc, &mut err_wz, &mut err_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS); }
+        let mut err_rc = RECT {
+            left: field_x,
+            top: cur_y,
+            right: field_x + pw,
+            bottom: cur_y + (16.0 * lay.scale) as i32,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut err_wz,
+                &mut err_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
         cur_y += (16.0 * lay.scale) as i32 + gap;
     }
 
@@ -934,14 +1347,52 @@ fn draw_accordion_editor(
     let is_cancel_hovered = state.hovered_target == HoverTarget::AccordionCancelBtn;
     let is_delete_hovered = state.hovered_target == HoverTarget::AccordionDeleteBtn;
 
-    draw_button(dib_dc, bits, win_w, win_h, start_x, cur_y, btn_w, btn_h,
-        "Save", theme, small_font, is_save_hovered, ButtonStyle::Primary);
-    draw_button(dib_dc, bits, win_w, win_h, start_x + btn_w + btn_gap, cur_y, btn_w, btn_h,
-        "Cancel", theme, small_font, is_cancel_hovered, ButtonStyle::Secondary);
-    draw_button(dib_dc, bits, win_w, win_h, start_x + (btn_w + btn_gap) * 2, cur_y, btn_w, btn_h,
-        "Delete", theme, small_font, is_delete_hovered, ButtonStyle::DangerGhost);
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        start_x,
+        cur_y,
+        btn_w,
+        btn_h,
+        "Save",
+        theme,
+        small_font,
+        is_save_hovered,
+        ButtonStyle::Primary,
+    );
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        start_x + btn_w + btn_gap,
+        cur_y,
+        btn_w,
+        btn_h,
+        "Cancel",
+        theme,
+        small_font,
+        is_cancel_hovered,
+        ButtonStyle::Secondary,
+    );
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        start_x + (btn_w + btn_gap) * 2,
+        cur_y,
+        btn_w,
+        btn_h,
+        "Delete",
+        theme,
+        small_font,
+        is_delete_hovered,
+        ButtonStyle::DangerGhost,
+    );
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Shortcuts page painting
@@ -965,10 +1416,19 @@ fn paint_shortcuts_page(
     }
     let mut short_wz = to_utf16_z("Shortcuts");
     let mut short_rc = RECT {
-        left: lay.pad, top: lay.shortcuts_y,
-        right: win_w - lay.pad, bottom: lay.shortcuts_y + (24.0 * lay.scale) as i32,
+        left: lay.pad,
+        top: lay.shortcuts_y,
+        right: win_w - lay.pad,
+        bottom: lay.shortcuts_y + (24.0 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut short_wz, &mut short_rc, DT_LEFT | DT_SINGLELINE); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut short_wz,
+            &mut short_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
+    }
 
     // ── Table Headers ──────────────────────────────────────────────
     unsafe {
@@ -981,43 +1441,87 @@ fn paint_shortcuts_page(
 
     let mut trig_header_wz = to_utf16_z("TRIGGER");
     let mut trig_header_rc = RECT {
-        left: lay.pad + 6, top: table_header_y,
-        right: lay.pad + lay.trig_w, bottom: table_header_y + (16.0 * lay.scale) as i32,
+        left: lay.pad + 6,
+        top: table_header_y,
+        right: lay.pad + lay.trig_w,
+        bottom: table_header_y + (16.0 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut trig_header_wz, &mut trig_header_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut trig_header_wz,
+            &mut trig_header_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     let mut action_header_wz = to_utf16_z("ACTION");
     let mut action_header_rc = RECT {
-        left: kind_x + 6, top: table_header_y,
-        right: kind_x + lay.kind_w, bottom: table_header_y + (16.0 * lay.scale) as i32,
+        left: kind_x + 6,
+        top: table_header_y,
+        right: kind_x + lay.kind_w,
+        bottom: table_header_y + (16.0 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut action_header_wz, &mut action_header_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut action_header_wz,
+            &mut action_header_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     let mut param_header_wz = to_utf16_z("PARAMETER");
     let mut param_header_rc = RECT {
-        left: param_x + 6, top: table_header_y,
-        right: win_w - lay.pad - lay.del_w, bottom: table_header_y + (16.0 * lay.scale) as i32,
+        left: param_x + 6,
+        top: table_header_y,
+        right: win_w - lay.pad - lay.del_w,
+        bottom: table_header_y + (16.0 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut param_header_wz, &mut param_header_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER); }
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut param_header_wz,
+            &mut param_header_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     // ── Bindings List ──────────────────────────────────────────────
-    unsafe { let _ = IntersectClipRect(dib_dc, lay.pad, lay.list_y, win_w - lay.pad, lay.list_y + lay.list_h); }
+    unsafe {
+        let _ = IntersectClipRect(
+            dib_dc,
+            lay.pad,
+            lay.list_y,
+            win_w - lay.pad,
+            lay.list_y + lay.list_h,
+        );
+    }
 
     let mut row_y = lay.list_y - state.bindings_scroll_y;
     for (i, b) in state.bindings.iter().enumerate() {
         if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
             let is_expanded = Some(i) == state.expanded_idx;
             if is_expanded {
-                let row_rect = RECT { left: lay.pad, top: row_y, right: win_w - lay.pad, bottom: row_y + lay.row_h };
+                let row_rect = RECT {
+                    left: lay.pad,
+                    top: row_y,
+                    right: win_w - lay.pad,
+                    bottom: row_y + lay.row_h,
+                };
                 draw_rounded_rect_in_buffer(bits, win_w, win_h, row_rect, 0, theme.selected);
             }
-            draw_binding_row(dib_dc, bits, i, b, row_y, state, theme, body_font, small_font);
+            draw_binding_row(
+                dib_dc, bits, i, b, row_y, state, theme, body_font, small_font,
+            );
         }
         row_y += lay.row_h;
 
         if Some(i) == state.expanded_idx {
             if row_y + lay.accordion_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
-                draw_accordion_editor(dib_dc, bits, win_w, win_h, theme, lay, state, small_font, lay.pad, row_y);
+                draw_accordion_editor(
+                    dib_dc, bits, win_w, win_h, theme, lay, state, small_font, lay.pad, row_y,
+                );
             }
             row_y += lay.accordion_h;
         }
@@ -1026,9 +1530,21 @@ fn paint_shortcuts_page(
     // "Add New" button
     if row_y + lay.row_h >= lay.list_y && row_y < lay.list_y + lay.list_h {
         let is_add_hovered = state.hovered_target == HoverTarget::AddBtn;
-        draw_button(dib_dc, bits, win_w, win_h,
-            lay.pad, row_y + (lay.row_h - lay.btn_h) / 2, (80.0 * lay.scale) as i32, lay.btn_h,
-            "+ Add", theme, small_font, is_add_hovered, ButtonStyle::Secondary);
+        draw_button(
+            dib_dc,
+            bits,
+            win_w,
+            win_h,
+            lay.pad,
+            row_y + (lay.row_h - lay.btn_h) / 2,
+            (80.0 * lay.scale) as i32,
+            lay.btn_h,
+            "+ Add",
+            theme,
+            small_font,
+            is_add_hovered,
+            ButtonStyle::Secondary,
+        );
     }
 
     unsafe {
@@ -1039,28 +1555,48 @@ fn paint_shortcuts_page(
 
     // ── Scrollbar ──────────────────────────────────────────────────
     let content_h = state.bindings.len() as i32 * lay.row_h
-        + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 }
+        + if state.expanded_idx.is_some() {
+            lay.accordion_h
+        } else {
+            0
+        }
         + lay.row_h;
     if content_h > lay.list_h {
         let scroll_w = (6.0 * lay.scale) as i32;
         let scroll_x = win_w - lay.pad + (lay.pad - scroll_w) / 2;
 
-        let track_rect = RECT { left: scroll_x, top: lay.list_y, right: scroll_x + scroll_w, bottom: lay.list_y + lay.list_h };
+        let track_rect = RECT {
+            left: scroll_x,
+            top: lay.list_y,
+            right: scroll_x + scroll_w,
+            bottom: lay.list_y + lay.list_h,
+        };
         draw_rounded_rect_in_buffer(bits, win_w, win_h, track_rect, scroll_w / 2, theme.border);
 
         let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
         let max_scroll = content_h - lay.list_h;
-        let thumb_y = lay.list_y + ((state.bindings_scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
+        let thumb_y = lay.list_y
+            + ((state.bindings_scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32)
+                as i32;
 
-        let is_thumb_active = state.hovered_target == HoverTarget::Scrollbar || state.is_dragging_scroll;
-        let thumb_color = if is_thumb_active { theme.accent } else { theme.text_muted };
+        let is_thumb_active =
+            state.hovered_target == HoverTarget::Scrollbar || state.is_dragging_scroll;
+        let thumb_color = if is_thumb_active {
+            theme.accent
+        } else {
+            theme.text_muted
+        };
 
-        let thumb_rect = RECT { left: scroll_x, top: thumb_y, right: scroll_x + scroll_w, bottom: thumb_y + thumb_h };
+        let thumb_rect = RECT {
+            left: scroll_x,
+            top: thumb_y,
+            right: scroll_x + scroll_w,
+            bottom: thumb_y + thumb_h,
+        };
         draw_rounded_rect_in_buffer(bits, win_w, win_h, thumb_rect, scroll_w / 2, thumb_color);
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Advanced page painting
@@ -1084,10 +1620,14 @@ fn paint_advanced_page(
     }
     let mut adv_wz = to_utf16_z("Advanced");
     let mut adv_rc = RECT {
-        left: lay.pad, top: lay.shortcuts_y,
-        right: win_w - lay.pad, bottom: lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
+        left: lay.pad,
+        top: lay.shortcuts_y,
+        right: win_w - lay.pad,
+        bottom: lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32,
     };
-    unsafe { let _ = DrawTextW(dib_dc, &mut adv_wz, &mut adv_rc, DT_LEFT | DT_SINGLELINE); }
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut adv_wz, &mut adv_rc, DT_LEFT | DT_SINGLELINE);
+    }
 
     let pad = lay.pad;
     let mut cur_y = lay.shortcuts_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
@@ -1098,13 +1638,18 @@ fn paint_advanced_page(
     for (i, &(label, _desc)) in ADVANCED_BUTTONS.iter().enumerate() {
         let is_hovered = state.hovered_target == HoverTarget::AdvancedBtn(i);
         let is_danger = i >= 4;
-        let style = if is_danger { ButtonStyle::DangerGhost } else { ButtonStyle::Secondary };
-        draw_button(dib_dc, bits, win_w, win_h, pad, cur_y, btn_w, btn_h,
-            label, theme, body_font, is_hovered, style);
+        let style = if is_danger {
+            ButtonStyle::DangerGhost
+        } else {
+            ButtonStyle::Secondary
+        };
+        draw_button(
+            dib_dc, bits, win_w, win_h, pad, cur_y, btn_w, btn_h, label, theme, body_font,
+            is_hovered, style,
+        );
         cur_y += btn_h + btn_gap;
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Binding row drawing
@@ -1122,57 +1667,128 @@ fn draw_binding_row(
     small_font: HFONT,
 ) {
     let lay = &state.layout;
-    let row_rc = RECT { left: lay.pad, top: y, right: lay.win_w - lay.pad, bottom: y + lay.row_h };
+    let row_rc = RECT {
+        left: lay.pad,
+        top: y,
+        right: lay.win_w - lay.pad,
+        bottom: y + lay.row_h,
+    };
 
     let is_selected = state.expanded_idx == Some(idx);
     let is_hovered = state.hovered_target == HoverTarget::RowClick(idx);
 
     let zebra_on = idx % 2 == 1;
     if is_selected {
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, row_rc, (4.0 * lay.scale) as i32, theme.selected);
+        draw_rounded_rect_in_buffer(
+            bits,
+            lay.win_w,
+            lay.win_h,
+            row_rc,
+            (4.0 * lay.scale) as i32,
+            theme.selected,
+        );
     } else if is_hovered {
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, row_rc, (4.0 * lay.scale) as i32, theme.hover);
+        draw_rounded_rect_in_buffer(
+            bits,
+            lay.win_w,
+            lay.win_h,
+            row_rc,
+            (4.0 * lay.scale) as i32,
+            theme.hover,
+        );
     } else if zebra_on {
-        draw_rounded_rect_in_buffer(bits, lay.win_w, lay.win_h, row_rc, (4.0 * lay.scale) as i32, theme.surface.blend_over(theme.background));
+        draw_rounded_rect_in_buffer(
+            bits,
+            lay.win_w,
+            lay.win_h,
+            row_rc,
+            (4.0 * lay.scale) as i32,
+            theme.surface.blend_over(theme.background),
+        );
     }
 
     let desc = editor_action_desc(binding.kind_idx);
 
-    let trig_text = if binding.is_recording_trigger { "..." } else { &binding.trigger };
+    let trig_text = if binding.is_recording_trigger {
+        "..."
+    } else {
+        &binding.trigger
+    };
     let mut trig_wz = to_utf16_z(trig_text);
-    let mut trig_rc = RECT { left: lay.pad + 8, top: y, right: lay.pad + lay.trig_w, bottom: y + lay.row_h };
+    let mut trig_rc = RECT {
+        left: lay.pad + 8,
+        top: y,
+        right: lay.pad + lay.trig_w,
+        bottom: y + lay.row_h,
+    };
     unsafe {
         let _ = SelectObject(hdc, small_font);
         let _ = SetTextColor(hdc, theme.text.to_colorref());
-        let _ = DrawTextW(hdc, &mut trig_wz, &mut trig_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let _ = DrawTextW(
+            hdc,
+            &mut trig_wz,
+            &mut trig_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
     }
 
     let kind_x = lay.pad + lay.trig_w + (8.0 * lay.scale) as i32;
     let mut kind_wz = to_utf16_z(desc.label);
-    let mut kind_rc = RECT { left: kind_x + 8, top: y, right: kind_x + lay.kind_w, bottom: y + lay.row_h };
+    let mut kind_rc = RECT {
+        left: kind_x + 8,
+        top: y,
+        right: kind_x + lay.kind_w,
+        bottom: y + lay.row_h,
+    };
     unsafe {
         let _ = SetTextColor(hdc, theme.text_muted.to_colorref());
-        let _ = DrawTextW(hdc, &mut kind_wz, &mut kind_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let _ = DrawTextW(
+            hdc,
+            &mut kind_wz,
+            &mut kind_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
     }
 
     if desc.param_key.is_some() && !binding.param.is_empty() {
         let param_x = kind_x + lay.kind_w + (8.0 * lay.scale) as i32;
         let param_w = lay.win_w - lay.pad - lay.del_w - param_x;
         let mut param_wz = to_utf16_z(&binding.param);
-        let mut param_rc = RECT { left: param_x + 4, top: y, right: param_x + param_w, bottom: y + lay.row_h };
+        let mut param_rc = RECT {
+            left: param_x + 4,
+            top: y,
+            right: param_x + param_w,
+            bottom: y + lay.row_h,
+        };
         unsafe {
             let _ = SetTextColor(hdc, theme.text_muted.to_colorref());
-            let _ = DrawTextW(hdc, &mut param_wz, &mut param_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            let _ = DrawTextW(
+                hdc,
+                &mut param_wz,
+                &mut param_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
         }
     }
 
     let del_btn_x = lay.win_w - lay.pad - lay.del_w;
     let is_del_hovered = state.hovered_target == HoverTarget::RowDelete(idx);
-    draw_button(hdc, bits, lay.win_w, lay.win_h,
-        del_btn_x, y + (lay.row_h - lay.del_w) / 2, lay.del_w, lay.del_w,
-        "X", theme, small_font, is_del_hovered, ButtonStyle::DangerGhost);
+    draw_button(
+        hdc,
+        bits,
+        lay.win_w,
+        lay.win_h,
+        del_btn_x,
+        y + (lay.row_h - lay.del_w) / 2,
+        lay.del_w,
+        lay.del_w,
+        "X",
+        theme,
+        small_font,
+        is_del_hovered,
+        ButtonStyle::DangerGhost,
+    );
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Inline editing helpers
@@ -1181,11 +1797,18 @@ fn draw_binding_row(
 #[allow(dead_code)] // kept for editor panel param editing
 fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
     if let Some(old) = state.param_edit_popup.take() {
-        unsafe { let _ = DestroyWindow(old); }
+        unsafe {
+            let _ = DestroyWindow(old);
+        }
     }
 
-    let mut pt = POINT { x: rc.left, y: rc.top };
-    unsafe { let _ = ClientToScreen(state.hwnd, &mut pt); }
+    let mut pt = POINT {
+        x: rc.left,
+        y: rc.top,
+    };
+    unsafe {
+        let _ = ClientToScreen(state.hwnd, &mut pt);
+    }
 
     let w = rc.right - rc.left;
     let h = rc.bottom - rc.top;
@@ -1221,7 +1844,10 @@ fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
             PCWSTR::from_raw(cls_name.as_ptr()),
             PCWSTR::null(),
             WS_POPUP | WS_BORDER,
-            pt.x, pt.y, w, h,
+            pt.x,
+            pt.y,
+            w,
+            h,
             state.hwnd,
             HMENU::default(),
             hinstance,
@@ -1233,7 +1859,9 @@ fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
         Ok(h) => {
             state.param_edit_popup = Some(h);
             state.param_edit_idx = Some(idx);
-            unsafe { let _ = ShowWindow(h, SW_SHOW); }
+            unsafe {
+                let _ = ShowWindow(h, SW_SHOW);
+            }
         }
         Err(_) => {
             state.edit_idx = Some(idx);
@@ -1273,7 +1901,6 @@ fn cancel_inline_edit(state: &mut SettingsState) {
     }
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // Apply & Save
 // ═══════════════════════════════════════════════════════════════════════
@@ -1310,10 +1937,21 @@ fn apply_settings(state: &mut SettingsState) {
                 }
             }
         }
-        if found.is_empty() { theme_name.clone() } else { found }
+        if found.is_empty() {
+            theme_name.clone()
+        } else {
+            found
+        }
     };
 
-    if let Err(e) = save_config(&state.handle.config_path, &config_name, &state.bindings, state.autostart, &state.notes_dir, &state.handle) {
+    if let Err(e) = save_config(
+        &state.handle.config_path,
+        &config_name,
+        &state.bindings,
+        state.autostart,
+        &state.notes_dir,
+        &state.handle,
+    ) {
         eprintln!("mhd: settings error: {e}");
         return;
     }
@@ -1339,7 +1977,10 @@ fn save_config(
         for b in bindings {
             let lower = b.trigger.trim().to_lowercase();
             if !seen.insert(lower.clone()) {
-                return Err(format!("Duplicate trigger '{}' — each trigger must be unique within the active scheme", b.trigger));
+                return Err(format!(
+                    "Duplicate trigger '{}' — each trigger must be unique within the active scheme",
+                    b.trigger
+                ));
             }
         }
     }
@@ -1359,7 +2000,10 @@ fn save_config(
         } else {
             table.insert("theme".to_string(), toml::Value::String(theme.to_string()));
         }
-        table.insert("active_scheme".to_string(), toml::Value::String(active_scheme));
+        table.insert(
+            "active_scheme".to_string(),
+            toml::Value::String(active_scheme),
+        );
 
         if autostart {
             table.insert("autostart".to_string(), toml::Value::Boolean(true));
@@ -1368,19 +2012,29 @@ fn save_config(
         }
 
         {
-            let qn = table.entry("quicknote".to_string())
+            let qn = table
+                .entry("quicknote".to_string())
                 .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
             if let Some(qn_table) = qn.as_table_mut() {
-                qn_table.insert("notes_dir".to_string(), toml::Value::String(notes_dir.to_string_lossy().into_owned()));
+                qn_table.insert(
+                    "notes_dir".to_string(),
+                    toml::Value::String(notes_dir.to_string_lossy().into_owned()),
+                );
             }
         }
 
         let mut new_bindings = Vec::new();
         for b in bindings {
             let mut map = toml::value::Table::new();
-            map.insert("trigger".to_string(), toml::Value::String(b.trigger.clone()));
+            map.insert(
+                "trigger".to_string(),
+                toml::Value::String(b.trigger.clone()),
+            );
             let desc = editor_action_desc(b.kind_idx);
-            map.insert("action".to_string(), toml::Value::String(desc.name.to_string()));
+            map.insert(
+                "action".to_string(),
+                toml::Value::String(desc.name.to_string()),
+            );
             if let Some(param_key) = desc.param_key {
                 map.insert(param_key.to_string(), toml::Value::String(b.param.clone()));
             }
@@ -1393,7 +2047,6 @@ fn save_config(
     std::fs::write(path, new_content).map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Window procedure — event routing
@@ -1412,7 +2065,10 @@ unsafe extern "system" fn settings_wndproc(
             WM_NCHITTEST => {
                 let screen_x = (lparam.0 as i16) as i32;
                 let screen_y = ((lparam.0 >> 16) as i16) as i32;
-                let mut pt = POINT { x: screen_x, y: screen_y };
+                let mut pt = POINT {
+                    x: screen_x,
+                    y: screen_y,
+                };
                 let _ = ScreenToClient(hwnd, &mut pt);
 
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
@@ -1433,7 +2089,9 @@ unsafe extern "system" fn settings_wndproc(
                 let y = ((lparam.0 >> 16) as i16) as i32;
 
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-                if state_ptr.is_null() { return LRESULT(0); }
+                if state_ptr.is_null() {
+                    return LRESULT(0);
+                }
                 let state = &mut *state_ptr;
 
                 let hit = hit_test_settings(state, x, y);
@@ -1451,7 +2109,9 @@ unsafe extern "system" fn settings_wndproc(
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                     }
-                    SettingsHit::ThemeCombo => { toggle_combo_popup(state); }
+                    SettingsHit::ThemeCombo => {
+                        toggle_combo_popup(state);
+                    }
                     SettingsHit::AutostartToggle => {
                         close_combo_popup(state);
                         close_kind_popup(state);
@@ -1461,7 +2121,12 @@ unsafe extern "system" fn settings_wndproc(
                                 let msg = format!("Failed to enable autostart:\n{e}");
                                 let wz = to_utf16_z(&msg);
                                 let title = to_utf16_z("mhd Autostart Error");
-                                let _ = MessageBoxW(hwnd, PCWSTR::from_raw(wz.as_ptr()), PCWSTR::from_raw(title.as_ptr()), MB_OK | MB_ICONERROR);
+                                let _ = MessageBoxW(
+                                    hwnd,
+                                    PCWSTR::from_raw(wz.as_ptr()),
+                                    PCWSTR::from_raw(title.as_ptr()),
+                                    MB_OK | MB_ICONERROR,
+                                );
                                 state.autostart = false;
                             }
                         } else {
@@ -1469,7 +2134,12 @@ unsafe extern "system" fn settings_wndproc(
                                 let msg = format!("Failed to disable autostart:\n{e}");
                                 let wz = to_utf16_z(&msg);
                                 let title = to_utf16_z("mhd Autostart Error");
-                                let _ = MessageBoxW(hwnd, PCWSTR::from_raw(wz.as_ptr()), PCWSTR::from_raw(title.as_ptr()), MB_OK | MB_ICONERROR);
+                                let _ = MessageBoxW(
+                                    hwnd,
+                                    PCWSTR::from_raw(wz.as_ptr()),
+                                    PCWSTR::from_raw(title.as_ptr()),
+                                    MB_OK | MB_ICONERROR,
+                                );
                             }
                         }
                         paint_settings(hwnd, state_ptr, &state.layout);
@@ -1479,12 +2149,20 @@ unsafe extern "system" fn settings_wndproc(
                         close_kind_popup(state);
                         let lay = state.layout;
                         let content_h = state.bindings.len() as i32 * lay.row_h
-                            + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 }
+                            + if state.expanded_idx.is_some() {
+                                lay.accordion_h
+                            } else {
+                                0
+                            }
                             + lay.row_h;
-                        let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
+                        let thumb_h =
+                            ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
                         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
                         let max_scroll = content_h - lay.list_h;
-                        let thumb_y = lay.list_y + ((state.bindings_scroll_y as f32 / max_scroll as f32) * (lay.list_h - thumb_h) as f32) as i32;
+                        let thumb_y = lay.list_y
+                            + ((state.bindings_scroll_y as f32 / max_scroll as f32)
+                                * (lay.list_h - thumb_h) as f32)
+                                as i32;
 
                         if y >= thumb_y && y < thumb_y + thumb_h {
                             state.is_dragging_scroll = true;
@@ -1528,7 +2206,8 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         finish_inline_edit(state);
-                        let row_y = state.layout.list_y - state.bindings_scroll_y + (i as i32) * state.layout.row_h;
+                        let row_y = state.layout.list_y - state.bindings_scroll_y
+                            + (i as i32) * state.layout.row_h;
                         handle_list_click(state, i, x, y, row_y);
                     }
                     SettingsHit::AddBtn => {
@@ -1536,8 +2215,11 @@ unsafe extern "system" fn settings_wndproc(
                         close_kind_popup(state);
                         let idx = state.bindings.len();
                         state.bindings.push(UIBinding {
-                            trigger: "none".to_string(), kind_idx: 0, param: "".to_string(),
-                            is_recording_trigger: false, is_recording_param: false,
+                            trigger: "none".to_string(),
+                            kind_idx: 0,
+                            param: "".to_string(),
+                            is_recording_trigger: false,
+                            is_recording_param: false,
                         });
                         state.acc_trigger = "none".to_string();
                         state.acc_kind_idx = 0;
@@ -1561,7 +2243,9 @@ unsafe extern "system" fn settings_wndproc(
                         apply_settings(state);
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::CloseBtn => { DestroyWindow(hwnd).ok(); }
+                    SettingsHit::CloseBtn => {
+                        DestroyWindow(hwnd).ok();
+                    }
                     SettingsHit::AdvancedButton(idx) => {
                         close_combo_popup(state);
                         close_kind_popup(state);
@@ -1569,13 +2253,27 @@ unsafe extern "system" fn settings_wndproc(
                             0 => {
                                 let path = state.handle.config_path.to_string_lossy().to_string();
                                 let wz = to_utf16_z(&path);
-                                let _ = ShellExecuteW(None, None, PCWSTR::from_raw(wz.as_ptr()), None, None, SW_SHOW);
+                                let _ = ShellExecuteW(
+                                    None,
+                                    None,
+                                    PCWSTR::from_raw(wz.as_ptr()),
+                                    None,
+                                    None,
+                                    SW_SHOW,
+                                );
                             }
                             1 => {
                                 if let Some(parent) = state.handle.config_path.parent() {
                                     let path = parent.to_string_lossy().to_string();
                                     let wz = to_utf16_z(&path);
-                                    let _ = ShellExecuteW(None, None, PCWSTR::from_raw(wz.as_ptr()), None, None, SW_SHOW);
+                                    let _ = ShellExecuteW(
+                                        None,
+                                        None,
+                                        PCWSTR::from_raw(wz.as_ptr()),
+                                        None,
+                                        None,
+                                        SW_SHOW,
+                                    );
                                 }
                             }
                             2 => {
@@ -1585,7 +2283,14 @@ unsafe extern "system" fn settings_wndproc(
                                 );
                                 let path = dir.to_string_lossy().to_string();
                                 let wz = to_utf16_z(&path);
-                                let _ = ShellExecuteW(None, None, PCWSTR::from_raw(wz.as_ptr()), None, None, SW_SHOW);
+                                let _ = ShellExecuteW(
+                                    None,
+                                    None,
+                                    PCWSTR::from_raw(wz.as_ptr()),
+                                    None,
+                                    None,
+                                    SW_SHOW,
+                                );
                             }
                             3 => {
                                 let crash_path = state.handle.config_path.parent().map_or_else(
@@ -1594,17 +2299,28 @@ unsafe extern "system" fn settings_wndproc(
                                 );
                                 let path = crash_path.to_string_lossy().to_string();
                                 let wz = to_utf16_z(&path);
-                                let _ = ShellExecuteW(None, None, PCWSTR::from_raw(wz.as_ptr()), None, None, SW_SHOW);
+                                let _ = ShellExecuteW(
+                                    None,
+                                    None,
+                                    PCWSTR::from_raw(wz.as_ptr()),
+                                    None,
+                                    None,
+                                    SW_SHOW,
+                                );
                             }
                             4 => {
-                                if let Ok(new) = crate::config::AppConfig::parse("", &state.handle.config_path) {
+                                if let Ok(new) =
+                                    crate::config::AppConfig::parse("", &state.handle.config_path)
+                                {
                                     *state.handle.config.lock().unwrap() = new;
                                     state.bindings = load_ui_bindings(&state.handle);
                                     paint_settings(hwnd, state_ptr, &state.layout);
                                 }
                             }
                             5 => {
-                                if let Ok(new) = crate::config::AppConfig::parse("", &state.handle.config_path) {
+                                if let Ok(new) =
+                                    crate::config::AppConfig::parse("", &state.handle.config_path)
+                                {
                                     *state.handle.config.lock().unwrap() = new;
                                     state.bindings = load_ui_bindings(&state.handle);
                                     state.theme = NativeTheme::default();
@@ -1625,9 +2341,9 @@ unsafe extern "system" fn settings_wndproc(
                                 crate::hook::set_recording_window(None);
                                 let trigger = state.acc_trigger.trim().to_lowercase();
                                 if !trigger.is_empty() {
-                                    let dup = state.bindings.iter().enumerate().any(|(j, b)|
+                                    let dup = state.bindings.iter().enumerate().any(|(j, b)| {
                                         j != idx && b.trigger.trim().to_lowercase() == trigger
-                                    );
+                                    });
                                     if dup {
                                         state.acc_save_error = Some("Duplicate trigger – each shortcut needs a unique key combination.".into());
                                         paint_settings(hwnd, state_ptr, &state.layout);
@@ -1724,8 +2440,13 @@ unsafe extern "system" fn settings_wndproc(
                             let gap = (8.0 * state.layout.scale) as i32;
                             let btn_h = (28.0 * state.layout.scale) as i32;
                             let desc = editor_action_desc(state.acc_kind_idx);
-                            let pw_adjust = if desc.param_schema == ActionParamSchema::KeyMapping { btn_h + gap } else { 0 };
-                            let pw = state.layout.win_w - state.layout.pad * 2 - gap * 2 - pw_adjust;
+                            let pw_adjust = if desc.param_schema == ActionParamSchema::KeyMapping {
+                                btn_h + gap
+                            } else {
+                                0
+                            };
+                            let pw =
+                                state.layout.win_w - state.layout.pad * 2 - gap * 2 - pw_adjust;
                             let accordion_y = state.layout.list_y - state.bindings_scroll_y
                                 + (idx as i32 + 1) * state.layout.row_h
                                 + (12.0 * state.layout.scale) as i32;
@@ -1786,16 +2507,24 @@ unsafe extern "system" fn settings_wndproc(
 
                     if state.is_dragging_scroll {
                         let content_h = state.bindings.len() as i32 * lay.row_h
-                            + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 }
+                            + if state.expanded_idx.is_some() {
+                                lay.accordion_h
+                            } else {
+                                0
+                            }
                             + lay.row_h;
-                        let thumb_h = ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
+                        let thumb_h =
+                            ((lay.list_h as f32 / content_h as f32) * lay.list_h as f32) as i32;
                         let thumb_h = thumb_h.max((30.0 * lay.scale) as i32);
                         let max_scroll = content_h - lay.list_h;
                         let thumb_travel = lay.list_h - thumb_h;
                         if thumb_travel > 0 {
                             let dy = y - state.scroll_drag_start_y;
-                            let scroll_delta = (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
-                            state.bindings_scroll_y = (state.scroll_drag_start_offset + scroll_delta).clamp(0, max_scroll);
+                            let scroll_delta =
+                                (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
+                            state.bindings_scroll_y = (state.scroll_drag_start_offset
+                                + scroll_delta)
+                                .clamp(0, max_scroll);
                             paint_settings(hwnd, state_ptr, &lay);
                         }
                     } else {
@@ -1816,9 +2545,13 @@ unsafe extern "system" fn settings_wndproc(
                             SettingsHit::AccordionDeleteBtn => HoverTarget::AccordionDeleteBtn,
                             SettingsHit::AccordionRecordBtn => HoverTarget::AccordionRecordBtn,
                             SettingsHit::AccordionActionBtn => HoverTarget::AccordionActionBtn,
-                            SettingsHit::AccordionTriggerField => HoverTarget::AccordionTriggerField,
+                            SettingsHit::AccordionTriggerField => {
+                                HoverTarget::AccordionTriggerField
+                            }
                             SettingsHit::AccordionParamField => HoverTarget::AccordionParamField,
-                            SettingsHit::AccordionParamRecordBtn => HoverTarget::AccordionParamRecordBtn,
+                            SettingsHit::AccordionParamRecordBtn => {
+                                HoverTarget::AccordionParamRecordBtn
+                            }
                             SettingsHit::None => HoverTarget::None,
                         };
 
@@ -1871,11 +2604,16 @@ unsafe extern "system" fn settings_wndproc(
                     if state.active_section == SettingsPage::Shortcuts {
                         let lay = state.layout;
                         let content_h = state.bindings.len() as i32 * lay.row_h
-                            + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 }
+                            + if state.expanded_idx.is_some() {
+                                lay.accordion_h
+                            } else {
+                                0
+                            }
                             + lay.row_h;
                         let max_scroll = (content_h - lay.list_h).max(0);
-                        state.bindings_scroll_y =
-                            (state.bindings_scroll_y - (delta as i32 / 120) * 40).clamp(0, max_scroll);
+                        state.bindings_scroll_y = (state.bindings_scroll_y
+                            - (delta as i32 / 120) * 40)
+                            .clamp(0, max_scroll);
                         paint_settings(hwnd, state_ptr, &lay);
                     }
                 }
@@ -1902,7 +2640,10 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 };
 
-                let trigger_str = keys_to_string(&KeyCombo { modifiers: mods, key: Some(key) });
+                let trigger_str = keys_to_string(&KeyCombo {
+                    modifiers: mods,
+                    key: Some(key),
+                });
 
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
@@ -2108,7 +2849,8 @@ unsafe extern "system" fn settings_wndproc(
                         if ch.is_ascii_graphic() || ch == ' ' {
                             if let Some(sel) = state.edit_select_start {
                                 if sel != state.edit_cursor {
-                                    let (s, e) = (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
+                                    let (s, e) =
+                                        (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
                                     state.edit_text.drain(s..e);
                                     state.edit_cursor = s;
                                     state.edit_select_start = None;
@@ -2141,13 +2883,15 @@ unsafe extern "system" fn settings_wndproc(
     }
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // Combo popup (theme selector)
 // ═══════════════════════════════════════════════════════════════════════
 
 unsafe extern "system" fn combo_popup_wndproc(
-    hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
         match msg {
@@ -2174,10 +2918,46 @@ unsafe extern "system" fn combo_popup_wndproc(
                 let _ = DeleteObject(bg);
 
                 let border_brush = CreateSolidBrush(theme.border.to_colorref());
-                let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: w, bottom: 1 }, border_brush);
-                let _ = FillRect(hdc, &RECT { left: 0, top: h - 1, right: w, bottom: h }, border_brush);
-                let _ = FillRect(hdc, &RECT { left: 0, top: 0, right: 1, bottom: h }, border_brush);
-                let _ = FillRect(hdc, &RECT { left: w - 1, top: 0, right: w, bottom: h }, border_brush);
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: w,
+                        bottom: 1,
+                    },
+                    border_brush,
+                );
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: h - 1,
+                        right: w,
+                        bottom: h,
+                    },
+                    border_brush,
+                );
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: 1,
+                        bottom: h,
+                    },
+                    border_brush,
+                );
+                let _ = FillRect(
+                    hdc,
+                    &RECT {
+                        left: w - 1,
+                        top: 0,
+                        right: w,
+                        bottom: h,
+                    },
+                    border_brush,
+                );
                 let _ = DeleteObject(border_brush);
 
                 if !state_ptr.is_null() {
@@ -2187,11 +2967,25 @@ unsafe extern "system" fn combo_popup_wndproc(
                     let font = create_font(font_h, false, "Segoe UI");
                     let old_font = SelectObject(hdc, font);
 
-                    for i in 0..state.theme_names.len().min(COMBO_POPUP_MAX_VISIBLE as usize) {
+                    for i in 0..state
+                        .theme_names
+                        .len()
+                        .min(COMBO_POPUP_MAX_VISIBLE as usize)
+                    {
                         let item_y = (i as i32) * item_h;
-                        let item_rc = RECT { left: 2, top: item_y, right: w - 2, bottom: item_y + item_h };
-                        let highlight = if i == state.theme_sel { Some(theme.selected) }
-                            else if state.hover_sel == Some(i) { Some(theme.hover) } else { None };
+                        let item_rc = RECT {
+                            left: 2,
+                            top: item_y,
+                            right: w - 2,
+                            bottom: item_y + item_h,
+                        };
+                        let highlight = if i == state.theme_sel {
+                            Some(theme.selected)
+                        } else if state.hover_sel == Some(i) {
+                            Some(theme.hover)
+                        } else {
+                            None
+                        };
                         if let Some(c) = highlight {
                             let blended = c.blend_over(theme.background);
                             let sel_brush = CreateSolidBrush(blended.to_colorref());
@@ -2201,8 +2995,17 @@ unsafe extern "system" fn combo_popup_wndproc(
                         let _ = SetTextColor(hdc, theme.text.to_colorref());
                         if let Some(name) = state.theme_names.get(i) {
                             let mut wz = to_utf16_z(name);
-                            let _ = DrawTextW(hdc, &mut wz, &mut RECT { left: 8, top: item_y, right: w - 8, bottom: item_y + item_h },
-                                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                            let _ = DrawTextW(
+                                hdc,
+                                &mut wz,
+                                &mut RECT {
+                                    left: 8,
+                                    top: item_y,
+                                    right: w - 8,
+                                    bottom: item_y + item_h,
+                                },
+                                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                            );
                         }
                     }
                     let _ = SelectObject(hdc, old_font);
@@ -2221,7 +3024,11 @@ unsafe extern "system" fn combo_popup_wndproc(
                     let item_h = (COMBO_POPUP_ITEM_HEIGHT as f32 * state.layout.scale) as i32;
                     let inner_y = if y > 0 { y - 1 } else { 0 };
                     let idx = (inner_y / item_h) as usize;
-                    let new_hover = if idx < state.theme_names.len() { Some(idx) } else { None };
+                    let new_hover = if idx < state.theme_names.len() {
+                        Some(idx)
+                    } else {
+                        None
+                    };
 
                     if state.hover_sel != new_hover {
                         state.hover_sel = new_hover;
@@ -2283,26 +3090,32 @@ unsafe extern "system" fn combo_popup_wndproc(
     }
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // Param edit popup (RichEdit inline editor)
 // ═══════════════════════════════════════════════════════════════════════
 
 unsafe extern "system" fn param_edit_rich_edit_subclass(
-    hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
 ) -> LRESULT {
     match msg {
         WM_CHAR => {
             let ch = (wparam.0 as u16) as u8 as char;
             if ch == '\r' {
                 if let Ok(parent) = unsafe { GetParent(hwnd) } {
-                    unsafe { let _ = SendMessageW(parent, WM_PARAM_EDIT_COMMIT, WPARAM(0), LPARAM(0)); }
+                    unsafe {
+                        let _ = SendMessageW(parent, WM_PARAM_EDIT_COMMIT, WPARAM(0), LPARAM(0));
+                    }
                 }
                 return LRESULT(0);
             }
             if ch == '\x1b' {
                 if let Ok(parent) = unsafe { GetParent(hwnd) } {
-                    unsafe { let _ = DestroyWindow(parent); }
+                    unsafe {
+                        let _ = DestroyWindow(parent);
+                    }
                 }
                 return LRESULT(0);
             }
@@ -2320,15 +3133,22 @@ unsafe extern "system" fn param_edit_rich_edit_subclass(
 }
 
 unsafe extern "system" fn param_edit_popup_wndproc(
-    hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
             let info = unsafe { &*(cs.lpCreateParams as *const ParamEditCreateInfo) };
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, info.state_ptr as isize); }
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, info.state_ptr as isize);
+            }
 
-            unsafe { let _ = LoadLibraryW(windows::core::w!("msftedit.dll")); }
+            unsafe {
+                let _ = LoadLibraryW(windows::core::w!("msftedit.dll"));
+            }
 
             if let Ok(edit) = unsafe {
                 CreateWindowExW(
@@ -2336,23 +3156,49 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                     windows::core::w!("RICHEDIT50W"),
                     PCWSTR::null(),
                     WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | ES_AUTOHSCROLL as u32),
-                    0, 0, info.width, info.height,
-                    hwnd, HMENU::default(),
+                    0,
+                    0,
+                    info.width,
+                    info.height,
+                    hwnd,
+                    HMENU::default(),
                     GetModuleHandleW(None).unwrap_or_default(),
                     None,
                 )
             } {
                 unsafe {
-                    let _ = SendMessageW(edit, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _), LPARAM(1));
-                    let old_proc = SetWindowLongPtrW(edit, GWLP_WNDPROC, param_edit_rich_edit_subclass as *const () as isize);
+                    let _ = SendMessageW(
+                        edit,
+                        WM_SETFONT,
+                        WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as _),
+                        LPARAM(1),
+                    );
+                    let old_proc = SetWindowLongPtrW(
+                        edit,
+                        GWLP_WNDPROC,
+                        param_edit_rich_edit_subclass as *const () as isize,
+                    );
                     SetWindowLongPtrW(edit, GWLP_USERDATA, old_proc);
                     let brush = CreateSolidBrush(info.brush_color.to_colorref());
-                    let _ = SetPropW(edit, windows::core::w!("EDIT_BRUSH"), HANDLE(brush.0 as *mut _));
-                    let _ = SendMessageW(edit, EM_SETBKGNDCOLOR, WPARAM(0), LPARAM(info.brush_color.to_colorref().0 as isize));
+                    let _ = SetPropW(
+                        edit,
+                        windows::core::w!("EDIT_BRUSH"),
+                        HANDLE(brush.0 as *mut _),
+                    );
+                    let _ = SendMessageW(
+                        edit,
+                        EM_SETBKGNDCOLOR,
+                        WPARAM(0),
+                        LPARAM(info.brush_color.to_colorref().0 as isize),
+                    );
                     let wz = &info.initial_text;
-                    let len = wz.iter().position(|&c| c == 0).unwrap_or(info.initial_text.len());
+                    let len = wz
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(info.initial_text.len());
                     if len > 0 {
-                        let _ = SendMessageW(edit, WM_SETTEXT, WPARAM(0), LPARAM(wz.as_ptr() as isize));
+                        let _ =
+                            SendMessageW(edit, WM_SETTEXT, WPARAM(0), LPARAM(wz.as_ptr() as isize));
                     }
                     let cf = CHARFORMATW {
                         cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
@@ -2361,7 +3207,12 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                         crTextColor: info.text_color.to_colorref(),
                         ..Default::default()
                     };
-                    let _ = SendMessageW(edit, EM_SETCHARFORMAT, WPARAM((SCF_DEFAULT | SCF_ALL) as usize), LPARAM(&cf as *const _ as isize));
+                    let _ = SendMessageW(
+                        edit,
+                        EM_SETCHARFORMAT,
+                        WPARAM((SCF_DEFAULT | SCF_ALL) as usize),
+                        LPARAM(&cf as *const _ as isize),
+                    );
                     let _ = SetWindowPos(edit, None, 0, 0, info.width, info.height, SWP_NOZORDER);
                     let _ = SetFocus(edit);
                 }
@@ -2373,19 +3224,30 @@ unsafe extern "system" fn param_edit_popup_wndproc(
             let w = (lparam.0 as i16) as i32;
             let h = ((lparam.0 >> 16) as i16) as i32;
             if let Ok(edit) = unsafe { GetWindow(hwnd, GW_CHILD) } {
-                unsafe { let _ = SetWindowPos(edit, None, 0, 0, w, h, SWP_NOZORDER); }
+                unsafe {
+                    let _ = SetWindowPos(edit, None, 0, 0, w, h, SWP_NOZORDER);
+                }
             }
             LRESULT(0)
         }
 
         WM_PARAM_EDIT_COMMIT => {
             if let Ok(edit) = unsafe { GetWindow(hwnd, GW_CHILD) } {
-                let text_len = unsafe { SendMessageW(edit, WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)) }.0 as usize;
+                let text_len = unsafe { SendMessageW(edit, WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)) }
+                    .0 as usize;
                 let mut buf = vec![0u16; text_len + 1];
-                unsafe { SendMessageW(edit, WM_GETTEXT, WPARAM(buf.len() as _), LPARAM(buf.as_mut_ptr() as isize)); }
+                unsafe {
+                    SendMessageW(
+                        edit,
+                        WM_GETTEXT,
+                        WPARAM(buf.len() as _),
+                        LPARAM(buf.as_mut_ptr() as isize),
+                    );
+                }
                 let new_text = String::from_utf16_lossy(&buf[..text_len]);
 
-                let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
+                let state_ptr =
+                    unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
                 if !state_ptr.is_null() {
                     let state = unsafe { &mut *state_ptr };
                     if let Some(idx) = state.param_edit_idx {
@@ -2402,19 +3264,24 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                     state.param_edit_idx = None;
                 }
             }
-            unsafe { let _ = DestroyWindow(hwnd); }
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
             LRESULT(0)
         }
 
         WM_ACTIVATE => {
             if loword(wparam.0 as u32) == 0 {
-                let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
+                let state_ptr =
+                    unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
                 if !state_ptr.is_null() {
                     let state = unsafe { &mut *state_ptr };
                     state.param_edit_popup = None;
                     state.param_edit_idx = None;
                 }
-                unsafe { let _ = DestroyWindow(hwnd); }
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
             }
             LRESULT(0)
         }
@@ -2436,8 +3303,9 @@ unsafe extern "system" fn param_edit_popup_wndproc(
     }
 }
 
-fn loword(dw: u32) -> u16 { (dw & 0xffff) as u16 }
-
+fn loword(dw: u32) -> u16 {
+    (dw & 0xffff) as u16
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Combo popup management
@@ -2453,18 +3321,28 @@ fn toggle_combo_popup(state: &mut SettingsState) {
 }
 
 fn open_combo_popup(state: &mut SettingsState) {
-    if state.combo_open.load(Ordering::SeqCst) { return; }
+    if state.combo_open.load(Ordering::SeqCst) {
+        return;
+    }
 
     let parent = state.hwnd;
     let lay = state.layout;
     let state_ptr = state as *mut SettingsState;
 
-    let mut combo_pt = POINT { x: lay.combo_x, y: lay.combo_y };
-    unsafe { let _ = ClientToScreen(parent, &mut combo_pt); }
+    let mut combo_pt = POINT {
+        x: lay.combo_x,
+        y: lay.combo_y,
+    };
+    unsafe {
+        let _ = ClientToScreen(parent, &mut combo_pt);
+    }
 
     let popup_w = COMBO_POPUP_WIDTH.max((COMBO_POPUP_WIDTH as f32 * lay.scale) as i32);
     let item_h = COMBO_POPUP_ITEM_HEIGHT.max((COMBO_POPUP_ITEM_HEIGHT as f32 * lay.scale) as i32);
-    let count = state.theme_names.len().min(COMBO_POPUP_MAX_VISIBLE as usize);
+    let count = state
+        .theme_names
+        .len()
+        .min(COMBO_POPUP_MAX_VISIBLE as usize);
     let popup_h = (count as i32) * item_h + 2;
 
     let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
@@ -2479,22 +3357,32 @@ fn open_combo_popup(state: &mut SettingsState) {
             WS_POPUP,
             combo_pt.x,
             combo_pt.y + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale) as i32),
-            popup_w, popup_h,
-            parent, HMENU::default(), hinstance, None,
+            popup_w,
+            popup_h,
+            parent,
+            HMENU::default(),
+            hinstance,
+            None,
         )
     };
 
     let Ok(popup) = popup else { return };
-    unsafe { let _ = SetWindowLongPtrW(popup, GWLP_USERDATA, state_ptr as isize); }
+    unsafe {
+        let _ = SetWindowLongPtrW(popup, GWLP_USERDATA, state_ptr as isize);
+    }
 
     state.combo_popup = Some(popup);
     state.combo_open.store(true, Ordering::SeqCst);
-    unsafe { let _ = ShowWindow(popup, SW_SHOWNA); }
+    unsafe {
+        let _ = ShowWindow(popup, SW_SHOWNA);
+    }
 }
 
 fn close_combo_popup(state: &mut SettingsState) {
     if let Some(popup) = state.combo_popup.take() {
-        unsafe { DestroyWindow(popup).ok(); }
+        unsafe {
+            DestroyWindow(popup).ok();
+        }
     }
     state.combo_open.store(false, Ordering::SeqCst);
 }
@@ -2502,7 +3390,6 @@ fn close_combo_popup(state: &mut SettingsState) {
 fn close_kind_popup(_state: &mut SettingsState) {
     // No-op: native HMENU is self-dismissing.
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Action kind menu (cascading popup)
@@ -2512,19 +3399,25 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
     unsafe {
         let main_menu = CreatePopupMenu();
         let Ok(main_menu) = main_menu else { return };
-        if main_menu == HMENU::default() { return; }
+        if main_menu == HMENU::default() {
+            return;
+        }
 
         use crate::core::action::ActionCategory;
         let mut categories: Vec<ActionCategory> = Vec::new();
         for editor_idx in 0..EDITOR_ACTION_NAMES.len() {
             let cat = editor_action_desc(editor_idx).category;
-            if !categories.contains(&cat) { categories.push(cat); }
+            if !categories.contains(&cat) {
+                categories.push(cat);
+            }
         }
 
         for &cat in &categories {
             let sub = CreatePopupMenu();
             let Ok(sub) = sub else { continue };
-            if sub == HMENU::default() { continue; }
+            if sub == HMENU::default() {
+                continue;
+            }
             for editor_idx in 0..EDITOR_ACTION_NAMES.len() {
                 let desc = editor_action_desc(editor_idx);
                 if desc.category == cat {
@@ -2534,13 +3427,26 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
                 }
             }
             let cat_label = to_utf16_z(cat.label());
-            let _ = AppendMenuW(main_menu, MF_POPUP | MF_STRING, sub.0 as usize, PCWSTR::from_raw(cat_label.as_ptr()));
+            let _ = AppendMenuW(
+                main_menu,
+                MF_POPUP | MF_STRING,
+                sub.0 as usize,
+                PCWSTR::from_raw(cat_label.as_ptr()),
+            );
         }
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
 
-        let chosen = TrackPopupMenu(main_menu, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y, 0, state.hwnd, None);
+        let chosen = TrackPopupMenu(
+            main_menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN,
+            pt.x,
+            pt.y,
+            0,
+            state.hwnd,
+            None,
+        );
         let chosen = chosen.0 as usize;
         let _ = DestroyMenu(main_menu);
 
@@ -2550,7 +3456,11 @@ fn open_kind_menu(state: &mut SettingsState, idx: usize) {
                 if state.bindings[idx].kind_idx != selected {
                     state.bindings[idx].kind_idx = selected;
                     let desc = editor_action_desc(selected);
-                    state.bindings[idx].param = if desc.param_key.is_some() { "5".to_string() } else { String::new() };
+                    state.bindings[idx].param = if desc.param_key.is_some() {
+                        "5".to_string()
+                    } else {
+                        String::new()
+                    };
                 }
                 paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
             }
@@ -2584,7 +3494,6 @@ fn handle_list_click(state: &mut SettingsState, idx: usize, x: i32, y: i32, row_
     }
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // File dialog (Run Program)
 // ═══════════════════════════════════════════════════════════════════════
@@ -2595,9 +3504,12 @@ fn pick_program_file(parent: HWND) -> Option<String> {
     unsafe {
         let mut ofn: windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW = mem::zeroed();
         let mut buf = [0u16; 1024];
-        let filter: Vec<u16> = "Programs\0*.exe;*.lnk;*.bat\0All Files\0*.*\0\0".encode_utf16().collect();
+        let filter: Vec<u16> = "Programs\0*.exe;*.lnk;*.bat\0All Files\0*.*\0\0"
+            .encode_utf16()
+            .collect();
 
-        ofn.lStructSize = mem::size_of::<windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW>() as u32;
+        ofn.lStructSize =
+            mem::size_of::<windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW>() as u32;
         ofn.hwndOwner = parent;
         ofn.lpstrFilter = PCWSTR(filter.as_ptr());
         ofn.lpstrFile = PWSTR(buf.as_mut_ptr());
@@ -2609,12 +3521,13 @@ fn pick_program_file(parent: HWND) -> Option<String> {
 
         if windows::Win32::UI::Controls::Dialogs::GetOpenFileNameW(&mut ofn).as_bool() {
             let len = (0..buf.len()).find(|&i| buf[i] == 0).unwrap_or(0);
-            if len > 0 { return Some(String::from_utf16_lossy(&buf[..len])); }
+            if len > 0 {
+                return Some(String::from_utf16_lossy(&buf[..len]));
+            }
         }
     }
     None
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Helpers
@@ -2627,7 +3540,6 @@ fn create_font(h: i32, bold: bool, family: &str) -> HFONT {
 fn monitor_work_rect() -> RECT {
     crate::renderer::primary_monitor_work_rect()
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Tests

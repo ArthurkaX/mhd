@@ -1,82 +1,250 @@
-# mhd — minimal Hotkey Daemon for Windows
+# mHD
 
-**mhd** (**m**inimal **h**otkey **d**aemon) is a lightweight background
-daemon that remaps keys, mouse buttons, and keyboard shortcuts using
-low-level Windows hooks. No drivers, no kernel components — just one
-portable `mhd.exe`.
+![mHD logo](icons/mHD_256.png)
 
-The "minimal" in its name is a design principle: the main daemon is kept
-as lean as possible — it consumes **0% CPU at idle** and uses only a few
-megabytes of RAM. All threads block on Win32 event/message waits
-(`GetMessageW`, `MsgWaitForMultipleObjects`) instead of polling. Optional
-UI components (tray icon, OSD, config editor, volume mixer) are implemented
-as lightweight Win32/GDI layered windows — no heavy frameworks like egui,
-winit, or WebView2.
+**Minimal Hotkey Daemon for Windows**
+
+One native tray process for hotkeys, remaps, monitor control, audio control, notes, timers, and small desktop tools.
+
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square)
+![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)
+![Native Win32](https://img.shields.io/badge/UI-native%20Win32-2F6F4E?style=flat-square)
+![No WebView](https://img.shields.io/badge/WebView-not%20required-555555?style=flat-square)
+
+**mHD** is a small Windows utility daemon for people who are tired of installing, launching, and keeping several separate tools around just to get a practical desktop workflow.
+
+The intent is to cover the everyday power-user actions that often end up split across products such as Windows PowerToys, monitor utilities, audio mixers, key remappers, launcher scripts, small note tools, timer apps, and window helpers. mHD puts those jobs behind one native tray process, one config file, and one hotkey system.
+
+It is not a replacement for every large productivity suite. The point is narrower: keep the useful parts close, fast, local, and lightweight.
+
+mHD ships as a single `mhd.exe`. It does not install a driver, does not require a service, does not need WebView2, and does not bring a large UI framework just to draw a few utility windows.
+
+The product is built around a simple idea:
+
+- one background daemon;
+- one tray icon;
+- one TOML config;
+- native Win32 overlays;
+- hotkeys for the tools you actually use;
+- no separate helper apps for every small task.
 
 ---
 
-## Architecture
+## At A Glance
+
+| Area | What mHD does |
+|------|---------------|
+| Input | Keyboard remaps, mouse bindings, scheme switching |
+| Automation | PowerShell commands, program launch, hotkey-driven actions |
+| Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
+| Audio | Master volume, per-app mixer, media key actions |
+| Desktop tools | Quick Note, Quick Draw, Pomodoro, power panel, CPU plan panel |
+| Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
+
+---
+
+## Positioning
+
+mHD is a compact desktop control layer for Windows.
+
+It is useful when you want one tool to handle:
+
+- keyboard and mouse remapping;
+- shortcut-driven automation;
+- monitor brightness and DDC/CI control;
+- per-app volume control;
+- media keys;
+- quick notes;
+- quick drawing;
+- Pomodoro timing;
+- power plan switching;
+- window always-on-top toggling;
+- process suspend/throttle behaviour;
+- small native control panels available from hotkeys or tray.
+
+The target user is someone who knows what they want their desktop to do and would rather configure a small daemon than keep a stack of unrelated utilities running.
+
+---
+
+## Screenshots
+
+![mHD settings and shortcuts](img/settings-shortcuts.png)
+
+Config editor with shortcut bindings and action selection.
+
+### Native utility panels
+
+| Volume Mixer | Monitor Control |
+|--------------|-----------------|
+| ![Volume Mixer](img/volume-mixer.png) | ![Monitor Control](img/monitor-control.png) |
+
+| Quick Note | Quick Draw |
+|------------|------------|
+| ![Quick Note](img/quick-note.png) | ![Quick Draw](img/quick-draw.png) |
+
+### CPU power plan panel
+
+![CPU Power Plan](img/cpu-power-plan.png)
+
+---
+
+## Runtime Model
+
+`mhd.exe` runs as one process with several internal threads:
 
 ```text
-mhd.exe (single binary)
+mhd.exe
 ├── Tray thread
-│   ├── System tray icon + context menu
-│   ├── About dialog (native layered window)
-│   ├── Config editor (native themed window)
-│   └── Volume Mixer launcher
-├── Hook thread (WH_KEYBOARD_LL / WH_MOUSE_LL)
-├── Worker thread (action dispatch: keys, PowerShell, DDC/CI, mixer)
-├── OSD thread (brightness overlay, native layered window)
-└── Volume Mixer thread (Core Audio + interactive layered window)
+│   ├── system tray icon and menu
+│   ├── About dialog
+│   ├── config editor
+│   └── quick access to utility overlays
+├── Hook thread
+│   ├── WH_KEYBOARD_LL and WH_MOUSE_LL hooks
+│   └── trigger capture and suppression
+├── Worker thread
+│   ├── action dispatch
+│   ├── PowerShell / program launch
+│   ├── DDC/CI monitor control
+│   └── power plan switching
+├── OSD thread
+│   └── native brightness overlay
+└── Overlay threads
+    ├── volume mixer
+    ├── monitor panel
+    ├── power panel
+    ├── quick draw
+    ├── quick note
+    ├── pomodoro timer
+    ├── CPU power panel
+    └── other native utility windows
 ```
 
-All components live in one process with **0% CPU at idle** and roughly
-**3–6 MB of committed RAM** (measured on Windows 11). Threads use blocking
-Win32 message/event waits (`GetMessageW`, `MsgWaitForMultipleObjects`, events),
-not polling. The UI is pure Win32/GDI layered windows — no `egui`, no `winit`,
-no OpenGL, no WebView2. This is what "minimal" means: every feature is
-built with the lightest possible Win32 primitives.
+The design goal is to keep the daemon responsive and the UI native. The hooks do their work without dragging in heavyweight UI frameworks or polling loops.
 
 ---
 
-## Features
+## Product Features
 
-- **Key remapping** — replace any key or shortcut with another via `SendInput`.
-- **Mouse button bindings** — bind side buttons (`mouseButton4`/`mouseButton5`) to actions.
-- **DDC/CI brightness and VCP** — adjust monitor brightness or arbitrary VCP codes.
-- **Brightness OSD** — native themed overlay for brightness changes.
-- **Interactive Volume Mixer** — master volume + per-app audio sessions via Core Audio.
-- **Run PowerShell** — execute arbitrary scripts/commands on a hotkey.
-- **Low-level hooks** — `WH_KEYBOARD_LL` / `WH_MOUSE_LL` with lock-free hot path.
-- **Config schemes** — switch between named binding schemes at runtime.
-- **Native themes** — JSON colour themes from `%USERPROFILE%\.config\mhd\themes\`.
-- **Styled settings panel** — native UI with theme selector, hover effects, DPI scaling.
-- **System tray menu** — reload config, edit config, open volume mixer, about, quit.
-- **Portable & tiny** — single binary, no installer, no runtime.
+### Hotkey and mouse bindings
+
+mHD listens for low-level keyboard and mouse events and maps them to actions. A binding can:
+
+- replace a key or shortcut with another key sequence;
+- launch a program;
+- run a PowerShell command;
+- open a utility overlay;
+- switch binding schemes;
+- control audio, brightness, or power state;
+- toggle process behaviour such as suspend/throttle/topmost.
+
+Bindings are configured in TOML. The action parser supports both simple one-field actions and structured actions with parameters.
+
+### Key remapping
+
+`replace_key` suppresses the original input and emits a replacement key combo through `SendInput`. This is the core remapping feature for key layout changes and ergonomic remaps.
+
+Examples:
+
+- `capslock -> alt+shift`
+- side mouse button -> `ctrl`
+- a dead key -> a custom shortcut
+
+### Mouse bindings
+
+Mouse buttons can be bound the same way as keyboard triggers. The codepath handles button down/up suppression so a remap behaves like a real input replacement rather than a duplicate event.
+
+### DDC/CI monitor control
+
+mHD can talk to monitors through DDC/CI and supports:
+
+- absolute brightness changes;
+- relative brightness changes;
+- arbitrary VCP codes;
+- a monitor panel overlay for direct adjustment.
+
+This is useful for external displays that expose brightness, input select, or other VCP controls over the I2C/DDC path.
+
+### Brightness OSD
+
+When brightness changes, mHD can show a native OSD. It is built as a layered Win32 window, not as a framework widget. The OSD is meant to be minimal, readable, and quick to dismiss.
+
+### Volume mixer
+
+The built-in mixer shows:
+
+- master output volume;
+- individual per-application audio sessions;
+- per-row mute and volume adjustment;
+- mouse wheel volume changes while hovering a row.
+
+It is designed as an interactive native window for day-to-day control without opening the full Windows sound UI.
+
+### Power controls
+
+mHD includes actions for:
+
+- switch to sleep / shutdown / wake-oriented power actions;
+- switch active Windows power plans;
+- toggle process suspension when a window loses focus;
+- toggle aggressive throttling when a process loses focus;
+- toggle always-on-top for the focused window.
+
+These actions are intended for people who want a small, direct utility layer rather than a large automation suite.
+
+### Utility overlays
+
+The included overlays are:
+
+- About dialog
+- Monitor panel
+- Power control panel
+- Quick Draw
+- Quick Note
+- Pomodoro timer
+- CPU power panel
+
+Each one is a native window with a narrow task and a minimal control surface.
+
+### Config editor and tray
+
+The tray provides the operational entry point:
+
+- reload config;
+- edit config;
+- open utility windows;
+- inspect and toggle supported features;
+- quit cleanly.
+
+The config editor is a native Win32 interface with grouped actions and supported parameter types. It exists so users can edit the common cases without hand-writing everything.
 
 ---
 
-## Quick Start
+## Build
 
-### 1. Build
+### Default build
 
 ```powershell
 cargo build --release
 ```
 
-Requires Rust 1.85+.
+This produces the normal public build.
 
-### 2. Run
+---
+
+## Run
 
 ```powershell
-.\mhd.exe              # tray + daemon (default)
+.\mhd.exe              # tray + daemon
 .\mhd.exe --daemon     # headless, no tray
 .\mhd.exe --quiet      # suppress startup messages
 ```
 
-### 3. Configure
+---
 
-On first run, `mhd` creates a default config at:
+## Configuration
+
+On first run, mHD creates:
 
 ```text
 %USERPROFILE%\.config\mhd\config.toml
@@ -88,45 +256,154 @@ You can override the config path with:
 $env:MHD_CONFIG = "C:\path\to\config.toml"
 ```
 
-Uncomment or add bindings, then restart mhd or select **Reload Config** from the
-tray menu. Use **Edit Config** from the tray to open the native settings panel.
+The config file is TOML. It can define:
+
+- startup binding scheme;
+- active theme;
+- volume step;
+- autostart;
+- quick note settings;
+- power plan order;
+- bindings.
 
 ---
 
-## Volume Mixer
+## Actions
 
-Open it via the tray menu (**Volume Mixer**) or bind the action:
+The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
+
+### Input
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `replace_key` | `keys` | Suppress the trigger and emit a replacement key combo via `SendInput`. |
+| `run_program` | `path` | Launch a program or file path directly. |
+
+### Automation
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `run_ps` | `command` | Run a PowerShell command. |
+| `switch_scheme` | `target_scheme` | Change the active binding scheme at runtime. |
+
+### Display
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `set_brightness` | `value` | Set brightness absolutely or relatively, depending on prefix. |
+| `brightness_up` | `value` | Increase brightness by the configured step. |
+| `brightness_down` | `value` | Decrease brightness by the configured step. |
+| `vcp` | `code`, `value` | Set or adjust an arbitrary VCP control code. |
+| `show_monitor_panel` | - | Open the monitor control overlay. |
+
+### Audio / Media
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `show_volume_mixer` | - | Open the interactive mixer window. |
+| `media_volume_up` | - | Send one volume-up media key step. |
+| `media_volume_down` | - | Send one volume-down media key step. |
+| `media_mute` | - | Toggle system mute. |
+| `media_play_pause` | - | Play or pause the active media session. |
+| `media_stop` | - | Stop playback. |
+| `media_last_track` | - | Go to the previous track. |
+| `media_next_track` | - | Go to the next track. |
+
+### System
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `toggle_topmost` | - | Toggle always-on-top for the focused window. |
+| `toggle_suspend_on_blur` | - | Suspend the focused process when it loses focus. |
+| `toggle_throttle_on_blur` | - | Apply Windows power throttling and one-CPU affinity when a process loses focus. |
+| `power_actions` | - | Open the power actions panel. |
+| `switch_power_plan` | `target` | Switch to a named power plan or `next`. |
+| `show_cpu_panel` | - | Open the CPU power plan panel. |
+| `quit` | - | Shut mHD down cleanly. |
+
+### Tools
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `quick_draw` | - | Open the quick drawing overlay. |
+| `quick_note` | - | Open the quick note overlay. |
+| `pomodoro` | - | Open the Pomodoro timer overlay. |
+
+---
+
+## Example Bindings
+
+The main use case for `replace_key` is taking a shortcut that is annoying, hard to reach, or difficult to change in Windows or in another application, and mapping it to something easier. mHD can turn one key or mouse button into a full key combination, so you do not have to accept the defaults chosen by Windows or by the app.
 
 ```toml
+# Quit mHD.
+[[binding]]
+trigger = "ctrl+alt+f12"
+action = "quit"
+
+# CapsLock -> Alt+Shift.
+# Useful when Alt+Shift is your Windows keyboard layout switch:
+# one key changes language/layout instead of a two-key chord.
+[[binding]]
+trigger = "capslock"
+action = "replace_key"
+keys = "alt+shift"
+
+# Mouse side buttons -> virtual desktop navigation.
+# Windows uses Ctrl+Win+Left/Right for this, which is not comfortable
+# during normal mouse-driven work. mHD can put that action under your thumb.
+[[binding]]
+trigger = "mouseButton4"
+action = "replace_key"
+keys = "ctrl+win+left"
+
+[[binding]]
+trigger = "mouseButton5"
+action = "replace_key"
+keys = "ctrl+win+right"
+
+# Brightness up / down through DDC/CI.
+# Useful for external monitors where Windows brightness controls do not work.
+[[binding]]
+trigger = "ctrl+alt+numpad_add"
+action = "brightness_up"
+value = "5"
+
+[[binding]]
+trigger = "ctrl+alt+numpad_subtract"
+action = "brightness_down"
+value = "5"
+
+# Open the compact volume mixer instead of the Windows sound settings.
 [[binding]]
 trigger = "ctrl+alt+numpad_star"
 action = "show_volume_mixer"
+
+# Suspend the focused app when it loses focus.
+# Useful for heavy games/tools that should stop consuming resources in background.
+[[binding]]
+trigger = "ctrl+alt+f9"
+action = "toggle_suspend_on_blur"
+
+# Throttle the focused app when it loses focus.
+# Less aggressive than suspend: the process keeps running, but with reduced CPU pressure.
+[[binding]]
+trigger = "ctrl+alt+f10"
+action = "toggle_throttle_on_blur"
+
+# Launch Windows Terminal from a shortcut.
+[[binding]]
+trigger = "ctrl+alt+t"
+action = "run_ps"
+command = "Start-Process wt"
+
 ```
-
-The mixer shows:
-
-- `Master Volume` (default render endpoint)
-- active per-application audio sessions
-
-Controls:
-
-- click a volume bar — set volume
-- drag a volume bar — adjust continuously
-- hover a row + mouse wheel — adjust by small steps
-- drag the header — move the mixer window
-- `Esc` — close
-
-Auto-hide behaviour:
-
-- on show: long timeout (`12s`)
-- while mouse is over the window: timeout disabled
-- after mouse leaves: short timeout (`2s`)
 
 ---
 
 ## Themes
 
-mhd loads JSON colour themes from:
+mHD loads JSON colour themes from:
 
 ```text
 %USERPROFILE%\.config\mhd\themes
@@ -138,17 +415,17 @@ Set the active theme in `config.toml`:
 theme = "night_glass"
 ```
 
-The file must be:
+The file must exist at:
 
 ```text
 %USERPROFILE%\.config\mhd\themes\night_glass.json
 ```
 
-### Supported colour keys
+Supported keys:
 
 | Key | Used for |
 |-----|----------|
-| `background` | OSD / About / editor / mixer background |
+| `background` | OSD, About, editor, mixer background |
 | `surface` | Edit control background |
 | `border` | Separator lines |
 | `text` | Primary text |
@@ -157,120 +434,7 @@ The file must be:
 | `element.selected` | Selection highlight |
 | `element.hover` | Hover state |
 
-All keys are optional — missing values fall back to the built-in dark theme.
-
----
-
-## Configuration
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `active_scheme` | `"default"` | Startup binding scheme |
-| `theme` | — | Active colour theme name (from `themes/` dir) |
-| `volume_step` | `1` | Step size for `media_volume_up` / `media_volume_down` (each step sends one VK press) |
-
----
-
-## Actions
-
-| Action | Fields | Description |
-|--------|--------|-------------|
-| `replace_key` | `keys` | Suppress trigger and send different keys via `SendInput` |
-| `set_brightness` | `value` | Adjust DDC/CI brightness (`+5`, `-5`, or absolute `50`) — *backward compat* |
-| `brightness_up` | `value` | Increase monitor brightness (default `5`, configurable step) |
-| `brightness_down` | `value` | Decrease monitor brightness (default `5`, configurable step) |
-| `vcp` | `code`, `value` | Set or adjust arbitrary DDC/CI VCP code |
-| `run_ps` | `command` | Run a PowerShell command |
-| `switch_scheme` | `target_scheme` | Switch active binding scheme |
-| `show_volume_mixer` | — | Show the interactive Volume Mixer overlay |
-| `media_volume_up` | — | Increase system volume by one step |
-| `media_volume_down` | — | Decrease system volume by one step |
-| `media_mute` | — | Toggle system mute |
-| `media_play_pause` | — | Play or pause current media |
-| `media_stop` | — | Stop media playback |
-| `media_last_track` | — | Go to previous track |
-| `media_next_track` | — | Go to next track |
-| `toggle_topmost` | — | Toggle always‑on‑top for the currently focused window |
-| `toggle_suspend_on_blur` | — | Toggle full process suspension for the focused process when it loses focus |
-| `toggle_throttle_on_blur` | — | Toggle Windows power throttling + one-CPU affinity for the focused process when it loses focus |
-| `quit` | — | Gracefully shut down mhd |
-
-The config editor exposes actions grouped by category (General, Display, Media,
-System) in a cascading menu. Advanced actions such as `vcp` and `switch_scheme`
-can be edited directly in TOML.
-
-### Example bindings
-
-```toml
-# Quit (Ctrl+Alt+F12)
-[[binding]]
-trigger = "ctrl+alt+f12"
-action = "quit"
-
-# CapsLock → Alt+Shift (keyboard layout switch)
-[[binding]]
-trigger = "capslock"
-action = "replace_key"
-keys = "alt+shift"
-
-# Brightness up / down (step defaults to 5, can be changed)
-[[binding]]
-trigger = "ctrl+alt+numpad_add"
-action = "brightness_up"
-value = "5"
-
-[[binding]]
-trigger = "ctrl+alt+numpad_subtract"
-action = "brightness_down"
-value = "5"
-
-# Show Volume Mixer
-[[binding]]
-trigger = "ctrl+alt+numpad_star"
-action = "show_volume_mixer"
-
-# Throttle the focused game/app when it loses focus
-[[binding]]
-trigger = "ctrl+alt+f10"
-action = "toggle_throttle_on_blur"
-
-# Suspend the focused game/app when it loses focus
-[[binding]]
-trigger = "ctrl+alt+f9"
-action = "toggle_suspend_on_blur"
-
-# Open Windows Terminal
-[[binding]]
-trigger = "ctrl+alt+t"
-action = "run_ps"
-command = "Start-Process wt"
-
-# Set monitor input to HDMI 1 (0x60 is Input Select, 17 is HDMI 1 on many monitors)
-[[binding]]
-trigger = "ctrl+alt+f1"
-action = "vcp"
-code = "0x60"
-value = "17"
-```
-
-### Schemes
-
-Bindings belong to the `default` scheme unless `scheme` is specified.
-
-```toml
-active_scheme = "default"
-
-[[binding]]
-scheme = "gaming"
-trigger = "mouseButton4"
-action = "replace_key"
-keys = "ctrl"
-
-[[binding]]
-trigger = "ctrl+alt+g"
-action = "switch_scheme"
-target_scheme = "gaming"
-```
+Missing keys fall back to the built-in default theme.
 
 ---
 
@@ -278,47 +442,64 @@ target_scheme = "gaming"
 
 ```text
 mhd/
-├── Cargo.toml                    — workspace
+├── Cargo.toml
 └── mhd-daemon/
-    ├── Cargo.toml                — binary crate (`mhd`)
+    ├── Cargo.toml
     └── src/
-        ├── main.rs               — CLI entry, startup orchestration
-        ├── app.rs                — App lifecycle and DaemonControl
-        ├── platform.rs           — Win32 helper layer (keys/events)
-        ├── action.rs             — Action definitions + action registry
-        ├── worker.rs             — Action execution thread
-        ├── hook.rs               — WH_KEYBOARD_LL / WH_MOUSE_LL hooks
-        ├── trigger.rs            — Hotkey/mouse trigger parsing
-        ├── tray.rs               — System tray icon + context menu
-        ├── volume_mixer.rs       — Core Audio interactive mixer overlay
-        ├── monitor.rs            — DDC/CI via dxva2.dll, EDID monitor name
-        ├── native_theme.rs       — JSON theme loader + colour helpers
-        ├── about.rs              — Styled native About dialog
-        ├── config_editor.rs      — Styled native settings panel
+        ├── main.rs
+        ├── app.rs
+        ├── core/
+        │   ├── action.rs
+        │   ├── hook.rs
+        │   ├── native_theme.rs
+        │   ├── platform.rs
+        │   ├── trigger.rs
+        │   └── worker.rs
         ├── config/
-        │   ├── mod.rs            — Validated config model
-        │   ├── raw.rs            — TOML-deserialised raw config
-        │   └── path.rs           — Config path + example config
-        └── osd/
-            ├── mod.rs            — Brightness OSD thread/window
-            └── painter.rs        — GDI/DIB drawing helpers
+        │   ├── mod.rs
+        │   ├── raw.rs
+        │   └── path.rs
+        ├── overlays/
+        │   ├── about.rs
+        │   ├── autostart.rs
+        │   ├── cpu_plan.rs
+        │   ├── draw.rs
+        │   ├── monitor.rs
+        │   ├── note.rs
+        │   ├── pomodoro.rs
+        │   ├── power.rs
+        │   ├── suspend.rs
+        │   ├── throttle.rs
+        │   ├── topmost.rs
+        │   ├── tray.rs
+        │   └── volume.rs
+        ├── osd/
+        │   ├── mod.rs
+        │   └── painter.rs
+        ├── renderer.rs
+        └── win32/
+            ├── mod.rs
+            └── text_host.rs
 ```
 
 ---
 
-## Internals
+## Optional Developer Build
 
-| Thread | Role |
-|--------|------|
-| **Tray** | Tray icon, context menu, About dialog, config editor |
-| **Hook** | Low-level keyboard/mouse hooks, blocking `GetMessageW`; lock-free state lookup in callbacks |
-| **Worker** | Key send, scheme switch, DDC/CI calls, PowerShell, mixer show requests |
-| **OSD** | Brightness layered overlay, `MsgWaitForMultipleObjects`, auto-hide |
-| **Volume Mixer** | Core Audio enumeration, interactive layered overlay, hover/drag/wheel input |
+The normal release build does not include `blackbox`.
 
-The low-level hook hot path avoids mutex locking so desktop switches or UI stalls
-do not block Windows low-level hook callbacks.
+`blackbox` is left in the source tree as an optional compile-time module for personal developer builds. It is a small local SQLite-backed activity logger that can record daemon/session events, input activity categories, foreground app changes, quick notes, and a few custom tool events.
 
-All UI components (OSD, About dialog, config editor, volume mixer) are native
-Win32 layered windows with GDI drawing — no framework dependencies. This keeps
-the binary small (under 3 MB) and memory usage predictable.
+It writes to:
+
+```text
+%USERPROFILE%\.config\mhd\blackbox\blackbox.db
+```
+
+Build it explicitly when you want that local diagnostic/history layer:
+
+```powershell
+cargo build --release --features blackbox
+```
+
+It is intentionally opt-in and should be treated as a local build option, not as part of the normal product.

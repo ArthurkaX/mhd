@@ -6,15 +6,15 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR,
+    DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DwmSetWindowAttribute,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, SetWindowPos, SetWindowTextW,
-    GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
+    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, HWND_NOTOPMOST,
+    HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, SetWindowTextW, WS_EX_TOPMOST,
 };
+use windows::core::PCWSTR;
 
 /// ASCII marker appended to the window title when pinned.
 /// Renders in any font on any Windows version.
@@ -51,9 +51,19 @@ unsafe fn pin(hwnd: HWND) {
     add_title_marker(hwnd);
 
     // Set DWM border colour (accent tint) — works on Win10 20H1+
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &PIN_BORDER_COLOR as *const _ as *const _, 4);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_BORDER_COLOR,
+        &PIN_BORDER_COLOR as *const _ as *const _,
+        4,
+    );
     // Also tint the caption area slightly
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &PIN_BORDER_COLOR as *const _ as *const _, 4);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR,
+        &PIN_BORDER_COLOR as *const _ as *const _,
+        4,
+    );
 }
 
 unsafe fn unpin(hwnd: HWND) {
@@ -63,8 +73,18 @@ unsafe fn unpin(hwnd: HWND) {
     remove_title_marker(hwnd);
 
     // Reset DWM border / caption colour to default
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &RESET_COLOR as *const _ as *const _, 4);
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &RESET_COLOR as *const _ as *const _, 4);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_BORDER_COLOR,
+        &RESET_COLOR as *const _ as *const _,
+        4,
+    );
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR,
+        &RESET_COLOR as *const _ as *const _,
+        4,
+    );
 }
 
 unsafe fn add_title_marker(hwnd: HWND) {

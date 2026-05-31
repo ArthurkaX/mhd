@@ -1,13 +1,11 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
-    SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
-    TRANSPARENT,
+    CreateSolidBrush, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteObject,
+    DrawTextW, FillRect, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 
 use crate::native_theme::NativeTheme;
-use crate::renderer::{DibFrame, to_utf16_z, create_font, draw_rounded_rect};
+use crate::renderer::{DibFrame, create_font, draw_rounded_rect, to_utf16_z};
 
 pub fn paint_osd(
     hwnd: HWND,
@@ -73,7 +71,12 @@ pub fn paint_osd(
     };
     let mut label_wide = to_utf16_z("Brightness");
     unsafe {
-        let _ = DrawTextW(frame.dc(), &mut label_wide, &mut lbl_rc, DT_LEFT | DT_SINGLELINE);
+        let _ = DrawTextW(
+            frame.dc(),
+            &mut label_wide,
+            &mut lbl_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
     }
     unsafe {
         let _ = SetTextColor(frame.dc(), theme.text.to_colorref());
@@ -203,5 +206,3 @@ pub fn paint_notify(
     let pos_y = work.top + (work.bottom - work.top - height) / 2;
     frame.present_layered(hwnd, pos_x, pos_y, 255);
 }
-
-

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["blackbox"]
+default = []
 blackbox = ["dep:rusqlite"]
 debug-dump = ["windows/Win32_System_Diagnostics_Debug", "windows/Win32_System_Kernel"]
 

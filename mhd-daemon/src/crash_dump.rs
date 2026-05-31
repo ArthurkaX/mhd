@@ -16,11 +16,15 @@ use windows::Win32::System::Diagnostics::Debug::{
     MiniDumpWithFullMemoryInfo, MiniDumpWithHandleData, MiniDumpWithThreadInfo,
     MiniDumpWithUnloadedModules, MiniDumpWriteDump, SetUnhandledExceptionFilter,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
+};
 
 pub fn install() {
     // Capture Rust panic backtraces even in release when possible.
-    unsafe { std::env::set_var("RUST_BACKTRACE", "full"); }
+    unsafe {
+        std::env::set_var("RUST_BACKTRACE", "full");
+    }
 
     std::panic::set_hook(Box::new(|info| {
         let ts = epoch_secs();
@@ -31,14 +35,15 @@ pub fn install() {
             .unwrap_or_else(|| "unknown".to_string());
         let bt = std::backtrace::Backtrace::force_capture();
 
-        let text = format!(
-            "mhd panic\n timestamp: {ts}\n location: {loc}\n message: {msg}\n\n{bt}\n"
-        );
+        let text =
+            format!("mhd panic\n timestamp: {ts}\n location: {loc}\n message: {msg}\n\n{bt}\n");
         write_debug_log(&text);
         let _ = write_minidump(None, "panic");
     }));
 
-    unsafe { let _ = SetUnhandledExceptionFilter(Some(unhandled_exception_filter)); }
+    unsafe {
+        let _ = SetUnhandledExceptionFilter(Some(unhandled_exception_filter));
+    }
     write_debug_log("debug-dump installed\n");
 }
 
@@ -51,7 +56,11 @@ unsafe extern "system" fn unhandled_exception_filter(info: *const EXCEPTION_POIN
 fn write_minidump(exception: Option<*mut EXCEPTION_POINTERS>, kind: &str) -> std::io::Result<()> {
     let ts = epoch_secs();
     let path = std::env::temp_dir().join(format!("mhd_{kind}_{ts}.dmp"));
-    let file = OpenOptions::new().create(true).write(true).truncate(true).open(&path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)?;
     let hfile = HANDLE(file.as_raw_handle() as *mut _);
 
     let mut ex_info = exception.map(|ptr| MINIDUMP_EXCEPTION_INFORMATION {

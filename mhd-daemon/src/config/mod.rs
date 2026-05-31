@@ -1,21 +1,21 @@
-pub mod path;
-pub mod raw;
 pub mod editor;
+pub mod editor_hittest;
 pub mod editor_layout;
 pub mod editor_state;
-pub mod editor_hittest;
 pub mod editor_theme;
+pub mod path;
+pub mod raw;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use self::raw::RawConfig;
 use crate::action::Action;
-use crate::trigger::parse_trigger;
 #[cfg(feature = "blackbox")]
 use crate::blackbox::BlackboxConfig;
-use crate::overlays::note::QuickNoteConfig;
 use crate::config::path::home_dir;
-use self::raw::RawConfig;
+use crate::overlays::note::QuickNoteConfig;
+use crate::trigger::parse_trigger;
 
 fn default_notes_dir() -> PathBuf {
     home_dir()
@@ -124,12 +124,13 @@ impl AppConfig {
         // Validate that all switch_scheme targets exist
         for binding in &bindings {
             if let Action::SwitchScheme { target_scheme } = &binding.action
-                && !scheme_names.contains(target_scheme) {
-                    return Err(format!(
-                        "switch_scheme target '{}' does not exist in config",
-                        target_scheme
-                    ));
-                }
+                && !scheme_names.contains(target_scheme)
+            {
+                return Err(format!(
+                    "switch_scheme target '{}' does not exist in config",
+                    target_scheme
+                ));
+            }
         }
 
         // Warn about duplicate triggers within same scheme (non-fatal)
@@ -157,12 +158,29 @@ impl AppConfig {
             volume_step: raw.volume_step.unwrap_or(1),
             #[cfg(feature = "blackbox")]
             blackbox: BlackboxConfig {
-                enabled: raw.blackbox.as_ref().and_then(|b| b.enabled).unwrap_or(false),
-                idle_seconds: raw.blackbox.as_ref().and_then(|b| b.idle_seconds).unwrap_or(300),
+                enabled: raw
+                    .blackbox
+                    .as_ref()
+                    .and_then(|b| b.enabled)
+                    .unwrap_or(false),
+                idle_seconds: raw
+                    .blackbox
+                    .as_ref()
+                    .and_then(|b| b.idle_seconds)
+                    .unwrap_or(300),
             },
             quicknote: QuickNoteConfig {
-                enabled: raw.quicknote.as_ref().and_then(|q| q.enabled).unwrap_or(true),
-                notes_dir: raw.quicknote.as_ref().and_then(|q| q.notes_dir.as_ref()).map(PathBuf::from).unwrap_or_else(default_notes_dir),
+                enabled: raw
+                    .quicknote
+                    .as_ref()
+                    .and_then(|q| q.enabled)
+                    .unwrap_or(true),
+                notes_dir: raw
+                    .quicknote
+                    .as_ref()
+                    .and_then(|q| q.notes_dir.as_ref())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(default_notes_dir),
             },
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,

@@ -20,16 +20,16 @@
 
 use std::sync::OnceLock;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::Controls::RichEdit::{
     CFE_EFFECTS, CFM_COLOR, CHARFORMATW, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_DEFAULT,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::PCWSTR;
 
 use crate::core::native_theme::Argb;
 
@@ -50,19 +50,14 @@ pub struct TextHost {
 }
 
 // Re‑export the subclass signature for convenience.
-pub type EditWndProc =
-    unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
+pub type EditWndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
 
 // ── msftedit.dll loader ────────────────────────────────────────────────
 
 /// Ensure `msftedit.dll` is loaded. Safe to call multiple times.
 fn ensure_msftedit() -> bool {
     static LOADED: OnceLock<bool> = OnceLock::new();
-    *LOADED.get_or_init(|| {
-        unsafe {
-            LoadLibraryW(windows::core::w!("msftedit.dll")).is_ok()
-        }
-    })
+    *LOADED.get_or_init(|| unsafe { LoadLibraryW(windows::core::w!("msftedit.dll")).is_ok() })
 }
 
 /// RichEdit 5.0 class name (not exported by `windows` crate directly).
@@ -96,7 +91,12 @@ impl TextHost {
             TextHostKind::Edit => None,
             TextHostKind::RichEdit => {
                 ensure_msftedit();
-                Some(MSFTEDIT_CLASS.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>())
+                Some(
+                    MSFTEDIT_CLASS
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect::<Vec<u16>>(),
+                )
             }
         };
         let class_ptr = match kind {
@@ -136,8 +136,7 @@ impl TextHost {
 
         // Subclass — store old proc in GWLP_USERDATA (standard Windows pattern)
         unsafe {
-            let old_proc =
-                SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wndproc as *const () as isize);
+            let old_proc = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wndproc as *const () as isize);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, old_proc);
         }
 
@@ -191,12 +190,7 @@ impl TextHost {
     /// Replace the control's font.
     pub fn set_font(&self, font: HFONT) {
         unsafe {
-            let _ = SendMessageW(
-                self.hwnd,
-                WM_SETFONT,
-                WPARAM(font.0 as _),
-                LPARAM(1),
-            );
+            let _ = SendMessageW(self.hwnd, WM_SETFONT, WPARAM(font.0 as _), LPARAM(1));
         }
     }
 
@@ -298,8 +292,7 @@ pub fn get_edit_text(hwnd: HWND) -> String {
 pub unsafe fn steal_focus(parent: HWND, child: HWND) {
     unsafe {
         let our_tid = GetCurrentThreadId();
-        let fore_tid =
-            GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let fore_tid = GetWindowThreadProcessId(GetForegroundWindow(), None);
         if fore_tid != our_tid && fore_tid != 0 {
             let _ = AttachThreadInput(our_tid, fore_tid, true);
             let _ = SetForegroundWindow(parent);

@@ -4,8 +4,7 @@
 //! editor state and layout geometry.
 
 use crate::config::editor_layout::{
-    COMBO_HIT_HEIGHT, SECTION_HEADER_HEIGHT_BASE,
-    SECTION_GAP_BASE, ADVANCED_BUTTONS,
+    ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
     editor_action_desc,
 };
 use crate::config::editor_state::{SettingsHit, SettingsPage, SettingsState};
@@ -35,13 +34,19 @@ fn hit_test_general(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     }
 
     // Quick Note browse button
-    let notes_divider_y = lay.autostart_y + (20.0 * lay.scale) as i32 + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
+    let notes_divider_y = lay.autostart_y
+        + (20.0 * lay.scale) as i32
+        + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
     let notes_header_y = notes_divider_y + (SECTION_GAP_BASE as f32 * lay.scale) as i32 / 2;
     let notes_path_y = notes_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale) as i32;
     let notes_row_h = (28.0 * lay.scale) as i32;
     let browse_btn_w = (80.0 * lay.scale) as i32;
     let browse_x = lay.combo_x + lay.combo_w - browse_btn_w;
-    if y >= notes_path_y && y < notes_path_y + notes_row_h && x >= browse_x && x < browse_x + browse_btn_w {
+    if y >= notes_path_y
+        && y < notes_path_y + notes_row_h
+        && x >= browse_x
+        && x < browse_x + browse_btn_w
+    {
         return SettingsHit::NotesDirBrowseBtn;
     }
 
@@ -57,7 +62,13 @@ fn hit_test_shortcuts(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         return SettingsHit::None;
     }
 
-    let content_h = state.bindings.len() as i32 * lay.row_h + if state.expanded_idx.is_some() { lay.accordion_h } else { 0 } + lay.row_h;
+    let content_h = state.bindings.len() as i32 * lay.row_h
+        + if state.expanded_idx.is_some() {
+            lay.accordion_h
+        } else {
+            0
+        }
+        + lay.row_h;
 
     // Scrollbar
     if content_h > lay.list_h {
@@ -125,7 +136,13 @@ fn hit_test_advanced(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
 
 // ── Accordion hit‑test ────────────────────────────────────────────
 
-fn hit_test_accordion(state: &SettingsState, x: i32, y: i32, accordion_x: i32, accordion_y: i32) -> SettingsHit {
+fn hit_test_accordion(
+    state: &SettingsState,
+    x: i32,
+    y: i32,
+    accordion_x: i32,
+    accordion_y: i32,
+) -> SettingsHit {
     let lay = &state.layout;
     if state.expanded_idx.is_none() {
         return SettingsHit::None;
@@ -136,7 +153,11 @@ fn hit_test_accordion(state: &SettingsState, x: i32, y: i32, accordion_x: i32, a
     let panel_w = pw + gap * 2;
     let panel_h = lay.accordion_h;
 
-    if x < accordion_x || x >= accordion_x + panel_w || y < accordion_y || y >= accordion_y + panel_h {
+    if x < accordion_x
+        || x >= accordion_x + panel_w
+        || y < accordion_y
+        || y >= accordion_y + panel_h
+    {
         return SettingsHit::None;
     }
 
@@ -168,7 +189,11 @@ fn hit_test_accordion(state: &SettingsState, x: i32, y: i32, accordion_x: i32, a
     // Row 2: parameter field
     if y >= cur_y && y < cur_y + btn_h {
         let desc = state.expanded_idx.and_then(|idx| {
-            if idx < state.bindings.len() { Some(editor_action_desc(state.acc_kind_idx)) } else { None }
+            if idx < state.bindings.len() {
+                Some(editor_action_desc(state.acc_kind_idx))
+            } else {
+                None
+            }
         });
         if desc.map(|d| d.param_schema) == Some(crate::action::ActionParamSchema::KeyMapping) {
             let param_field_w = pw - btn_h - gap;
@@ -236,9 +261,12 @@ pub fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         let tab_start_x = (lay.win_w - tab_total_w) / 2;
         let idx = if x >= tab_start_x && x < tab_start_x + lay.tab_w {
             Some(0usize)
-        } else if x >= tab_start_x + lay.tab_w + lay.tab_gap && x < tab_start_x + 2 * lay.tab_w + lay.tab_gap {
+        } else if x >= tab_start_x + lay.tab_w + lay.tab_gap
+            && x < tab_start_x + 2 * lay.tab_w + lay.tab_gap
+        {
             Some(1usize)
-        } else if x >= tab_start_x + 2 * (lay.tab_w + lay.tab_gap) && x < tab_start_x + tab_total_w {
+        } else if x >= tab_start_x + 2 * (lay.tab_w + lay.tab_gap) && x < tab_start_x + tab_total_w
+        {
             Some(2usize)
         } else {
             None

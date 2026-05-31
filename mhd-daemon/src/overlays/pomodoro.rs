@@ -19,12 +19,14 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::PCWSTR;
 
 use crate::app::SendHwnd;
 use crate::core::native_theme::Argb;
@@ -39,19 +41,25 @@ unsafe extern "system" {
 
 // ── Layout ───────────────────────────────────────────────────────────
 
-const WIN_W: i32 = 400;
-const WIN_H: i32 = 260;
-const PAD: i32 = 12;
-const HEADER_H: i32 = 34;
-const INPUT_H: i32 = 28;
-const BTN_H: i32 = 30;
-const BTN_W: i32 = 72;
+const WIN_W: i32 = 460;
+const WIN_H: i32 = 330;
+const PAD: i32 = 18;
+const HEADER_H: i32 = 46;
+const INPUT_Y: i32 = 78;
+const INPUT_H: i32 = 32;
+const TIMER_Y: i32 = 132;
+const PROGRESS_Y: i32 = 220;
+const BTN_H: i32 = 34;
+const BTN_W: i32 = 92;
+const BTN_GAP: i32 = 10;
+const CLOSE_SIZE: i32 = 26;
 const DAEMON_CLS: &str = "mhd_pomodoro_daemon_cls";
 const OVERLAY_CLS: &str = "mhd_pomodoro_overlay_cls";
 
 const TIMER_ID: usize = 1;
 
 const DEFAULT_WORK_SECS: u32 = 25 * 60;
+const DEFAULT_BREAK_SECS: u32 = 5 * 60;
 const EXTEND_SECS: u32 = 5 * 60;
 
 // ── Custom messages ──────────────────────────────────────────────────
@@ -60,13 +68,13 @@ const WM_POM_START: u32 = WM_APP + 100;
 const WM_POM_PAUSE: u32 = WM_APP + 101;
 const WM_POM_STOP: u32 = WM_APP + 102;
 const WM_POM_EXTEND: u32 = WM_APP + 103;
-const WM_POM_SET_TASK: u32 = WM_APP + 104;  // wparam = overlay HWND, lparam = string ptr
-const WM_POM_REGISTER_OVERLAY: u32 = WM_APP + 105;  // wparam = overlay HWND
+const WM_POM_SET_TASK: u32 = WM_APP + 104; // wparam = overlay HWND, lparam = string ptr
+const WM_POM_REGISTER_OVERLAY: u32 = WM_APP + 105; // wparam = overlay HWND
 const WM_POM_UNREGISTER_OVERLAY: u32 = WM_APP + 106;
-const WM_POM_BREAK: u32 = WM_APP + 107;  // start a break timer
+const WM_POM_BREAK: u32 = WM_APP + 107; // start a break timer
 
 // Daemon → Overlay
-const WM_POM_UPDATE: u32 = WM_APP + 200;  // wparam = remaining_secs, lparam = phase as u32
+const WM_POM_UPDATE: u32 = WM_APP + 200; // wparam = remaining_secs, lparam = phase as u32
 
 // ── Debug logging ────────────────────────────────────────────────────
 
@@ -164,13 +172,19 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, bb: bool) {
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_overlay(state_clone, theme, bb)
             }));
-            if r.is_err() { plog("overlay thread panic caught"); }
+            if r.is_err() {
+                plog("overlay thread panic caught");
+            }
             plog("overlay thread end");
         })
         .ok();
 }
 
-fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_theme::NativeTheme, bb: bool) {
+fn run_overlay(
+    state: Arc<Mutex<PomodoroState>>,
+    theme: crate::core::native_theme::NativeTheme,
+    bb: bool,
+) {
     let cls = to_utf16_z(OVERLAY_CLS);
     let hi: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap_or_default() }.into();
 
@@ -180,6 +194,7 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
             lpfnWndProc: Some(overlay_wndproc),
             hInstance: hi,
             hbrBackground: HBRUSH(2 as _),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             lpszClassName: PCWSTR::from_raw(cls.as_ptr()),
             ..Default::default()
         };
@@ -198,16 +213,27 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
             PCWSTR::from_raw(cls.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
-            0, 0, WIN_W, WIN_H,
-            None, None, hi, None,
+            0,
+            0,
+            WIN_W,
+            WIN_H,
+            None,
+            None,
+            hi,
+            None,
         )
     } {
         Ok(h) => h,
-        Err(e) => { plog(format!("CreateWindowEx failed: {e}")); return; }
+        Err(e) => {
+            plog(format!("CreateWindowEx failed: {e}"));
+            return;
+        }
     };
 
     if theme.background.a < 255 {
-        unsafe { let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), theme.background.a, LWA_ALPHA); }
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), theme.background.a, LWA_ALPHA);
+        }
     }
 
     // ── Create EDIT via TextHost ──────────────────────────────────
@@ -219,15 +245,22 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
     let text_host = TextHost::create(
         TextHostKind::Edit,
         hwnd,
-        PAD, HEADER_H + PAD,
-        WIN_W - 2 * PAD, INPUT_H,
+        PAD,
+        INPUT_Y,
+        WIN_W - 2 * PAD,
+        INPUT_H,
         ES_AUTOHSCROLL as u32,
         edit_wndproc,
         brush_color,
-    ).expect("TextHost::create failed");
-    text_host.set_text("Task name (optional)");
+    )
+    .expect("TextHost::create failed");
+    text_host.set_text("");
     // Set text colour directly (RichEdit ignores SetTextColor from WM_CTLCOLOREDIT)
-    let surface_for_color = if theme.surface.a == 255 { theme.surface } else { theme.surface.blend_over(theme.background) };
+    let surface_for_color = if theme.surface.a == 255 {
+        theme.surface
+    } else {
+        theme.surface.blend_over(theme.background)
+    };
     text_host.set_default_text_color(surface_for_color.contrasting_text_color());
 
     // Save theme + bb in daemon state
@@ -246,7 +279,9 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
     let wa = work_area();
     let x = wa.left + (wa.right - wa.left - WIN_W) / 2;
     let y = wa.top + (wa.bottom - wa.top - WIN_H) / 2;
-    unsafe { let _ = SetWindowPos(hwnd, HWND::default(), x, y, WIN_W, WIN_H, SWP_NOZORDER); }
+    unsafe {
+        let _ = SetWindowPos(hwnd, HWND::default(), x, y, WIN_W, WIN_H, SWP_NOZORDER);
+    }
 
     // Show + focus (before text_host is moved into state)
     unsafe {
@@ -261,12 +296,28 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
         theme: theme.clone(),
         _bb: bb,
     }));
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_box as isize); }
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_box as isize);
+    }
 
     // Register with daemon
-    let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
+    let daemon_hwnd = {
+        DAEMON
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|d| d.hwnd.0)
+            .unwrap_or(HWND::default())
+    };
     if daemon_hwnd != HWND::default() {
-        unsafe { let _ = PostMessageW(daemon_hwnd, WM_POM_REGISTER_OVERLAY, WPARAM(hwnd.0 as _), LPARAM(0)); }
+        unsafe {
+            let _ = PostMessageW(
+                daemon_hwnd,
+                WM_POM_REGISTER_OVERLAY,
+                WPARAM(hwnd.0 as _),
+                LPARAM(0),
+            );
+        }
     }
 
     // Message loop
@@ -281,7 +332,9 @@ fn run_overlay(state: Arc<Mutex<PomodoroState>>, theme: crate::core::native_them
 
     // Unregister from daemon (daemon keeps running)
     if daemon_hwnd != HWND::default() {
-        unsafe { let _ = PostMessageW(daemon_hwnd, WM_POM_UNREGISTER_OVERLAY, WPARAM(0), LPARAM(0)); }
+        unsafe {
+            let _ = PostMessageW(daemon_hwnd, WM_POM_UNREGISTER_OVERLAY, WPARAM(0), LPARAM(0));
+        }
     }
 
     // Clean up overlay_hwnd ref
@@ -314,101 +367,155 @@ unsafe extern "system" fn overlay_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-    if msg == WM_CREATE {
-        return LRESULT(0);
-    }
-
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayState;
-    if ptr.is_null() {
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-    let os = &mut *ptr;
-
-    match msg {
-        WM_NCHITTEST => {
-            let x = (lparam.0 as i32) & 0xFFFF;
-            let y = ((lparam.0 as i32) >> 16) & 0xFFFF;
-            let mut pt = POINT { x, y };
-            let _ = ScreenToClient(hwnd, &mut pt);
-            if pt.y < HEADER_H {
-                return LRESULT(HTCAPTION as _);
-            }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+        if msg == WM_CREATE {
+            return LRESULT(0);
         }
 
-        WM_ERASEBKGND => LRESULT(1),
-
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            paint_overlay(hdc, hwnd, os);
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayState;
+        if ptr.is_null() {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
+        let os = &mut *ptr;
 
-        WM_CTLCOLOREDIT => {
-            let hdc = HDC(wparam.0 as _);
-            let surface = os.theme.surface.blend_over(os.theme.background);
-            let _ = SetBkColor(hdc, surface.to_colorref());
-            let text_color = surface.contrasting_text_color();
-            let _ = SetTextColor(hdc, text_color.to_colorref());
-            LRESULT(os.text_host.brush().0 as _)
-        }
-
-        WM_POM_UPDATE => {
-            // State changed, repaint
-            let _ = InvalidateRect(hwnd, None, TRUE);
-            LRESULT(0)
-        }
-
-        WM_COMMAND => {
-            let code = (wparam.0 >> 16) as u32;
-            if code == EN_UPDATE {
-                let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
-                let len = SendMessageW(os.text_host.hwnd(), WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0 as usize;
-                if len > 0 && daemon_hwnd != HWND::default() {
-                    let mut buf = vec![0u16; len + 1];
-                    SendMessageW(os.text_host.hwnd(), WM_GETTEXT, WPARAM(buf.len()), LPARAM(buf.as_mut_ptr() as isize));
-                    // Send task name to daemon as a heap-allocated string
-                    let s = String::from_utf16_lossy(&buf[..len]).trim().to_string();
-                    let s_box = Box::into_raw(Box::new(s));
-                    let _ = PostMessageW(daemon_hwnd, WM_POM_SET_TASK, WPARAM(s_box as _), LPARAM(0));
+        match msg {
+            WM_NCHITTEST => {
+                let x = (lparam.0 as i32) & 0xFFFF;
+                let y = ((lparam.0 as i32) >> 16) & 0xFFFF;
+                let mut pt = POINT { x, y };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                if point_in_rect(pt.x, pt.y, close_rect()) {
+                    return LRESULT(HTCLIENT as _);
                 }
+                if pt.y < HEADER_H {
+                    return LRESULT(HTCAPTION as _);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            LRESULT(0)
-        }
 
-        WM_LBUTTONDOWN => {
-            let x = (lparam.0 as i32) & 0xFFFF;
-            let y = ((lparam.0 as i32) >> 16) & 0xFFFF;
-            handle_overlay_click(os, hwnd, x, y);
-            LRESULT(0)
-        }
+            WM_SETCURSOR => {
+                let cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+                let _ = SetCursor(cursor);
+                LRESULT(1)
+            }
 
-        WM_CLOSE => {
-            let _ = DestroyWindow(hwnd);
-            LRESULT(0)
-        }
+            WM_ACTIVATE => {
+                if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
 
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
+            WM_KEYDOWN => {
+                if wparam.0 as u32 == VK_ESCAPE.0 as u32 {
+                    let _ = DestroyWindow(hwnd);
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
 
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
+            WM_ERASEBKGND => LRESULT(1),
+
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                paint_overlay(hdc, hwnd, os);
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+
+            WM_CTLCOLOREDIT => {
+                let hdc = HDC(wparam.0 as _);
+                let surface = os.theme.surface.blend_over(os.theme.background);
+                let _ = SetBkColor(hdc, surface.to_colorref());
+                let text_color = surface.contrasting_text_color();
+                let _ = SetTextColor(hdc, text_color.to_colorref());
+                LRESULT(os.text_host.brush().0 as _)
+            }
+
+            WM_POM_UPDATE => {
+                // State changed, repaint
+                let _ = InvalidateRect(hwnd, None, TRUE);
+                LRESULT(0)
+            }
+
+            WM_COMMAND => {
+                let code = (wparam.0 >> 16) as u32;
+                if code == EN_UPDATE {
+                    let daemon_hwnd = {
+                        DAEMON
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|d| d.hwnd.0)
+                            .unwrap_or(HWND::default())
+                    };
+                    let len =
+                        SendMessageW(os.text_host.hwnd(), WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0
+                            as usize;
+                    if daemon_hwnd != HWND::default() {
+                        let mut buf = vec![0u16; len + 1];
+                        SendMessageW(
+                            os.text_host.hwnd(),
+                            WM_GETTEXT,
+                            WPARAM(buf.len()),
+                            LPARAM(buf.as_mut_ptr() as isize),
+                        );
+                        // Send task name to daemon as a heap-allocated string
+                        let s = String::from_utf16_lossy(&buf[..len]).trim().to_string();
+                        let s_box = Box::into_raw(Box::new(s));
+                        let _ = PostMessageW(
+                            daemon_hwnd,
+                            WM_POM_SET_TASK,
+                            WPARAM(s_box as _),
+                            LPARAM(0),
+                        );
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_LBUTTONDOWN => {
+                let x = (lparam.0 as i32) & 0xFFFF;
+                let y = ((lparam.0 as i32) >> 16) & 0xFFFF;
+                if point_in_rect(x, y, close_rect()) {
+                    let _ = DestroyWindow(hwnd);
+                    return LRESULT(0);
+                }
+                handle_overlay_click(os, hwnd, x, y);
+                LRESULT(0)
+            }
+
+            WM_CLOSE => {
+                let _ = DestroyWindow(hwnd);
+                LRESULT(0)
+            }
+
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
 }
 
 // ── Overlay click ────────────────────────────────────────────────────
 
 fn handle_overlay_click(os: &OverlayState, _hwnd: HWND, x: i32, y: i32) {
-    let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
+    let daemon_hwnd = {
+        DAEMON
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|d| d.hwnd.0)
+            .unwrap_or(HWND::default())
+    };
     if daemon_hwnd == HWND::default() {
         return;
     }
 
-    let btn_y = WIN_H - PAD - BTN_H;
+    let btn_y = button_y();
     if y < btn_y || y > btn_y + BTN_H {
         return;
     }
@@ -419,16 +526,20 @@ fn handle_overlay_click(os: &OverlayState, _hwnd: HWND, x: i32, y: i32) {
     let is_work = st.mode == PomodoroMode::Work;
     drop(st);
 
-    let btn_total = BTN_W * 4 + PAD * 3;
+    let btn_total = BTN_W * 4 + BTN_GAP * 3;
     let btn_start_x = (WIN_W - btn_total) / 2;
 
     let btn_idx = if x >= btn_start_x && x < btn_start_x + BTN_W {
         0usize
-    } else if x >= btn_start_x + BTN_W + PAD && x < btn_start_x + BTN_W * 2 + PAD {
+    } else if x >= btn_start_x + BTN_W + BTN_GAP && x < btn_start_x + BTN_W * 2 + BTN_GAP {
         1
-    } else if x >= btn_start_x + BTN_W * 2 + PAD * 2 && x < btn_start_x + BTN_W * 3 + PAD * 2 {
+    } else if x >= btn_start_x + BTN_W * 2 + BTN_GAP * 2
+        && x < btn_start_x + BTN_W * 3 + BTN_GAP * 2
+    {
         2
-    } else if x >= btn_start_x + BTN_W * 3 + PAD * 3 && x < btn_start_x + BTN_W * 4 + PAD * 3 {
+    } else if x >= btn_start_x + BTN_W * 3 + BTN_GAP * 3
+        && x < btn_start_x + BTN_W * 4 + BTN_GAP * 3
+    {
         3
     } else {
         return;
@@ -436,21 +547,37 @@ fn handle_overlay_click(os: &OverlayState, _hwnd: HWND, x: i32, y: i32) {
 
     let msg = if is_finished {
         match btn_idx {
-            0 => WM_POM_EXTEND,          // +5m
+            0 => WM_POM_EXTEND,           // +5m
             1 if is_work => WM_POM_BREAK, // Break 5m (work finished)
-            1 => WM_POM_START,           // Work 25m (break finished)
+            1 => WM_POM_START,            // Work 25m (break finished)
             _ => return,                  // buttons 2,3 = empty
         }
     } else {
-        match btn_idx {
-            0 => WM_POM_START,
-            1 => WM_POM_PAUSE,
-            2 => WM_POM_STOP,
-            3 => WM_POM_EXTEND,
-            _ => return,
+        let st = os.state.lock().unwrap();
+        match st.phase {
+            Phase::Running => match btn_idx {
+                0 => WM_POM_PAUSE,
+                1 => WM_POM_STOP,
+                2 => WM_POM_EXTEND,
+                _ => return,
+            },
+            Phase::Paused => match btn_idx {
+                0 => WM_POM_START,
+                1 => WM_POM_STOP,
+                2 => WM_POM_EXTEND,
+                _ => return,
+            },
+            Phase::Idle => match btn_idx {
+                0 => WM_POM_START,
+                1 => WM_POM_EXTEND,
+                _ => return,
+            },
+            Phase::Finished => return,
         }
     };
-    unsafe { let _ = PostMessageW(daemon_hwnd, msg, WPARAM(0), LPARAM(0)); }
+    unsafe {
+        let _ = PostMessageW(daemon_hwnd, msg, WPARAM(0), LPARAM(0));
+    }
 }
 
 // ── Overlay painting ─────────────────────────────────────────────────
@@ -460,116 +587,360 @@ fn paint_overlay(hdc: HDC, _hwnd: HWND, os: &OverlayState) {
     let theme = &os.theme;
 
     let bg = gdi_color(theme.background, Argb::new(255, 0, 0, 0));
-    let bg_brush = unsafe { CreateSolidBrush(bg.to_colorref()) };
-    let rc = RECT { left: 0, top: 0, right: WIN_W, bottom: WIN_H };
-    unsafe {
-        let _ = FillRect(hdc, &rc, bg_brush);
-        let _ = DeleteObject(bg_brush);
+    fill_rect(
+        hdc,
+        RECT {
+            left: 0,
+            top: 0,
+            right: WIN_W,
+            bottom: WIN_H,
+        },
+        bg,
+    );
+
+    let surface = gdi_color(theme.surface, theme.background);
+    let accent = theme.accent;
+    let muted = theme.text_muted;
+    let text = theme.text;
+
+    // Header
+    fill_rect(
+        hdc,
+        RECT {
+            left: 0,
+            top: 0,
+            right: WIN_W,
+            bottom: HEADER_H,
+        },
+        surface,
+    );
+    draw_bottom_line(hdc, HEADER_H - 1, theme.border);
+    draw_label(
+        hdc,
+        "Pomodoro",
+        RECT {
+            left: PAD,
+            top: 0,
+            right: WIN_W - PAD,
+            bottom: HEADER_H,
+        },
+        text,
+        18,
+        true,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    draw_close_button(hdc, close_rect(), theme);
+
+    let mode = match st.mode {
+        PomodoroMode::Work => "Focus",
+        PomodoroMode::Break => "Break",
+    };
+    let phase = match st.phase {
+        Phase::Idle => "ready",
+        Phase::Running => "running",
+        Phase::Paused => "paused",
+        Phase::Finished => "done",
+    };
+    let status = format!("{mode} - {phase}");
+    draw_label(
+        hdc,
+        &status,
+        RECT {
+            left: WIN_W - 200,
+            top: 0,
+            right: WIN_W - PAD - CLOSE_SIZE - 8,
+            bottom: HEADER_H,
+        },
+        muted,
+        13,
+        false,
+        DT_RIGHT | DT_VCENTER | DT_SINGLELINE,
+    );
+
+    // Task input label
+    draw_label(
+        hdc,
+        "Task",
+        RECT {
+            left: PAD,
+            top: 56,
+            right: WIN_W - PAD,
+            bottom: 74,
+        },
+        muted,
+        12,
+        false,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+
+    // Timer
+    let mins = st.remaining / 60;
+    let secs = st.remaining % 60;
+    let time_str = format!("{:02}:{:02}", mins, secs);
+    let time_color = match st.phase {
+        Phase::Finished => accent,
+        Phase::Paused => muted,
+        _ => text,
+    };
+    draw_label(
+        hdc,
+        &time_str,
+        RECT {
+            left: PAD,
+            top: TIMER_Y,
+            right: WIN_W - PAD,
+            bottom: TIMER_Y + 66,
+        },
+        time_color,
+        54,
+        false,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+
+    let hint = match st.phase {
+        Phase::Idle => "Enter starts a 25 minute focus session",
+        Phase::Running if st.mode == PomodoroMode::Work => {
+            "Stay on task. Esc hides this panel; timer keeps running."
+        }
+        Phase::Running if st.mode == PomodoroMode::Break => "Short break running.",
+        Phase::Paused => "Paused. Press Start or Enter to continue.",
+        Phase::Finished if st.mode == PomodoroMode::Work => {
+            "Focus session complete. Extend or start a break."
+        }
+        Phase::Finished if st.mode == PomodoroMode::Break => {
+            "Break complete. Start the next focus session."
+        }
+        _ => "",
+    };
+    draw_label(
+        hdc,
+        hint,
+        RECT {
+            left: PAD,
+            top: TIMER_Y + 68,
+            right: WIN_W - PAD,
+            bottom: TIMER_Y + 94,
+        },
+        muted,
+        13,
+        false,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+
+    // Progress
+    let total = total_secs_for(&st).max(1);
+    let elapsed = total.saturating_sub(st.remaining.min(total));
+    let progress_w = WIN_W - PAD * 2;
+    let filled_w = ((progress_w as u64 * elapsed as u64) / total as u64) as i32;
+    let track = RECT {
+        left: PAD,
+        top: PROGRESS_Y,
+        right: WIN_W - PAD,
+        bottom: PROGRESS_Y + 8,
+    };
+    fill_round_rect(hdc, track, theme.border, 8);
+    if filled_w > 0 {
+        fill_round_rect(
+            hdc,
+            RECT {
+                left: PAD,
+                top: PROGRESS_Y,
+                right: PAD + filled_w,
+                bottom: PROGRESS_Y + 8,
+            },
+            accent,
+            8,
+        );
     }
 
-    // ── Header ────────────────────────────────────────────────────
-    let mut hr = RECT { left: 0, top: 0, right: WIN_W, bottom: HEADER_H };
-    unsafe {
-        let header_brush = CreateSolidBrush(gdi_color(theme.surface, theme.background).to_colorref());
-        let _ = FillRect(hdc, &hr, header_brush);
-        let _ = DeleteObject(header_brush);
+    // Buttons
+    let labels = button_labels(&st);
+    let btn_y = button_y();
+    let btn_total = BTN_W * 4 + BTN_GAP * 3;
+    let btn_start_x = (WIN_W - btn_total) / 2;
+    for (i, label) in labels.iter().enumerate() {
+        if label.is_empty() {
+            continue;
+        }
+        let bx = btn_start_x + i as i32 * (BTN_W + BTN_GAP);
+        let br = RECT {
+            left: bx,
+            top: btn_y,
+            right: bx + BTN_W,
+            bottom: btn_y + BTN_H,
+        };
+        let primary = i == 0 && st.phase != Phase::Running;
+        draw_button(hdc, br, label, theme, primary);
+    }
+}
 
-        let pen = CreatePen(PS_SOLID, 1, theme.border.to_colorref());
+fn button_y() -> i32 {
+    WIN_H - PAD - BTN_H
+}
+
+fn close_rect() -> RECT {
+    let top = (HEADER_H - CLOSE_SIZE) / 2;
+    RECT {
+        left: WIN_W - PAD - CLOSE_SIZE,
+        top,
+        right: WIN_W - PAD,
+        bottom: top + CLOSE_SIZE,
+    }
+}
+
+fn point_in_rect(x: i32, y: i32, rc: RECT) -> bool {
+    x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
+}
+
+fn total_secs_for(st: &PomodoroState) -> u32 {
+    let base = match st.mode {
+        PomodoroMode::Work => DEFAULT_WORK_SECS,
+        PomodoroMode::Break => DEFAULT_BREAK_SECS,
+    };
+    base.max(st.remaining)
+}
+
+fn button_labels(st: &PomodoroState) -> [&'static str; 4] {
+    if st.phase == Phase::Finished {
+        if st.mode == PomodoroMode::Work {
+            ["+5m", "Break", "", ""]
+        } else {
+            ["+5m", "Work", "", ""]
+        }
+    } else if st.phase == Phase::Running {
+        ["Pause", "Stop", "+5m", ""]
+    } else if st.phase == Phase::Paused {
+        ["Resume", "Stop", "+5m", ""]
+    } else {
+        ["Start", "+5m", "", ""]
+    }
+}
+
+fn fill_rect(hdc: HDC, rc: RECT, color: Argb) {
+    unsafe {
+        let brush = CreateSolidBrush(color.to_colorref());
+        let _ = FillRect(hdc, &rc, brush);
+        let _ = DeleteObject(brush);
+    }
+}
+
+fn fill_round_rect(hdc: HDC, rc: RECT, color: Argb, radius: i32) {
+    unsafe {
+        let brush = CreateSolidBrush(color.to_colorref());
+        let pen = CreatePen(PS_SOLID, 1, color.to_colorref());
+        let old_brush = SelectObject(hdc, brush);
         let old_pen = SelectObject(hdc, pen);
-        let _ = MoveToEx(hdc, 0, HEADER_H - 1, None);
-        let _ = LineTo(hdc, WIN_W, HEADER_H - 1);
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+        let _ = SelectObject(hdc, old_brush);
+        let _ = SelectObject(hdc, old_pen);
+        let _ = DeleteObject(brush);
+        let _ = DeleteObject(pen);
+    }
+}
+
+fn draw_bottom_line(hdc: HDC, y: i32, color: Argb) {
+    unsafe {
+        let pen = CreatePen(PS_SOLID, 1, color.to_colorref());
+        let old_pen = SelectObject(hdc, pen);
+        let _ = MoveToEx(hdc, 0, y, None);
+        let _ = LineTo(hdc, WIN_W, y);
         let _ = SelectObject(hdc, old_pen);
         let _ = DeleteObject(pen);
-
-        let _ = SetBkMode(hdc, TRANSPARENT);
-        let _ = SetTextColor(hdc, theme.text.to_colorref());
-        let mut title = to_utf16_z("🍅 Pomodoro");
-        let _ = DrawTextW(hdc, &mut title, &mut hr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
+}
 
-    // ── Timer display ─────────────────────────────────────────────
-    let timer_y = HEADER_H + PAD + INPUT_H + PAD;
-    let remaining = st.remaining;
-    let mins = remaining / 60;
-    let secs = remaining % 60;
-    let time_str = format!("{:02}:{:02}", mins, secs);
-
+fn draw_label(
+    hdc: HDC,
+    text: &str,
+    mut rc: RECT,
+    color: Argb,
+    size: i32,
+    semibold: bool,
+    fmt: DRAW_TEXT_FORMAT,
+) {
     unsafe {
-        let mut time_wz = to_utf16_z(&time_str);
-        let large_font = CreateFontW(
-            42, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0,
+        let face = to_utf16_z("Segoe UI");
+        let font = CreateFontW(
+            size,
+            0,
+            0,
+            0,
+            if semibold {
+                FW_SEMIBOLD.0 as i32
+            } else {
+                FW_NORMAL.0 as i32
+            },
+            0,
+            0,
+            0,
             DEFAULT_CHARSET.0 as u32,
             OUT_DEFAULT_PRECIS.0 as u32,
             CLIP_DEFAULT_PRECIS.0 as u32,
             DEFAULT_QUALITY.0 as u32,
             FF_DONTCARE.0 as u32,
-            PCWSTR::from_raw(to_utf16_z("Segoe UI").as_ptr()),
+            PCWSTR::from_raw(face.as_ptr()),
         );
-        let old_font = SelectObject(hdc, large_font);
-        let mut tr = RECT {
-            left: PAD, top: timer_y,
-            right: WIN_W - PAD, bottom: timer_y + 56,
-        };
-        let _ = SetTextColor(hdc, theme.text.to_colorref());
-        let _ = DrawTextW(hdc, &mut time_wz, &mut tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        let old_font = SelectObject(hdc, font);
+        let _ = SetBkMode(hdc, TRANSPARENT);
+        let _ = SetTextColor(hdc, color.to_colorref());
+        let mut wz = to_utf16_z(text);
+        let _ = DrawTextW(hdc, &mut wz, &mut rc, fmt);
         let _ = SelectObject(hdc, old_font);
-        let _ = DeleteObject(large_font);
+        let _ = DeleteObject(font);
     }
+}
 
-    // ── Phase label ───────────────────────────────────────────────
-    let phase_label = match st.phase {
-        Phase::Idle => "Press Start or Enter",
-        Phase::Running if st.mode == PomodoroMode::Work => "Running",
-        Phase::Running if st.mode == PomodoroMode::Break => "Break 🧘",
-        Phase::Paused => "Paused",
-        Phase::Finished if st.mode == PomodoroMode::Work => "Time's up! 🎉",
-        Phase::Finished if st.mode == PomodoroMode::Break => "Break over! 🎯",
-        _ => "",
-    };
-    unsafe {
-        let mut pr = RECT {
-            left: PAD, top: timer_y + 56,
-            right: WIN_W - PAD, bottom: timer_y + 56 + 24,
-        };
-        let _ = SetTextColor(hdc, theme.text_muted.to_colorref());
-        let mut label_wz = to_utf16_z(phase_label);
-        let _ = DrawTextW(hdc, &mut label_wz, &mut pr, DT_CENTER | DT_TOP | DT_SINGLELINE);
-    }
-
-    // ── Buttons ───────────────────────────────────────────────────
-    let btn_y = WIN_H - PAD - BTN_H;
-    let btn_total = BTN_W * 4 + PAD * 3;
-    let btn_start_x = (WIN_W - btn_total) / 2;
-    let labels = if st.phase == Phase::Finished {
-        if st.mode == PomodoroMode::Work {
-            ["+5m", "Break 5m", "", ""]
-        } else {
-            ["+5m", "Work 25m", "", ""]
-        }
+fn draw_button(
+    hdc: HDC,
+    rc: RECT,
+    label: &str,
+    theme: &crate::core::native_theme::NativeTheme,
+    primary: bool,
+) {
+    let fill = if primary {
+        theme.accent
     } else {
-        ["Start", "Pause", "Stop", "+5m"]
+        gdi_color(theme.surface, theme.background)
     };
-    for i in 0..4 {
-        if labels[i].is_empty() { continue; }
-        let bx = btn_start_x + i as i32 * (BTN_W + PAD);
-        let br = RECT { left: bx, top: btn_y, right: bx + BTN_W, bottom: btn_y + BTN_H };
-        unsafe {
-            let border_pen = CreatePen(PS_SOLID, 1, theme.border.to_colorref());
-            let old_pen = SelectObject(hdc, border_pen);
-            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            let _ = Rectangle(hdc, br.left, br.top, br.right, br.bottom);
-            let _ = SelectObject(hdc, old_pen);
-            let _ = SelectObject(hdc, old_brush);
-            let _ = DeleteObject(border_pen);
-        }
-        unsafe {
-            let _ = SetTextColor(hdc, theme.text.to_colorref());
-            let mut label_wz = to_utf16_z(labels[i]);
-            let mut lr = br;
-            let _ = DrawTextW(hdc, &mut label_wz, &mut lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        }
+    let border = if primary { theme.accent } else { theme.border };
+    let text = if primary {
+        theme.accent.contrasting_text_color()
+    } else {
+        theme.text
+    };
+
+    fill_round_rect(hdc, rc, fill, 8);
+    unsafe {
+        let pen = CreatePen(PS_SOLID, 1, border.to_colorref());
+        let old_pen = SelectObject(hdc, pen);
+        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
+        let _ = SelectObject(hdc, old_pen);
+        let _ = SelectObject(hdc, old_brush);
+        let _ = DeleteObject(pen);
     }
-    drop(st);
+    draw_label(
+        hdc,
+        label,
+        rc,
+        text,
+        13,
+        true,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+}
+
+fn draw_close_button(hdc: HDC, rc: RECT, theme: &crate::core::native_theme::NativeTheme) {
+    fill_round_rect(hdc, rc, theme.hover.blend_over(theme.background), 8);
+    draw_label(
+        hdc,
+        "X",
+        rc,
+        theme.text_muted,
+        13,
+        true,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
 }
 
 // ── EDIT subclass ────────────────────────────────────────────────────
@@ -581,35 +952,46 @@ unsafe extern "system" fn edit_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-    let old_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-    let old: WNDPROC = Some(std::mem::transmute::<isize, extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>(old_proc));
+        let old_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        let old: WNDPROC = Some(std::mem::transmute::<
+            isize,
+            extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+        >(old_proc));
 
-    match msg {
-        WM_KEYDOWN => {
-            let vk = wparam.0 as u32;
-            if vk == VK_RETURN.0 as u32 {
-                let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                if !ctrl_down {
-                    if let Ok(_parent) = GetParent(hwnd) {
-                        let daemon_hwnd = { DAEMON.lock().unwrap().as_ref().map(|d| d.hwnd.0).unwrap_or(HWND::default()) };
-                        if daemon_hwnd != HWND::default() {
-                            let _ = PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
+        match msg {
+            WM_KEYDOWN => {
+                let vk = wparam.0 as u32;
+                if vk == VK_RETURN.0 as u32 {
+                    let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+                    if !ctrl_down {
+                        if let Ok(_parent) = GetParent(hwnd) {
+                            let daemon_hwnd = {
+                                DAEMON
+                                    .lock()
+                                    .unwrap()
+                                    .as_ref()
+                                    .map(|d| d.hwnd.0)
+                                    .unwrap_or(HWND::default())
+                            };
+                            if daemon_hwnd != HWND::default() {
+                                let _ =
+                                    PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
+                            }
                         }
+                        return LRESULT(0);
+                    }
+                }
+                if vk == VK_ESCAPE.0 as u32 {
+                    if let Ok(parent) = GetParent(hwnd) {
+                        let _ = PostMessageW(parent, WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
                     return LRESULT(0);
                 }
             }
-            if vk == VK_ESCAPE.0 as u32 {
-                if let Ok(parent) = GetParent(hwnd) {
-                    let _ = PostMessageW(parent, WM_CLOSE, WPARAM(0), LPARAM(0));
-                }
-                return LRESULT(0);
-            }
+            _ => {}
         }
-        _ => {}
-    }
 
-    CallWindowProcW(old, hwnd, msg, wparam, lparam)
+        CallWindowProcW(old, hwnd, msg, wparam, lparam)
     }
 }
 
@@ -655,17 +1037,28 @@ fn spawn_daemon() -> DaemonHandle {
                     PCWSTR::from_raw(cls.as_ptr()),
                     PCWSTR::null(),
                     WS_POPUP,
-                    0, 0, 0, 0,
-                    None, None, hi, None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    None,
+                    hi,
+                    None,
                 )
             } {
                 Ok(h) => h,
-                Err(e) => { plog(format!("daemon CreateWindowEx failed: {e}")); return; }
+                Err(e) => {
+                    plog(format!("daemon CreateWindowEx failed: {e}"));
+                    return;
+                }
             };
 
             // Store shared state in GWLP_USERDATA
             let state_box = Box::into_raw(Box::new(state_clone));
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_box as isize); }
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_box as isize);
+            }
 
             // Signal that daemon is ready
             let _ = tx.send(SendHwnd(hwnd));
@@ -698,182 +1091,213 @@ unsafe extern "system" fn daemon_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-    if msg == WM_CREATE {
-        return LRESULT(0);
-    }
-
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Arc<Mutex<PomodoroState>>;
-    if ptr.is_null() {
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-    let state_arc = &*ptr;
-    let mut st = state_arc.lock().unwrap();
-
-    match msg {
-        WM_TIMER if wparam.0 == TIMER_ID => {
-            if st.phase == Phase::Running {
-                if st.remaining <= 1 {
-                    st.phase = Phase::Finished;
-                    st.remaining = 0;
-                    let _ = KillTimer(hwnd, TIMER_ID);
-                    log_blackbox_raw(&st, if st.mode == PomodoroMode::Work { "pomodoro_end" } else { "break_end" });
-                    // Beep
-                    let _ = Beep(800, 200);
-                    std::thread::sleep(std::time::Duration::from_millis(150));
-                    let _ = Beep(1000, 200);
-                    // Auto-show overlay + flash if closed
-                    if st.overlay_hwnd.is_none() {
-                        if let Some(ref theme) = st.last_theme {
-                            let state_arc2 = state_arc.clone();
-                            let theme2 = theme.clone();
-                            let bb2 = st.bb;
-                            std::thread::Builder::new()
-                                .name("pomodoro-overlay".into())
-                                .spawn(move || {
-                                    run_overlay(state_arc2, theme2, bb2);
-                                })
-                                .ok();
-                        }
-                    } else if let Some(ref oh) = st.overlay_hwnd {
-                        let _ = FlashWindow(oh.0, TRUE);
-                    }
-                } else {
-                    st.remaining -= 1;
-                }
-                // Notify overlay
-                if let Some(ref oh) = st.overlay_hwnd {
-                    let _ = PostMessageW(oh.0, WM_POM_UPDATE, WPARAM(st.remaining as _), LPARAM(st.phase as u32 as _));
-                }
-            }
-            LRESULT(0)
+        if msg == WM_CREATE {
+            return LRESULT(0);
         }
 
-        WM_POM_START => {
-            match st.phase {
-                Phase::Idle | Phase::Finished => {
-                    st.mode = PomodoroMode::Work;
-                    st.phase = Phase::Running;
-                    st.remaining = DEFAULT_WORK_SECS;
-                    st.start_time = epoch_secs();
-                    log_blackbox_raw(&st, "pomodoro_start");
-                    let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Arc<Mutex<PomodoroState>>;
+        if ptr.is_null() {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        let state_arc = &*ptr;
+        let mut st = state_arc.lock().unwrap();
+
+        match msg {
+            WM_TIMER if wparam.0 == TIMER_ID => {
+                if st.phase == Phase::Running {
+                    if st.remaining <= 1 {
+                        st.phase = Phase::Finished;
+                        st.remaining = 0;
+                        let _ = KillTimer(hwnd, TIMER_ID);
+                        log_blackbox_raw(
+                            &st,
+                            if st.mode == PomodoroMode::Work {
+                                "pomodoro_end"
+                            } else {
+                                "break_end"
+                            },
+                        );
+                        // Beep
+                        let _ = Beep(800, 200);
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                        let _ = Beep(1000, 200);
+                        // Auto-show overlay + flash if closed
+                        if st.overlay_hwnd.is_none() {
+                            if let Some(ref theme) = st.last_theme {
+                                let state_arc2 = state_arc.clone();
+                                let theme2 = theme.clone();
+                                let bb2 = st.bb;
+                                std::thread::Builder::new()
+                                    .name("pomodoro-overlay".into())
+                                    .spawn(move || {
+                                        run_overlay(state_arc2, theme2, bb2);
+                                    })
+                                    .ok();
+                            }
+                        } else if let Some(ref oh) = st.overlay_hwnd {
+                            let _ = FlashWindow(oh.0, TRUE);
+                        }
+                    } else {
+                        st.remaining -= 1;
+                    }
+                    // Notify overlay
+                    if let Some(ref oh) = st.overlay_hwnd {
+                        let _ = PostMessageW(
+                            oh.0,
+                            WM_POM_UPDATE,
+                            WPARAM(st.remaining as _),
+                            LPARAM(st.phase as u32 as _),
+                        );
+                    }
                 }
-                Phase::Paused => {
-                    st.phase = Phase::Running;
-                    st.start_time = epoch_secs();
-                    let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+                LRESULT(0)
+            }
+
+            WM_POM_START => {
+                match st.phase {
+                    Phase::Idle | Phase::Finished => {
+                        st.mode = PomodoroMode::Work;
+                        st.phase = Phase::Running;
+                        st.remaining = DEFAULT_WORK_SECS;
+                        st.start_time = epoch_secs();
+                        log_blackbox_raw(&st, "pomodoro_start");
+                        let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+                    }
+                    Phase::Paused => {
+                        st.phase = Phase::Running;
+                        st.start_time = epoch_secs();
+                        let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+                    }
+                    Phase::Running => {
+                        // Running → pause
+                        st.phase = Phase::Paused;
+                        let _ = KillTimer(hwnd, TIMER_ID);
+                    }
                 }
-                Phase::Running => {
-                    // Running → pause
+                notify_overlay(&st);
+                LRESULT(0)
+            }
+
+            WM_POM_PAUSE => {
+                if st.phase == Phase::Running {
                     st.phase = Phase::Paused;
                     let _ = KillTimer(hwnd, TIMER_ID);
+                    notify_overlay(&st);
                 }
+                LRESULT(0)
             }
-            notify_overlay(&st);
-            LRESULT(0)
-        }
 
-        WM_POM_PAUSE => {
-            if st.phase == Phase::Running {
-                st.phase = Phase::Paused;
+            WM_POM_STOP => {
+                if st.phase == Phase::Running || st.phase == Phase::Paused {
+                    log_blackbox_raw(&st, "pomodoro_abandon");
+                }
+                st.phase = Phase::Idle;
+                st.remaining = DEFAULT_WORK_SECS;
                 let _ = KillTimer(hwnd, TIMER_ID);
                 notify_overlay(&st);
+                LRESULT(0)
             }
-            LRESULT(0)
-        }
 
-        WM_POM_STOP => {
-            if st.phase == Phase::Running || st.phase == Phase::Paused {
-                log_blackbox_raw(&st, "pomodoro_abandon");
-            }
-            st.phase = Phase::Idle;
-            st.remaining = DEFAULT_WORK_SECS;
-            let _ = KillTimer(hwnd, TIMER_ID);
-            notify_overlay(&st);
-            LRESULT(0)
-        }
-
-        WM_POM_EXTEND => {
-            match st.phase {
-                Phase::Running => {
-                    st.remaining = st.remaining.saturating_add(EXTEND_SECS);
+            WM_POM_EXTEND => {
+                match st.phase {
+                    Phase::Running => {
+                        st.remaining = st.remaining.saturating_add(EXTEND_SECS);
+                    }
+                    Phase::Paused => {
+                        st.remaining = st.remaining.saturating_add(EXTEND_SECS);
+                    }
+                    Phase::Finished => {
+                        // Keep current mode (Work/Break)
+                        st.phase = Phase::Running;
+                        st.remaining = EXTEND_SECS;
+                        st.start_time = epoch_secs();
+                        let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+                        log_blackbox_raw(
+                            &st,
+                            if st.mode == PomodoroMode::Work {
+                                "pomodoro_restart"
+                            } else {
+                                "break_restart"
+                            },
+                        );
+                    }
+                    Phase::Idle => {
+                        st.mode = PomodoroMode::Work;
+                        st.phase = Phase::Running;
+                        st.remaining = DEFAULT_WORK_SECS;
+                        st.start_time = epoch_secs();
+                        let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+                        log_blackbox_raw(&st, "pomodoro_start");
+                    }
                 }
-                Phase::Paused => {
-                    st.remaining = st.remaining.saturating_add(EXTEND_SECS);
-                }
-                Phase::Finished => {
-                    // Keep current mode (Work/Break)
-                    st.phase = Phase::Running;
-                    st.remaining = EXTEND_SECS;
-                    st.start_time = epoch_secs();
-                    let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
-                    log_blackbox_raw(&st, if st.mode == PomodoroMode::Work { "pomodoro_restart" } else { "break_restart" });
-                }
-                Phase::Idle => {
-                    st.mode = PomodoroMode::Work;
-                    st.phase = Phase::Running;
-                    st.remaining = DEFAULT_WORK_SECS;
-                    st.start_time = epoch_secs();
-                    let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
-                    log_blackbox_raw(&st, "pomodoro_start");
-                }
-            }
-            notify_overlay(&st);
-            LRESULT(0)
-        }
-
-        WM_POM_BREAK => {
-            st.mode = PomodoroMode::Break;
-            st.phase = Phase::Running;
-            st.remaining = 5 * 60; // 5 min break
-            st.start_time = epoch_secs();
-            let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
-            log_blackbox_raw(&st, "break_start");
-            notify_overlay(&st);
-            LRESULT(0)
-        }
-
-        WM_POM_SET_TASK => {
-            let ptr = wparam.0 as *mut String;
-            if !ptr.is_null() {
-                let s = Box::from_raw(ptr);
-                st.task_name = *s;
                 notify_overlay(&st);
+                LRESULT(0)
             }
-            LRESULT(0)
-        }
 
-        WM_POM_REGISTER_OVERLAY => {
-            let oh = HWND(wparam.0 as _);
-            st.overlay_hwnd = Some(SendHwnd(oh));
-            // Send current state to new overlay
-            let _ = PostMessageW(oh, WM_POM_UPDATE, WPARAM(st.remaining as _), LPARAM(st.phase as u32 as _));
-            LRESULT(0)
-        }
+            WM_POM_BREAK => {
+                st.mode = PomodoroMode::Break;
+                st.phase = Phase::Running;
+                st.remaining = DEFAULT_BREAK_SECS;
+                st.start_time = epoch_secs();
+                let _ = SetTimer(hwnd, TIMER_ID, 1000, None);
+                log_blackbox_raw(&st, "break_start");
+                notify_overlay(&st);
+                LRESULT(0)
+            }
 
-        WM_POM_UNREGISTER_OVERLAY => {
-            st.overlay_hwnd = None;
-            LRESULT(0)
-        }
+            WM_POM_SET_TASK => {
+                let ptr = wparam.0 as *mut String;
+                if !ptr.is_null() {
+                    let s = Box::from_raw(ptr);
+                    st.task_name = *s;
+                    notify_overlay(&st);
+                }
+                LRESULT(0)
+            }
 
-        WM_CLOSE => {
-            // Daemon hidden window should not be closed normally
-            LRESULT(0)
-        }
+            WM_POM_REGISTER_OVERLAY => {
+                let oh = HWND(wparam.0 as _);
+                st.overlay_hwnd = Some(SendHwnd(oh));
+                // Send current state to new overlay
+                let _ = PostMessageW(
+                    oh,
+                    WM_POM_UPDATE,
+                    WPARAM(st.remaining as _),
+                    LPARAM(st.phase as u32 as _),
+                );
+                LRESULT(0)
+            }
 
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
+            WM_POM_UNREGISTER_OVERLAY => {
+                st.overlay_hwnd = None;
+                LRESULT(0)
+            }
 
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
+            WM_CLOSE => {
+                // Daemon hidden window should not be closed normally
+                LRESULT(0)
+            }
+
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
 }
 
 fn notify_overlay(st: &PomodoroState) {
     if let Some(ref oh) = st.overlay_hwnd {
-        let _ = unsafe { PostMessageW(oh.0, WM_POM_UPDATE, WPARAM(st.remaining as _), LPARAM(st.phase as u32 as _)) };
+        let _ = unsafe {
+            PostMessageW(
+                oh.0,
+                WM_POM_UPDATE,
+                WPARAM(st.remaining as _),
+                LPARAM(st.phase as u32 as _),
+            )
+        };
     }
 }
 
@@ -881,11 +1305,21 @@ fn notify_overlay(st: &PomodoroState) {
 
 fn log_blackbox_raw(st: &PomodoroState, event: &str) {
     let _ = st;
+    #[cfg(not(feature = "blackbox"))]
+    let _ = event;
     #[cfg(feature = "blackbox")]
     {
         let ts = epoch_secs();
-        let duration = if st.start_time > 0 { ts - st.start_time } else { 0 };
-        let task = if st.task_name.is_empty() { "_" } else { &st.task_name };
+        let duration = if st.start_time > 0 {
+            ts - st.start_time
+        } else {
+            0
+        };
+        let task = if st.task_name.is_empty() {
+            "_"
+        } else {
+            &st.task_name
+        };
         crate::blackbox::send_event(crate::blackbox::BlackboxEvent::LogCustom {
             ts,
             event: event.to_string(),
@@ -900,7 +1334,11 @@ fn log_blackbox_raw(st: &PomodoroState, event: &str) {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 fn gdi_color(color: Argb, background: Argb) -> Argb {
-    if color.a == 255 { color } else { color.blend_over(background) }
+    if color.a == 255 {
+        color
+    } else {
+        color.blend_over(background)
+    }
 }
 
 fn to_utf16_z(s: &str) -> Vec<u16> {
@@ -919,7 +1357,6 @@ fn work_area() -> RECT {
         info.rcWork
     }
 }
-
 
 fn epoch_secs() -> u64 {
     SystemTime::now()

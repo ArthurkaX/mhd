@@ -9,8 +9,8 @@
 
 use std::process::Command;
 
-use windows::Win32::System::Registry::*;
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+use windows::Win32::System::Registry::*;
 use windows::core::PCWSTR;
 
 /// Registry value name for the mHD autostart entry.
@@ -72,16 +72,7 @@ fn task_xml() -> Result<Option<String>, String> {
 fn install_scheduled_task() -> Result<(), String> {
     let command = autostart_command()?;
     run_schtasks(&[
-        "/Create",
-        "/TN",
-        TASK_NAME,
-        "/SC",
-        "ONLOGON",
-        "/TR",
-        &command,
-        "/RL",
-        "HIGHEST",
-        "/F",
+        "/Create", "/TN", TASK_NAME, "/SC", "ONLOGON", "/TR", &command, "/RL", "HIGHEST", "/F",
     ])
     .map(|_| ())
 }
@@ -103,9 +94,11 @@ fn scheduled_task_status() -> Option<bool> {
         Ok(None) => return None,
         Err(_) => return Some(false),
     };
-    Some(xml.contains("<LogonTrigger")
-        && xml.contains("<RunLevel>HighestAvailable</RunLevel>")
-        && xml.contains(&exe))
+    Some(
+        xml.contains("<LogonTrigger")
+            && xml.contains("<RunLevel>HighestAvailable</RunLevel>")
+            && xml.contains(&exe),
+    )
 }
 
 /// Helper: open the Run key with desired access, call `f`, then close the
@@ -119,12 +112,12 @@ unsafe fn with_run_key<R>(
 
     let ret = unsafe {
         RegOpenKeyExW(
-        HKEY_CURRENT_USER,
-        PCWSTR::from_raw(path.as_ptr()),
-        0,
-        desired_access,
-        &mut key,
-    )
+            HKEY_CURRENT_USER,
+            PCWSTR::from_raw(path.as_ptr()),
+            0,
+            desired_access,
+            &mut key,
+        )
     };
     if ret != ERROR_SUCCESS {
         return Err(format!("RegOpenKeyExW failed: {ret:?}"));
@@ -200,10 +193,8 @@ fn install_run_key_autostart() -> Result<(), String> {
         with_run_key(KEY_SET_VALUE, |key| {
             // RegSetValueExW expects lpdata as Option<&[u8]>; include the
             // null terminator in the byte count for a proper REG_SZ.
-            let slice = std::slice::from_raw_parts(
-                wide_value.as_ptr().cast::<u8>(),
-                wide_value.len() * 2,
-            );
+            let slice =
+                std::slice::from_raw_parts(wide_value.as_ptr().cast::<u8>(), wide_value.len() * 2);
 
             let ret = RegSetValueExW(
                 key,
@@ -255,7 +246,9 @@ pub fn install_autostart() -> Result<(), String> {
             Ok(())
         }
         Err(task_err) => install_run_key_autostart().map_err(|reg_err| {
-            format!("scheduled task install failed: {task_err}; registry fallback failed: {reg_err}")
+            format!(
+                "scheduled task install failed: {task_err}; registry fallback failed: {reg_err}"
+            )
         }),
     }
 }

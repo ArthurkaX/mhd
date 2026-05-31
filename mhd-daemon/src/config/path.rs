@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::env;
+use std::path::PathBuf;
 
 pub fn resolve_config_path() -> PathBuf {
     if let Ok(custom) = env::var("MHD_CONFIG") {
@@ -35,11 +35,26 @@ struct BundledTheme {
 }
 
 const BUNDLED_THEMES: &[BundledTheme] = &[
-    BundledTheme { filename: "carbon.json",      content: include_str!("../../../themes/carbon.json") },
-    BundledTheme { filename: "paper.json",       content: include_str!("../../../themes/paper.json") },
-    BundledTheme { filename: "night_glass.json", content: include_str!("../../../themes/night_glass.json") },
-    BundledTheme { filename: "day_glass.json",   content: include_str!("../../../themes/day_glass.json") },
-    BundledTheme { filename: "ember.json",       content: include_str!("../../../themes/ember.json") },
+    BundledTheme {
+        filename: "carbon.json",
+        content: include_str!("../../../themes/carbon.json"),
+    },
+    BundledTheme {
+        filename: "paper.json",
+        content: include_str!("../../../themes/paper.json"),
+    },
+    BundledTheme {
+        filename: "night_glass.json",
+        content: include_str!("../../../themes/night_glass.json"),
+    },
+    BundledTheme {
+        filename: "day_glass.json",
+        content: include_str!("../../../themes/day_glass.json"),
+    },
+    BundledTheme {
+        filename: "ember.json",
+        content: include_str!("../../../themes/ember.json"),
+    },
 ];
 
 /// Create the themes directory and write bundled theme files.
@@ -64,6 +79,8 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Path: %USERPROFILE%\.config\mhd\config.toml
 #
 # Uncomment bindings to enable them.
+# The main idea: if Windows or another app uses an uncomfortable shortcut
+# and does not make it easy to change, map a convenient key/button to it here.
 #
 # Optional startup scheme. If omitted, "default" is used.
 # active_scheme = "default"
@@ -80,25 +97,30 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 trigger = "ctrl+alt+f12"
 action = "quit"
 
-# Replace CapsLock with Alt+Shift for keyboard layout switching.
+# CapsLock -> Alt+Shift.
+# Useful when Alt+Shift is your Windows keyboard layout switch:
+# one key changes language/layout instead of a two-key chord.
 # [[binding]]
 # trigger = "capslock"
 # action = "replace_key"
 # keys = "alt+shift"
 
-# Switch to the left virtual desktop using mouse button 4 (side button).
+# Mouse side buttons -> virtual desktop navigation.
+# Windows uses Ctrl+Win+Left/Right for this, which is not comfortable
+# during normal mouse-driven work. mhd can put that action under your thumb.
 # [[binding]]
 # trigger = "mouseButton4"
 # action = "replace_key"
 # keys = "ctrl+win+left"
 
-# Switch to the right virtual desktop using mouse button 5 (side button).
+# Mouse button 5 does the symmetric action: switch to the right desktop.
 # [[binding]]
 # trigger = "mouseButton5"
 # action = "replace_key"
 # keys = "ctrl+win+right"
 
 # Increase monitor brightness via DDC/CI.
+# Useful for external monitors where Windows brightness controls do not work.
 # [[binding]]
 # trigger = "ctrl+alt+numpad_add"
 # action = "brightness_up"
@@ -110,25 +132,20 @@ action = "quit"
 # action = "brightness_down"
 # value = "5"
 
-# Set monitor input to HDMI 1 (0x60 is Input Select, 17 is HDMI 1 on some monitors).
-# [[binding]]
-# trigger = "ctrl+alt+f1"
-# action = "vcp"
-# code = "0x60"
-# value = "17"
-
-# Open Windows Terminal.
+# Open Windows Terminal from a shortcut.
 # [[binding]]
 # trigger = "ctrl+alt+t"
 # action = "run_ps"
 # command = "Start-Process wt"
 
 # Toggle aggressive Windows power throttling + one-CPU affinity for the current app when it loses focus.
+# Useful for heavy games/tools that should keep running with reduced CPU pressure in background.
 # [[binding]]
 # trigger = "ctrl+alt+f10"
 # action = "toggle_throttle_on_blur"
 
 # Toggle full process suspension for the current app when it loses focus.
+# Useful for heavy games/tools that should stop consuming resources in background.
 # [[binding]]
 # trigger = "ctrl+alt+f9"
 # action = "toggle_suspend_on_blur"
@@ -176,6 +193,8 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Path: %USERPROFILE%\.config\mhd\config.toml
 #
 # Uncomment bindings to enable them.
+# The main idea: if Windows or another app uses an uncomfortable shortcut
+# and does not make it easy to change, map a convenient key/button to it here.
 #
 # Optional startup scheme. If omitted, "default" is used.
 # active_scheme = "default"
@@ -197,25 +216,30 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 trigger = "ctrl+alt+f12"
 action = "quit"
 
-# Replace CapsLock with Alt+Shift for keyboard layout switching.
+# CapsLock -> Alt+Shift.
+# Useful when Alt+Shift is your Windows keyboard layout switch:
+# one key changes language/layout instead of a two-key chord.
 # [[binding]]
 # trigger = "capslock"
 # action = "replace_key"
 # keys = "alt+shift"
 
-# Switch to the left virtual desktop using mouse button 4 (side button).
+# Mouse side buttons -> virtual desktop navigation.
+# Windows uses Ctrl+Win+Left/Right for this, which is not comfortable
+# during normal mouse-driven work. mhd can put that action under your thumb.
 # [[binding]]
 # trigger = "mouseButton4"
 # action = "replace_key"
 # keys = "ctrl+win+left"
 
-# Switch to the right virtual desktop using mouse button 5 (side button).
+# Mouse button 5 does the symmetric action: switch to the right desktop.
 # [[binding]]
 # trigger = "mouseButton5"
 # action = "replace_key"
 # keys = "ctrl+win+right"
 
 # Increase monitor brightness via DDC/CI.
+# Useful for external monitors where Windows brightness controls do not work.
 # [[binding]]
 # trigger = "ctrl+alt+numpad_add"
 # action = "brightness_up"
@@ -227,25 +251,20 @@ action = "quit"
 # action = "brightness_down"
 # value = "5"
 
-# Set monitor input to HDMI 1 (0x60 is Input Select, 17 is HDMI 1 on some monitors).
-# [[binding]]
-# trigger = "ctrl+alt+f1"
-# action = "vcp"
-# code = "0x60"
-# value = "17"
-
-# Open Windows Terminal.
+# Open Windows Terminal from a shortcut.
 # [[binding]]
 # trigger = "ctrl+alt+t"
 # action = "run_ps"
 # command = "Start-Process wt"
 
 # Toggle aggressive Windows power throttling + one-CPU affinity for the current app when it loses focus.
+# Useful for heavy games/tools that should keep running with reduced CPU pressure in background.
 # [[binding]]
 # trigger = "ctrl+alt+f10"
 # action = "toggle_throttle_on_blur"
 
 # Toggle full process suspension for the current app when it loses focus.
+# Useful for heavy games/tools that should stop consuming resources in background.
 # [[binding]]
 # trigger = "ctrl+alt+f9"
 # action = "toggle_suspend_on_blur"

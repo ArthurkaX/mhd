@@ -240,7 +240,9 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
         "media_play_pause" => 0xB3,
 
         _ => {
-            if s.starts_with("0x") && let Ok(vk) = u8::from_str_radix(&s[2..], 16) {
+            if s.starts_with("0x")
+                && let Ok(vk) = u8::from_str_radix(&s[2..], 16)
+            {
                 vk
             } else {
                 return Err(format!("unknown key: '{}'", s));
@@ -436,7 +438,11 @@ mod tests {
         ];
         for (name, vk) in &cases {
             let pt = parse_trigger(name).unwrap();
-            assert_eq!(pt.trigger.key, PhysicalKey::Keyboard(*vk), "failed for '{name}'");
+            assert_eq!(
+                pt.trigger.key,
+                PhysicalKey::Keyboard(*vk),
+                "failed for '{name}'"
+            );
         }
     }
 

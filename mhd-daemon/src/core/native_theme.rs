@@ -67,9 +67,7 @@ impl Argb {
 
     /// Convert to GDI `COLORREF`.  GDI uses `0x00BBGGRR`.
     pub fn to_colorref(self) -> COLORREF {
-        COLORREF(
-            ((self.b as u32) << 16) | ((self.g as u32) << 8) | self.r as u32,
-        )
+        COLORREF(((self.b as u32) << 16) | ((self.g as u32) << 8) | self.r as u32)
     }
 
     /// Convert to a premultiplied ARGB pixel value suitable for
@@ -92,7 +90,12 @@ impl Argb {
     /// against this background (based on WCAG‑style luminance).
     /// Return a copy with the alpha channel replaced.
     pub fn with_alpha(&self, a: u8) -> Argb {
-        Argb { a, r: self.r, g: self.g, b: self.b }
+        Argb {
+            a,
+            r: self.r,
+            g: self.g,
+            b: self.b,
+        }
     }
 
     pub fn contrasting_text_color(&self) -> Argb {
@@ -111,7 +114,10 @@ impl Argb {
             return Argb { a: 255, ..self };
         }
         if self.a == 0 {
-            return Argb { a: 255, ..background };
+            return Argb {
+                a: 255,
+                ..background
+            };
         }
 
         let a = self.a as u32;
@@ -167,13 +173,13 @@ impl Default for NativeTheme {
         Self {
             name: "built-in dark".into(),
             background: Argb::new(0xDD, 0x20, 0x20, 0x20),
-            surface:    Argb::new(0xFF, 0x2A, 0x2A, 0x2A),
-            border:     Argb::new(0xFF, 0x33, 0x33, 0x33),
-            text:       Argb::new(0xFF, 0xFF, 0xFF, 0xFF),
+            surface: Argb::new(0xFF, 0x2A, 0x2A, 0x2A),
+            border: Argb::new(0xFF, 0x33, 0x33, 0x33),
+            text: Argb::new(0xFF, 0xFF, 0xFF, 0xFF),
             text_muted: Argb::new(0xFF, 0x99, 0x99, 0x99),
-            accent:     Argb::new(0xFF, 0xFF, 0x8C, 0x00),
-            selected:   Argb::new(0x22, 0xFF, 0xFF, 0xFF),
-            hover:      Argb::new(0x22, 0xFF, 0xFF, 0xFF),
+            accent: Argb::new(0xFF, 0xFF, 0x8C, 0x00),
+            selected: Argb::new(0x22, 0xFF, 0xFF, 0xFF),
+            hover: Argb::new(0x22, 0xFF, 0xFF, 0xFF),
             bar_background: Argb::new(0xFF, 0x50, 0x50, 0x50),
         }
     }
@@ -236,14 +242,14 @@ impl ThemeColors {
         for (k, v) in colors {
             let argb = Argb::from_hex(v);
             match k.as_str() {
-                "background"        => tc.background = argb,
-                "surface"           => tc.surface = argb,
-                "border"            => tc.border = argb,
-                "text"              => tc.text = argb,
-                "text.muted"        => tc.text_muted = argb,
-                "element.active"    => tc.accent = argb,
-                "element.selected"  => tc.selected = argb,
-                "element.hover"     => tc.hover = argb,
+                "background" => tc.background = argb,
+                "surface" => tc.surface = argb,
+                "border" => tc.border = argb,
+                "text" => tc.text = argb,
+                "text.muted" => tc.text_muted = argb,
+                "element.active" => tc.accent = argb,
+                "element.selected" => tc.selected = argb,
+                "element.hover" => tc.hover = argb,
                 _ => {}
             }
         }
@@ -262,7 +268,10 @@ impl ThemeColors {
 /// 2. If `$USERPROFILE` is unset: `\.config\mhd\themes` (current drive root fallback)
 pub fn themes_dir() -> PathBuf {
     if let Ok(home) = std::env::var("USERPROFILE") {
-        PathBuf::from(home).join(".config").join("mhd").join("themes")
+        PathBuf::from(home)
+            .join(".config")
+            .join("mhd")
+            .join("themes")
     } else {
         PathBuf::from(r"\.config\mhd\themes")
     }
@@ -289,12 +298,13 @@ pub fn load_theme(theme_name: Option<&str>) -> NativeTheme {
 /// Load a theme from an explicit file path.  Returns an `Err` if the
 /// file cannot be read or is syntactically/structurally invalid.
 pub fn load_theme_from_path(path: &std::path::Path) -> Result<NativeTheme, String> {
-    let json = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read theme file: {e}"))?;
-    let file: ThemeFile = serde_json::from_str(&json)
-        .map_err(|e| format!("JSON parse error: {e}"))?;
+    let json = std::fs::read_to_string(path).map_err(|e| format!("cannot read theme file: {e}"))?;
+    let file: ThemeFile =
+        serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))?;
 
-    let entry = file.themes.first()
+    let entry = file
+        .themes
+        .first()
         .ok_or_else(|| "no theme entries found".to_string())?;
 
     let tc = ThemeColors::from_map(&entry.style.colors);
@@ -302,14 +312,14 @@ pub fn load_theme_from_path(path: &std::path::Path) -> Result<NativeTheme, Strin
     let def = NativeTheme::default();
     Ok(NativeTheme {
         name: entry.name.clone().unwrap_or_else(|| "unknown".into()),
-        background:  tc.background.unwrap_or(def.background),
-        surface:     tc.surface.unwrap_or(def.surface),
-        border:      tc.border.unwrap_or(def.border),
-        text:        tc.text.unwrap_or(def.text),
-        text_muted:  tc.text_muted.unwrap_or(def.text_muted),
-        accent:      tc.accent.unwrap_or(def.accent),
-        selected:    tc.selected.unwrap_or(def.selected),
-        hover:       tc.hover.unwrap_or(def.hover),
+        background: tc.background.unwrap_or(def.background),
+        surface: tc.surface.unwrap_or(def.surface),
+        border: tc.border.unwrap_or(def.border),
+        text: tc.text.unwrap_or(def.text),
+        text_muted: tc.text_muted.unwrap_or(def.text_muted),
+        accent: tc.accent.unwrap_or(def.accent),
+        selected: tc.selected.unwrap_or(def.selected),
+        hover: tc.hover.unwrap_or(def.hover),
         bar_background: def.bar_background,
     })
 }

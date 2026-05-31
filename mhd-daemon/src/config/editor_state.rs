@@ -7,8 +7,8 @@ use std::sync::atomic::AtomicBool;
 use windows::Win32::Foundation::HWND;
 
 use crate::app::AppHandle;
-use crate::core::native_theme::NativeTheme;
 use crate::config::editor_layout::Layout;
+use crate::core::native_theme::NativeTheme;
 
 // ── UI Binding (row data) ─────────────────────────────────────────
 

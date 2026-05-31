@@ -59,11 +59,21 @@ impl Default for BlackboxConfig {
 
 #[derive(Debug, Clone)]
 pub enum BlackboxEvent {
-    Input { kind: InputKind, ts: u64 },
+    Input {
+        kind: InputKind,
+        ts: u64,
+    },
     /// Quick Note was saved (ts = save time, text = note content).
-    QuickNote { ts: u64, text: String },
+    QuickNote {
+        ts: u64,
+        text: String,
+    },
     /// Custom log event (e.g. pomodoro) with key-value pairs.
-    LogCustom { ts: u64, event: String, kv: Vec<(String, String)> },
+    LogCustom {
+        ts: u64,
+        event: String,
+        kv: Vec<(String, String)>,
+    },
     Shutdown,
     /// Toggle enabled state from tray.
     ToggleEnabled,
@@ -198,15 +208,29 @@ impl SessionState {
             self.last_action_at = ts;
         }
         match kind {
-            InputKind::Keyboard => { self.keyboard_count += 1; self.span_keyboard += 1; }
-            InputKind::MouseButton => { self.click_count += 1; self.span_clicks += 1; }
-            InputKind::Wheel => { self.wheel_count += 1; self.span_wheel += 1; }
-            InputKind::Move => { self.move_count += 1; self.span_moves += 1; }
+            InputKind::Keyboard => {
+                self.keyboard_count += 1;
+                self.span_keyboard += 1;
+            }
+            InputKind::MouseButton => {
+                self.click_count += 1;
+                self.span_clicks += 1;
+            }
+            InputKind::Wheel => {
+                self.wheel_count += 1;
+                self.span_wheel += 1;
+            }
+            InputKind::Move => {
+                self.move_count += 1;
+                self.span_moves += 1;
+            }
         }
     }
 
     fn end_session(&mut self, ts: u64, reason: Option<&str>) -> Option<SessionEndData> {
-        if !self.active { return None; }
+        if !self.active {
+            return None;
+        }
         let duration = ts.saturating_sub(self.started_ts);
         let active_sec = self.last_action_at.saturating_sub(self.started_ts);
         let data = SessionEndData {
@@ -225,7 +249,9 @@ impl SessionState {
 
     /// Snapshot the current span, reset for a fresh span, and return the data.
     fn take_span(&mut self, end_ts: u64) -> Option<SpanData> {
-        if !self.active { return None; }
+        if !self.active {
+            return None;
+        }
         let data = SpanData {
             app: self.span_app.clone(),
             win: self.span_win.clone(),
@@ -275,10 +301,16 @@ struct SpanData {
 fn get_foreground_title() -> String {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd == HWND::default() { return String::new(); }
+        if hwnd == HWND::default() {
+            return String::new();
+        }
         let mut buf = [0u16; 512];
         let len = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf);
-        if len > 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { String::new() }
+        if len > 0 {
+            String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -287,17 +319,26 @@ fn get_foreground_title() -> String {
 fn get_app_name() -> Option<String> {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd == HWND::default() { return None; }
+        if hwnd == HWND::default() {
+            return None;
+        }
         let mut pid = 0u32;
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 { return None; }
+        let _ =
+            windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        if handle.is_invalid() { return None; }
+        if handle.is_invalid() {
+            return None;
+        }
         let mut buf = [0u16; 260];
         let mut size = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) != 0;
         let _ = CloseHandle(handle);
-        if !ok || size == 0 { return None; }
+        if !ok || size == 0 {
+            return None;
+        }
         let path = String::from_utf16_lossy(&buf[..size as usize]);
         // Extract filename without extension
         let stem = std::path::Path::new(&path)
@@ -318,7 +359,11 @@ fn get_app_name() -> Option<String> {
 fn kv_payload(kv: &[(String, String)]) -> String {
     kv.iter()
         .map(|(k, v)| {
-            let needs_quote = v.contains(' ') || v.contains('"') || v.contains('\\') || v.contains('=') || v.is_empty();
+            let needs_quote = v.contains(' ')
+                || v.contains('"')
+                || v.contains('\\')
+                || v.contains('=')
+                || v.is_empty();
             if needs_quote {
                 let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
                 format!("{k}=\"{escaped}\"")
@@ -403,9 +448,15 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
             // Write daemon_start event with current context + version stamp
             ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
             let payload = format!("v={} schema=2", env!("CARGO_PKG_VERSION"));
-            if let Err(e) = db.insert_event(now, "daemon_start",
+            if let Err(e) = db.insert_event(
+                now,
+                "daemon_start",
                 initial_app.as_deref(),
-                if initial_title.is_empty() { None } else { Some(initial_title.as_str()) },
+                if initial_title.is_empty() {
+                    None
+                } else {
+                    Some(initial_title.as_str())
+                },
                 Some(&payload),
             ) {
                 eprintln!("mhd: blackbox: insert daemon_start: {e}");
@@ -427,13 +478,23 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         if enabled && session.active {
                             let now = epoch_secs();
                             if now >= session.last_action_at + idle_seconds {
-                                end_session_and_insert(&db, &mut session, now, Some("idle"),
-                                    &mut events_since_flush, &mut last_flush_ts);
+                                end_session_and_insert(
+                                    &db,
+                                    &mut session,
+                                    now,
+                                    Some("idle"),
+                                    &mut events_since_flush,
+                                    &mut last_flush_ts,
+                                );
                             }
                         }
                         if enabled {
-                            check_app_and_title(&db, &mut session,
-                                &mut events_since_flush, &mut last_flush_ts);
+                            check_app_and_title(
+                                &db,
+                                &mut session,
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
 
                             // Heartbeat with foreground app + idle flag
                             let now = epoch_secs();
@@ -443,8 +504,13 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                                 let idle_flag = if session.active { 0 } else { 1 };
                                 let payload = format!("idle={idle_flag}");
                                 ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
-                                let _ = db.insert_event(now, "heartbeat",
-                                    hb_app.as_deref(), None, Some(&payload));
+                                let _ = db.insert_event(
+                                    now,
+                                    "heartbeat",
+                                    hb_app.as_deref(),
+                                    None,
+                                    Some(&payload),
+                                );
                                 events_since_flush += 1;
                                 check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
                             }
@@ -460,16 +526,26 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         if enabled {
                             session.on_input(kind, ts);
                             ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
-                            check_app_and_title(&db, &mut session,
-                                &mut events_since_flush, &mut last_flush_ts);
+                            check_app_and_title(
+                                &db,
+                                &mut session,
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
                             check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
                         }
                     }
                     BlackboxEvent::Shutdown => {
                         let now = epoch_secs();
                         if enabled {
-                            end_session_and_insert(&db, &mut session, now, Some("stop"),
-                                &mut events_since_flush, &mut last_flush_ts);
+                            end_session_and_insert(
+                                &db,
+                                &mut session,
+                                now,
+                                Some("stop"),
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
                         }
                         let _ = db.insert_event(now, "daemon_stop", None, None, None);
                         // Final flush
@@ -481,7 +557,9 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                     BlackboxEvent::QuickNote { ts, text } => {
                         if enabled {
                             ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
-                            if let Ok(eid) = db.insert_event(ts, "note",
+                            if let Ok(eid) = db.insert_event(
+                                ts,
+                                "note",
                                 session.last_app_name.as_deref(),
                                 session.last_window_title.as_deref(),
                                 None,
@@ -497,8 +575,14 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                     BlackboxEvent::LogCustom { ts, event, kv } => {
                         if enabled {
                             ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
-                            let payload = if kv.is_empty() { None } else { Some(kv_payload(&kv)) };
-                            if let Err(e) = db.insert_event(ts, &event,
+                            let payload = if kv.is_empty() {
+                                None
+                            } else {
+                                Some(kv_payload(&kv))
+                            };
+                            if let Err(e) = db.insert_event(
+                                ts,
+                                &event,
                                 session.last_app_name.as_deref(),
                                 session.last_window_title.as_deref(),
                                 payload.as_deref(),
@@ -524,9 +608,15 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             if !title.is_empty() {
                                 session.last_window_title = Some(title.clone());
                             }
-                            if let Err(e) = db.insert_event(now, "logging_on",
+                            if let Err(e) = db.insert_event(
+                                now,
+                                "logging_on",
                                 app.as_deref(),
-                                if title.is_empty() { None } else { Some(title.as_str()) },
+                                if title.is_empty() {
+                                    None
+                                } else {
+                                    Some(title.as_str())
+                                },
                                 None,
                             ) {
                                 eprintln!("mhd: blackbox: insert logging_on: {e}");
@@ -536,9 +626,15 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         } else {
                             let title = get_foreground_title();
                             let app = get_app_name();
-                            if let Err(e) = db.insert_event(now, "logging_off",
+                            if let Err(e) = db.insert_event(
+                                now,
+                                "logging_off",
                                 app.as_deref(),
-                                if title.is_empty() { None } else { Some(title.as_str()) },
+                                if title.is_empty() {
+                                    None
+                                } else {
+                                    Some(title.as_str())
+                                },
                                 None,
                             ) {
                                 eprintln!("mhd: blackbox: insert logging_off: {e}");
@@ -556,7 +652,10 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
         })
         .map_err(|e| format!("cannot spawn blackbox thread: {e}"))?;
 
-    Ok(BlackboxHandle { tx, join: Some(join) })
+    Ok(BlackboxHandle {
+        tx,
+        join: Some(join),
+    })
 }
 
 // ── Transaction / flush helpers ────────────────────────────────────────
@@ -596,13 +695,17 @@ fn end_session_and_insert(
     let final_span = session.take_span(ts);
 
     // 2. End the session (sets active=false)
-    let Some(data) = session.end_session(ts, reason) else { return };
+    let Some(data) = session.end_session(ts, reason) else {
+        return;
+    };
 
     // 3. Begin transaction if needed
     ensure_tx(db, events_since_flush, last_flush_ts);
 
     // 4. Insert the ses_end event — this owns all spans
-    let event_id = match db.insert_event(ts, "ses_end",
+    let event_id = match db.insert_event(
+        ts,
+        "ses_end",
         session.last_app_name.as_deref(),
         session.last_window_title.as_deref(),
         None,
@@ -617,8 +720,14 @@ fn end_session_and_insert(
 
     // 5. Insert the session row (new split counters)
     let _ = db.insert_session(
-        event_id, data.started_ts, data.duration_sec, data.active_sec,
-        data.keyboard, data.clicks, data.wheel, data.moves,
+        event_id,
+        data.started_ts,
+        data.duration_sec,
+        data.active_sec,
+        data.keyboard,
+        data.clicks,
+        data.wheel,
+        data.moves,
         data.end_reason.as_deref(),
     );
 
@@ -650,10 +759,10 @@ fn check_app_and_title(
     events_since_flush: &mut u32,
     last_flush_ts: &mut u64,
 ) {
-    let app   = get_app_name();
+    let app = get_app_name();
     let title = get_foreground_title();
 
-    let app_changed   = app.as_deref() != session.last_app_name.as_deref();
+    let app_changed = app.as_deref() != session.last_app_name.as_deref();
     let title_changed = title != session.last_window_title.as_deref().unwrap_or("");
 
     if app_changed || title_changed {
@@ -668,7 +777,11 @@ fn check_app_and_title(
             // The new span has already been started by take_span (fields reset)
             // Re-point the fresh span to the new app/title
             session.span_app = app.clone();
-            session.span_win = if title.is_empty() { None } else { Some(title.clone()) };
+            session.span_win = if title.is_empty() {
+                None
+            } else {
+                Some(title.clone())
+            };
         }
 
         // Update cached state
@@ -688,9 +801,14 @@ fn check_app_and_title(
         if app.is_some() || !title.is_empty() {
             ensure_tx(db, events_since_flush, last_flush_ts);
             let _ = db.insert_event(
-                ts, "win",
+                ts,
+                "win",
                 app.as_deref(),
-                if title.is_empty() { None } else { Some(title.as_str()) },
+                if title.is_empty() {
+                    None
+                } else {
+                    Some(title.as_str())
+                },
                 None,
             );
             *events_since_flush += 1;
@@ -739,5 +857,4 @@ mod tests {
         assert_eq!(data.moves, 1);
         assert!(!s.active);
     }
-
 }

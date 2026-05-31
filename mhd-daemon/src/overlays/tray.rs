@@ -8,29 +8,27 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-
-
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorPos,
-    GetMessageW, InsertMenuW, LoadImageW, PostQuitMessage, RegisterClassW,
-    SetForegroundWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HICON, IMAGE_ICON, LR_LOADFROMFILE, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, HICON, IMAGE_ICON, InsertMenuW,
+    LR_LOADFROMFILE, LoadImageW, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
+    PostQuitMessage, RegisterClassW, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TrackPopupMenu, TranslateMessage, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
     WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
+use windows::core::PCWSTR;
 
 use crate::app::{AppHandle, DaemonControl};
-use crate::monitor;
-use crate::volume;
-use crate::draw;
-use crate::note;
 use crate::cpu_plan;
+use crate::draw;
+use crate::monitor;
+use crate::note;
+use crate::volume;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
@@ -115,7 +113,7 @@ fn show_menu(hwnd: HWND) {
             Err(_) => return,
         };
 
-        let state = match state_ref() {
+        let _state = match state_ref() {
             Some(s) => s,
             None => return,
         };
@@ -129,18 +127,30 @@ fn show_menu(hwnd: HWND) {
             MF_BYPOSITION | MF_STRING
         };
         let mhd_text: Vec<u16> = "mhd on/off\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 0, mhd_flags, CMD_TOGGLE_SUSPEND, PCWSTR::from_raw(mhd_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            0,
+            mhd_flags,
+            CMD_TOGGLE_SUSPEND,
+            PCWSTR::from_raw(mhd_text.as_ptr()),
+        );
 
         #[cfg(feature = "blackbox")]
         {
-            let bb_enabled = state.app.blackbox_enabled();
+            let bb_enabled = _state.app.blackbox_enabled();
             let bb_flags = if bb_enabled {
                 MF_BYPOSITION | MF_STRING | MF_CHECKED
             } else {
                 MF_BYPOSITION | MF_STRING
             };
             let bb_text: Vec<u16> = "Blackbox on/off\0".encode_utf16().collect();
-            let _ = InsertMenuW(menu, 1, bb_flags, CMD_BLACKBOX_TOGGLE, PCWSTR::from_raw(bb_text.as_ptr()));
+            let _ = InsertMenuW(
+                menu,
+                1,
+                bb_flags,
+                CMD_BLACKBOX_TOGGLE,
+                PCWSTR::from_raw(bb_text.as_ptr()),
+            );
         }
 
         // Separator
@@ -149,14 +159,32 @@ fn show_menu(hwnd: HWND) {
         // ── Control group ──────────────────────────────────────────
 
         let vol_text: Vec<u16> = "Volume\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 3, MF_BYPOSITION | MF_STRING, CMD_VOLUME, PCWSTR::from_raw(vol_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            3,
+            MF_BYPOSITION | MF_STRING,
+            CMD_VOLUME,
+            PCWSTR::from_raw(vol_text.as_ptr()),
+        );
 
         let mon_text: Vec<u16> = "Monitor\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 4, MF_BYPOSITION | MF_STRING, CMD_MONITOR, PCWSTR::from_raw(mon_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            4,
+            MF_BYPOSITION | MF_STRING,
+            CMD_MONITOR,
+            PCWSTR::from_raw(mon_text.as_ptr()),
+        );
 
         // CPU Power
         let cpu_text: Vec<u16> = "CPU Power\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 5, MF_BYPOSITION | MF_STRING, CMD_CPU_PANEL, PCWSTR::from_raw(cpu_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            5,
+            MF_BYPOSITION | MF_STRING,
+            CMD_CPU_PANEL,
+            PCWSTR::from_raw(cpu_text.as_ptr()),
+        );
 
         // Separator
         let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
@@ -164,10 +192,22 @@ fn show_menu(hwnd: HWND) {
         // ── Actions group ──────────────────────────────────────────
 
         let note_text: Vec<u16> = "Note\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 7, MF_BYPOSITION | MF_STRING, CMD_NOTE, PCWSTR::from_raw(note_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            7,
+            MF_BYPOSITION | MF_STRING,
+            CMD_NOTE,
+            PCWSTR::from_raw(note_text.as_ptr()),
+        );
 
         let draw_text: Vec<u16> = "Draw\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 8, MF_BYPOSITION | MF_STRING, CMD_DRAW, PCWSTR::from_raw(draw_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            8,
+            MF_BYPOSITION | MF_STRING,
+            CMD_DRAW,
+            PCWSTR::from_raw(draw_text.as_ptr()),
+        );
 
         // Separator
         let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
@@ -186,21 +226,51 @@ fn show_menu(hwnd: HWND) {
                 MF_BYPOSITION | MF_STRING
             };
             let item_text: Vec<u16> = format!("{}\0", name).encode_utf16().collect();
-            let _ = InsertMenuW(pp_menu, i as u32, flags, CMD_POWER_PLAN_BASE + i, PCWSTR::from_raw(item_text.as_ptr()));
+            let _ = InsertMenuW(
+                pp_menu,
+                i as u32,
+                flags,
+                CMD_POWER_PLAN_BASE + i,
+                PCWSTR::from_raw(item_text.as_ptr()),
+            );
         }
         let pp_label: Vec<u16> = "Power Plan\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 10, MF_BYPOSITION | MF_POPUP, pp_menu.0 as usize, PCWSTR::from_raw(pp_label.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            10,
+            MF_BYPOSITION | MF_POPUP,
+            pp_menu.0 as usize,
+            PCWSTR::from_raw(pp_label.as_ptr()),
+        );
 
         // ── Bottom section ─────────────────────────────────────────
 
         let settings_text: Vec<u16> = "Settings\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 11, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, PCWSTR::from_raw(settings_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            11,
+            MF_BYPOSITION | MF_STRING,
+            CMD_EDIT_CONFIG,
+            PCWSTR::from_raw(settings_text.as_ptr()),
+        );
 
         let about_text: Vec<u16> = "About\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 12, MF_BYPOSITION | MF_STRING, CMD_ABOUT, PCWSTR::from_raw(about_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            12,
+            MF_BYPOSITION | MF_STRING,
+            CMD_ABOUT,
+            PCWSTR::from_raw(about_text.as_ptr()),
+        );
 
         let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
-        let _ = InsertMenuW(menu, 13, MF_BYPOSITION | MF_STRING, CMD_QUIT, PCWSTR::from_raw(exit_text.as_ptr()));
+        let _ = InsertMenuW(
+            menu,
+            13,
+            MF_BYPOSITION | MF_STRING,
+            CMD_QUIT,
+            PCWSTR::from_raw(exit_text.as_ptr()),
+        );
 
         let _ = SetForegroundWindow(hwnd);
 
@@ -310,9 +380,7 @@ unsafe extern "system" fn wnd_proc(
                         // Sleep a tiny bit to let the hook thread process WM_QUIT,
                         // then post our own quit to exit the tray message loop.
                         std::thread::sleep(Duration::from_millis(200));
-                        unsafe {
-                            PostQuitMessage(0)
-                        };
+                        unsafe { PostQuitMessage(0) };
                     }
                     _ => {}
                 }
@@ -328,9 +396,7 @@ unsafe extern "system" fn wnd_proc(
                 nid.uID = 1;
                 let _ = Shell_NotifyIconW(NIM_DELETE, &nid as *const _ as *mut _);
             }
-            unsafe {
-                PostQuitMessage(0)
-            };
+            unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
 
@@ -377,9 +443,7 @@ pub fn run(app: AppHandle) {
         return;
     }
 
-    let _ = STATE.set(Box::new(TrayState {
-        app,
-    }));
+    let _ = STATE.set(Box::new(TrayState { app }));
 
     let hwnd = unsafe {
         CreateWindowExW(

@@ -4,10 +4,10 @@
 
 #![windows_subsystem = "windows"]
 
-mod constants;
-mod core;
 #[cfg(feature = "blackbox")]
 pub(crate) mod blackbox;
+mod constants;
+mod core;
 #[cfg(not(feature = "blackbox"))]
 #[allow(dead_code)]
 pub(crate) mod blackbox {
@@ -48,18 +48,21 @@ pub(crate) mod blackbox {
     }
 }
 mod app;
-mod ddc;
 mod config;
-mod overlays;
-mod osd;
-pub mod renderer;
-pub mod win32;
 #[cfg(feature = "debug-dump")]
 mod crash_dump;
+mod ddc;
+mod osd;
+mod overlays;
+pub mod renderer;
+pub mod win32;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
 pub use core::{action, hook, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
-pub use overlays::{about, autostart, draw, monitor, note, power, suspend, topmost, throttle, tray, volume, cpu_plan};
+pub use overlays::{
+    about, autostart, cpu_plan, draw, monitor, note, power, suspend, throttle, topmost, tray,
+    volume,
+};
 // Re-export config/editor as config_editor for backward compat.
 pub use config::editor as config_editor;
 
@@ -68,10 +71,10 @@ use std::process::ExitCode;
 #[cfg(not(feature = "debug-dump"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
+use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole};
 
-use crate::config::path::{resolve_config_path, create_example_config, create_bundled_themes};
 use crate::app::DaemonControl;
+use crate::config::path::{create_bundled_themes, create_example_config, resolve_config_path};
 
 /// Install a panic hook that writes the panic message and backtrace to
 /// `<config_dir>/crash.log` for post‑mortem analysis.
@@ -82,7 +85,8 @@ use crate::app::DaemonControl;
 fn setup_panic_hook() {
     // Resolve config directory once (before any potential panic)
     let config_path = resolve_config_path();
-    let log_dir = config_path.parent()
+    let log_dir = config_path
+        .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
@@ -101,7 +105,8 @@ fn setup_panic_hook() {
             "(non‑string panic payload)".to_string()
         };
 
-        let location = info.location()
+        let location = info
+            .location()
             .map(|loc| format!("{}:{}", loc.file(), loc.line()))
             .unwrap_or_else(|| "(unknown location)".to_string());
 
@@ -131,7 +136,10 @@ fn setup_panic_hook() {
         let _ = std::fs::write(&dated_path, &log_content);
 
         // Print to stderr in case there's a console attached
-        eprintln!("mhd PANIC — crash details written to {}", log_path.display());
+        eprintln!(
+            "mhd PANIC — crash details written to {}",
+            log_path.display()
+        );
     }));
 }
 
@@ -150,7 +158,9 @@ fn main() -> ExitCode {
     }
 
     // Try to attach to parent console so we can print messages if launched from a terminal.
-    unsafe { let _ = AttachConsole(ATTACH_PARENT_PROCESS); }
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 
     let args: Vec<String> = env::args().collect();
     let mut quiet = false;

@@ -2,12 +2,12 @@ use std::sync::mpsc;
 
 use crate::action::Action;
 use crate::app::{AppHandle, DaemonControl};
-use crate::ddc;
-use crate::platform;
-use crate::monitor;
-use crate::volume;
-use crate::power;
 use crate::cpu_plan;
+use crate::ddc;
+use crate::monitor;
+use crate::platform;
+use crate::power;
+use crate::volume;
 
 /// Messages sent from hook callbacks to the worker thread.
 #[derive(Debug)]
@@ -126,18 +126,26 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             let cfg = handle.quicknote_config();
             let bb = {
                 #[cfg(feature = "blackbox")]
-                { handle.blackbox_enabled() }
+                {
+                    handle.blackbox_enabled()
+                }
                 #[cfg(not(feature = "blackbox"))]
-                { false }
+                {
+                    false
+                }
             };
             crate::overlays::note::show(handle.theme(), cfg.notes_dir.clone(), bb);
         }
         Action::Pomodoro => {
             let bb = {
                 #[cfg(feature = "blackbox")]
-                { handle.blackbox_enabled() }
+                {
+                    handle.blackbox_enabled()
+                }
                 #[cfg(not(feature = "blackbox"))]
-                { false }
+                {
+                    false
+                }
             };
             crate::overlays::pomodoro::show(handle.theme(), bb);
         }
@@ -171,7 +179,11 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 Err(e) => eprintln!("mhd: brightness error: {e}"),
             }
         }
-        Action::Vcp { code, relative, value } => {
+        Action::Vcp {
+            code,
+            relative,
+            value,
+        } => {
             if *relative {
                 if let Err(e) = ddc::adjust_vcp_feature(*code, *value) {
                     eprintln!("mhd: VCP error: {e}");
@@ -214,4 +226,3 @@ fn run_powershell(command: &str) {
         eprintln!("mhd: failed to run powershell: {e}");
     }
 }
-

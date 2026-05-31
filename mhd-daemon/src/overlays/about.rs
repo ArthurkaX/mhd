@@ -5,10 +5,12 @@
 //! [`crate::renderer`].
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{DeleteObject, SelectObject, SetBkMode, DT_LEFT, DT_SINGLELINE, TRANSPARENT};
+use windows::Win32::Graphics::Gdi::{
+    DT_LEFT, DT_SINGLELINE, DeleteObject, SelectObject, SetBkMode, TRANSPARENT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
-    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
@@ -43,7 +45,9 @@ pub fn show_about(theme: NativeTheme) {
         lpszClassName: PCWSTR::from_raw(cls_name.as_ptr()),
         ..Default::default()
     };
-    unsafe { RegisterClassW(&wc); }
+    unsafe {
+        RegisterClassW(&wc);
+    }
 
     let hwnd = match unsafe {
         CreateWindowExW(
@@ -95,25 +99,28 @@ pub fn show_about(theme: NativeTheme) {
     }
 }
 
-extern "system" fn about_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
-            unsafe { DestroyWindow(hwnd).ok(); }
+            unsafe {
+                DestroyWindow(hwnd).ok();
+            }
             return LRESULT(0);
         }
         WM_KEYDOWN => {
-            if wparam.0 == 0x1B /* VK_ESCAPE */ || wparam.0 == 0x0D /* VK_RETURN */ {
-                unsafe { DestroyWindow(hwnd).ok(); }
+            if wparam.0 == 0x1B /* VK_ESCAPE */ || wparam.0 == 0x0D
+            /* VK_RETURN */
+            {
+                unsafe {
+                    DestroyWindow(hwnd).ok();
+                }
                 return LRESULT(0);
             }
         }
         WM_DESTROY => {
-            unsafe { PostQuitMessage(0); }
+            unsafe {
+                PostQuitMessage(0);
+            }
             return LRESULT(0);
         }
         _ => {}
@@ -146,8 +153,12 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTh
     let right = width - pad;
 
     // ── Title ──
-    unsafe { let _ = SetBkMode(shell.dc(), TRANSPARENT); }
-    unsafe { let _ = SelectObject(shell.dc(), hfont_title); }
+    unsafe {
+        let _ = SetBkMode(shell.dc(), TRANSPARENT);
+    }
+    unsafe {
+        let _ = SelectObject(shell.dc(), hfont_title);
+    }
     shell.draw_text(
         "mHD",
         &RECT {
@@ -162,7 +173,9 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTh
 
     // ── Version ──
     let ver_y = pad + font_title_h.abs() * 3 / 2 + 4;
-    unsafe { let _ = SelectObject(shell.dc(), hfont_small); }
+    unsafe {
+        let _ = SelectObject(shell.dc(), hfont_small);
+    }
     shell.draw_text(
         &format!("v{}", env!("CARGO_PKG_VERSION")),
         &RECT {
@@ -181,7 +194,9 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTh
 
     // ── Body text ──
     let body_y = sep_y + 14;
-    unsafe { let _ = SelectObject(shell.dc(), hfont_body); }
+    unsafe {
+        let _ = SelectObject(shell.dc(), hfont_body);
+    }
 
     let lines = [
         "Minimal Hotkey Daemon for Windows",
@@ -208,7 +223,9 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTh
     }
 
     // ── Hint ──
-    unsafe { let _ = SelectObject(shell.dc(), hfont_small); }
+    unsafe {
+        let _ = SelectObject(shell.dc(), hfont_small);
+    }
     shell.draw_text(
         "Click or press Esc to close",
         &RECT {

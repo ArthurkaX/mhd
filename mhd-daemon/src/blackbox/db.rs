@@ -93,7 +93,7 @@ impl Db {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA temp_store = MEMORY;"
+             PRAGMA temp_store = MEMORY;",
         )
         .map_err(|e| format!("cannot set pragmas: {e}"))?;
 
@@ -105,12 +105,12 @@ impl Db {
     /// Open an in-memory database (for testing).
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, String> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| format!("cannot open in-memory db: {e}"))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| format!("cannot open in-memory db: {e}"))?;
 
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
-             PRAGMA temp_store = MEMORY;"
+             PRAGMA temp_store = MEMORY;",
         )
         .map_err(|e| format!("cannot set pragmas: {e}"))?;
 
@@ -214,7 +214,7 @@ impl Db {
     pub fn ensure_app_category(&self, app: &str) -> Result<(), String> {
         self.conn
             .prepare_cached(
-                "INSERT OR IGNORE INTO app_category (app, category) VALUES (?1, 'unknown')"
+                "INSERT OR IGNORE INTO app_category (app, category) VALUES (?1, 'unknown')",
             )
             .and_then(|mut stmt| stmt.insert(params![app]).map(|_| ()))
             .map_err(|e| format!("cannot ensure app_category: {e}"))
@@ -247,16 +247,16 @@ impl Db {
 
 fn migrate(conn: &Connection) -> Result<(), String> {
     // 1. Ensure schema_version table exists
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);"
-    )
-    .map_err(|e| format!("cannot create schema_version table: {e}"))?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+        .map_err(|e| format!("cannot create schema_version table: {e}"))?;
 
     // 2. Read current version (0 if none)
     let current: i64 = conn
-        .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|e| format!("cannot read schema version: {e}"))?;
 
     // 3. If already at CURRENT_SCHEMA → skip
@@ -271,7 +271,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
          DROP TABLE IF EXISTS notes;
          DROP TABLE IF EXISTS app_category;
          DROP TABLE IF EXISTS events;
-         DELETE FROM schema_version;"
+         DELETE FROM schema_version;",
     )
     .map_err(|e| format!("cannot drop old tables: {e}"))?;
 
@@ -305,7 +305,8 @@ mod tests {
     #[test]
     fn test_open_and_migrate() {
         let db = Db::open_in_memory().unwrap();
-        let tables: Vec<String> = db.conn
+        let tables: Vec<String> = db
+            .conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap()
             .query_map([], |row| row.get(0))
@@ -323,13 +324,18 @@ mod tests {
     #[test]
     fn test_insert_event() {
         let db = Db::open_in_memory().unwrap();
-        let id = db.insert_event(1000, "test_event", Some("notepad"), None, Some("k=v")).unwrap();
+        let id = db
+            .insert_event(1000, "test_event", Some("notepad"), None, Some("k=v"))
+            .unwrap();
         assert!(id > 0);
 
-        let (ts, kind): (i64, String) = db.conn
-            .query_row("SELECT ts, kind FROM events WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+        let (ts, kind): (i64, String) = db
+            .conn
+            .query_row(
+                "SELECT ts, kind FROM events WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(ts, 1000);
         assert_eq!(kind, "test_event");
@@ -339,7 +345,8 @@ mod tests {
     fn test_insert_session() {
         let db = Db::open_in_memory().unwrap();
         let event_id = db.insert_event(2000, "ses_end", None, None, None).unwrap();
-        db.insert_session(event_id, 1900, 100, 90, 50, 8, 2, 40, Some("stop")).unwrap();
+        db.insert_session(event_id, 1900, 100, 90, 50, 8, 2, 40, Some("stop"))
+            .unwrap();
 
         let (started, dur, active, k, c, w, m): (i64, i64, i64, i64, i64, i64, i64) = db.conn
             .query_row(
@@ -371,9 +378,11 @@ mod tests {
     fn test_insert_app_span() {
         let db = Db::open_in_memory().unwrap();
         let eid = db.insert_event(100, "ses_end", None, None, None).unwrap();
-        db.insert_app_span(eid, Some("RustRover"), Some("x"), 100, 50, 30, 5, 1, 20).unwrap();
+        db.insert_app_span(eid, Some("RustRover"), Some("x"), 100, 50, 30, 5, 1, 20)
+            .unwrap();
 
-        let (app, keyboard, moves): (Option<String>, i64, i64) = db.conn
+        let (app, keyboard, moves): (Option<String>, i64, i64) = db
+            .conn
             .query_row(
                 "SELECT app, keyboard, moves FROM app_spans WHERE session_event_id = ?1",
                 params![eid],
@@ -388,10 +397,13 @@ mod tests {
     #[test]
     fn test_app_category_seeded() {
         let db = Db::open_in_memory().unwrap();
-        let cat: String = db.conn
-            .query_row("SELECT category FROM app_category WHERE app = ?1", params!["RustRover"], |row| {
-                row.get(0)
-            })
+        let cat: String = db
+            .conn
+            .query_row(
+                "SELECT category FROM app_category WHERE app = ?1",
+                params!["RustRover"],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(cat, "work");
     }
@@ -399,12 +411,16 @@ mod tests {
     #[test]
     fn test_migration_idempotent() {
         let db = Db::open_in_memory().unwrap();
-        let v1: i64 = db.conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0))
+        let v1: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(v1, CURRENT_SCHEMA);
 
-        let tables: Vec<String> = db.conn
+        let tables: Vec<String> = db
+            .conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap()
             .query_map([], |row| row.get(0))
@@ -423,7 +439,8 @@ mod tests {
         }
         db.commit().unwrap();
 
-        let count: i64 = db.conn
+        let count: i64 = db
+            .conn
             .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 60);

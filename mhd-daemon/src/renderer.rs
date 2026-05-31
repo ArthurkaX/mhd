@@ -14,22 +14,22 @@
 //! ```
 
 use std::ffi::c_void;
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, FillRect, GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY,
-    DIB_RGB_COLORS, DRAW_TEXT_FORMAT, FF_DONTCARE, FW_BOLD, FW_NORMAL, HDC,
-    OUT_DEFAULT_PRECIS, RGBQUAD, TRANSPARENT,
+    BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection,
+    CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
+    DRAW_TEXT_FORMAT, DeleteDC, DeleteObject, DrawTextW, FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect,
+    GetDC, HDC, OUT_DEFAULT_PRECIS, RGBQUAD, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+    TRANSPARENT,
 };
-use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+use windows::Win32::UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow};
+use windows::core::PCWSTR;
 
 use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── BLENDFUNCTION constant re-export ─────────────────────────────────
 
-pub use windows::Win32::Graphics::Gdi::{BLENDFUNCTION, AC_SRC_ALPHA, AC_SRC_OVER};
+pub use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 
 // ── DibFrame ──────────────────────────────────────────────────────────
 
@@ -167,7 +167,12 @@ impl DibFrame {
     /// `background` is the rounded‑rect background colour (used to detect
     /// which pixels are background vs. foreground).
     pub fn fix_gdi_alpha(&mut self, background: Argb) {
-        fix_gdi_alpha(self.bits as *mut c_void, self.width, self.height, background);
+        fix_gdi_alpha(
+            self.bits as *mut c_void,
+            self.width,
+            self.height,
+            background,
+        );
     }
 
     /// Present the DIB as a layered window via `UpdateLayeredWindow`.
@@ -342,7 +347,11 @@ pub fn create_font(height: i32, bold: bool, family: &str) -> windows::Win32::Gra
             0,
             0,
             0,
-            if bold { FW_BOLD.0 as i32 } else { FW_NORMAL.0 as i32 },
+            if bold {
+                FW_BOLD.0 as i32
+            } else {
+                FW_NORMAL.0 as i32
+            },
             0,
             0,
             0,
@@ -489,12 +498,15 @@ impl ShellRenderer {
 
 /// Return the work area rectangle of the primary monitor.
 pub fn primary_monitor_work_rect() -> RECT {
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO, MonitorFromWindow};
     use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
     // SAFETY: Standard GDI calls.
     unsafe {
         let desktop = GetDesktopWindow();
-        let hmon = MonitorFromWindow(desktop, windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST);
+        let hmon = MonitorFromWindow(
+            desktop,
+            windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
+        );
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -512,5 +524,3 @@ pub fn centered_position(width: i32, height: i32) -> (i32, i32) {
     let y = work.top + (work.bottom - work.top - height) / 2;
     (x, y)
 }
-
-

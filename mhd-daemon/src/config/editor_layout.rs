@@ -75,12 +75,24 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
 // ── Advanced page constants ────────────────────────────────────────
 
 pub const ADVANCED_BUTTONS: &[(&str, &str)] = &[
-    ("Open Config File", "Edit the TOML configuration file directly"),
-    ("Open Config Folder", "Open the configuration directory in Explorer"),
+    (
+        "Open Config File",
+        "Edit the TOML configuration file directly",
+    ),
+    (
+        "Open Config Folder",
+        "Open the configuration directory in Explorer",
+    ),
     ("Open Blackbox Logs", "Open the blackbox log directory"),
     ("Open Crash Log", "Open the most recent crash log"),
-    ("Reset Shortcuts", "Restore all shortcuts to their default values"),
-    ("Reset All Settings", "Restore all settings to factory defaults"),
+    (
+        "Reset Shortcuts",
+        "Restore all shortcuts to their default values",
+    ),
+    (
+        "Reset All Settings",
+        "Restore all settings to factory defaults",
+    ),
 ];
 
 /// Group definitions: (name, start_index, end_index_exclusive, is_danger)
@@ -111,7 +123,12 @@ pub fn editor_action_desc(editor_idx: usize) -> &'static crate::core::action::Ac
     crate::core::action::ALL_ACTIONS
         .iter()
         .find(|d| d.name == name)
-        .unwrap_or_else(|| crate::core::action::ALL_ACTIONS.iter().find(|d| d.name == "quit").unwrap())
+        .unwrap_or_else(|| {
+            crate::core::action::ALL_ACTIONS
+                .iter()
+                .find(|d| d.name == "quit")
+                .unwrap()
+        })
 }
 
 /// Get the editor index for an action name, falling back to the "quit" action.
@@ -119,11 +136,15 @@ pub fn editor_index_for_action_name(name: &str) -> usize {
     EDITOR_ACTION_NAMES
         .iter()
         .position(|n| *n == name)
-        .unwrap_or_else(|| EDITOR_ACTION_NAMES.iter().position(|n| *n == "quit").unwrap())
+        .unwrap_or_else(|| {
+            EDITOR_ACTION_NAMES
+                .iter()
+                .position(|n| *n == "quit")
+                .unwrap()
+        })
 }
 
 // ── Scaled layout ──────────────────────────────────────────────────
-
 
 /// Pre-computed geometry for the settings editor window.
 ///
@@ -211,7 +232,10 @@ pub fn compute_layout(scale: f32) -> Layout {
     let combo_y = appearance_y + (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
 
     let shortcuts_y = content_y;
-    let autostart_y = combo_y + (CONTROL_ROW_HEIGHT_BASE as f32 * scale) as i32 + (SECTION_GAP_BASE as f32 * scale) as i32 + (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let autostart_y = combo_y
+        + (CONTROL_ROW_HEIGHT_BASE as f32 * scale) as i32
+        + (SECTION_GAP_BASE as f32 * scale) as i32
+        + (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
     let list_y = shortcuts_y + (48.0 * scale) as i32;
     let list_h = (win_h - footer_h) - list_y - pad / 2;
 

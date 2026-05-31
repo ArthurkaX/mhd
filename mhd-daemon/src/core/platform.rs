@@ -3,11 +3,11 @@
 //! better modularity.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
+    SendInput, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 
-use crate::trigger::{KeyCombo, Modifiers, PhysicalKey, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+use crate::trigger::{KeyCombo, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, Modifiers, PhysicalKey};
 
 /// Get currently pressed modifier keys.
 ///
@@ -49,9 +49,7 @@ pub fn send_keys(keys: &KeyCombo) {
     let mut inputs: Vec<INPUT> = Vec::new();
 
     // Helper: check if a VK is currently physically pressed.
-    let is_pressed = |vk: u16| -> bool {
-        unsafe { GetAsyncKeyState(vk as i32) < 0 }
-    };
+    let is_pressed = |vk: u16| -> bool { unsafe { GetAsyncKeyState(vk as i32) < 0 } };
 
     let is_modifier_only = keys.key.is_none();
 

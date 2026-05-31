@@ -3,17 +3,36 @@ use crate::trigger::{KeyCombo, parse_keys};
 /// An action to execute when a trigger fires.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    ReplaceKey { keys: KeyCombo },
-    RunPs { command: String },
+    ReplaceKey {
+        keys: KeyCombo,
+    },
+    RunPs {
+        command: String,
+    },
     /// Launch an executable file.
-    RunProgram { path: String },
-    SwitchScheme { target_scheme: String },
-    SetBrightness { relative: bool, value: i32 },
+    RunProgram {
+        path: String,
+    },
+    SwitchScheme {
+        target_scheme: String,
+    },
+    SetBrightness {
+        relative: bool,
+        value: i32,
+    },
     /// Increase monitor brightness by a configurable step.
-    BrightnessUp { value: u32 },
+    BrightnessUp {
+        value: u32,
+    },
     /// Decrease monitor brightness by a configurable step.
-    BrightnessDown { value: u32 },
-    Vcp { code: u8, relative: bool, value: i32 },
+    BrightnessDown {
+        value: u32,
+    },
+    Vcp {
+        code: u8,
+        relative: bool,
+        value: i32,
+    },
     ShowVolumeMixer,
     ShowMonitorPanel,
     /// Increase system volume by one step (VK_VOLUME_UP).
@@ -45,7 +64,9 @@ pub enum Action {
     /// Show the Pomodoro timer overlay.
     Pomodoro,
     /// Switch active Windows power plan. target = plan name or "next".
-    SwitchPowerPlan { target: String },
+    SwitchPowerPlan {
+        target: String,
+    },
     /// Show the CPU power plan settings panel.
     ShowCpuPanel,
     Quit,
@@ -130,10 +151,12 @@ impl Action {
             "quick_note" => Ok(Action::QuickNote),
             "pomodoro" => Ok(Action::Pomodoro),
             "switch_power_plan" => {
-                let target = fields.target.ok_or_else(|| {
-                    "switch_power_plan requires 'target' field".to_string()
-                })?;
-                Ok(Action::SwitchPowerPlan { target: target.to_string() })
+                let target = fields
+                    .target
+                    .ok_or_else(|| "switch_power_plan requires 'target' field".to_string())?;
+                Ok(Action::SwitchPowerPlan {
+                    target: target.to_string(),
+                })
             }
             "show_cpu_panel" => Ok(Action::ShowCpuPanel),
             "power_actions" => Ok(Action::PowerActions),
@@ -230,7 +253,8 @@ impl Action {
             u8::from_str_radix(stripped, 16)
         } else {
             code_raw.parse()
-        }.map_err(|_| format!("invalid VCP code: {code_raw}"))?;
+        }
+        .map_err(|_| format!("invalid VCP code: {code_raw}"))?;
 
         let s = value_raw.trim();
         if s.is_empty() {
@@ -238,14 +262,32 @@ impl Action {
         }
 
         if let Some(rest) = s.strip_prefix("+") {
-            let v: i32 = rest.trim().parse().map_err(|_| format!("invalid vcp delta: {s}"))?;
-            Ok(Action::Vcp { code, relative: true, value: v })
+            let v: i32 = rest
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid vcp delta: {s}"))?;
+            Ok(Action::Vcp {
+                code,
+                relative: true,
+                value: v,
+            })
         } else if let Some(rest) = s.strip_prefix("-") {
-            let v: i32 = rest.trim().parse().map_err(|_| format!("invalid vcp delta: {s}"))?;
-            Ok(Action::Vcp { code, relative: true, value: -v })
+            let v: i32 = rest
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid vcp delta: {s}"))?;
+            Ok(Action::Vcp {
+                code,
+                relative: true,
+                value: -v,
+            })
         } else {
             let v: i32 = s.parse().map_err(|_| format!("invalid vcp value: {s}"))?;
-            Ok(Action::Vcp { code, relative: false, value: v })
+            Ok(Action::Vcp {
+                code,
+                relative: false,
+                value: v,
+            })
         }
     }
 
@@ -256,7 +298,10 @@ impl Action {
             Action::RunPs { .. } => "run_ps",
             Action::RunProgram { .. } => "run_program",
             Action::SwitchScheme { .. } => "switch_scheme",
-            Action::SetBrightness { relative: true, value } if *value > 0 => "brightness_up",
+            Action::SetBrightness {
+                relative: true,
+                value,
+            } if *value > 0 => "brightness_up",
             Action::SetBrightness { .. } => "brightness_down",
             Action::BrightnessUp { .. } => "brightness_up",
             Action::BrightnessDown { .. } => "brightness_down",
@@ -299,7 +344,11 @@ impl Action {
                     format!("set_brightness: {}%", value)
                 }
             }
-            Action::Vcp { code, relative, value } => {
+            Action::Vcp {
+                code,
+                relative,
+                value,
+            } => {
                 if *relative {
                     format!("vcp: 0x{:02X} {:+}", code, value)
                 } else {
@@ -335,7 +384,8 @@ impl Action {
 
 /// Parse the `value` field for brightness_up / brightness_down.
 fn parse_brightness_step(fields: &ActionRawFields, name: &str) -> Result<u32, String> {
-    let value = fields.value
+    let value = fields
+        .value
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(5);
     if value == 0 {
@@ -381,7 +431,11 @@ pub enum ActionParamSchema {
     /// Key combination recording (for replace_key).
     KeyMapping,
     /// Numeric value with min/max/unit.
-    Number { unit: &'static str, min: i32, max: i32 },
+    Number {
+        unit: &'static str,
+        min: i32,
+        max: i32,
+    },
     /// Power action selector (shutdown, sleep, etc.).
     PowerAction,
 }
@@ -435,14 +489,22 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         label: "Brightness Up",
         category: ActionCategory::Display,
         param_key: Some("value"),
-        param_schema: ActionParamSchema::Number { unit: "%", min: 1, max: 100 },
+        param_schema: ActionParamSchema::Number {
+            unit: "%",
+            min: 1,
+            max: 100,
+        },
     },
     ActionDescriptor {
         name: "brightness_down",
         label: "Brightness Down",
         category: ActionCategory::Display,
         param_key: Some("value"),
-        param_schema: ActionParamSchema::Number { unit: "%", min: 1, max: 100 },
+        param_schema: ActionParamSchema::Number {
+            unit: "%",
+            min: 1,
+            max: 100,
+        },
     },
     ActionDescriptor {
         name: "show_monitor_panel",
@@ -596,14 +658,32 @@ mod tests {
     fn test_action_name_stability() {
         // Every action variant has a stable name that round-trips
         let actions = [
-            Action::ReplaceKey { keys: KeyCombo { modifiers: Modifiers(0), key: None } },
-            Action::RunPs { command: "echo".into() },
-            Action::RunProgram { path: "notepad.exe".into() },
-            Action::SwitchScheme { target_scheme: "default".into() },
-            Action::SetBrightness { relative: true, value: 5 },
+            Action::ReplaceKey {
+                keys: KeyCombo {
+                    modifiers: Modifiers(0),
+                    key: None,
+                },
+            },
+            Action::RunPs {
+                command: "echo".into(),
+            },
+            Action::RunProgram {
+                path: "notepad.exe".into(),
+            },
+            Action::SwitchScheme {
+                target_scheme: "default".into(),
+            },
+            Action::SetBrightness {
+                relative: true,
+                value: 5,
+            },
             Action::BrightnessUp { value: 10 },
             Action::BrightnessDown { value: 10 },
-            Action::Vcp { code: 0x10, relative: true, value: 5 },
+            Action::Vcp {
+                code: 0x10,
+                relative: true,
+                value: 5,
+            },
             Action::ShowMonitorPanel,
             Action::ShowVolumeMixer,
             Action::MediaVolumeUp,
@@ -619,7 +699,9 @@ mod tests {
             Action::PowerActions,
             Action::QuickDraw,
             Action::QuickNote,
-            Action::SwitchPowerPlan { target: "next".into() },
+            Action::SwitchPowerPlan {
+                target: "next".into(),
+            },
             Action::ShowCpuPanel,
             Action::Quit,
         ];
@@ -633,39 +715,86 @@ mod tests {
             let fields = match action {
                 Action::ReplaceKey { .. } => ActionRawFields {
                     keys: Some("ctrl+alt+x"),
-                    command: None, path: None, target_scheme: None, value: None, code: None, target: None,
+                    command: None,
+                    path: None,
+                    target_scheme: None,
+                    value: None,
+                    code: None,
+                    target: None,
                 },
                 Action::RunPs { .. } => ActionRawFields {
                     command: Some("echo test"),
-                    keys: None, path: None, target_scheme: None, value: None, code: None, target: None,
+                    keys: None,
+                    path: None,
+                    target_scheme: None,
+                    value: None,
+                    code: None,
+                    target: None,
                 },
                 Action::RunProgram { .. } => ActionRawFields {
                     path: Some("notepad.exe"),
-                    keys: None, command: None, target_scheme: None, value: None, code: None, target: None,
+                    keys: None,
+                    command: None,
+                    target_scheme: None,
+                    value: None,
+                    code: None,
+                    target: None,
                 },
                 Action::SwitchScheme { .. } => ActionRawFields {
                     target_scheme: Some("default"),
-                    keys: None, command: None, path: None, value: None, code: None, target: None,
+                    keys: None,
+                    command: None,
+                    path: None,
+                    value: None,
+                    code: None,
+                    target: None,
                 },
-                Action::BrightnessUp { .. } | Action::BrightnessDown { .. } | Action::SetBrightness { .. } => ActionRawFields {
+                Action::BrightnessUp { .. }
+                | Action::BrightnessDown { .. }
+                | Action::SetBrightness { .. } => ActionRawFields {
                     value: Some("10"),
-                    keys: None, command: None, path: None, target_scheme: None, code: None, target: None,
+                    keys: None,
+                    command: None,
+                    path: None,
+                    target_scheme: None,
+                    code: None,
+                    target: None,
                 },
                 Action::Vcp { .. } => ActionRawFields {
                     code: Some("0x10"),
                     value: Some("+5"),
-                    keys: None, command: None, path: None, target_scheme: None, target: None,
+                    keys: None,
+                    command: None,
+                    path: None,
+                    target_scheme: None,
+                    target: None,
                 },
                 Action::SwitchPowerPlan { .. } => ActionRawFields {
                     target: Some("next"),
-                    keys: None, command: None, path: None, target_scheme: None, value: None, code: None,
+                    keys: None,
+                    command: None,
+                    path: None,
+                    target_scheme: None,
+                    value: None,
+                    code: None,
                 },
                 _ => ActionRawFields {
-                    keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
+                    keys: None,
+                    command: None,
+                    path: None,
+                    target_scheme: None,
+                    value: None,
+                    code: None,
+                    target: None,
                 },
             };
             let roundtrip = Action::from_raw(name, fields);
-            assert!(roundtrip.is_ok(), "action '{}' failed round-trip: {:?}", name, roundtrip);
+            assert!(
+                roundtrip.is_ok(),
+                "action '{}' failed round-trip: {:?}",
+                name,
+                roundtrip
+            );
         }
     }
 
@@ -697,15 +826,33 @@ mod tests {
     fn test_set_brightness_validation() {
         // Relative positive
         let a = Action::new_set_brightness("+5").unwrap();
-        assert_eq!(a, Action::SetBrightness { relative: true, value: 5 });
+        assert_eq!(
+            a,
+            Action::SetBrightness {
+                relative: true,
+                value: 5
+            }
+        );
 
         // Relative negative
         let a = Action::new_set_brightness("-3").unwrap();
-        assert_eq!(a, Action::SetBrightness { relative: true, value: -3 });
+        assert_eq!(
+            a,
+            Action::SetBrightness {
+                relative: true,
+                value: -3
+            }
+        );
 
         // Absolute
         let a = Action::new_set_brightness("75").unwrap();
-        assert_eq!(a, Action::SetBrightness { relative: false, value: 75 });
+        assert_eq!(
+            a,
+            Action::SetBrightness {
+                relative: false,
+                value: 75
+            }
+        );
 
         // Invalid
         assert!(Action::new_set_brightness("").is_err());
@@ -718,11 +865,25 @@ mod tests {
     fn test_vcp_validation() {
         // Relative positive
         let a = Action::new_vcp("0x10", "+5").unwrap();
-        assert_eq!(a, Action::Vcp { code: 0x10, relative: true, value: 5 });
+        assert_eq!(
+            a,
+            Action::Vcp {
+                code: 0x10,
+                relative: true,
+                value: 5
+            }
+        );
 
         // Absolute
         let a = Action::new_vcp("0x60", "3").unwrap();
-        assert_eq!(a, Action::Vcp { code: 0x60, relative: false, value: 3 });
+        assert_eq!(
+            a,
+            Action::Vcp {
+                code: 0x60,
+                relative: false,
+                value: 3
+            }
+        );
 
         // Invalid code format
         assert!(Action::new_vcp("xyz", "5").is_err());
@@ -744,7 +905,13 @@ mod tests {
     #[test]
     fn test_unknown_action_name() {
         let fields = ActionRawFields {
-            keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
+            keys: None,
+            command: None,
+            path: None,
+            target_scheme: None,
+            value: None,
+            code: None,
+            target: None,
         };
         let result = Action::from_raw("nonexistent_action", fields);
         assert!(result.is_err());
@@ -755,19 +922,39 @@ mod tests {
     fn test_missing_required_field() {
         // replace_key without 'keys' field
         let fields = ActionRawFields {
-            keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
+            keys: None,
+            command: None,
+            path: None,
+            target_scheme: None,
+            value: None,
+            code: None,
+            target: None,
         };
         let result = Action::from_raw("replace_key", fields);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("replace_key action requires 'keys' field"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("replace_key action requires 'keys' field")
+        );
 
         // run_program without 'path' field
         let fields = ActionRawFields {
-            keys: None, command: None, path: None, target_scheme: None, value: None, code: None, target: None,
+            keys: None,
+            command: None,
+            path: None,
+            target_scheme: None,
+            value: None,
+            code: None,
+            target: None,
         };
         let result = Action::from_raw("run_program", fields);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("run_program action requires 'path' field"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("run_program action requires 'path' field")
+        );
     }
 
     // ── Action descriptor registry ─────────────────────────────────
@@ -790,7 +977,11 @@ mod tests {
         let mut names: Vec<&str> = ALL_ACTIONS.iter().map(|d| d.name).collect();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), ALL_ACTIONS.len(), "duplicate names in ALL_ACTIONS");
+        assert_eq!(
+            names.len(),
+            ALL_ACTIONS.len(),
+            "duplicate names in ALL_ACTIONS"
+        );
     }
 
     #[test]
@@ -807,7 +998,12 @@ mod tests {
                 target: Some("next"),
             };
             let result = Action::from_raw(desc.name, fields);
-            assert!(result.is_ok(), "descriptor '{}' cannot be parsed: {:?}", desc.name, result);
+            assert!(
+                result.is_ok(),
+                "descriptor '{}' cannot be parsed: {:?}",
+                desc.name,
+                result
+            );
         }
     }
 }

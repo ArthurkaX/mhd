@@ -2,12 +2,14 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(feature = "blackbox")]
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
-    MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::action::Action;
@@ -165,15 +167,21 @@ pub fn toggle_suspended() -> bool {
 
 /// Whether hotkey processing is currently suspended.
 pub fn is_suspended() -> bool {
-    HOOK_STATE.get().map_or(false, |s| s.suspended.load(Ordering::Acquire))
+    HOOK_STATE
+        .get()
+        .map_or(false, |s| s.suspended.load(Ordering::Acquire))
 }
 
 pub(crate) fn signal_tray_to_quit() {
-    let class: Vec<u16> = format!("{}\0", crate::tray::TRAY_CLASS).encode_utf16().collect();
-    let title: Vec<u16> = format!("{}\0", crate::tray::TRAY_TITLE).encode_utf16().collect();
+    let class: Vec<u16> = format!("{}\0", crate::tray::TRAY_CLASS)
+        .encode_utf16()
+        .collect();
+    let title: Vec<u16> = format!("{}\0", crate::tray::TRAY_TITLE)
+        .encode_utf16()
+        .collect();
     unsafe {
-        use windows::core::PCWSTR;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+        use windows::core::PCWSTR;
         if let Ok(hwnd) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
@@ -253,7 +261,10 @@ fn dispatch_trigger(state: &HookState, trigger: Trigger) -> bool {
                 let bit = mouse_btn_bit(btn);
                 state.swallowed_mouse.fetch_or(bit, Ordering::Release);
             }
-            PhysicalKey::WheelUp | PhysicalKey::WheelDown | PhysicalKey::WheelLeft | PhysicalKey::WheelRight => {
+            PhysicalKey::WheelUp
+            | PhysicalKey::WheelDown
+            | PhysicalKey::WheelLeft
+            | PhysicalKey::WheelRight => {
                 // No separate up — already swallowed by returning LRESULT(1)
             }
         }
@@ -420,7 +431,11 @@ unsafe extern "system" fn mouse_hook_proc(
                 bb_input(crate::blackbox::InputKind::Wheel);
                 // Delta is in MSLLHOOKSTRUCT.mouseData, NOT in wParam (for LL hooks)
                 let delta = wheel_delta(ms_struct.mouseData);
-                let key = if delta > 0 { PhysicalKey::WheelUp } else { PhysicalKey::WheelDown };
+                let key = if delta > 0 {
+                    PhysicalKey::WheelUp
+                } else {
+                    PhysicalKey::WheelDown
+                };
                 let modifiers = get_pressed_modifiers();
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
@@ -431,7 +446,11 @@ unsafe extern "system" fn mouse_hook_proc(
                 #[cfg(feature = "blackbox")]
                 bb_input(crate::blackbox::InputKind::Wheel);
                 let delta = wheel_delta(ms_struct.mouseData);
-                let key = if delta > 0 { PhysicalKey::WheelRight } else { PhysicalKey::WheelLeft };
+                let key = if delta > 0 {
+                    PhysicalKey::WheelRight
+                } else {
+                    PhysicalKey::WheelLeft
+                };
                 let modifiers = get_pressed_modifiers();
                 let trigger = Trigger { modifiers, key };
                 if dispatch_trigger(state, trigger) {
@@ -461,5 +480,3 @@ unsafe extern "system" fn mouse_hook_proc(
 fn mouse_btn_bit(btn: u8) -> u8 {
     1u8.checked_shl(btn.saturating_sub(1) as u32).unwrap_or(0)
 }
-
-

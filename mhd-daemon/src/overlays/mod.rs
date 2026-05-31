@@ -2,14 +2,14 @@
 
 pub mod about;
 pub mod autostart;
-pub mod monitor;
-pub mod power;
+pub mod cpu_plan;
 pub mod draw;
+pub mod monitor;
 pub mod note;
 pub mod pomodoro;
+pub mod power;
 pub mod suspend;
-pub mod topmost;
 pub mod throttle;
+pub mod topmost;
 pub mod tray;
 pub mod volume;
-pub mod cpu_plan;
