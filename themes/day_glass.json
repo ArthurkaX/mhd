@@ -1,0 +1,22 @@
+{
+  "name": "Day Glass",
+  "author": "mhd",
+  "themes": [
+    {
+      "name": "Day Glass",
+      "appearance": "light",
+      "style": {
+        "colors": {
+          "background": "#F7FBF8D8",
+          "surface": "#18404710",
+          "border": "#1840472E",
+          "text": "#142024",
+          "text.muted": "#627078",
+          "element.active": "#367E8A",
+          "element.selected": "#367E8A1F",
+          "element.hover": "#18404716"
+        }
+      }
+    }
+  ]
+}

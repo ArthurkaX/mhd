@@ -61,7 +61,7 @@ const SCHEMA_SQL: &str = "
 const SEED_CATEGORIES: &[(&str, &str)] = &[
     ("mhd", "work"),
     ("Astra.IDE", "work"),
-    ("Zed", "work"),
+    ("RustRover", "work"),
     ("Code", "work"),
     ("WindowsTerminal", "work"),
     ("TOTALCMD64", "file"),
@@ -371,7 +371,7 @@ mod tests {
     fn test_insert_app_span() {
         let db = Db::open_in_memory().unwrap();
         let eid = db.insert_event(100, "ses_end", None, None, None).unwrap();
-        db.insert_app_span(eid, Some("Zed"), Some("x"), 100, 50, 30, 5, 1, 20).unwrap();
+        db.insert_app_span(eid, Some("RustRover"), Some("x"), 100, 50, 30, 5, 1, 20).unwrap();
 
         let (app, keyboard, moves): (Option<String>, i64, i64) = db.conn
             .query_row(
@@ -380,7 +380,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(app.as_deref(), Some("Zed"));
+        assert_eq!(app.as_deref(), Some("RustRover"));
         assert_eq!(keyboard, 30);
         assert_eq!(moves, 20);
     }
@@ -389,7 +389,7 @@ mod tests {
     fn test_app_category_seeded() {
         let db = Db::open_in_memory().unwrap();
         let cat: String = db.conn
-            .query_row("SELECT category FROM app_category WHERE app = ?1", params!["Zed"], |row| {
+            .query_row("SELECT category FROM app_category WHERE app = ?1", params!["RustRover"], |row| {
                 row.get(0)
             })
             .unwrap();

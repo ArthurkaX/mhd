@@ -1,0 +1,22 @@
+{
+  "name": "Carbon",
+  "author": "mhd",
+  "themes": [
+    {
+      "name": "Carbon",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#181B20",
+          "surface": "#222831",
+          "border": "#39424E",
+          "text": "#E7ECF2",
+          "text.muted": "#95A1AE",
+          "element.active": "#2FB7A3",
+          "element.selected": "#314556",
+          "element.hover": "#29333E"
+        }
+      }
+    }
+  ]
+}

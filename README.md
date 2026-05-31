@@ -135,13 +135,13 @@ mhd loads JSON colour themes from:
 Set the active theme in `config.toml`:
 
 ```toml
-theme = "glass_dark"
+theme = "night_glass"
 ```
 
 The file must be:
 
 ```text
-%USERPROFILE%\.config\mhd\themes\glass_dark.json
+%USERPROFILE%\.config\mhd\themes\night_glass.json
 ```
 
 ### Supported colour keys

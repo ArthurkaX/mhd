@@ -1,0 +1,22 @@
+{
+  "name": "Paper",
+  "author": "mhd",
+  "themes": [
+    {
+      "name": "Paper",
+      "appearance": "light",
+      "style": {
+        "colors": {
+          "background": "#FAFAF7",
+          "surface": "#F0F2EE",
+          "border": "#D9DED6",
+          "text": "#232A2E",
+          "text.muted": "#6E7A73",
+          "element.active": "#287D8E",
+          "element.selected": "#DCEBEA",
+          "element.hover": "#E8EEE9"
+        }
+      }
+    }
+  ]
+}

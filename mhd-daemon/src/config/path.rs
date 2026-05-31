@@ -35,11 +35,11 @@ struct BundledTheme {
 }
 
 const BUNDLED_THEMES: &[BundledTheme] = &[
-    BundledTheme { filename: "dark.json",        content: include_str!("../../../themes/dark.json") },
-    BundledTheme { filename: "light.json",       content: include_str!("../../../themes/light.json") },
-    BundledTheme { filename: "glass_dark.json",  content: include_str!("../../../themes/glass_dark.json") },
-    BundledTheme { filename: "glass_light.json", content: include_str!("../../../themes/glass_light.json") },
-    BundledTheme { filename: "one_dark.json",    content: include_str!("../../../themes/one_dark.json") },
+    BundledTheme { filename: "carbon.json",      content: include_str!("../../../themes/carbon.json") },
+    BundledTheme { filename: "paper.json",       content: include_str!("../../../themes/paper.json") },
+    BundledTheme { filename: "night_glass.json", content: include_str!("../../../themes/night_glass.json") },
+    BundledTheme { filename: "day_glass.json",   content: include_str!("../../../themes/day_glass.json") },
+    BundledTheme { filename: "ember.json",       content: include_str!("../../../themes/ember.json") },
 ];
 
 /// Create the themes directory and write bundled theme files.

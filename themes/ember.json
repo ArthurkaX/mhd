@@ -1,0 +1,22 @@
+{
+  "name": "Ember",
+  "author": "mhd",
+  "themes": [
+    {
+      "name": "Ember",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#201C1A",
+          "surface": "#2B2623",
+          "border": "#4A4039",
+          "text": "#F1EAE2",
+          "text.muted": "#B3A59B",
+          "element.active": "#E06F4F",
+          "element.selected": "#49322F",
+          "element.hover": "#352C29"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "Night Glass",
+  "author": "mhd",
+  "themes": [
+    {
+      "name": "Night Glass",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#101820D0",
+          "surface": "#FFFFFF18",
+          "border": "#8AB4C833",
+          "text": "#F3F7F8",
+          "text.muted": "#A9B8BD",
+          "element.active": "#6AD4C8",
+          "element.selected": "#6AD4C826",
+          "element.hover": "#FFFFFF20"
+        }
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 //! Shared JSON theme loader for native Win32 UI components.
 //!
-//! Reads Zed‑compatible JSON theme files from
+//! Reads mhd JSON theme files from
 //! `%USERPROFILE%\.config\mhd\themes\{name}.json`.
 //!
 //! If the file is missing, malformed, or no theme is configured the
@@ -180,7 +180,7 @@ impl Default for NativeTheme {
 }
 
 // -----------------------------------------------------------------------
-// Deserialisation support (Zed‑format JSON)
+// Deserialisation support
 // -----------------------------------------------------------------------
 
 /// Top‑level theme file.

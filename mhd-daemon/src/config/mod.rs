@@ -287,13 +287,13 @@ action = "quit"
     #[test]
     fn parse_config_with_theme() {
         let toml = format!(
-            r#"theme = "one_dark"
+            r#"theme = "carbon"
 {}
         "#,
             valid_config()
         );
         let cfg = parse(&toml);
-        assert_eq!(cfg.theme.as_deref(), Some("one_dark"));
+        assert_eq!(cfg.theme.as_deref(), Some("carbon"));
     }
 
     #[test]
