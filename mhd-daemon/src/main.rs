@@ -222,10 +222,8 @@ fn main() -> ExitCode {
     // Push initial theme to OSD
     osd_handle.set_theme(handle.theme());
 
-    // Sync autostart registry entry with config on startup.
-    // If config says enabled but the registry value is missing (e.g.
-    // after a manual registry clean-up), re-install; if config says
-    // disabled but the value exists, remove it.
+    // Sync autostart state with config on startup. This also repairs stale
+    // entries that point at an old executable path or use an obsolete trigger.
     let config_autostart = handle.config.lock().unwrap().autostart();
     let reg_autostart = crate::autostart::is_autostart_enabled();
     if config_autostart && !reg_autostart {

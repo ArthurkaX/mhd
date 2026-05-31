@@ -19,7 +19,7 @@ use crate::osd::{ShellRenderer, centered_position, create_font, to_utf16_z};
 // ── Layout constants (96 dpi base) ────────────────────────────────────
 
 const ABT_WIDTH_BASE: i32 = 360;
-const ABT_HEIGHT_BASE: i32 = 180;
+const ABT_HEIGHT_BASE: i32 = 210;
 const PADDING: i32 = 24;
 const ROUND_RADIUS_BASE: f32 = 14.0;
 
@@ -149,7 +149,7 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTh
     unsafe { let _ = SetBkMode(shell.dc(), TRANSPARENT); }
     unsafe { let _ = SelectObject(shell.dc(), hfont_title); }
     shell.draw_text(
-        "mhd",
+        "mHD",
         &RECT {
             left,
             top: pad,
@@ -184,8 +184,10 @@ fn paint_about(hwnd: HWND, width: i32, height: i32, scale: f32, theme: &NativeTh
     unsafe { let _ = SelectObject(shell.dc(), hfont_body); }
 
     let lines = [
-        "Mouse & Hotkey Daemon for Windows",
-        "Lightweight, single‑binary, DDC/CI support.",
+        "Minimal Hotkey Daemon for Windows",
+        "Native hotkeys, overlays, DDC/CI, and audio tools.",
+        "Author: ArthurkaX",
+        "https://github.com/ArthurkaX",
     ];
 
     let mut line_y = body_y;
