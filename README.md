@@ -10,6 +10,7 @@ One native tray process for hotkeys, remaps, monitor control, audio control, not
 ![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)
 ![Native Win32](https://img.shields.io/badge/UI-native%20Win32-2F6F4E?style=flat-square)
 ![No WebView](https://img.shields.io/badge/WebView-not%20required-555555?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)
 
 **mHD** is a small Windows utility daemon for people who are tired of installing, launching, and keeping several separate tools around just to get a practical desktop workflow.
 
