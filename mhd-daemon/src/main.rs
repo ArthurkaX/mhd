@@ -15,11 +15,17 @@ pub(crate) mod blackbox {
     pub struct BlackboxConfig {
         pub enabled: bool,
         pub idle_seconds: u64,
+        pub track_locks: bool,
+        pub track_suspend: bool,
     }
 
     #[derive(Debug, Clone)]
     pub enum BlackboxEvent {
         Input { kind: InputKind, ts: u64 },
+        SystemLocked { ts: u64 },
+        SystemUnlocked { ts: u64 },
+        SystemSuspend { ts: u64 },
+        SystemResume { ts: u64 },
         Shutdown,
         ToggleEnabled,
     }

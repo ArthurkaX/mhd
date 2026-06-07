@@ -168,6 +168,16 @@ impl AppConfig {
                     .as_ref()
                     .and_then(|b| b.idle_seconds)
                     .unwrap_or(300),
+                track_locks: raw
+                    .blackbox
+                    .as_ref()
+                    .and_then(|b| b.track_locks)
+                    .unwrap_or(true),
+                track_suspend: raw
+                    .blackbox
+                    .as_ref()
+                    .and_then(|b| b.track_suspend)
+                    .unwrap_or(true),
             },
             quicknote: QuickNoteConfig {
                 enabled: raw

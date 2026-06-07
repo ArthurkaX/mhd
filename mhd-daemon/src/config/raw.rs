@@ -33,6 +33,12 @@ pub struct RawBlackbox {
     /// Seconds of inactivity before a session is considered ended.
     #[serde(default)]
     pub idle_seconds: Option<u64>,
+    /// End active sessions when the Windows session is locked. Default: `true`.
+    #[serde(default)]
+    pub track_locks: Option<bool>,
+    /// End active sessions when Windows suspends. Default: `true`.
+    #[serde(default)]
+    pub track_suspend: Option<bool>,
 }
 
 /// Raw TOML `[quicknote]` section.

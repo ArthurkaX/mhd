@@ -45,6 +45,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Performance",
     "Win32_System_ProcessStatus",
     "Win32_System_Shutdown",
+    "Win32_System_RemoteDesktop",
     "Win32_UI_Accessibility",
     "Win32_UI_Controls_RichEdit",
     "Win32_System_SystemInformation",

@@ -11,6 +11,7 @@
 //! low‑level hook hot path.
 
 mod db;
+mod sys_events;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +45,8 @@ use self::db::Db;
 pub struct BlackboxConfig {
     pub enabled: bool,
     pub idle_seconds: u64,
+    pub track_locks: bool,
+    pub track_suspend: bool,
 }
 
 impl Default for BlackboxConfig {
@@ -51,6 +54,8 @@ impl Default for BlackboxConfig {
         BlackboxConfig {
             enabled: false,
             idle_seconds: 300,
+            track_locks: true,
+            track_suspend: true,
         }
     }
 }
@@ -73,6 +78,18 @@ pub enum BlackboxEvent {
         ts: u64,
         event: String,
         kv: Vec<(String, String)>,
+    },
+    SystemLocked {
+        ts: u64,
+    },
+    SystemUnlocked {
+        ts: u64,
+    },
+    SystemSuspend {
+        ts: u64,
+    },
+    SystemResume {
+        ts: u64,
     },
     Shutdown,
     /// Toggle enabled state from tray.
@@ -380,6 +397,7 @@ fn kv_payload(kv: &[(String, String)]) -> String {
 pub struct BlackboxHandle {
     tx: mpsc::Sender<BlackboxEvent>,
     join: Option<thread::JoinHandle<()>>,
+    sys_events: Option<sys_events::SysEventsHandle>,
 }
 
 impl BlackboxHandle {
@@ -387,6 +405,9 @@ impl BlackboxHandle {
         let _ = self.tx.send(BlackboxEvent::Shutdown);
         if let Some(j) = self.join.take() {
             let _: () = j.join().unwrap_or(());
+        }
+        if let Some(mut h) = self.sys_events.take() {
+            h.shutdown();
         }
     }
 
@@ -399,8 +420,11 @@ impl BlackboxHandle {
 /// Start blackbox monitoring.
 pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
     let idle_seconds = config.idle_seconds;
+    let track_locks = config.track_locks;
+    let track_suspend = config.track_suspend;
 
     let (tx, rx) = mpsc::channel::<BlackboxEvent>();
+    let sys_events = sys_events::start(tx.clone(), track_locks, track_suspend);
     {
         let mut guard = BLACKBOX_TX.lock().unwrap();
         *guard = Some(tx.clone());
@@ -594,6 +618,70 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
                         }
                     }
+                    BlackboxEvent::SystemLocked { ts } => {
+                        if enabled {
+                            log_system_event(
+                                &db,
+                                &session,
+                                ts,
+                                "lock",
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
+                            end_session_and_insert(
+                                &db,
+                                &mut session,
+                                ts,
+                                Some("lock"),
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
+                        }
+                    }
+                    BlackboxEvent::SystemUnlocked { ts } => {
+                        if enabled {
+                            log_system_event(
+                                &db,
+                                &session,
+                                ts,
+                                "unlock",
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
+                        }
+                    }
+                    BlackboxEvent::SystemSuspend { ts } => {
+                        if enabled {
+                            log_system_event(
+                                &db,
+                                &session,
+                                ts,
+                                "suspend",
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
+                            end_session_and_insert(
+                                &db,
+                                &mut session,
+                                ts,
+                                Some("suspend"),
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
+                        }
+                    }
+                    BlackboxEvent::SystemResume { ts } => {
+                        if enabled {
+                            log_system_event(
+                                &db,
+                                &session,
+                                ts,
+                                "resume",
+                                &mut events_since_flush,
+                                &mut last_flush_ts,
+                            );
+                        }
+                    }
                     BlackboxEvent::ToggleEnabled => {
                         enabled = !enabled;
                         BLACKBOX_ENABLED.store(enabled, Ordering::Relaxed);
@@ -655,6 +743,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
     Ok(BlackboxHandle {
         tx,
         join: Some(join),
+        sys_events: Some(sys_events),
     })
 }
 
@@ -680,6 +769,29 @@ fn check_flush_inner(db: &Db, events_since_flush: &mut u32, last_flush_ts: &mut 
         *events_since_flush = 0;
         *last_flush_ts = now;
     }
+}
+
+fn log_system_event(
+    db: &Db,
+    session: &SessionState,
+    ts: u64,
+    kind: &str,
+    events_since_flush: &mut u32,
+    last_flush_ts: &mut u64,
+) {
+    ensure_tx(db, events_since_flush, last_flush_ts);
+    if let Err(e) = db.insert_event(
+        ts,
+        kind,
+        session.last_app_name.as_deref(),
+        session.last_window_title.as_deref(),
+        None,
+    ) {
+        eprintln!("mhd: blackbox: insert {kind}: {e}");
+    } else {
+        *events_since_flush += 1;
+    }
+    check_flush_inner(db, events_since_flush, last_flush_ts);
 }
 
 /// End the current session, flush all spans, and insert ses_end + sessions rows.
