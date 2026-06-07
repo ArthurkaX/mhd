@@ -41,6 +41,7 @@ The product is built around a simple idea:
 | Audio | Master volume, per-app mixer, media key actions |
 | Desktop tools | Quick Note, Quick Draw, Pomodoro, power panel, CPU plan panel |
 | Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
+| Settings | Native config editor, theme selection, autostart, shortcut editing |
 
 ---
 
@@ -187,6 +188,8 @@ mHD includes actions for:
 
 - switch to sleep / shutdown / wake-oriented power actions;
 - switch active Windows power plans;
+- edit processor power settings from the CPU power panel;
+- inspect live per-core CPU load and core topology;
 - toggle process suspension when a window loses focus;
 - toggle aggressive throttling when a process loses focus;
 - toggle always-on-top for the focused window.
@@ -207,6 +210,14 @@ The included overlays are:
 
 Each one is a native window with a narrow task and a minimal control surface.
 
+Quick Draw is a transparent drawing layer with pencil, rectangle, circle, and arrow tools, a small colour picker, undo, clear, and close controls. Drawings remain in memory while the overlay is hidden.
+
+Quick Note is a hotkey popup for short Markdown notes. Enter saves, Shift+Enter inserts a new line, Escape cancels, and a second hotkey press closes the popup without saving. Notes are written by day into the configured notes directory.
+
+The Pomodoro tool keeps its timer state in a background thread, so the overlay can be opened and closed without losing the current timer. It supports task text, start/pause/stop, five-minute extension, break timing, and completion feedback.
+
+The CPU power panel can switch Windows power plans, edit processor parking and frequency-related power settings, show live per-core load, expose P/E core topology when Windows reports it, and run a small local stress load for testing plan behaviour.
+
 ### Config editor and tray
 
 The tray provides the operational entry point:
@@ -215,9 +226,28 @@ The tray provides the operational entry point:
 - edit config;
 - open utility windows;
 - inspect and toggle supported features;
+- switch themes;
+- enable or disable autostart;
+- choose the Quick Note directory;
+- open config, log, and crash-log locations;
+- reset shortcuts or all settings;
 - quit cleanly.
 
-The config editor is a native Win32 interface with grouped actions and supported parameter types. It exists so users can edit the common cases without hand-writing everything.
+The config editor is a native Win32 interface with tabs for appearance, shortcuts, and advanced maintenance. Shortcut editing uses the same action registry as the TOML parser, so new action names and parameter types stay consistent between hand-written config and the UI.
+
+### Diagnostics
+
+Normal builds write panic details to:
+
+```text
+%USERPROFILE%\.config\mhd\crash.log
+```
+
+Developer builds can also be compiled with `debug-dump` to write minidumps and an additional debug log under `%TEMP%`:
+
+```powershell
+cargo build --release --features debug-dump
+```
 
 ---
 
@@ -229,24 +259,24 @@ The config editor is a native Win32 interface with grouped actions and supported
 cargo build --release
 ```
 
-This produces the normal public build.
+This produces the normal public build. Optional developer features are disabled by default.
 
 ### Release package
 
 The public release archive is portable and contains the normal build only:
 
 ```powershell
-.\scripts\package-release.ps1 -Version 0.1.0
+.\scripts\package-release.ps1 -Version 0.1.1
 ```
 
 The script creates:
 
 ```text
-dist\mhd-v0.1.0-windows-x64.zip
-dist\mhd-v0.1.0-windows-x64.zip.sha256
+dist\mhd-v0.1.1-windows-x64.zip
+dist\mhd-v0.1.1-windows-x64.zip.sha256
 ```
 
-Attach both files to the matching GitHub Release tag, for example `v0.1.0`.
+Attach both files to the matching GitHub Release tag, for example `v0.1.1`.
 
 ---
 
@@ -256,6 +286,7 @@ Attach both files to the matching GitHub Release tag, for example `v0.1.0`.
 .\mhd.exe              # tray + daemon
 .\mhd.exe --daemon     # headless, no tray
 .\mhd.exe --quiet      # suppress startup messages
+.\mhd.exe --debug-quicknote  # print QuickNote lifecycle/debug events
 ```
 
 ---
@@ -282,6 +313,7 @@ The config file is TOML. It can define:
 - autostart;
 - quick note settings;
 - power plan order;
+- optional developer-only blackbox settings when compiled with that feature;
 - bindings.
 
 ---
@@ -453,6 +485,14 @@ Supported keys:
 | `element.hover` | Hover state |
 
 Missing keys fall back to the built-in default theme.
+
+On first run, mHD also creates bundled theme files when they are missing:
+
+- `carbon`
+- `paper`
+- `night_glass`
+- `day_glass`
+- `ember`
 
 ---
 

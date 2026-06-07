@@ -34,7 +34,7 @@ If Windows blocks the first launch because the binary is unsigned, choose the us
 The distributed binary is built without optional developer features:
 
 ```powershell
-cargo build --release
+cargo build --release --no-default-features
 ```
 
 The `blackbox` feature is not included in normal release archives. It exists only for users who intentionally build mHD from source with:
@@ -48,5 +48,5 @@ cargo build --release --features blackbox
 Each release archive should include a SHA256 checksum next to the zip file on the release page. Verify it with:
 
 ```powershell
-Get-FileHash .\mhd-v0.1.0-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\mhd-v0.1.1-windows-x64.zip -Algorithm SHA256
 ```

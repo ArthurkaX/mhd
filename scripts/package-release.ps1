@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,7 +13,7 @@ $checksum = "$zip.sha256"
 
 Push-Location $root
 try {
-    cargo build --release --target-dir $targetDir
+    cargo build --release --no-default-features --target-dir $targetDir
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
