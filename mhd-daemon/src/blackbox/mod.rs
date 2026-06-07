@@ -47,6 +47,7 @@ pub struct BlackboxConfig {
     pub idle_seconds: u64,
     pub track_locks: bool,
     pub track_suspend: bool,
+    pub window_title_filter: Vec<String>,
 }
 
 impl Default for BlackboxConfig {
@@ -56,6 +57,7 @@ impl Default for BlackboxConfig {
             idle_seconds: 300,
             track_locks: true,
             track_suspend: true,
+            window_title_filter: Vec::new(),
         }
     }
 }
@@ -315,7 +317,7 @@ struct SpanData {
 
 // ── Foreground window helpers ────────────────────────────────────────────
 
-fn get_foreground_title() -> String {
+fn get_foreground_title(window_title_filter: &[String]) -> String {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd == HWND::default() {
@@ -324,10 +326,25 @@ fn get_foreground_title() -> String {
         let mut buf = [0u16; 512];
         let len = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf);
         if len > 0 {
-            String::from_utf16_lossy(&buf[..len as usize])
+            redact_title(
+                String::from_utf16_lossy(&buf[..len as usize]),
+                window_title_filter,
+            )
         } else {
             String::new()
         }
+    }
+}
+
+fn redact_title(title: String, window_title_filter: &[String]) -> String {
+    if !window_title_filter.is_empty()
+        && window_title_filter
+            .iter()
+            .any(|pattern| !pattern.is_empty() && title.contains(pattern))
+    {
+        "[REDACTED] — Private Browsing".to_string()
+    } else {
+        title
     }
 }
 
@@ -422,6 +439,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
     let idle_seconds = config.idle_seconds;
     let track_locks = config.track_locks;
     let track_suspend = config.track_suspend;
+    let window_title_filter = config.window_title_filter;
 
     let (tx, rx) = mpsc::channel::<BlackboxEvent>();
     let sys_events = sys_events::start(tx.clone(), track_locks, track_suspend);
@@ -460,7 +478,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
 
             // Snapshot initial context
             let now = epoch_secs();
-            let initial_title = get_foreground_title();
+            let initial_title = get_foreground_title(&window_title_filter);
             if !initial_title.is_empty() {
                 session.last_window_title = Some(initial_title.clone());
             }
@@ -516,6 +534,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             check_app_and_title(
                                 &db,
                                 &mut session,
+                                &window_title_filter,
                                 &mut events_since_flush,
                                 &mut last_flush_ts,
                             );
@@ -553,6 +572,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             check_app_and_title(
                                 &db,
                                 &mut session,
+                                &window_title_filter,
                                 &mut events_since_flush,
                                 &mut last_flush_ts,
                             );
@@ -688,7 +708,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         let now = epoch_secs();
                         ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
                         if enabled {
-                            let title = get_foreground_title();
+                            let title = get_foreground_title(&window_title_filter);
                             let app = get_app_name();
                             if let Some(ref a) = app {
                                 session.last_app_name = Some(a.clone());
@@ -712,7 +732,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                                 events_since_flush += 1;
                             }
                         } else {
-                            let title = get_foreground_title();
+                            let title = get_foreground_title(&window_title_filter);
                             let app = get_app_name();
                             if let Err(e) = db.insert_event(
                                 now,
@@ -868,11 +888,12 @@ fn end_session_and_insert(
 fn check_app_and_title(
     db: &Db,
     session: &mut SessionState,
+    window_title_filter: &[String],
     events_since_flush: &mut u32,
     last_flush_ts: &mut u64,
 ) {
     let app = get_app_name();
-    let title = get_foreground_title();
+    let title = get_foreground_title(window_title_filter);
 
     let app_changed = app.as_deref() != session.last_app_name.as_deref();
     let title_changed = title != session.last_window_title.as_deref().unwrap_or("");
@@ -968,5 +989,32 @@ mod tests {
         assert_eq!(data.wheel, 1);
         assert_eq!(data.moves, 1);
         assert!(!s.active);
+    }
+
+    #[test]
+    fn redact_title_keeps_title_when_filter_is_empty() {
+        let title = redact_title("Example - Microsoft Edge".to_string(), &[]);
+        assert_eq!(title, "Example - Microsoft Edge");
+    }
+
+    #[test]
+    fn redact_title_replaces_private_browsing_titles() {
+        let filter = vec!["Private Browsing".to_string(), "InPrivate".to_string()];
+
+        let title = redact_title(
+            "Example - [InPrivate] - Microsoft Edge".to_string(),
+            &filter,
+        );
+
+        assert_eq!(title, "[REDACTED] — Private Browsing");
+    }
+
+    #[test]
+    fn redact_title_ignores_empty_patterns() {
+        let filter = vec![String::new()];
+
+        let title = redact_title("Example - Microsoft Edge".to_string(), &filter);
+
+        assert_eq!(title, "Example - Microsoft Edge");
     }
 }

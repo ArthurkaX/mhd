@@ -17,6 +17,7 @@ pub(crate) mod blackbox {
         pub idle_seconds: u64,
         pub track_locks: bool,
         pub track_suspend: bool,
+        pub window_title_filter: Vec<String>,
     }
 
     #[derive(Debug, Clone)]

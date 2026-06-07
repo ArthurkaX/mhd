@@ -39,6 +39,9 @@ pub struct RawBlackbox {
     /// End active sessions when Windows suspends. Default: `true`.
     #[serde(default)]
     pub track_suspend: Option<bool>,
+    /// Redact window titles containing any of these substrings. Default: disabled.
+    #[serde(default)]
+    pub window_title_filter: Option<Vec<String>>,
 }
 
 /// Raw TOML `[quicknote]` section.

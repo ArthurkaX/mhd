@@ -178,6 +178,11 @@ impl AppConfig {
                     .as_ref()
                     .and_then(|b| b.track_suspend)
                     .unwrap_or(true),
+                window_title_filter: raw
+                    .blackbox
+                    .as_ref()
+                    .and_then(|b| b.window_title_filter.clone())
+                    .unwrap_or_default(),
             },
             quicknote: QuickNoteConfig {
                 enabled: raw
