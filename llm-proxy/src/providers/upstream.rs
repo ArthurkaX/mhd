@@ -22,9 +22,9 @@ pub async fn send_request(
     payload: Value,
     target_model: &str,
 ) -> Result<Value> {
-    let base_url = state.upstream_base_url.read().await.clone();
-    let api_key = state.upstream_key.read().await.clone();
-    let debug = *state.debug_dump.read().await;
+    let base_url = state.upstream_base_url.read().unwrap().clone();
+    let api_key = state.upstream_key.read().unwrap().clone();
+    let debug = *state.debug_dump.read().unwrap();
 
     // Anthropic → OpenAI, then force the real upstream model id.
     let mut openai_payload = transform::anthropic_to_openai(payload);
@@ -78,8 +78,8 @@ pub async fn stream_request(
     target_model: &str,
     requested_model: &str,
 ) -> Result<Body> {
-    let base_url = state.upstream_base_url.read().await.clone();
-    let api_key = state.upstream_key.read().await.clone();
+    let base_url = state.upstream_base_url.read().unwrap().clone();
+    let api_key = state.upstream_key.read().unwrap().clone();
 
     let mut openai_payload = transform::anthropic_to_openai(payload);
     if let Value::Object(ref mut map) = openai_payload {
@@ -304,8 +304,8 @@ fn sse(event: &str, data: &Value) -> Bytes {
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
 pub async fn send_raw_openai(state: &Arc<AppState>, payload: Value) -> Result<Value> {
-    let base_url = state.upstream_base_url.read().await.clone();
-    let api_key = state.upstream_key.read().await.clone();
+    let base_url = state.upstream_base_url.read().unwrap().clone();
+    let api_key = state.upstream_key.read().unwrap().clone();
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let client = reqwest::Client::new();

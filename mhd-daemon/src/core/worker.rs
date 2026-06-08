@@ -211,6 +211,16 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ShowCpuPanel => {
             cpu_plan::show_panel(handle.theme());
         }
+        Action::ShowLlmModels => {
+            crate::overlays::llm_models::show(handle.theme(), handle.llm_proxy_config());
+        }
+        Action::ToggleLlmProxy => {
+            let cfg = handle.llm_proxy_config();
+            let on = crate::llm_proxy::toggle(&cfg);
+            if !handle.quiet() {
+                println!("mhd: llm-proxy {}", if on { "started" } else { "stopped" });
+            }
+        }
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}

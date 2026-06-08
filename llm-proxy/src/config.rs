@@ -25,23 +25,30 @@ pub struct Config {
     #[serde(default)]
     pub upstream_key: String,
 
-    /// Upstream model id that `sonnet` requests are routed to. Switchable at
-    /// runtime via `POST /set_model`.
-    #[serde(default = "default_sonnet_model")]
-    pub sonnet_model: String,
+    /// Routing target for the `opus` tier: `native` (Anthropic) or an upstream
+    /// model id. Switchable at runtime via `GET /set_model/opus?id=...`.
+    #[serde(default = "default_opus_target")]
+    pub opus_target: String,
 
-    /// Upstream model id that `haiku` requests are routed to.
-    #[serde(default = "default_haiku_model")]
-    pub haiku_model: String,
+    /// Routing target for the `sonnet` tier.
+    #[serde(default = "default_sonnet_target")]
+    pub sonnet_target: String,
+
+    /// Routing target for the `haiku` tier.
+    #[serde(default = "default_haiku_target")]
+    pub haiku_target: String,
 }
 
 fn default_upstream_base_url() -> String {
     "http://89.22.226.188:8080/v1".to_string()
 }
-fn default_sonnet_model() -> String {
-    "sva-opencode/glm-5.1".to_string()
+fn default_opus_target() -> String {
+    "native".to_string()
 }
-fn default_haiku_model() -> String {
+fn default_sonnet_target() -> String {
+    "sva-opencode/deepseek-v4-pro".to_string()
+}
+fn default_haiku_target() -> String {
     "sva-opencode/deepseek-v4-flash".to_string()
 }
 
@@ -51,8 +58,9 @@ impl Default for Config {
             anthropic_key: String::new(),
             upstream_base_url: default_upstream_base_url(),
             upstream_key: String::new(),
-            sonnet_model: default_sonnet_model(),
-            haiku_model: default_haiku_model(),
+            opus_target: default_opus_target(),
+            sonnet_target: default_sonnet_target(),
+            haiku_target: default_haiku_target(),
         }
     }
 }

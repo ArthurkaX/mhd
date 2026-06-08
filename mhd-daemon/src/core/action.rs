@@ -69,6 +69,10 @@ pub enum Action {
     },
     /// Show the CPU power plan settings panel.
     ShowCpuPanel,
+    /// Show the LLM model selector overlay (per-tier routing for Claude Code).
+    ShowLlmModels,
+    /// Toggle the llm-proxy process on/off.
+    ToggleLlmProxy,
     Quit,
 }
 
@@ -159,6 +163,8 @@ impl Action {
                 })
             }
             "show_cpu_panel" => Ok(Action::ShowCpuPanel),
+            "show_llm_models" => Ok(Action::ShowLlmModels),
+            "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
             "power_actions" => Ok(Action::PowerActions),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
@@ -323,6 +329,8 @@ impl Action {
             Action::QuickNote => "quick_note",
             Action::SwitchPowerPlan { .. } => "switch_power_plan",
             Action::ShowCpuPanel => "show_cpu_panel",
+            Action::ShowLlmModels => "show_llm_models",
+            Action::ToggleLlmProxy => "toggle_llm_proxy",
             Action::Pomodoro => "pomodoro",
             Action::Quit => "quit",
         }
@@ -374,6 +382,8 @@ impl Action {
             | Action::QuickNote
             | Action::SwitchPowerPlan { .. }
             | Action::ShowCpuPanel
+            | Action::ShowLlmModels
+            | Action::ToggleLlmProxy
             | Action::Pomodoro
             | Action::Quit => self.name().to_string(),
         }
@@ -401,6 +411,7 @@ pub enum ActionCategory {
     Display,
     AudioMedia,
     Tools,
+    LlmProxy,
     Automation,
     System,
 }
@@ -412,6 +423,7 @@ impl ActionCategory {
             ActionCategory::Display => "Display",
             ActionCategory::AudioMedia => "Audio / Media",
             ActionCategory::Tools => "Tools",
+            ActionCategory::LlmProxy => "LLM Proxy",
             ActionCategory::Automation => "Automation",
             ActionCategory::System => "System",
         }
@@ -629,6 +641,20 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "show_cpu_panel",
         label: "CPU Power Panel",
         category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "show_llm_models",
+        label: "LLM Models",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "toggle_llm_proxy",
+        label: "Toggle LLM Proxy",
+        category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,
     },
@@ -961,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(23)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
+        assert_eq!(find_action_index("quit"), Some(25)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

@@ -69,6 +69,8 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "pomodoro",
     "switch_power_plan",
     "show_cpu_panel",
+    "show_llm_models",
+    "toggle_llm_proxy",
     "quit",
 ];
 

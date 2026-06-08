@@ -921,6 +921,7 @@ name = "mhd-daemon"
 version = "0.1.1"
 dependencies = [
  "embed-resource",
+ "mhd-llm-proxy",
  "rusqlite",
  "serde",
  "serde_json",

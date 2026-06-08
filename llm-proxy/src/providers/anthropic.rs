@@ -36,7 +36,7 @@ async fn build_request(
         req = req.header("x-api-key", key);
     } else {
         // Fall back to the configured API key.
-        let api_key = state.anthropic_key.read().await.clone();
+        let api_key = state.anthropic_key.read().unwrap().clone();
         req = req.header("x-api-key", api_key);
     }
 

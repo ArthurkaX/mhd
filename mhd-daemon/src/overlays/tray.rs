@@ -41,6 +41,8 @@ const CMD_MONITOR: usize = 4;
 const CMD_NOTE: usize = 5;
 const CMD_DRAW: usize = 6;
 const CMD_CPU_PANEL: usize = 10;
+const CMD_LLM_MODELS: usize = 11;
+const CMD_LLM_PROXY_TOGGLE: usize = 12;
 const CMD_POWER_PLAN_BASE: usize = 100;
 const CMD_ABOUT: usize = 7;
 const CMD_QUIT: usize = 8;
@@ -118,6 +120,17 @@ fn show_menu(hwnd: HWND) {
             None => return,
         };
 
+        // Running position counter so items can be added/reordered freely.
+        let mut pos: u32 = 0;
+        let mut item = |menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+                        flags: windows::Win32::UI::WindowsAndMessaging::MENU_ITEM_FLAGS,
+                        id: usize,
+                        text: &str| {
+            let wt: Vec<u16> = format!("{text}\0").encode_utf16().collect();
+            let _ = InsertMenuW(menu, pos, flags, id, PCWSTR::from_raw(wt.as_ptr()));
+            pos += 1;
+        };
+
         // ── Top section: master toggle + blackbox ──────────────────
 
         let suspended = crate::hook::is_suspended();
@@ -126,14 +139,7 @@ fn show_menu(hwnd: HWND) {
         } else {
             MF_BYPOSITION | MF_STRING
         };
-        let mhd_text: Vec<u16> = "mhd on/off\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            0,
-            mhd_flags,
-            CMD_TOGGLE_SUSPEND,
-            PCWSTR::from_raw(mhd_text.as_ptr()),
-        );
+        item(menu, mhd_flags, CMD_TOGGLE_SUSPEND, "mhd on/off");
 
         #[cfg(feature = "blackbox")]
         {
@@ -143,74 +149,35 @@ fn show_menu(hwnd: HWND) {
             } else {
                 MF_BYPOSITION | MF_STRING
             };
-            let bb_text: Vec<u16> = "Blackbox on/off\0".encode_utf16().collect();
-            let _ = InsertMenuW(
-                menu,
-                1,
-                bb_flags,
-                CMD_BLACKBOX_TOGGLE,
-                PCWSTR::from_raw(bb_text.as_ptr()),
-            );
+            item(menu, bb_flags, CMD_BLACKBOX_TOGGLE, "Blackbox on/off");
         }
 
-        // Separator
-        let _ = InsertMenuW(menu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        // LLM proxy on/off (checked when the embedded proxy is running).
+        let llm_running = crate::llm_proxy::is_running();
+        let llm_flags = if llm_running {
+            MF_BYPOSITION | MF_STRING | MF_CHECKED
+        } else {
+            MF_BYPOSITION | MF_STRING
+        };
+        item(menu, llm_flags, CMD_LLM_PROXY_TOGGLE, "LLM Proxy on/off");
+
+        item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
         // ── Control group ──────────────────────────────────────────
 
-        let vol_text: Vec<u16> = "Volume\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            3,
-            MF_BYPOSITION | MF_STRING,
-            CMD_VOLUME,
-            PCWSTR::from_raw(vol_text.as_ptr()),
-        );
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_VOLUME, "Volume");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_MONITOR, "Monitor");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_CPU_PANEL, "CPU Power");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_LLM_MODELS, "LLM Models");
 
-        let mon_text: Vec<u16> = "Monitor\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            4,
-            MF_BYPOSITION | MF_STRING,
-            CMD_MONITOR,
-            PCWSTR::from_raw(mon_text.as_ptr()),
-        );
-
-        // CPU Power
-        let cpu_text: Vec<u16> = "CPU Power\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            5,
-            MF_BYPOSITION | MF_STRING,
-            CMD_CPU_PANEL,
-            PCWSTR::from_raw(cpu_text.as_ptr()),
-        );
-
-        // Separator
-        let _ = InsertMenuW(menu, 6, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
         // ── Actions group ──────────────────────────────────────────
 
-        let note_text: Vec<u16> = "Note\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            7,
-            MF_BYPOSITION | MF_STRING,
-            CMD_NOTE,
-            PCWSTR::from_raw(note_text.as_ptr()),
-        );
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_NOTE, "Note");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_DRAW, "Draw");
 
-        let draw_text: Vec<u16> = "Draw\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            8,
-            MF_BYPOSITION | MF_STRING,
-            CMD_DRAW,
-            PCWSTR::from_raw(draw_text.as_ptr()),
-        );
-
-        // Separator
-        let _ = InsertMenuW(menu, 9, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
+        item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
         // ── Power Plan submenu ─────────────────────────────────────
         let schemes = crate::cpu_plan::enumerate_schemes();
@@ -234,43 +201,18 @@ fn show_menu(hwnd: HWND) {
                 PCWSTR::from_raw(item_text.as_ptr()),
             );
         }
-        let pp_label: Vec<u16> = "Power Plan\0".encode_utf16().collect();
-        let _ = InsertMenuW(
+        item(
             menu,
-            10,
             MF_BYPOSITION | MF_POPUP,
             pp_menu.0 as usize,
-            PCWSTR::from_raw(pp_label.as_ptr()),
+            "Power Plan",
         );
 
         // ── Bottom section ─────────────────────────────────────────
 
-        let settings_text: Vec<u16> = "Settings\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            11,
-            MF_BYPOSITION | MF_STRING,
-            CMD_EDIT_CONFIG,
-            PCWSTR::from_raw(settings_text.as_ptr()),
-        );
-
-        let about_text: Vec<u16> = "About\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            12,
-            MF_BYPOSITION | MF_STRING,
-            CMD_ABOUT,
-            PCWSTR::from_raw(about_text.as_ptr()),
-        );
-
-        let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
-        let _ = InsertMenuW(
-            menu,
-            13,
-            MF_BYPOSITION | MF_STRING,
-            CMD_QUIT,
-            PCWSTR::from_raw(exit_text.as_ptr()),
-        );
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_EDIT_CONFIG, "Settings");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_ABOUT, "About");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_QUIT, "Exit");
 
         let _ = SetForegroundWindow(hwnd);
 
@@ -367,6 +309,16 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_CPU_PANEL => {
                         cpu_plan::show_panel(state.app.theme());
+                    }
+                    CMD_LLM_MODELS => {
+                        crate::overlays::llm_models::show(
+                            state.app.theme(),
+                            state.app.llm_proxy_config(),
+                        );
+                    }
+                    CMD_LLM_PROXY_TOGGLE => {
+                        let cfg = state.app.llm_proxy_config();
+                        crate::llm_proxy::toggle(&cfg);
                     }
                     cmd if cmd >= CMD_POWER_PLAN_BASE && cmd < CMD_POWER_PLAN_BASE + 20 => {
                         let index = cmd - CMD_POWER_PLAN_BASE;

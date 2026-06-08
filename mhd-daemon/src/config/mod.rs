@@ -25,6 +25,49 @@ fn default_notes_dir() -> PathBuf {
         .join("notes")
 }
 
+/// One selectable alternative model in the LLM proxy selector.
+#[derive(Debug, Clone)]
+pub struct LlmModel {
+    pub name: String,
+    pub id: String,
+}
+
+/// Validated `[llm_proxy]` config.
+#[derive(Debug, Clone)]
+pub struct LlmProxyConfig {
+    pub enabled: bool,
+    pub port: u16,
+    /// Upstream gateway base URL (OpenAI-compatible, includes `/v1`).
+    pub endpoint: String,
+    /// Bearer key for the upstream gateway.
+    pub api_key: String,
+    /// Optional Anthropic API key for native passthrough (usually empty — OAuth
+    /// from Claude Code is forwarded instead).
+    pub anthropic_key: String,
+    /// Default routing target per tier: "native" or an upstream model id.
+    pub opus: String,
+    pub sonnet: String,
+    pub haiku: String,
+    /// Shared pool of alternative models offered for every tier.
+    pub models: Vec<LlmModel>,
+}
+
+impl Default for LlmProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 3456,
+            endpoint: "http://89.22.226.188:8080/v1".to_string(),
+            api_key: String::new(),
+            anthropic_key: String::new(),
+            opus: "native".to_string(),
+            sonnet: "native".to_string(),
+            haiku: "native".to_string(),
+            models: Vec::new(),
+        }
+    }
+}
+
 /// A validated binding.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -57,6 +100,8 @@ pub struct AppConfig {
     pub quicknote: QuickNoteConfig,
     /// Ordered list of power plan names for rotation.
     pub power_plans: Vec<String>,
+    /// LLM proxy integration config.
+    pub llm_proxy: LlmProxyConfig,
 }
 
 impl AppConfig {
@@ -199,6 +244,61 @@ impl AppConfig {
             },
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,
+            llm_proxy: LlmProxyConfig {
+                enabled: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.enabled)
+                    .unwrap_or(false),
+                port: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.port)
+                    .unwrap_or(3456),
+                endpoint: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.endpoint.clone())
+                    .unwrap_or_else(|| "http://89.22.226.188:8080/v1".to_string()),
+                api_key: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.api_key.clone())
+                    .unwrap_or_default(),
+                anthropic_key: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.anthropic_key.clone())
+                    .unwrap_or_default(),
+                opus: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.opus.clone())
+                    .unwrap_or_else(|| "native".to_string()),
+                sonnet: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.sonnet.clone())
+                    .unwrap_or_else(|| "native".to_string()),
+                haiku: raw
+                    .llm_proxy
+                    .as_ref()
+                    .and_then(|l| l.haiku.clone())
+                    .unwrap_or_else(|| "native".to_string()),
+                models: raw
+                    .llm_proxy
+                    .as_ref()
+                    .map(|l| {
+                        l.model
+                            .iter()
+                            .map(|m| LlmModel {
+                                name: m.name.clone(),
+                                id: m.id.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            },
         })
     }
 
@@ -275,6 +375,11 @@ impl AppConfig {
 
     pub fn quicknote_config(&self) -> &QuickNoteConfig {
         &self.quicknote
+    }
+
+    /// LLM proxy configuration.
+    pub fn llm_proxy(&self) -> &LlmProxyConfig {
+        &self.llm_proxy
     }
 }
 

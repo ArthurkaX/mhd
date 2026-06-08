@@ -64,7 +64,7 @@ mod overlays;
 pub mod renderer;
 pub mod win32;
 // Re-export core modules so existing `crate::hook::*` etc. still resolve.
-pub use core::{action, hook, native_theme, platform, trigger, worker};
+pub use core::{action, hook, llm_proxy, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
 pub use overlays::{
     about, autostart, cpu_plan, draw, monitor, note, power, suspend, throttle, topmost, tray,
@@ -253,6 +253,20 @@ fn main() -> ExitCode {
         }
     }
 
+    // Start the llm-proxy child if enabled in config.
+    {
+        let llm_cfg = handle.llm_proxy_config();
+        if llm_cfg.enabled {
+            if crate::llm_proxy::start(&llm_cfg) {
+                if !quiet {
+                    println!("mhd: llm-proxy started on port {}", llm_cfg.port);
+                }
+            } else if !quiet {
+                eprintln!("mhd: llm-proxy failed to start");
+            }
+        }
+    }
+
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.
         if !quiet {
@@ -286,6 +300,9 @@ fn main() -> ExitCode {
             println!("mhd: stopped");
         }
     }
+
+    // Stop the llm-proxy child if we started it.
+    crate::llm_proxy::stop();
 
     // Shutdown OSD
     osd_handle.shutdown();

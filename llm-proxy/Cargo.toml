@@ -5,6 +5,10 @@ edition = "2024"
 license.workspace = true
 description = "Dynamic LLM proxy — intercepts Claude Code requests and routes them to Anthropic, OpenCode, or local models"
 
+[lib]
+name = "llm_proxy"
+path = "src/lib.rs"
+
 [[bin]]
 name = "llm-proxy"
 path = "src/main.rs"

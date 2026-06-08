@@ -44,6 +44,45 @@ pub struct RawBlackbox {
     pub window_title_filter: Option<Vec<String>>,
 }
 
+/// Raw TOML `[[llm_proxy.model]]` entry — one selectable alternative model.
+#[derive(Debug, Deserialize)]
+pub struct RawLlmModel {
+    /// Short display label shown in the selector (e.g. "DeepSeek V4 Pro").
+    pub name: String,
+    /// Upstream model id sent to the gateway (e.g. "sva-opencode/deepseek-v4-pro").
+    pub id: String,
+}
+
+/// Raw TOML `[llm_proxy]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawLlmProxy {
+    /// Launch the proxy automatically when the daemon starts. Default: `false`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Port the proxy listens on. Default: `3456`.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// OpenAI-compatible upstream gateway base URL (includes `/v1`).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Bearer key for the upstream gateway.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Optional Anthropic API key (for native passthrough when not using OAuth).
+    #[serde(default)]
+    pub anthropic_key: Option<String>,
+    /// Default routing target for each tier: "native" or an upstream model id.
+    #[serde(default)]
+    pub opus: Option<String>,
+    #[serde(default)]
+    pub sonnet: Option<String>,
+    #[serde(default)]
+    pub haiku: Option<String>,
+    /// Selectable alternative models (the shared pool for all tiers).
+    #[serde(default)]
+    pub model: Vec<RawLlmModel>,
+}
+
 /// Raw TOML `[quicknote]` section.
 #[derive(Debug, Deserialize)]
 pub struct RawQuickNote {
@@ -74,6 +113,9 @@ pub struct RawConfig {
     pub blackbox: Option<RawBlackbox>,
     #[serde(default)]
     pub quicknote: Option<RawQuickNote>,
+    /// LLM proxy integration (model routing for Claude Code).
+    #[serde(default)]
+    pub llm_proxy: Option<RawLlmProxy>,
     /// Ordered list of power plan names for `switch_power_plan` with target="next".
     #[serde(default)]
     pub power_plans: Vec<String>,

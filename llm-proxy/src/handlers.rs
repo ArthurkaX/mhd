@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::providers;
-use crate::state::{AppState, Tier};
+use crate::state::{AppState, Target, Tier};
 
 /// Handler for `POST /v1/messages` — main Anthropic Messages API endpoint.
 ///
@@ -34,7 +34,7 @@ pub async fn post_messages(
     let tier = Tier::from_model(&model);
     let stream = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if *state.debug_dump.read().await {
+    if *state.debug_dump.read().unwrap() {
         // Show how Claude Code authenticated (helps verify OAuth passthrough).
         let auth = headers
             .get("authorization")
@@ -50,25 +50,25 @@ pub async fn post_messages(
                     .map(|s| format!("x-api-key:{}…", s.chars().take(12).collect::<String>()))
             })
             .unwrap_or_else(|| "(none)".to_string());
+        let tgt = state.target_for(tier);
         eprintln!(
-            "[llm-proxy] → {tier:?} (model={model}, stream={stream}) | incoming auth: {auth}"
+            "[llm-proxy] → {tier:?} ⇒ {} (model={model}, stream={stream}) | incoming auth: {auth}",
+            tgt.as_str()
         );
     }
 
-    // Resolve the upstream target model for non-opus tiers.
-    let target = match tier {
-        Tier::Opus => String::new(),
-        Tier::Sonnet => state.sonnet_model.read().await.clone(),
-        Tier::Haiku => state.haiku_model.read().await.clone(),
-    };
+    // Resolve where this tier routes: Anthropic native, or an upstream model.
+    let target = state.target_for(tier);
 
     if stream {
-        let body = match tier {
-            Tier::Opus => {
+        let body = match &target {
+            Target::Native => {
                 let resp = providers::anthropic::stream_request(&state, payload, &headers).await?;
                 Body::from_stream(resp.bytes_stream())
             }
-            _ => providers::upstream::stream_request(&state, payload, &target, &model).await?,
+            Target::Model(id) => {
+                providers::upstream::stream_request(&state, payload, id, &model).await?
+            }
         };
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -78,9 +78,9 @@ pub async fn post_messages(
             .map_err(|e| AppError(e.into()))?);
     }
 
-    let response = match tier {
-        Tier::Opus => providers::anthropic::send_request(&state, payload, &headers).await?,
-        _ => providers::upstream::send_request(&state, payload, &target).await?,
+    let response = match &target {
+        Target::Native => providers::anthropic::send_request(&state, payload, &headers).await?,
+        Target::Model(id) => providers::upstream::send_request(&state, payload, id).await?,
     };
 
     Ok(Json(response).into_response())
@@ -100,57 +100,56 @@ pub async fn post_chat_completions(
 
 #[derive(Deserialize)]
 pub struct SetModelQuery {
-    /// Upstream model id, e.g. `sva-opencode/glm-5.1`.
+    /// Routing target: `native` for Anthropic, or an upstream model id like
+    /// `sva-opencode/glm-5.1`.
     id: String,
 }
 
-/// `GET /set_model/{slot}?id=<upstream-model-id>` — change which upstream model
-/// a tier maps to, on the fly. `slot` is `sonnet` or `haiku`.
+/// `GET /set_model/{slot}?id=<native|model-id>` — change a tier's routing target
+/// on the fly. `slot` is `opus`, `sonnet`, or `haiku`.
 ///
-/// Example:
+/// Examples:
 ///   curl "http://localhost:3456/set_model/sonnet?id=sva-opencode/qwen3.7-max"
+///   curl "http://localhost:3456/set_model/sonnet?id=native"
 pub async fn set_model(
     State(state): State<Arc<AppState>>,
     Path(slot): Path<String>,
     Query(q): Query<SetModelQuery>,
 ) -> Result<Json<Value>, AppError> {
-    match slot.as_str() {
-        "sonnet" => *state.sonnet_model.write().await = q.id.clone(),
-        "haiku" => *state.haiku_model.write().await = q.id.clone(),
-        other => {
-            return Err(AppError::bad_request(format!(
-                "Unknown slot '{other}'. Use: sonnet, haiku"
-            )));
-        }
+    let target = Target::parse(&q.id);
+    if !state.set_target(&slot, target.clone()) {
+        return Err(AppError::bad_request(format!(
+            "Unknown slot '{slot}'. Use: opus, sonnet, haiku"
+        )));
     }
 
     // Persist the change so it survives restarts.
-    if let Err(e) = crate::config::save(&state.to_config().await) {
+    if let Err(e) = crate::config::save(&state.to_config()) {
         tracing::warn!("Failed to persist config: {e}");
     }
 
     Ok(Json(serde_json::json!({
         "status": "ok",
         "slot": slot,
-        "model": q.id,
+        "target": target.as_str(),
     })))
 }
 
 /// `GET /config` — show the current effective routing config (keys masked).
 pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(serde_json::json!({
-        "opus": "official Anthropic (passthrough)",
-        "sonnet_model": *state.sonnet_model.read().await,
-        "haiku_model": *state.haiku_model.read().await,
-        "upstream_base_url": *state.upstream_base_url.read().await,
-        "anthropic_key_set": !state.anthropic_key.read().await.is_empty(),
-        "upstream_key_set": !state.upstream_key.read().await.is_empty(),
+        "opus": state.opus_target.read().unwrap().as_str(),
+        "sonnet": state.sonnet_target.read().unwrap().as_str(),
+        "haiku": state.haiku_target.read().unwrap().as_str(),
+        "upstream_base_url": *state.upstream_base_url.read().unwrap(),
+        "anthropic_key_set": !state.anthropic_key.read().unwrap().is_empty(),
+        "upstream_key_set": !state.upstream_key.read().unwrap().is_empty(),
     }))
 }
 
 /// `GET /debug` — toggle debug dump mode.
 pub async fn toggle_debug(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let mut debug = state.debug_dump.write().await;
+    let mut debug = state.debug_dump.write().unwrap();
     *debug = !*debug;
     Json(serde_json::json!({ "debug_dump": *debug }))
 }
