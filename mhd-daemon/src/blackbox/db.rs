@@ -216,7 +216,7 @@ impl Db {
             .prepare_cached(
                 "INSERT OR IGNORE INTO app_category (app, category) VALUES (?1, 'unknown')",
             )
-            .and_then(|mut stmt| stmt.insert(params![app]).map(|_| ()))
+            .and_then(|mut stmt| stmt.execute(params![app]).map(|_| ()))
             .map_err(|e| format!("cannot ensure app_category: {e}"))
     }
 

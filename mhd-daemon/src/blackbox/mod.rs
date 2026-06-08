@@ -774,6 +774,10 @@ fn ensure_tx(db: &Db, events_since_flush: &mut u32, last_flush_ts: &mut u64) {
     if *events_since_flush == 0 {
         if let Err(e) = db.begin() {
             eprintln!("mhd: blackbox: begin tx: {e}");
+        } else {
+            // Increment so nested ensure_tx calls before the first insert don't
+            // attempt a second BEGIN (rusqlite doesn't allow nested transactions).
+            *events_since_flush = 1;
         }
         *last_flush_ts = epoch_secs();
     }
