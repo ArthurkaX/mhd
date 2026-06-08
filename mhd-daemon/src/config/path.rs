@@ -186,6 +186,29 @@ action = "quit"
 # [[binding]]
 # trigger = "ctrl+alt+numpad9"
 # action = "media_next_track"
+
+# ── LLM Proxy (intercept Claude Code API calls) ───────────────────
+#
+# Routes Anthropic API requests through a local proxy that can
+# remap models (e.g. use DeepSeek V4 Flash as the "sonnet" tier).
+# The proxy listens on the configured port; Claude Code talks to it
+# via ANTHROPIC_BASE_URL.
+#
+# [llm_proxy]
+# enabled = true
+# port = 3456
+# endpoint = "http://your-gateway:8080/v1"
+# api_key = "your-gateway-api-key"
+#
+# Per-tier model override: "native" passes through to real Anthropic.
+# opus = "native"
+# sonnet = "native"
+# haiku = "native"
+#
+# Additional models shown in the model-switcher UI (Ctrl+Alt+L).
+# [[llm_proxy.model]]
+# id = "your-provider/model-name"
+# name = "Your Model Name"
 "#;
 
 #[cfg(feature = "blackbox")]
@@ -305,4 +328,27 @@ action = "quit"
 # [[binding]]
 # trigger = "ctrl+alt+numpad9"
 # action = "media_next_track"
+
+# ── LLM Proxy (intercept Claude Code API calls) ───────────────────
+#
+# Routes Anthropic API requests through a local proxy that can
+# remap models (e.g. use DeepSeek V4 Flash as the "sonnet" tier).
+# The proxy listens on the configured port; Claude Code talks to it
+# via ANTHROPIC_BASE_URL.
+#
+# [llm_proxy]
+# enabled = true
+# port = 3456
+# endpoint = "http://your-gateway:8080/v1"
+# api_key = "your-gateway-api-key"
+#
+# Per-tier model override: "native" passes through to real Anthropic.
+# opus = "native"
+# sonnet = "native"
+# haiku = "native"
+#
+# Additional models shown in the model-switcher UI (Ctrl+Alt+L).
+# [[llm_proxy.model]]
+# id = "your-provider/model-name"
+# name = "Your Model Name"
 "#;

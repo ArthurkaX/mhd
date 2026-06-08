@@ -48,5 +48,5 @@ cargo build --release --features blackbox
 Each release archive should include a SHA256 checksum next to the zip file on the release page. Verify it with:
 
 ```powershell
-Get-FileHash .\mhd-v0.1.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\mhd-v0.2.0-windows-x64.zip -Algorithm SHA256
 ```

@@ -40,6 +40,7 @@ The product is built around a simple idea:
 | Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
 | Audio | Master volume, per-app mixer, media key actions |
 | Desktop tools | Quick Note, Quick Draw, Pomodoro, power panel, CPU plan panel |
+| LLM Proxy | Local proxy for Claude Code — intercepts API calls, remaps models |
 | Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
 | Settings | Native config editor, theme selection, autostart, shortcut editing |
 
@@ -87,6 +88,12 @@ Config editor with shortcut bindings and action selection.
 ### CPU power plan panel
 
 ![CPU Power Plan](img/cpu-power-plan.png)
+
+### LLM Model Selector
+
+![LLM Model Selector](img/LLM%20Models.png)
+
+Quick-model-switcher for the built-in LLM proxy. Cycles through configured gateway models on the fly without restarting the proxy or Claude Code.
 
 ---
 
@@ -218,6 +225,68 @@ The Pomodoro tool keeps its timer state in a background thread, so the overlay c
 
 The CPU power panel can switch Windows power plans, edit processor parking and frequency-related power settings, show live per-core load, expose P/E core topology when Windows reports it, and run a small local stress load for testing plan behaviour.
 
+### LLM Proxy
+
+mHD includes a built-in local proxy server that intercepts Claude Code's Anthropic API calls and can route them to a different (typically cheaper or self-hosted) OpenAI-compatible gateway. This lets you use alternative models for the `sonnet` or `haiku` tiers while keeping `opus` on real Anthropic, or route everything through a gateway if you don't have an Anthropic subscription.
+
+Key concepts:
+
+- The proxy listens on `127.0.0.1:<port>` (default `3456`). Point Claude Code at it with `ANTHROPIC_BASE_URL=http://127.0.0.1:3456`.
+- Each model tier (`opus`, `sonnet`, `haiku`) can be set to `"native"` (pass through to real Anthropic using the forwarded OAuth) or to a gateway model ID.
+- Additional models can be registered under `[[llm_proxy.model]]` and switched at runtime via the model selector overlay (Ctrl+Alt+L by default) or the tray menu.
+- The proxy forwards the OAuth token from Claude Code for native tiers and injects the configured `api_key` for gateway tiers.
+
+Configuration in `config.toml`:
+
+```toml
+[llm_proxy]
+enabled = true
+port = 3456
+endpoint = "http://your-gateway:8080/v1"
+api_key = "your-gateway-api-key"
+
+# Per-tier override. "native" = use real Anthropic.
+opus = "native"
+sonnet = "deepseek-v4-flash"
+haiku = "deepseek-v4-flash"
+
+[[llm_proxy.model]]
+id = "deepseek-v4-flash"
+name = "DeepSeek V4 Flash"
+
+[[llm_proxy.model]]
+id = "deepseek-v4-pro"
+name = "DeepSeek V4 Pro"
+```
+
+#### `claude-mhd` launcher
+
+The repo includes `claude-mhd.bat` — a batch wrapper that launches Claude Code with `ANTHROPIC_BASE_URL` pointing at the local proxy:
+
+```bat
+@echo off
+setlocal
+set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"
+set "ANTHROPIC_AUTH_TOKEN="
+REM set "ANTHROPIC_AUTH_TOKEN=unused"
+call claude %*
+```
+
+To call it as `claude-mhd` from any terminal:
+
+1. Copy `claude-mhd.bat` to a folder of your choice.
+2. Add that folder to your `PATH` environment variable (System → Advanced system settings → Environment Variables → User `Path` → Edit → add the folder).
+3. Restart your terminal.
+
+Then use it like the real `claude` CLI:
+
+```powershell
+claude-mhd                          # default model
+claude-mhd --model sonnet -p "hi"   # pick a model and prompt
+```
+
+The launcher has two modes depending on whether you have an Anthropic subscription (see comments inside the file).
+
 ### Config editor and tray
 
 The tray provides the operational entry point:
@@ -230,6 +299,7 @@ The tray provides the operational entry point:
 - enable or disable autostart;
 - choose the Quick Note directory;
 - open config, log, and crash-log locations;
+- switch LLM proxy models;
 - reset shortcuts or all settings;
 - quit cleanly.
 
@@ -266,17 +336,17 @@ This produces the normal public build. Optional developer features are disabled 
 The public release archive is portable and contains the normal build only:
 
 ```powershell
-.\scripts\package-release.ps1 -Version 0.1.1
+.\scripts\package-release.ps1 -Version 0.2.0
 ```
 
 The script creates:
 
 ```text
-dist\mhd-v0.1.1-windows-x64.zip
-dist\mhd-v0.1.1-windows-x64.zip.sha256
+dist\mhd-v0.2.0-windows-x64.zip
+dist\mhd-v0.2.0-windows-x64.zip.sha256
 ```
 
-Attach both files to the matching GitHub Release tag, for example `v0.1.1`.
+Attach both files to the matching GitHub Release tag, for example `v0.2.0`.
 
 ---
 
@@ -313,6 +383,7 @@ The config file is TOML. It can define:
 - autostart;
 - quick note settings;
 - power plan order;
+- LLM proxy server and model routing (`[llm_proxy]`);
 - optional developer-only blackbox settings when compiled with that feature;
 - bindings.
 
@@ -378,6 +449,13 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 | `quick_draw` | - | Open the quick drawing overlay. |
 | `quick_note` | - | Open the quick note overlay. |
 | `pomodoro` | - | Open the Pomodoro timer overlay. |
+
+### LLM Proxy
+
+| Action | Fields | Behaviour |
+|--------|--------|-----------|
+| `show_llm_models` | - | Open the model selector overlay to switch proxy routing on the fly. |
+| `toggle_llm_proxy` | - | Enable or disable the LLM proxy server at runtime. |
 
 ---
 
@@ -501,6 +579,17 @@ On first run, mHD also creates bundled theme files when they are missing:
 ```text
 mhd/
 ├── Cargo.toml
+├── llm-proxy/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs
+│       ├── config.rs
+│       ├── handlers.rs
+│       ├── state.rs
+│       └── providers/
+│           ├── mod.rs
+│           ├── anthropic.rs
+│           └── upstream.rs
 └── mhd-daemon/
     ├── Cargo.toml
     └── src/
@@ -509,6 +598,7 @@ mhd/
         ├── core/
         │   ├── action.rs
         │   ├── hook.rs
+        │   ├── llm_proxy.rs
         │   ├── native_theme.rs
         │   ├── platform.rs
         │   ├── trigger.rs
@@ -522,6 +612,7 @@ mhd/
         │   ├── autostart.rs
         │   ├── cpu_plan.rs
         │   ├── draw.rs
+        │   ├── llm_models.rs
         │   ├── monitor.rs
         │   ├── note.rs
         │   ├── pomodoro.rs
