@@ -3,3 +3,4 @@ dist/
 nul
 _patch_*.py
 backLog.md
+/.claude/
