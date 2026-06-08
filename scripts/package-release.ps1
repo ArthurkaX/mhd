@@ -34,6 +34,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root "INSTALL.md") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $root "claude-mhd.bat") -Destination $stage
 
     $packageFiles = Get-ChildItem -LiteralPath $stage
     Compress-Archive -Path $packageFiles.FullName -DestinationPath $zip -CompressionLevel Optimal

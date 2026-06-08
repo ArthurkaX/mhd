@@ -23,6 +23,17 @@ The app starts as a tray daemon. On first run it creates the config at:
 %USERPROFILE%\.config\mhd\config.toml
 ```
 
+## LLM Proxy Launcher
+
+The archive also includes `claude-mhd.bat` — a batch wrapper to launch Claude Code through mHD's built-in LLM proxy. To use it from any terminal, add the extraction folder to your `PATH` or copy the `.bat` to a folder already on your `PATH`. Then run:
+
+```powershell
+claude-mhd                          # default model
+claude-mhd --model sonnet -p "hi"   # pick model and prompt
+```
+
+See `claude-mhd.bat` for instructions depending on whether you have an Anthropic subscription.
+
 ## Autostart
 
 Open the tray menu and enable autostart from mHD. The app will try to register a Windows logon task and falls back to the current-user Run key when needed.

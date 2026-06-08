@@ -179,6 +179,14 @@ fn convert_message(msg: &Value, out: &mut Vec<Value>) {
                     "content": content
                 }));
             }
+            Some("thinking" | "redacted_thinking") => {
+                // Extended thinking block — not supported by OpenAI/gateways.
+                // Drop it silently rather than accumulating signature expiry errors.
+            }
+            Some("signature") => {
+                // Cryptographic thinking signature — meaningless to a gateway.
+                // Dropping it avoids "Invalid signature" errors on follow-up calls.
+            }
             _ => {}
         }
     }

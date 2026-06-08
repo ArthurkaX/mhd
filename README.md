@@ -267,7 +267,6 @@ The repo includes `claude-mhd.bat` — a batch wrapper that launches Claude Code
 @echo off
 setlocal
 set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"
-set "ANTHROPIC_AUTH_TOKEN="
 REM set "ANTHROPIC_AUTH_TOKEN=unused"
 call claude %*
 ```
