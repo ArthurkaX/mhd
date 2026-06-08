@@ -14,6 +14,13 @@
 
 use serde_json::{Map, Value};
 
+/// Placeholder signature attached to `thinking` blocks we synthesise from an
+/// upstream's `reasoning_content`. Anthropic-native thinking blocks carry a
+/// cryptographic signature; thinking-mode gateways (e.g. DeepSeek) don't, but
+/// Claude Code still needs *some* signature to round-trip the block back to us.
+/// We strip it again on the next request, so the value is never verified.
+pub const SYNTHETIC_THINKING_SIGNATURE: &str = "mhd-proxy-synthetic-reasoning-signature";
+
 /// Transform an incoming Anthropic-format request into OpenAI/OpenCode format.
 pub fn anthropic_to_openai(anthropic: Value) -> Value {
     let mut out = Map::new();
@@ -138,6 +145,7 @@ fn convert_message(msg: &Value, out: &mut Vec<Value>) {
 
     let mut text_parts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<Value> = Vec::new();
+    let mut reasoning_parts: Vec<String> = Vec::new();
 
     for block in blocks {
         match block.get("type").and_then(|v| v.as_str()) {
@@ -180,8 +188,13 @@ fn convert_message(msg: &Value, out: &mut Vec<Value>) {
                 }));
             }
             Some("thinking" | "redacted_thinking") => {
-                // Extended thinking block — not supported by OpenAI/gateways.
-                // Drop it silently rather than accumulating signature expiry errors.
+                // Preserve the reasoning text as `reasoning_content`. Thinking-mode
+                // upstreams (e.g. DeepSeek) reject follow-up calls whose assistant
+                // turns are missing the `reasoning_content` they emitted. The
+                // `redacted_thinking` variant has no readable text, so it's skipped.
+                if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
+                    reasoning_parts.push(t.to_string());
+                }
             }
             Some("signature") => {
                 // Cryptographic thinking signature — meaningless to a gateway.
@@ -193,6 +206,7 @@ fn convert_message(msg: &Value, out: &mut Vec<Value>) {
 
     // Emit the text/tool_calls message for this role (if anything remains).
     let text = text_parts.join("\n");
+    let reasoning = reasoning_parts.join("\n");
     if !tool_calls.is_empty() {
         let mut m = Map::new();
         m.insert("role".to_string(), Value::String(role.to_string()));
@@ -201,10 +215,27 @@ fn convert_message(msg: &Value, out: &mut Vec<Value>) {
             "content".to_string(),
             if text.is_empty() { Value::Null } else { Value::String(text) },
         );
+        if !reasoning.is_empty() {
+            m.insert("reasoning_content".to_string(), Value::String(reasoning));
+        }
         m.insert("tool_calls".to_string(), Value::Array(tool_calls));
         out.push(Value::Object(m));
     } else if !text.is_empty() {
-        out.push(serde_json::json!({ "role": role, "content": text }));
+        let mut m = Map::new();
+        m.insert("role".to_string(), Value::String(role.to_string()));
+        m.insert("content".to_string(), Value::String(text));
+        if !reasoning.is_empty() {
+            m.insert("reasoning_content".to_string(), Value::String(reasoning));
+        }
+        out.push(Value::Object(m));
+    } else if !reasoning.is_empty() {
+        // Reasoning-only assistant turn — keep it so the upstream sees the
+        // `reasoning_content` it expects, with explicit null content.
+        let mut m = Map::new();
+        m.insert("role".to_string(), Value::String(role.to_string()));
+        m.insert("content".to_string(), Value::Null);
+        m.insert("reasoning_content".to_string(), Value::String(reasoning));
+        out.push(Value::Object(m));
     }
 }
 
@@ -240,6 +271,22 @@ pub fn openai_to_anthropic(openai: Value) -> Value {
         .and_then(|c| c.get("message"));
 
     let mut content_blocks: Vec<Value> = Vec::new();
+
+    // Reasoning comes first in Anthropic's content order. Surface it as a
+    // `thinking` block so Claude Code stores it and echoes it back on the next
+    // turn — thinking-mode upstreams require their `reasoning_content` returned.
+    if let Some(reasoning) = message
+        .and_then(|m| m.get("reasoning_content"))
+        .and_then(|c| c.as_str())
+    {
+        if !reasoning.is_empty() {
+            content_blocks.push(serde_json::json!({
+                "type": "thinking",
+                "thinking": reasoning,
+                "signature": SYNTHETIC_THINKING_SIGNATURE,
+            }));
+        }
+    }
 
     if let Some(text) = message
         .and_then(|m| m.get("content"))
@@ -399,5 +446,52 @@ mod tests {
 
         let result = anthropic_to_openai(input);
         assert_eq!(result["messages"][0]["content"], "Hello \nworld!");
+    }
+
+    #[test]
+    fn test_thinking_block_becomes_reasoning_content() {
+        // An assistant turn carrying a thinking block must round-trip its text
+        // as `reasoning_content` so thinking-mode upstreams accept the follow-up.
+        let input = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Let me reason.", "signature": "sig"},
+                    {"type": "text", "text": "The answer."}
+                ]
+            }]
+        });
+
+        let result = anthropic_to_openai(input);
+        let msg = &result["messages"][0];
+        assert_eq!(msg["role"], "assistant");
+        assert_eq!(msg["content"], "The answer.");
+        assert_eq!(msg["reasoning_content"], "Let me reason.");
+    }
+
+    #[test]
+    fn test_reasoning_content_becomes_thinking_block() {
+        // Upstream `reasoning_content` surfaces as a leading Anthropic thinking
+        // block so Claude Code stores and echoes it back next turn.
+        let input = serde_json::json!({
+            "id": "chatcmpl-xxx",
+            "model": "deepseek-v4-flash",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Thinking hard.",
+                    "content": "Done."
+                },
+                "finish_reason": "stop"
+            }]
+        });
+
+        let result = openai_to_anthropic(input);
+        assert_eq!(result["content"][0]["type"], "thinking");
+        assert_eq!(result["content"][0]["thinking"], "Thinking hard.");
+        assert_eq!(result["content"][0]["signature"], SYNTHETIC_THINKING_SIGNATURE);
+        assert_eq!(result["content"][1]["type"], "text");
+        assert_eq!(result["content"][1]["text"], "Done.");
     }
 }

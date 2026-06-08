@@ -146,6 +146,7 @@ pub async fn stream_request(
         let mut next_index: i64 = 0;
         let mut open_index: Option<i64> = None;
         let mut text_index: Option<i64> = None;
+        let mut thinking_index: Option<i64> = None;
         let mut tool_map: HashMap<i64, i64> = HashMap::new(); // openai tool idx → anthropic idx
         let mut any_tool = false;
 
@@ -175,6 +176,38 @@ pub async fn stream_request(
                     .and_then(|a| a.first())
                 else { continue };
 
+                // ── reasoning delta (thinking) ──────────────────────
+                // Thinking-mode upstreams stream their chain-of-thought in
+                // `reasoning_content` before the answer. Surface it as an
+                // Anthropic `thinking` block so Claude Code stores and echoes
+                // it back (the upstream rejects turns that drop it).
+                if let Some(rc) = choice
+                    .get("delta")
+                    .and_then(|d| d.get("reasoning_content"))
+                    .and_then(|t| t.as_str())
+                {
+                    if !rc.is_empty() {
+                        if thinking_index.is_none() {
+                            if let Some(oi) = open_index {
+                                yield Ok(sse("content_block_stop", &json!({
+                                    "type": "content_block_stop", "index": oi
+                                })));
+                            }
+                            let idx = next_index; next_index += 1;
+                            thinking_index = Some(idx); open_index = Some(idx);
+                            yield Ok(sse("content_block_start", &json!({
+                                "type": "content_block_start", "index": idx,
+                                "content_block": { "type": "thinking", "thinking": "" }
+                            })));
+                        }
+                        let idx = thinking_index.unwrap();
+                        yield Ok(sse("content_block_delta", &json!({
+                            "type": "content_block_delta", "index": idx,
+                            "delta": { "type": "thinking_delta", "thinking": rc }
+                        })));
+                    }
+                }
+
                 // ── text delta ──────────────────────────────────────
                 if let Some(text) = choice
                     .get("delta")
@@ -184,6 +217,15 @@ pub async fn stream_request(
                     if !text.is_empty() {
                         if text_index.is_none() {
                             if let Some(oi) = open_index {
+                                if Some(oi) == thinking_index {
+                                    yield Ok(sse("content_block_delta", &json!({
+                                        "type": "content_block_delta", "index": oi,
+                                        "delta": {
+                                            "type": "signature_delta",
+                                            "signature": crate::transform::SYNTHETIC_THINKING_SIGNATURE
+                                        }
+                                    })));
+                                }
                                 yield Ok(sse("content_block_stop", &json!({
                                     "type": "content_block_stop", "index": oi
                                 })));
@@ -217,6 +259,15 @@ pub async fn stream_request(
                             Some(&x) => x,
                             None => {
                                 if let Some(oi) = open_index {
+                                    if Some(oi) == thinking_index {
+                                        yield Ok(sse("content_block_delta", &json!({
+                                            "type": "content_block_delta", "index": oi,
+                                            "delta": {
+                                                "type": "signature_delta",
+                                                "signature": crate::transform::SYNTHETIC_THINKING_SIGNATURE
+                                            }
+                                        })));
+                                    }
                                     yield Ok(sse("content_block_stop", &json!({
                                         "type": "content_block_stop", "index": oi
                                     })));
@@ -267,9 +318,20 @@ pub async fn stream_request(
 
         // ── closing events ──────────────────────────────────────────
         match open_index {
-            Some(oi) => yield Ok(sse("content_block_stop", &json!({
-                "type": "content_block_stop", "index": oi
-            }))),
+            Some(oi) => {
+                if Some(oi) == thinking_index {
+                    yield Ok(sse("content_block_delta", &json!({
+                        "type": "content_block_delta", "index": oi,
+                        "delta": {
+                            "type": "signature_delta",
+                            "signature": crate::transform::SYNTHETIC_THINKING_SIGNATURE
+                        }
+                    })));
+                }
+                yield Ok(sse("content_block_stop", &json!({
+                    "type": "content_block_stop", "index": oi
+                })));
+            }
             None => {
                 // No content at all — emit an empty text block so the message
                 // is well-formed.
