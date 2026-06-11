@@ -91,18 +91,22 @@ pub fn paint_control(
             );
         }
         Control::BindingRow { rect, trigger, kind_label, param, is_selected, is_hovered, zebra, .. } => {
-            // Background rounded rect
+            // Background rounded rect. Even, unselected, unhovered rows draw
+            // no fill (the zebra effect) — but must still render their text,
+            // so skip only the fill here instead of returning early.
             let bg = if *is_selected {
-                theme.selected
+                Some(theme.selected)
             } else if *is_hovered {
-                theme.hover
+                Some(theme.hover)
             } else if *zebra {
-                theme.surface.blend_over(theme.background)
+                Some(theme.surface.blend_over(theme.background))
             } else {
-                return; // no background for even rows
+                None
             };
-            let radius = (4.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, radius, bg);
+            if let Some(bg) = bg {
+                let radius = (4.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
+                draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, radius, bg);
+            }
 
             // Trigger text
             unsafe {
