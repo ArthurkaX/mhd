@@ -881,8 +881,16 @@ fn save_config(
     {
         let mut seen = std::collections::HashSet::new();
         for b in bindings {
-            let lower = b.trigger.trim().to_lowercase();
-            if !seen.insert(lower.clone()) {
+            // Canonicalize so alias spellings of the same physical key
+            // (e.g. "0x13" vs "pause") collapse to one entry.
+            let key = match crate::core::trigger::parse_trigger(&b.trigger) {
+                Ok(pt) => crate::core::trigger::keys_to_string(&crate::core::trigger::KeyCombo {
+                    modifiers: pt.trigger.modifiers,
+                    key: Some(pt.trigger.key),
+                }),
+                Err(_) => b.trigger.trim().to_lowercase(),
+            };
+            if !seen.insert(key) {
                 return Err(format!(
                     "Duplicate trigger '{}' — each trigger must be unique within the active scheme",
                     b.trigger
@@ -1268,9 +1276,23 @@ unsafe extern "system" fn settings_wndproc(
                                 crate::hook::set_recording_window(None);
                                 let trigger = state.acc_trigger.trim().to_lowercase();
                                 if !trigger.is_empty() {
-                                    let dup = state.bindings.iter().enumerate().any(|(j, b)| {
-                                        j != idx && b.trigger.trim().to_lowercase() == trigger
-                                    });
+                                    // Compare resolved triggers, not raw strings,
+                                    // so aliases of the same physical key (e.g.
+                                    // "0x13" and "pause") are caught as dupes.
+                                    let dup = match crate::core::trigger::parse_trigger(&trigger) {
+                                        Ok(new_pt) => {
+                                            state.bindings.iter().enumerate().any(|(j, b)| {
+                                                j != idx
+                                                    && crate::core::trigger::parse_trigger(&b.trigger)
+                                                        .map(|pt| pt.trigger == new_pt.trigger)
+                                                        .unwrap_or(false)
+                                            })
+                                        }
+                                        // Unparseable: fall back to string compare.
+                                        Err(_) => state.bindings.iter().enumerate().any(|(j, b)| {
+                                            j != idx && b.trigger.trim().to_lowercase() == trigger
+                                        }),
+                                    };
                                     if dup {
                                         state.acc_save_error = Some("Duplicate trigger – each shortcut needs a unique key combination.".into());
                                         paint_settings(hwnd, state_ptr, &state.layout);
