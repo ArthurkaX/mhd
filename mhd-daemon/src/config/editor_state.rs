@@ -29,6 +29,7 @@ pub struct UIBinding {
 pub enum SettingsPage {
     General,
     Shortcuts,
+    LlmProxy,
     Advanced,
 }
 
@@ -53,6 +54,8 @@ pub enum SettingsHit {
     AdvancedButton(usize),
     /// Browse button for Quick Note save path.
     NotesDirBrowseBtn,
+    /// Browse button for Quick Draw save path.
+    DrawDirBrowseBtn,
     // ── Accordion editor (inline, expanded row) ──────────────
     AccordionTriggerField,
     AccordionRecordBtn,
@@ -81,6 +84,7 @@ pub enum HoverTarget {
     /// Hover target for a button on the Advanced page.
     AdvancedBtn(usize),
     NotesDirBrowseBtn,
+    DrawDirBrowseBtn,
     // ── Accordion editor hovers ────────────────────────────────
     AccordionTriggerField,
     AccordionRecordBtn,
@@ -144,6 +148,9 @@ pub struct SettingsState {
     /// Quick Note save directory
     pub notes_dir: PathBuf,
 
+    /// Quick Draw save directory
+    pub draw_dir: PathBuf,
+
     /// List of bindings being edited
     pub bindings: Vec<UIBinding>,
     /// Vertical scroll offset per section
@@ -190,4 +197,11 @@ pub struct SettingsState {
     pub param_edit_popup: Option<HWND>,
     /// Binding index being edited in the param edit popup.
     pub param_edit_idx: Option<usize>,
+
+    /// Tab titles in display order. Used by hit-test and paint to size and
+    /// label the tab bar without hardcoding counts.
+    pub tab_titles: Vec<&'static str>,
+    /// Hit-testable rects for the active page, rebuilt on every paint.
+    /// Looked up linearly by `hit_test_settings`.
+    pub hit_regions: Vec<crate::config::editor_control::HitRegion>,
 }

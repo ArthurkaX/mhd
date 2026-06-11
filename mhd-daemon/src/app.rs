@@ -43,6 +43,8 @@ pub trait DaemonControl: Send + Sync {
     fn blackbox_enabled(&self) -> bool;
     /// Quick Note config snapshot.
     fn quicknote_config(&self) -> QuickNoteConfig;
+    /// Quick Draw save directory.
+    fn draw_dir(&self) -> std::path::PathBuf;
     /// LLM proxy config snapshot.
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig;
 }
@@ -164,6 +166,10 @@ impl DaemonControl for AppHandle {
 
     fn quicknote_config(&self) -> QuickNoteConfig {
         self.config.lock().unwrap().quicknote_config().clone()
+    }
+
+    fn draw_dir(&self) -> std::path::PathBuf {
+        self.config.lock().unwrap().draw_dir().clone()
     }
 
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig {

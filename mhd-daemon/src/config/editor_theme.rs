@@ -347,3 +347,233 @@ pub fn draw_button(
 pub fn to_utf16_z(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+// ── Section header ────────────────────────────────────────────────────
+
+/// Draw a section header label (left aligned, single line, no vertical
+/// centering — matches "Appearance", "Shortcuts", "Advanced", "Startup",
+/// and "Quick Note" headers in the editor).
+pub fn draw_section_header(
+    dib_dc: HDC,
+    rect: RECT,
+    label: &str,
+    font: HFONT,
+    text_color: Argb,
+) {
+    unsafe {
+        let _ = SelectObject(dib_dc, font);
+        let _ = SetTextColor(dib_dc, text_color.to_colorref());
+    }
+    let mut wz = to_utf16_z(label);
+    let mut rc = rect;
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE);
+    }
+}
+
+// ── Plain label ───────────────────────────────────────────────────────
+
+/// Draw a single‑line plain label with vertical centering and left alignment
+/// (used for "Theme", "Autostart", "Save path", etc.).
+pub fn draw_plain_label(
+    dib_dc: HDC,
+    rect: RECT,
+    label: &str,
+    font: HFONT,
+    text_color: Argb,
+) {
+    unsafe {
+        let _ = SelectObject(dib_dc, font);
+        let _ = SetTextColor(dib_dc, text_color.to_colorref());
+    }
+    let mut wz = to_utf16_z(label);
+    let mut rc = rect;
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut wz,
+            &mut rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+}
+
+// ── Read‑only text field ──────────────────────────────────────────────
+
+/// Draw a single‑line read‑only text field with a rounded background,
+/// a 1‑px border, and clipped text.  When `text` is empty and `placeholder`
+/// is `Some`, the placeholder is drawn in a muted colour.
+///
+/// The caller supplies the fully resolved background, border, and text colours
+/// (including any hover / open state).
+pub fn draw_readonly_text_field(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
+    rect: RECT,
+    text: &str,
+    placeholder: Option<&str>,
+    font: HFONT,
+    bg_color: Argb,
+    border_color: Argb,
+    text_color: Argb,
+) {
+    let scale = win_w as f32 / WIN_WIDTH_BASE as f32;
+    let radius = (4.0 * scale) as i32;
+
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, bg_color);
+
+    if border_color.a > 0 {
+        draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+    }
+
+    unsafe {
+        let _ = SelectObject(dib_dc, font);
+        let _ = SetTextColor(dib_dc, text_color.to_colorref());
+    }
+    let display = if text.is_empty() {
+        placeholder.unwrap_or("")
+    } else {
+        text
+    };
+    let inset = (6.0 * scale) as i32;
+    let mut text_rc = RECT {
+        left: rect.left + inset,
+        top: rect.top,
+        right: rect.right - inset,
+        bottom: rect.bottom,
+    };
+    let mut wz = to_utf16_z(display);
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut wz,
+            &mut text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+    }
+}
+
+// ── Collapsed combo box ───────────────────────────────────────────────
+
+/// Draw a collapsed (unopened) combo box: rounded background + border,
+/// selected text, and a **▼** dropdown arrow at the right edge.
+///
+/// `arrow_width` controls the square arrow hit area width; pass
+/// `max(rect height, …)` for a typical square arrow button.
+pub fn draw_collapsed_combo_box(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
+    rect: RECT,
+    arrow_width: i32,
+    selected_text: &str,
+    font: HFONT,
+    bg_color: Argb,
+    border_color: Argb,
+    text_color: Argb,
+    arrow_color: Argb,
+) {
+    let scale = win_w as f32 / WIN_WIDTH_BASE as f32;
+    let radius = (4.0 * scale) as i32;
+
+    // Background + border
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, bg_color);
+    if border_color.a > 0 {
+        draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+    }
+
+    // Selected text (left side, before arrow)
+    unsafe {
+        let _ = SelectObject(dib_dc, font);
+        let _ = SetTextColor(dib_dc, text_color.to_colorref());
+    }
+    let inset = (8.0 * scale) as i32;
+    let mut text_rc = RECT {
+        left: rect.left + inset,
+        top: rect.top,
+        right: rect.right - arrow_width,
+        bottom: rect.bottom,
+    };
+    let mut sel_wz = to_utf16_z(selected_text);
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut sel_wz,
+            &mut text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+    }
+
+    // Dropdown arrow (right edge, vertically centred)
+    unsafe {
+        let _ = SetTextColor(dib_dc, arrow_color.to_colorref());
+    }
+    let mut arrow_wz = to_utf16_z("\u{25BC}"); // ▼
+    let mut arrow_rc = RECT {
+        left: rect.right - arrow_width,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut arrow_wz,
+            &mut arrow_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+}
+
+// ── Toggle switch ─────────────────────────────────────────────────────
+
+/// Draw a pill‑shaped toggle switch with a circular knob.
+///
+/// * `is_on` — knob slides to the right and the track uses `theme.accent`.
+/// * `is_hovered` — applies a hover overlay on the track.
+///
+/// The caller positions `rect` (expected aspect ≈ 2 : 1, e.g. 36 × 18 at 96 dpi).
+pub fn draw_toggle_switch(
+    bits: *mut c_void,
+    win_w: i32,
+    win_h: i32,
+    rect: RECT,
+    is_on: bool,
+    is_hovered: bool,
+    theme: &NativeTheme,
+) {
+    let scale = win_w as f32 / WIN_WIDTH_BASE as f32;
+    let h = rect.bottom - rect.top;
+    let toggle_radius = h / 2;
+
+    // Track background
+    let mut track = if is_on {
+        theme.accent
+    } else {
+        theme.surface.blend_over(theme.background)
+    };
+    if is_hovered {
+        track = theme.hover.blend_over(track);
+    }
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, toggle_radius, track);
+
+    // Knob
+    let knob_margin = (2.0 * scale) as i32;
+    let knob_diam = h - knob_margin * 2;
+    let knob_left = if is_on {
+        rect.right - knob_diam - knob_margin
+    } else {
+        rect.left + knob_margin
+    };
+    let knob_color = if is_on { theme.text } else { theme.text_muted };
+    let knob_rect = RECT {
+        left: knob_left,
+        top: rect.top + knob_margin,
+        right: knob_left + knob_diam,
+        bottom: rect.bottom - knob_margin,
+    };
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, knob_rect, knob_diam / 2, knob_color);
+}

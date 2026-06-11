@@ -67,6 +67,17 @@ pub fn toggle(cfg: &LlmProxyConfig) -> bool {
     }
 }
 
+/// Restart the embedded proxy with new config. If the proxy is off, starts it.
+/// In-flight requests are aborted by the underlying `stop()` + `start()` cycle.
+/// No-op if the proxy is off and `start` returns false.
+///
+/// The caller is responsible for detecting whether the config has actually
+/// changed before calling this.
+pub fn reload(cfg: &LlmProxyConfig) -> bool {
+    stop();
+    start(cfg)
+}
+
 /// Current per-tier targets (opus, sonnet, haiku). None if the proxy is off.
 pub fn get_targets() -> Option<(String, String, String)> {
     CONTROL.lock().unwrap().as_ref().map(|c| c.targets())

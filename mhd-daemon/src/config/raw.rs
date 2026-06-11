@@ -94,6 +94,14 @@ pub struct RawQuickNote {
     pub notes_dir: Option<String>,
 }
 
+/// Raw TOML `[quickdraw]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawQuickDraw {
+    /// Directory for saved drawings. Default: `~/.config/mhd/screenshots/`.
+    #[serde(default)]
+    pub draw_dir: Option<String>,
+}
+
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
@@ -113,6 +121,8 @@ pub struct RawConfig {
     pub blackbox: Option<RawBlackbox>,
     #[serde(default)]
     pub quicknote: Option<RawQuickNote>,
+    #[serde(default)]
+    pub quickdraw: Option<RawQuickDraw>,
     /// LLM proxy integration (model routing for Claude Code).
     #[serde(default)]
     pub llm_proxy: Option<RawLlmProxy>,

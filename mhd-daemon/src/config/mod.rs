@@ -1,6 +1,8 @@
 pub mod editor;
+pub mod editor_control;
 pub mod editor_hittest;
 pub mod editor_layout;
+pub mod editor_paint;
 pub mod editor_state;
 pub mod editor_theme;
 pub mod path;
@@ -23,6 +25,14 @@ fn default_notes_dir() -> PathBuf {
         .join(".config")
         .join("mhd")
         .join("notes")
+}
+
+fn default_draw_dir() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join("mhd")
+        .join("screenshots")
 }
 
 /// One selectable alternative model in the LLM proxy selector.
@@ -98,6 +108,8 @@ pub struct AppConfig {
     pub blackbox: BlackboxConfig,
     /// Quick Note config.
     pub quicknote: QuickNoteConfig,
+    /// Quick Draw save directory.
+    pub draw_dir: PathBuf,
     /// Ordered list of power plan names for rotation.
     pub power_plans: Vec<String>,
     /// LLM proxy integration config.
@@ -242,6 +254,12 @@ impl AppConfig {
                     .map(PathBuf::from)
                     .unwrap_or_else(default_notes_dir),
             },
+            draw_dir: raw
+                .quickdraw
+                .as_ref()
+                .and_then(|q| q.draw_dir.as_ref())
+                .map(PathBuf::from)
+                .unwrap_or_else(default_draw_dir),
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,
             llm_proxy: LlmProxyConfig {
@@ -375,6 +393,10 @@ impl AppConfig {
 
     pub fn quicknote_config(&self) -> &QuickNoteConfig {
         &self.quicknote
+    }
+
+    pub fn draw_dir(&self) -> &PathBuf {
+        &self.draw_dir
     }
 
     /// LLM proxy configuration.

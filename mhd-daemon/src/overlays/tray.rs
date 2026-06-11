@@ -302,7 +302,7 @@ unsafe extern "system" fn wnd_proc(
                         note::show(state.app.theme(), cfg.notes_dir.clone(), bb);
                     }
                     CMD_DRAW => {
-                        draw::show(state.app.theme());
+                        draw::show(state.app.theme(), state.app.draw_dir());
                     }
                     CMD_EDIT_CONFIG => {
                         crate::config_editor::show_config_editor(state.app.clone());

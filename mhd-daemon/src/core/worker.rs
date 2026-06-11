@@ -120,7 +120,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             power::show(handle.theme());
         }
         Action::QuickDraw => {
-            crate::overlays::draw::show(handle.theme());
+            crate::overlays::draw::show(handle.theme(), handle.draw_dir());
         }
         Action::QuickNote => {
             let cfg = handle.quicknote_config();
