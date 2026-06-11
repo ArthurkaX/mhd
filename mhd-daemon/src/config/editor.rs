@@ -66,7 +66,7 @@ pub use crate::config::editor_layout::{
     WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_state::{
-    ButtonStyle, HoverTarget, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState,
+    ButtonStyle, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState,
     UIBinding,
 };
 pub use crate::config::editor_paint::{build_advanced_controls, build_general_controls, build_shortcuts_controls, paint_page};
@@ -195,6 +195,18 @@ pub fn show_config_editor(handle: AppHandle) {
 
     let bindings = load_ui_bindings(&handle);
 
+    // Read both save paths up front, each lock released before the next, so the
+    // struct literal below doesn't hold two MutexGuards on handle.config at once
+    // (temporaries live to the end of the statement → that would deadlock).
+    let notes_dir = handle
+        .config
+        .lock()
+        .unwrap()
+        .quicknote_config()
+        .notes_dir
+        .clone();
+    let draw_dir = handle.config.lock().unwrap().draw_dir().clone();
+
     let state = Box::into_raw(Box::new(SettingsState {
         handle: handle.clone(),
         theme: theme.clone(),
@@ -207,14 +219,8 @@ pub fn show_config_editor(handle: AppHandle) {
         combo_open,
         active_section: SettingsPage::General,
         autostart: crate::autostart::is_autostart_enabled(),
-        notes_dir: handle
-            .config
-            .lock()
-            .unwrap()
-            .quicknote_config()
-            .notes_dir
-            .clone(),
-        draw_dir: handle.config.lock().unwrap().draw_dir().clone(),
+        notes_dir,
+        draw_dir,
         bindings,
         general_scroll_y: 0,
         bindings_scroll_y: 0,
@@ -231,7 +237,7 @@ pub fn show_config_editor(handle: AppHandle) {
         edit_cursor: 0,
         edit_select_start: None,
         edit_old_value: String::new(),
-        hovered_target: HoverTarget::None,
+        hovered_target: SettingsHit::None,
         is_dragging_scroll: false,
         scroll_drag_start_y: 0,
         scroll_drag_start_offset: 0,
@@ -460,7 +466,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             || (ti == 2 && state.active_section == SettingsPage::LlmProxy)
             || (ti == 3 && state.active_section == SettingsPage::Advanced);
         let is_hovered = match state.hovered_target {
-            HoverTarget::Tab(i) => i == ti,
+            SettingsHit::Tab(i) => i == ti,
             _ => false,
         };
 
@@ -571,7 +577,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     }
 
     // ── Buttons ────────────────────────────────────────────────────
-    let is_apply_hovered = state.hovered_target == HoverTarget::ApplyBtn;
+    let is_apply_hovered = state.hovered_target == SettingsHit::ApplyBtn;
     draw_button(
         dib_dc,
         bits,
@@ -588,7 +594,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         ButtonStyle::Primary,
     );
 
-    let is_close_hovered = state.hovered_target == HoverTarget::CloseBtn;
+    let is_close_hovered = state.hovered_target == SettingsHit::CloseBtn;
     draw_button(
         dib_dc,
         bits,
@@ -1449,33 +1455,7 @@ unsafe extern "system" fn settings_wndproc(
                             paint_settings(hwnd, state_ptr, &lay);
                         }
                     } else {
-                        let target = match hit_test_settings(state, x, y) {
-                            SettingsHit::Tab(ti) => HoverTarget::Tab(ti),
-                            SettingsHit::ThemeCombo => HoverTarget::ThemeCombo,
-                            SettingsHit::AutostartToggle => HoverTarget::AutostartToggle,
-                            SettingsHit::ApplyBtn => HoverTarget::ApplyBtn,
-                            SettingsHit::CloseBtn => HoverTarget::CloseBtn,
-                            SettingsHit::Scrollbar => HoverTarget::Scrollbar,
-                            SettingsHit::RowClick(i) => HoverTarget::RowClick(i),
-                            SettingsHit::RowDelete(i) => HoverTarget::RowDelete(i),
-                            SettingsHit::AddBtn => HoverTarget::AddBtn,
-                            SettingsHit::AdvancedButton(i) => HoverTarget::AdvancedBtn(i),
-                            SettingsHit::NotesDirBrowseBtn => HoverTarget::NotesDirBrowseBtn,
-                            SettingsHit::DrawDirBrowseBtn => HoverTarget::DrawDirBrowseBtn,
-                            SettingsHit::AccordionSaveBtn => HoverTarget::AccordionSaveBtn,
-                            SettingsHit::AccordionCancelBtn => HoverTarget::AccordionCancelBtn,
-                            SettingsHit::AccordionDeleteBtn => HoverTarget::AccordionDeleteBtn,
-                            SettingsHit::AccordionRecordBtn => HoverTarget::AccordionRecordBtn,
-                            SettingsHit::AccordionActionBtn => HoverTarget::AccordionActionBtn,
-                            SettingsHit::AccordionTriggerField => {
-                                HoverTarget::AccordionTriggerField
-                            }
-                            SettingsHit::AccordionParamField => HoverTarget::AccordionParamField,
-                            SettingsHit::AccordionParamRecordBtn => {
-                                HoverTarget::AccordionParamRecordBtn
-                            }
-                            SettingsHit::None => HoverTarget::None,
-                        };
+                        let target = hit_test_settings(state, x, y);
 
                         if state.hovered_target != target {
                             state.hovered_target = target;
@@ -1498,8 +1478,8 @@ unsafe extern "system" fn settings_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if state.hovered_target != HoverTarget::None {
-                        state.hovered_target = HoverTarget::None;
+                    if state.hovered_target != SettingsHit::None {
+                        state.hovered_target = SettingsHit::None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                 }

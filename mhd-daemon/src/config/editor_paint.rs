@@ -17,7 +17,7 @@ use crate::config::editor_layout::{
     editor_action_desc, ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, SECTION_GAP_BASE,
     SECTION_HEADER_HEIGHT_BASE, Layout, WIN_WIDTH_BASE,
 };
-use crate::config::editor_state::{ButtonStyle, HoverTarget, SettingsHit, SettingsState};
+use crate::config::editor_state::{ButtonStyle, SettingsHit, SettingsState};
 use crate::config::editor_theme::{
     draw_button, draw_collapsed_combo_box, draw_plain_label, draw_readonly_text_field,
     draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer, draw_section_header,
@@ -288,7 +288,7 @@ pub fn build_general_controls(
         right: lay.combo_x() + lay.combo_w(),
         bottom: lay.combo_y() + combo_h,
     };
-    let is_combo_hovered = state.hovered_target == HoverTarget::ThemeCombo;
+    let is_combo_hovered = state.hovered_target == SettingsHit::ThemeCombo;
     let combo_bg = if is_combo_hovered {
         theme_hover(state).blend_over(theme_surface(state))
     } else {
@@ -382,7 +382,7 @@ pub fn build_general_controls(
         right: lay.combo_x() + toggle_w,
         bottom: toggle_y + toggle_h,
     };
-    let is_auto_hovered = state.hovered_target == HoverTarget::AutostartToggle;
+    let is_auto_hovered = state.hovered_target == SettingsHit::AutostartToggle;
     ctls.push(Control::Toggle {
         rect: toggle_rect,
         is_on: state.autostart,
@@ -470,7 +470,7 @@ pub fn build_general_controls(
     });
 
     // Browse button
-    let is_browse_hovered = state.hovered_target == HoverTarget::NotesDirBrowseBtn;
+    let is_browse_hovered = state.hovered_target == SettingsHit::NotesDirBrowseBtn;
     ctls.push(Control::Button {
         rect: RECT {
             left: browse_x,
@@ -547,7 +547,7 @@ pub fn build_general_controls(
     });
 
     // Browse button
-    let is_draw_browse_hovered = state.hovered_target == HoverTarget::DrawDirBrowseBtn;
+    let is_draw_browse_hovered = state.hovered_target == SettingsHit::DrawDirBrowseBtn;
     ctls.push(Control::Button {
         rect: RECT {
             left: draw_browse_x,
@@ -597,7 +597,7 @@ pub fn build_advanced_controls(
     let btn_w = (260.0 * scale) as i32;
 
     for (i, &(label, _desc)) in ADVANCED_BUTTONS.iter().enumerate() {
-        let is_hovered = state.hovered_target == HoverTarget::AdvancedBtn(i);
+        let is_hovered = state.hovered_target == SettingsHit::AdvancedButton(i);
         let is_danger = i >= 4;
         let style = if is_danger {
             ButtonStyle::DangerGhost
@@ -729,7 +729,7 @@ pub fn build_shortcuts_controls(
 
             // Row body (pushed first in draw order; hit scan is back-to-front
             // so the delete-X button pushed next wins for overlaps).
-            let is_row_hovered = state.hovered_target == HoverTarget::RowClick(i);
+            let is_row_hovered = state.hovered_target == SettingsHit::RowClick(i);
             let is_selected = state.expanded_idx == Some(i);
             let zebra_on = i % 2 == 1;
             ctls.push(Control::BindingRow {
@@ -752,7 +752,7 @@ pub fn build_shortcuts_controls(
             // hit scan is back-to-front this narrower Button wins over the
             // wider BindingRow for clicks on the X.
             let del_x = win_w_val - pad - lay.del_w();
-            let is_del_hovered = state.hovered_target == HoverTarget::RowDelete(i);
+            let is_del_hovered = state.hovered_target == SettingsHit::RowDelete(i);
             ctls.push(Control::Button {
                 rect: RECT {
                     left: del_x,
@@ -801,7 +801,7 @@ pub fn build_shortcuts_controls(
                 let action_btn_w = pw - trigger_field_w - btn_h - gap * 2;
 
                 // ── Row 1: trigger field, record btn, action btn ──
-                let is_tf_hovered = state.hovered_target == HoverTarget::AccordionTriggerField;
+                let is_tf_hovered = state.hovered_target == SettingsHit::AccordionTriggerField;
                 let tf_bg = if is_tf_hovered {
                     theme_hover(state).blend_over(panel_bg)
                 } else {
@@ -828,7 +828,7 @@ pub fn build_shortcuts_controls(
                 });
 
                 let record_x = field_x + trigger_field_w + gap;
-                let is_rec_hovered = state.hovered_target == HoverTarget::AccordionRecordBtn;
+                let is_rec_hovered = state.hovered_target == SettingsHit::AccordionRecordBtn;
                 ctls.push(Control::Button {
                     rect: RECT {
                         left: record_x,
@@ -844,7 +844,7 @@ pub fn build_shortcuts_controls(
                 });
 
                 let act_x = record_x + btn_h + gap;
-                let is_act_hovered = state.hovered_target == HoverTarget::AccordionActionBtn;
+                let is_act_hovered = state.hovered_target == SettingsHit::AccordionActionBtn;
                 let desc = editor_action_desc(state.acc_kind_idx);
                 ctls.push(Control::Button {
                     rect: RECT {
@@ -889,7 +889,7 @@ pub fn build_shortcuts_controls(
                         } else {
                             state.acc_param.clone()
                         };
-                        let is_param_hovered = state.hovered_target == HoverTarget::AccordionParamField;
+                        let is_param_hovered = state.hovered_target == SettingsHit::AccordionParamField;
                         let p_bg = if is_param_hovered {
                             theme_hover(state).blend_over(panel_bg)
                         } else {
@@ -911,7 +911,7 @@ pub fn build_shortcuts_controls(
 
                         if is_key_mapping {
                             let param_record_x = field_x + param_field_w + gap;
-                            let is_param_rec_hovered = state.hovered_target == HoverTarget::AccordionParamRecordBtn;
+                            let is_param_rec_hovered = state.hovered_target == SettingsHit::AccordionParamRecordBtn;
                             ctls.push(Control::Button {
                                 rect: RECT {
                                     left: param_record_x,
@@ -953,9 +953,9 @@ pub fn build_shortcuts_controls(
                 let total = fbtn_w * 3 + fbtn_gap * 2;
                 let start_x = pad + (panel_w - total) / 2;
 
-                let is_save_hovered = state.hovered_target == HoverTarget::AccordionSaveBtn;
-                let is_cancel_hovered = state.hovered_target == HoverTarget::AccordionCancelBtn;
-                let is_delete_hovered = state.hovered_target == HoverTarget::AccordionDeleteBtn;
+                let is_save_hovered = state.hovered_target == SettingsHit::AccordionSaveBtn;
+                let is_cancel_hovered = state.hovered_target == SettingsHit::AccordionCancelBtn;
+                let is_delete_hovered = state.hovered_target == SettingsHit::AccordionDeleteBtn;
 
                 ctls.push(Control::Button {
                     rect: RECT {
@@ -1006,7 +1006,7 @@ pub fn build_shortcuts_controls(
     let add_btn_visible = row_y + row_h >= list_y && row_y < list_y + list_h;
     if add_btn_visible {
         let add_btn_w = (80.0 * scale) as i32;
-        let is_add_hovered = state.hovered_target == HoverTarget::AddBtn;
+        let is_add_hovered = state.hovered_target == SettingsHit::AddBtn;
         ctls.push(Control::Button {
             rect: RECT {
                 left: pad,
@@ -1050,7 +1050,7 @@ pub fn build_shortcuts_controls(
         };
 
         let is_thumb_active =
-            state.hovered_target == HoverTarget::Scrollbar || state.is_dragging_scroll;
+            state.hovered_target == SettingsHit::Scrollbar || state.is_dragging_scroll;
         let thumb_color = if is_thumb_active {
             theme_accent(state)
         } else {

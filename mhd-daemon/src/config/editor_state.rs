@@ -67,35 +67,6 @@ pub enum SettingsHit {
     AccordionDeleteBtn,
 }
 
-// ── Hover target ──────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HoverTarget {
-    None,
-    Tab(usize),
-    ThemeCombo,
-    AutostartToggle,
-    ApplyBtn,
-    CloseBtn,
-    AddBtn,
-    RowClick(usize),
-    RowDelete(usize),
-    Scrollbar,
-    /// Hover target for a button on the Advanced page.
-    AdvancedBtn(usize),
-    NotesDirBrowseBtn,
-    DrawDirBrowseBtn,
-    // ── Accordion editor hovers ────────────────────────────────
-    AccordionTriggerField,
-    AccordionRecordBtn,
-    AccordionActionBtn,
-    AccordionParamField,
-    AccordionParamRecordBtn,
-    AccordionSaveBtn,
-    AccordionCancelBtn,
-    AccordionDeleteBtn,
-}
-
 // ── Button style ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,7 +156,7 @@ pub struct SettingsState {
     pub edit_old_value: String,
 
     /// Hovered interactive target
-    pub hovered_target: HoverTarget,
+    pub hovered_target: SettingsHit,
     /// Scroll dragging state
     pub is_dragging_scroll: bool,
     /// Scroll drag starting mouse Y position
