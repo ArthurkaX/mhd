@@ -167,91 +167,101 @@ fn parse_key(s: &str) -> Result<Option<PhysicalKey>, String> {
         return Ok(Some(PhysicalKey::Keyboard(vk)));
     }
 
-    // Named keys
-    let vk = match s {
-        "capslock" | "capital" => 0x14,
-        "space" => 0x20,
-        "tab" => 0x09,
-        "enter" | "return" => 0x0D,
-        "esc" | "escape" => 0x1B,
-        "backspace" => 0x08,
-        "delete" | "del" => 0x2E,
-        "insert" | "ins" => 0x2D,
-        "home" => 0x24,
-        "end" => 0x23,
-        "pageup" | "prior" => 0x21,
-        "pagedown" | "next" => 0x22,
-        "left" => 0x25,
-        "right" => 0x27,
-        "up" => 0x26,
-        "down" => 0x28,
-        "contextmenu" | "apps" => 0x5D,
-        "scrolllock" => 0x91,
-        "numlock" => 0x90,
-        "printscreen" => 0x2C,
+    // Numpad digits 0-9 (algorithmic)
+    if let Some(rest) = s.strip_prefix("numpad")
+        && rest.len() == 1
+        && let Ok(n) = rest.parse::<u8>()
+    {
+        return Ok(Some(PhysicalKey::Keyboard(0x60 + n)));
+    }
 
-        "lshift" => 0xA0,
-        "rshift" => 0xA1,
-        "lctrl" | "lcontrol" => 0xA2,
-        "rctrl" | "rcontrol" => 0xA3,
-        "lalt" | "lmenu" => 0xA4,
-        "ralt" | "rmenu" => 0xA5,
-        "lwin" => 0x5B,
-        "rwin" => 0x5C,
+    // Named keys (irregular) — single source of truth shared with `vk_to_name`.
+    if let Some(&(vk, _)) = NAMED_VKS.iter().find(|(_, names)| names.contains(&s)) {
+        return Ok(Some(PhysicalKey::Keyboard(vk)));
+    }
 
-        // OEM keys
-        "minus" | "oem_minus" => 0xBD,
-        "equal" | "oem_equal" | "equals" => 0xBB,
-        "comma" | "oem_comma" => 0xBC,
-        "period" | "oem_period" => 0xBE,
-        "slash" | "oem_slash" => 0xBF,
-        "semicolon" | "oem_semicolon" => 0xBA,
-        "quote" | "oem_quote" => 0xDE,
-        "backslash" | "oem_backslash" => 0xDC,
-        "lbracket" | "oem_lbracket" | "oem_4" => 0xDB,
-        "rbracket" | "oem_rbracket" | "oem_6" => 0xDD,
-        "backquote" | "oem_3" | "grave" => 0xC0,
+    // Raw hex virtual-key code, e.g. "0x7b"
+    if let Some(hex) = s.strip_prefix("0x")
+        && let Ok(vk) = u8::from_str_radix(hex, 16)
+    {
+        return Ok(Some(PhysicalKey::Keyboard(vk)));
+    }
 
-        // Numpad keys
-        "numpad0" => 0x60,
-        "numpad1" => 0x61,
-        "numpad2" => 0x62,
-        "numpad3" => 0x63,
-        "numpad4" => 0x64,
-        "numpad5" => 0x65,
-        "numpad6" => 0x66,
-        "numpad7" => 0x67,
-        "numpad8" => 0x68,
-        "numpad9" => 0x69,
-        "numpadmultiply" | "numpad_star" => 0x6A,
-        "numpadadd" | "numpad_plus" | "numpad_add" => 0x6B,
-        "numpadsubtract" | "numpad_minus" | "numpad_subtract" => 0x6D,
-        "numpaddivide" | "numpad_slash" => 0x6F,
-        "numpadenter" => 0x6C,
-        "numpaddecimal" | "numpad_dot" => 0x6E,
-
-        // Media keys
-        "volume_mute" => 0xAD,
-        "volume_down" => 0xAE,
-        "volume_up" => 0xAF,
-        "media_next" => 0xB0,
-        "media_prev" => 0xB1,
-        "media_stop" => 0xB2,
-        "media_play_pause" => 0xB3,
-
-        _ => {
-            if s.starts_with("0x")
-                && let Ok(vk) = u8::from_str_radix(&s[2..], 16)
-            {
-                vk
-            } else {
-                return Err(format!("unknown key: '{}'", s));
-            }
-        }
-    };
-
-    Ok(Some(PhysicalKey::Keyboard(vk)))
+    Err(format!("unknown key: '{}'", s))
 }
+
+/// Irregular named virtual keys, shared by [`parse_key`] and [`vk_to_name`].
+///
+/// Each entry is `(vk, &[canonical, aliases...])`: the **first** name is the
+/// canonical one emitted by `vk_to_name`; every name in the slice is accepted
+/// by `parse_key`. Algorithmic ranges (a–z, 0–9, F1–F24, numpad0–9) are handled
+/// directly in both functions and are intentionally absent here.
+///
+/// This is the single source of truth — adding a key here teaches both
+/// directions at once (the `test_named_vks_round_trip` test enforces it).
+#[rustfmt::skip]
+const NAMED_VKS: &[(u8, &[&str])] = &[
+    (0x14, &["capslock", "capital"]),
+    (0x20, &["space"]),
+    (0x09, &["tab"]),
+    (0x0D, &["enter", "return"]),
+    (0x1B, &["esc", "escape"]),
+    (0x08, &["backspace"]),
+    (0x2E, &["delete", "del"]),
+    (0x2D, &["insert", "ins"]),
+    (0x24, &["home"]),
+    (0x23, &["end"]),
+    (0x21, &["pageup", "prior"]),
+    (0x22, &["pagedown", "next"]),
+    (0x25, &["left"]),
+    (0x27, &["right"]),
+    (0x26, &["up"]),
+    (0x28, &["down"]),
+    (0x5D, &["contextmenu", "apps"]),
+    (0x91, &["scrolllock"]),
+    (0x90, &["numlock"]),
+    (0x2C, &["printscreen"]),
+    (0x13, &["pause", "break"]),
+
+    (0xA0, &["lshift"]),
+    (0xA1, &["rshift"]),
+    (0xA2, &["lctrl", "lcontrol"]),
+    (0xA3, &["rctrl", "rcontrol"]),
+    (0xA4, &["lalt", "lmenu"]),
+    (0xA5, &["ralt", "rmenu"]),
+    (0x5B, &["lwin"]),
+    (0x5C, &["rwin"]),
+
+    // OEM keys
+    (0xBD, &["minus", "oem_minus"]),
+    (0xBB, &["equal", "oem_equal", "equals"]),
+    (0xBC, &["comma", "oem_comma"]),
+    (0xBE, &["period", "oem_period"]),
+    (0xBF, &["slash", "oem_slash"]),
+    (0xBA, &["semicolon", "oem_semicolon"]),
+    (0xDE, &["quote", "oem_quote"]),
+    (0xDC, &["backslash", "oem_backslash"]),
+    (0xDB, &["lbracket", "oem_lbracket", "oem_4"]),
+    (0xDD, &["rbracket", "oem_rbracket", "oem_6"]),
+    (0xC0, &["backquote", "oem_3", "grave"]),
+
+    // Numpad operators
+    (0x6A, &["numpad_star", "numpadmultiply"]),
+    (0x6B, &["numpad_plus", "numpadadd", "numpad_add"]),
+    (0x6D, &["numpad_minus", "numpadsubtract", "numpad_subtract"]),
+    (0x6F, &["numpad_slash", "numpaddivide"]),
+    (0x6C, &["numpadenter"]),
+    (0x6E, &["numpad_dot", "numpaddecimal"]),
+
+    // Media keys
+    (0xAD, &["volume_mute"]),
+    (0xAE, &["volume_down"]),
+    (0xAF, &["volume_up"]),
+    (0xB0, &["media_next"]),
+    (0xB1, &["media_prev"]),
+    (0xB2, &["media_stop"]),
+    (0xB3, &["media_play_pause"]),
+];
 
 /// Check if a virtual key code is a modifier key.
 pub fn is_modifier_vk(vk: u32) -> bool {
@@ -300,65 +310,21 @@ pub fn keys_to_string(keys: &KeyCombo) -> String {
 }
 
 pub fn vk_to_name(vk: u8) -> String {
+    // Algorithmic ranges first.
     match vk {
-        0x30..=0x39 => (vk as char).to_string().to_lowercase(),
-        0x41..=0x5A => (vk as char).to_string().to_lowercase(),
-        0x70..=0x87 => format!("f{}", vk - 0x70 + 1),
-        0x60..=0x69 => format!("numpad{}", vk - 0x60),
-        0x14 => "capslock".into(),
-        0x20 => "space".into(),
-        0x09 => "tab".into(),
-        0x0D => "enter".into(),
-        0x1B => "esc".into(),
-        0x08 => "backspace".into(),
-        0x2E => "delete".into(),
-        0x2D => "insert".into(),
-        0x24 => "home".into(),
-        0x23 => "end".into(),
-        0x21 => "pageup".into(),
-        0x22 => "pagedown".into(),
-        0x25 => "left".into(),
-        0x27 => "right".into(),
-        0x26 => "up".into(),
-        0x28 => "down".into(),
-        0x5D => "contextmenu".into(),
-        0x91 => "scrolllock".into(),
-        0x90 => "numlock".into(),
-        0x2C => "printscreen".into(),
-        0xA0 => "lshift".into(),
-        0xA1 => "rshift".into(),
-        0xA2 => "lctrl".into(),
-        0xA3 => "rctrl".into(),
-        0xA4 => "lalt".into(),
-        0xA5 => "ralt".into(),
-        0x5B => "lwin".into(),
-        0x5C => "rwin".into(),
-        0xBD => "minus".into(),
-        0xBB => "equal".into(),
-        0xBC => "comma".into(),
-        0xBE => "period".into(),
-        0xBF => "slash".into(),
-        0xBA => "semicolon".into(),
-        0xDE => "quote".into(),
-        0xDC => "backslash".into(),
-        0xDB => "lbracket".into(),
-        0xDD => "rbracket".into(),
-        0xC0 => "backquote".into(),
-        0x6A => "numpad_star".into(),
-        0x6B => "numpad_plus".into(),
-        0x6D => "numpad_minus".into(),
-        0x6F => "numpad_slash".into(),
-        0x6C => "numpadenter".into(),
-        0x6E => "numpad_dot".into(),
-        0xAD => "volume_mute".into(),
-        0xAE => "volume_down".into(),
-        0xAF => "volume_up".into(),
-        0xB0 => "media_next".into(),
-        0xB1 => "media_prev".into(),
-        0xB2 => "media_stop".into(),
-        0xB3 => "media_play_pause".into(),
-        _ => format!("0x{:02x}", vk),
+        0x30..=0x39 | 0x41..=0x5A => return (vk as char).to_ascii_lowercase().to_string(),
+        0x70..=0x87 => return format!("f{}", vk - 0x70 + 1),
+        0x60..=0x69 => return format!("numpad{}", vk - 0x60),
+        _ => {}
     }
+
+    // Irregular named keys — same table `parse_key` reads, so the canonical
+    // name round-trips back to this vk.
+    NAMED_VKS
+        .iter()
+        .find(|(code, _)| *code == vk)
+        .map(|(_, names)| names[0].to_string())
+        .unwrap_or_else(|| format!("0x{:02x}", vk))
 }
 
 #[cfg(test)]
@@ -590,5 +556,46 @@ mod tests {
     #[test]
     fn test_vk_to_name_unknown_returns_hex() {
         assert_eq!(vk_to_name(0xFF), "0xff");
+    }
+
+    // ── Single-source-of-truth invariant for NAMED_VKS ─────────────
+
+    #[test]
+    fn test_named_vks_round_trip() {
+        for &(vk, names) in NAMED_VKS {
+            // Canonical name is what vk_to_name emits.
+            assert_eq!(vk_to_name(vk), names[0], "vk_to_name(0x{vk:02x})");
+            // Every alias parses back to this vk.
+            for name in names {
+                let parsed = parse_key(name).unwrap();
+                assert_eq!(
+                    parsed,
+                    Some(PhysicalKey::Keyboard(vk)),
+                    "parse_key({name:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_named_vks_no_duplicate_names() {
+        let mut seen = std::collections::HashSet::new();
+        for &(_, names) in NAMED_VKS {
+            for name in names {
+                assert!(seen.insert(*name), "duplicate key name in table: {name:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_trigger_pause() {
+        assert_eq!(
+            parse_trigger("pause").unwrap().trigger.key,
+            PhysicalKey::Keyboard(0x13)
+        );
+        assert_eq!(
+            parse_trigger("break").unwrap().trigger.key,
+            PhysicalKey::Keyboard(0x13)
+        );
     }
 }
