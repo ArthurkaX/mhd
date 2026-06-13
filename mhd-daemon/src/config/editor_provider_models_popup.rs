@@ -1136,7 +1136,7 @@ fn run_single_model_test(
     {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("mhd: model test failed for '{model_id}': {e}");
+            log_test_error(&format!("model test '{model_id}' failed: {e}"));
             return false;
         }
     };
@@ -1147,12 +1147,27 @@ fn run_single_model_test(
 
     let ok = resp.status().is_success();
     if !ok {
-        eprintln!(
-            "mhd: model test for '{model_id}' returned HTTP {}",
+        log_test_error(&format!(
+            "model test '{model_id}' returned HTTP {}",
             resp.status()
-        );
+        ));
     }
     ok
+}
+
+/// Append a line to the daemon debug log at `~/.config/mhd/llm-proxy/daemon.log`.
+fn log_test_error(msg: &str) {
+    let log_dir = llm_proxy::config::config_dir();
+    let path = log_dir.join("daemon.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "mhd: {msg}");
+    }
+    eprintln!("mhd: {msg}");
 }
 
 // ── Window procedure ─────────────────────────────────────────────────
