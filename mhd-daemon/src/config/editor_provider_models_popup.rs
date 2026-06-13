@@ -5,6 +5,8 @@
 //! can be added.  Follows the same pattern as `editor_provider_popup`.
 
 use std::ffi::c_void;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -30,6 +32,10 @@ const POPUP_PADDING: i32 = 20;
 const POPUP_FIELD_HEIGHT: i32 = 30;
 const POPUP_ROW_HEIGHT: i32 = 32;
 
+/// Custom message for per-model test results.
+/// `WPARAM` = model index, `LPARAM` = pointer to a heap-allocated bool (true=success).
+const WM_MODEL_TEST_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 3;
+
 // ── Hit targets ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +43,8 @@ enum ModelsPopupHit {
     None,
     /// Click on a model row field to start inline editing.
     ModelField(usize),
+    /// Test button on a model row.
+    ModelTestBtn(usize),
     /// Delete button on a model row.
     ModelDelete(usize),
     /// "+ Add Model" button.
@@ -56,11 +64,23 @@ struct ModelsPopupState {
     /// The live-edited model list.
     models: Vec<String>,
 
+    /// Endpoint URL for testing models.
+    endpoint: String,
+    /// API key for testing models.
+    api_key: String,
+
     // Inline editing state for a single row at a time
     editing_idx: Option<usize>,
     edit_text: String,
     edit_cursor: usize,
     edit_old_value: String,
+
+    /// Per-model test status: None=untested, Some(true)=success, Some(false)=failure.
+    model_test_results: Vec<Option<bool>>,
+    /// Index of model currently being tested.
+    testing_idx: Option<usize>,
+    /// Cancellation flag for the background test thread.
+    cancelled: Arc<AtomicBool>,
 
     // Scrolling state
     content_scroll_y: i32,
@@ -120,6 +140,8 @@ pub fn open_models_popup(
     theme: &NativeTheme,
     scale: f32,
     models: Vec<String>,
+    endpoint: &str,
+    api_key: &str,
 ) -> Option<Vec<String>> {
     let win_w = (POPUP_WIDTH_BASE as f32 * scale) as i32;
     let win_h = (POPUP_HEIGHT_BASE as f32 * scale) as i32;
@@ -137,14 +159,21 @@ pub fn open_models_popup(
     let pad = (POPUP_PADDING as f32 * scale) as i32;
     let list_area_h = win_h - header_h - footer_h - pad;
 
+    let model_test_results = (0..models.len()).map(|_| None).collect();
+
     let popup_state = Box::new(ModelsPopupState {
         hwnd: HWND::default(),
         _parent_hwnd: parent_hwnd,
         models,
+        endpoint: endpoint.to_string(),
+        api_key: api_key.to_string(),
         editing_idx: None,
         edit_text: String::new(),
         edit_cursor: 0,
         edit_old_value: String::new(),
+        model_test_results,
+        testing_idx: None,
+        cancelled: Arc::new(AtomicBool::new(false)),
         content_scroll_y: 0,
         list_area_h,
         theme: theme.clone(),
@@ -262,7 +291,10 @@ pub fn open_models_popup(
         None
     };
 
-    // Cleanup
+    // Cleanup — signal the test thread to stop
+    unsafe {
+        (*popup_ptr).cancelled.store(true, Ordering::SeqCst);
+    }
     if !hwnd.is_invalid() {
         unsafe {
             DestroyWindow(hwnd).ok();
@@ -400,6 +432,9 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
         let scrollbar_x = w - pad - scrollbar_w;
 
         // ── Model rows ───────────────────────────────────────────
+        let test_btn_w = (50.0 * scale) as i32;
+        let btn_gap = (4.0 * scale) as i32;
+
         for (i, model_id) in state.models.iter().enumerate() {
             let ry = list_content_top + i as i32 * row_h - scroll_y;
             let row_visible = ry + row_h > list_y && ry < list_y + list_h;
@@ -429,10 +464,13 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
                 );
             }
 
+            // Button positions from the right edge
+            let del_x = w - pad - scrollbar_w - del_w;
+            let test_btn_x = del_x - btn_gap - test_btn_w;
+            let field_right = test_btn_x - btn_gap;
+
             // Text field background + border
             let field_left = pad;
-            let field_right = w - pad - scrollbar_w - del_w - (4.0 * scale) as i32;
-
             let bg = if is_editing {
                 theme.surface.blend_over(theme.background)
             } else if is_hovered {
@@ -497,8 +535,34 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
                 let _ = DeleteObject(cursor_pen);
             }
 
+            // Test button (colored by test status)
+            let is_testing = state.testing_idx == Some(i);
+            let test_status = state.model_test_results.get(i).copied().unwrap_or(None);
+            let is_test_hovered = state.hovered_target == ModelsPopupHit::ModelTestBtn(i);
+            let test_label = if is_testing { ".." } else { "T" };
+            let test_btn_style = match test_status {
+                Some(true) => ButtonStyle::Primary,      // green/success
+                Some(false) => ButtonStyle::DangerGhost, // red
+                None => ButtonStyle::Secondary,          // neutral
+            };
+            let test_btn_h = (20.0 * scale) as i32;
+            draw_button(
+                dib_dc,
+                bits,
+                w,
+                h,
+                test_btn_x,
+                ry + (row_h - test_btn_h) / 2,
+                test_btn_w,
+                test_btn_h,
+                test_label,
+                theme,
+                body_font,
+                is_test_hovered || is_testing,
+                test_btn_style,
+            );
+
             // Delete X button
-            let del_x = w - pad - scrollbar_w - del_w;
             let is_del_hovered = state.hovered_target == ModelsPopupHit::ModelDelete(i);
             let del_btn_h = (20.0 * scale) as i32;
             draw_button(
@@ -664,6 +728,8 @@ fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopu
     let field_h = (POPUP_FIELD_HEIGHT as f32 * scale) as i32;
     let del_w = (28.0 * scale) as i32;
     let scrollbar_w = (8.0 * scale) as i32;
+    let test_btn_w = (50.0 * scale) as i32;
+    let btn_gap = (4.0 * scale) as i32;
     let scroll_y = state.content_scroll_y;
 
     let list_y = header_h + pad;
@@ -708,14 +774,21 @@ fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopu
         for i in 0..total_rows {
             let ry = list_content_top + i * row_h - scroll_y;
             if y >= ry && y < ry + row_h {
-                // Check delete X button (right side)
+                // Button positions
                 let del_x = w - pad - scrollbar_w - del_w;
+                let test_btn_x = del_x - btn_gap - test_btn_w;
+
+                // Check delete X button (rightmost)
                 if x >= del_x && x < del_x + del_w {
                     return ModelsPopupHit::ModelDelete(i as usize);
                 }
+                // Check test button
+                if x >= test_btn_x && x < test_btn_x + test_btn_w {
+                    return ModelsPopupHit::ModelTestBtn(i as usize);
+                }
                 // Check text field
                 let field_left = pad;
-                let field_right = w - pad - scrollbar_w - del_w - (4.0 * scale) as i32;
+                let field_right = test_btn_x - btn_gap;
                 let field_top = ry + (row_h - field_h) / 2;
                 let field_bottom = ry + (row_h + field_h) / 2;
                 if x >= field_left && x < field_right && y >= field_top && y < field_bottom {
@@ -761,6 +834,66 @@ fn begin_model_edit(state: &mut ModelsPopupState, idx: usize) {
         state.edit_cursor = state.edit_text.len();
         state.edit_old_value = state.edit_text.clone();
     }
+}
+
+// ── Background model test ────────────────────────────────────────────
+
+/// Send a minimal ping to a specific model and return true if successful.
+fn run_single_model_test(
+    endpoint: &str,
+    api_key: &str,
+    model_id: &str,
+    cancelled: &AtomicBool,
+) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let base = endpoint.trim_end_matches('/');
+    let chat_url = format!("{base}/chat/completions");
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if !api_key.is_empty() {
+        let Ok(hdr) = format!("Bearer {api_key}").parse::<reqwest::header::HeaderValue>() else {
+            return false;
+        };
+        headers.insert(reqwest::header::AUTHORIZATION, hdr);
+    }
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+
+    if cancelled.load(Ordering::SeqCst) {
+        return false;
+    }
+
+    let ping_body = serde_json::json!({
+        "model": model_id,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 5,
+        "stream": false,
+    });
+
+    let resp = match client
+        .post(&chat_url)
+        .headers(headers)
+        .json(&ping_body)
+        .send()
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    if cancelled.load(Ordering::SeqCst) {
+        return false;
+    }
+
+    resp.status().is_success()
 }
 
 // ── Window procedure ─────────────────────────────────────────────────
@@ -835,10 +968,44 @@ unsafe extern "system" fn models_popup_wndproc(
                         begin_model_edit(state, i);
                         paint_models_popup(hwnd, state_ptr);
                     }
+                    ModelsPopupHit::ModelTestBtn(i) => {
+                        if state.testing_idx.is_some() {
+                            // Already testing another model
+                            return LRESULT(0);
+                        }
+                        commit_model_edit(state);
+                        if i < state.models.len() && !state.models[i].trim().is_empty() {
+                            let model_id = state.models[i].clone();
+                            let ep = state.endpoint.clone();
+                            let ak = state.api_key.clone();
+                            let cancelled = state.cancelled.clone();
+                            let test_hwnd = state.hwnd.0 as isize;
+
+                            state.testing_idx = Some(i);
+                            // Keep previous test result visible while re-testing
+                            // (it will be replaced when the result comes back)
+                            paint_models_popup(hwnd, state_ptr);
+
+                            std::thread::spawn(move || {
+                                let success =
+                                    run_single_model_test(&ep, &ak, &model_id, &cancelled);
+                                let result_ptr = Box::into_raw(Box::new(success));
+                                let _ = PostMessageW(
+                                    HWND(test_hwnd as *mut c_void),
+                                    WM_MODEL_TEST_RESULT,
+                                    WPARAM(i),
+                                    LPARAM(result_ptr as isize),
+                                );
+                            });
+                        }
+                    }
                     ModelsPopupHit::ModelDelete(i) => {
                         cancel_model_edit(state); // commit any in-progress edit first
                         if i < state.models.len() {
                             state.models.remove(i);
+                            if i < state.model_test_results.len() {
+                                state.model_test_results.remove(i);
+                            }
                             // Adjust editing_idx if needed
                             if state.editing_idx == Some(i) {
                                 state.editing_idx = None;
@@ -853,6 +1020,7 @@ unsafe extern "system" fn models_popup_wndproc(
                     ModelsPopupHit::AddBtn => {
                         cancel_model_edit(state);
                         state.models.push(String::new());
+                        state.model_test_results.push(None);
                         let new_idx = state.models.len() - 1;
                         begin_model_edit(state, new_idx);
                         // Scroll to bottom to show the new item
@@ -866,7 +1034,17 @@ unsafe extern "system" fn models_popup_wndproc(
                     ModelsPopupHit::SaveBtn => {
                         commit_model_edit(state);
                         // Filter out empty models before saving
-                        state.models.retain(|m| !m.is_empty());
+                        let mut i = 0;
+                        while i < state.models.len() {
+                            if state.models[i].is_empty() {
+                                state.models.remove(i);
+                                if i < state.model_test_results.len() {
+                                    state.model_test_results.remove(i);
+                                }
+                            } else {
+                                i += 1;
+                            }
+                        }
                         state.saved = true;
                         state.should_close = true;
                         paint_models_popup(hwnd, state_ptr);
@@ -875,6 +1053,24 @@ unsafe extern "system" fn models_popup_wndproc(
                         state.should_close = true;
                     }
                     ModelsPopupHit::None | ModelsPopupHit::Scrollbar => {}
+                }
+                LRESULT(0)
+            }
+
+            WM_MODEL_TEST_RESULT => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let model_idx = wparam.0;
+                    let result_ptr = lparam.0 as *mut bool;
+                    if !result_ptr.is_null() {
+                        let result = Box::from_raw(result_ptr);
+                        if model_idx < state.model_test_results.len() {
+                            state.model_test_results[model_idx] = Some(*result);
+                        }
+                    }
+                    state.testing_idx = None;
+                    paint_models_popup(hwnd, state_ptr);
                 }
                 LRESULT(0)
             }

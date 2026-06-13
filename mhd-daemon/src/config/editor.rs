@@ -1391,12 +1391,16 @@ unsafe extern "system" fn settings_wndproc(
                         close_kind_popup(state);
                         if i < state.providers.len() {
                             let models = state.providers[i].models.clone();
+                            let endpoint = state.providers[i].endpoint.clone();
+                            let api_key = state.providers[i].api_key.clone();
                             if let Some(updated_models) =
                                 crate::config::editor_provider_models_popup::open_models_popup(
                                     hwnd,
                                     &state.theme,
                                     state.layout.scale(),
                                     models,
+                                    &endpoint,
+                                    &api_key,
                                 )
                             {
                                 state.providers[i].models = updated_models;
