@@ -1247,7 +1247,7 @@ unsafe extern "system" fn models_popup_wndproc(
                         }
                         commit_model_edit(state);
                         if i < state.models.len() && !state.models[i].trim().is_empty() {
-                            let model_id = state.models[i].clone();
+                            let model_id = state.models[i].trim().to_string();
                             let ep = state.endpoint.clone();
                             let ak = state.api_key.clone();
                             let cancelled = state.cancelled.clone();
