@@ -4,7 +4,6 @@
 //! transparent window. Each row is one request: original tier, effective tier,
 //! target model, and a "downgraded" badge.
 
-use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -187,8 +186,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         None => return,
     };
     let dib_dc = frame.dc();
-    let bits = frame.pixels_mut().as_mut_ptr() as *mut c_void;
-    let _ = bits;
 
     let radius = (RADIUS_BASE * scale) as i32;
     crate::osd::draw_rounded_rect(frame.pixels_mut(), win_w, win_h, radius, theme.background);
@@ -312,14 +309,52 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
 
-    let col_w = (win_w - pad * 2) / 5;
-    let col_labels = ["Seq", "Tier", "Effective", "Target", "Reason"];
-    for (i, label) in col_labels.iter().enumerate() {
+    let col_defs: [(u32, &str); 5] = [
+        (45, "Seq"),
+        (60, "Tier"),
+        (60, "Eff."),
+        (999, "Target"), // auto-fill
+        (75, "Reason"),
+    ];
+    // First pass: compute fixed columns, last column fills the rest
+    let fixed_w: i32 =
+        col_defs[..4].iter().map(|(w, _)| *w as i32).sum::<i32>() + col_defs[4].0 as i32;
+    let total_w = win_w - pad * 2;
+    // If fixed sum fits, use it; otherwise scale down
+    let (seq_w, tier_w, eff_w, target_w, reason_w) = if fixed_w < total_w {
+        let remaining = total_w
+            - (col_defs[0].0 as i32
+                + col_defs[1].0 as i32
+                + col_defs[2].0 as i32
+                + col_defs[4].0 as i32
+                + 4);
+        (
+            col_defs[0].0 as i32,
+            col_defs[1].0 as i32,
+            col_defs[2].0 as i32,
+            remaining,
+            col_defs[4].0 as i32,
+        )
+    } else {
+        let scale_f = total_w as f32 / fixed_w as f32;
+        (
+            (col_defs[0].0 as f32 * scale_f) as i32,
+            (col_defs[1].0 as f32 * scale_f) as i32,
+            (col_defs[2].0 as f32 * scale_f) as i32,
+            ((total_w as f32 * 0.4 * scale_f) as i32).max(80),
+            (col_defs[4].0 as f32 * scale_f) as i32,
+        )
+    };
+    let col_widths = [seq_w, tier_w, eff_w, target_w, reason_w];
+    let col_headers = ["Seq", "Tier", "Eff.", "Target", "Reason"];
+    let mut col_x = pad;
+    for (i, label) in col_headers.iter().enumerate() {
         let mut lw = crate::osd::to_utf16_z(label);
+        let cw = col_widths[i];
         let mut rc = RECT {
-            left: pad + i as i32 * col_w,
+            left: col_x,
             top: col_y,
-            right: pad + (i as i32 + 1) * col_w,
+            right: col_x + cw,
             bottom: col_y + header_h,
         };
         unsafe {
@@ -330,6 +365,7 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
             );
         }
+        col_x += cw;
     }
 
     // ── Trace rows ───────────────────────────────────────────────
@@ -389,14 +425,17 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             },
         ];
 
+        let mut col_x = pad;
         for (j, val) in values.iter().enumerate() {
             let mut vw = crate::osd::to_utf16_z(val);
+            let cw = col_widths[j];
             let mut rc = RECT {
-                left: pad + j as i32 * col_w,
+                left: col_x,
                 top: ry,
-                right: pad + (j as i32 + 1) * col_w,
+                right: col_x + cw,
                 bottom: ry + row_h,
             };
+            col_x += cw;
             unsafe {
                 let _ = DrawTextW(
                     dib_dc,
