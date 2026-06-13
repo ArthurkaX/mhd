@@ -22,16 +22,16 @@ use crate::config::editor_state::{SettingsHit, SettingsState};
 pub fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     let lay = &state.layout;
 
-    // ── Footer buttons (always accessible) ──────────────────────
+    // ── Footer buttons (right to left: Close, Apply, Save) ───────
     if y >= lay.btn_y() && y < lay.btn_y() + lay.btn_h() {
-        if x >= lay.save_x() && x < lay.save_x() + lay.btn_w() {
-            return SettingsHit::SaveBtn;
+        if x >= lay.close_x() && x < lay.close_x() + lay.btn_w() {
+            return SettingsHit::CloseBtn;
         }
         if x >= lay.apply_x() && x < lay.apply_x() + lay.btn_w() {
             return SettingsHit::ApplyBtn;
         }
-        if x >= lay.close_x() && x < lay.close_x() + lay.btn_w() {
-            return SettingsHit::CloseBtn;
+        if x >= lay.save_x() && x < lay.save_x() + lay.btn_w() {
+            return SettingsHit::SaveBtn;
         }
     }
 

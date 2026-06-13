@@ -465,9 +465,9 @@ fn compute_common_layout(scale: f32) -> CommonLayout {
         btn_h,
         btn_w,
         btn_y,
-        apply_x: win_w - pad - btn_w,
-        close_x: win_w - pad - btn_w * 2 - (8.0 * scale) as i32,
-        save_x: win_w - pad - btn_w * 3 - (16.0 * scale) as i32,
+        close_x: win_w - pad - btn_w, // rightmost
+        apply_x: win_w - pad - btn_w * 2 - (8.0 * scale) as i32, // middle
+        save_x: win_w - pad - btn_w * 3 - (16.0 * scale) as i32, // leftmost, highlighted
         radius,
         label_w,
         section_gap,

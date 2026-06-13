@@ -633,21 +633,21 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let _ = DeleteObject(sep_brush);
     }
 
-    // ── Buttons ────────────────────────────────────────────────────
-    let is_save_hovered = state.hovered_target == SettingsHit::SaveBtn;
+    // ── Buttons (right to left: Close, Apply, Save) ────────────────
+    let is_close_hovered = state.hovered_target == SettingsHit::CloseBtn;
     draw_button(
         dib_dc,
         bits,
         lay.win_w(),
         lay.win_h(),
-        lay.save_x(),
+        lay.close_x(),
         lay.btn_y(),
         lay.btn_w(),
         lay.btn_h(),
-        "Save",
+        "Close",
         theme,
         body_font,
-        is_save_hovered,
+        is_close_hovered,
         ButtonStyle::Secondary,
     );
 
@@ -665,24 +665,24 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         theme,
         body_font,
         is_apply_hovered,
-        ButtonStyle::Primary,
+        ButtonStyle::Secondary,
     );
 
-    let is_close_hovered = state.hovered_target == SettingsHit::CloseBtn;
+    let is_save_hovered = state.hovered_target == SettingsHit::SaveBtn;
     draw_button(
         dib_dc,
         bits,
         lay.win_w(),
         lay.win_h(),
-        lay.close_x(),
+        lay.save_x(),
         lay.btn_y(),
         lay.btn_w(),
         lay.btn_h(),
-        "Close",
+        "Save",
         theme,
         body_font,
-        is_close_hovered,
-        ButtonStyle::Secondary,
+        is_save_hovered,
+        ButtonStyle::Primary,
     );
 
     // ── Cleanup GDI objects ────────────────────────────────────────
