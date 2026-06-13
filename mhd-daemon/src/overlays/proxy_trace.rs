@@ -313,13 +313,13 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     let col_w = total_cw / 5;
     // Seq gets less space, Target gets more: Seq 0.5x, Target 1.5x
     let col_widths = [
-        (col_w as f32 * 0.5) as i32,     // Seq
-        col_w,                           // Tier
-        col_w,                           // Effective
-        (col_w as f32 * 1.5) as i32 + 4, // Target (extra space)
-        col_w,                           // Reason
+        (col_w as f32 * 0.5) as i32,                                // Seq (~40px)
+        (col_w as f32 * 0.7) as i32,                                // Tier (~56px)
+        (col_w as f32 * 0.7) as i32,                                // Eff (~56px)
+        total_cw - (col_w as f32 * (0.5 + 0.7 + 0.7 + 0.8)) as i32, // Target = remainder
+        (col_w as f32 * 0.8) as i32,                                // Reason (~64px)
     ];
-    let col_headers = ["Seq", "Tier", "Effective", "Target", "Reason"];
+    let col_headers = ["#", "Tier", "Eff", "Target", "Reason"];
     let mut col_x = pad;
     for (i, label) in col_headers.iter().enumerate() {
         let mut lw = crate::osd::to_utf16_z(label);
