@@ -1105,6 +1105,8 @@ fn run_single_model_test(
     let base = endpoint.trim_end_matches('/');
     let chat_url = format!("{base}/chat/completions");
 
+    log_test_error(&format!("testing '{model_id}' via POST {chat_url}"));
+
     let mut headers = reqwest::header::HeaderMap::new();
     if !api_key.is_empty() {
         let Ok(hdr) = format!("Bearer {api_key}").parse::<reqwest::header::HeaderValue>() else {
@@ -1136,28 +1138,23 @@ fn run_single_model_test(
     {
         Ok(r) => r,
         Err(e) => {
-            log_test_error(&format!("model test '{model_id}' failed: {e}"));
+            log_test_error(&format!("model test '{model_id}' failed after send: {e}"));
             return false;
         }
     };
 
-    if cancelled.load(Ordering::SeqCst) {
-        return false;
-    }
+    log_test_error(&format!(
+        "model test '{model_id}' got HTTP {}",
+        resp.status()
+    ));
 
-    let ok = resp.status().is_success();
-    if !ok {
-        log_test_error(&format!(
-            "model test '{model_id}' returned HTTP {}",
-            resp.status()
-        ));
-    }
-    ok
+    resp.status().is_success()
 }
 
 /// Append a line to the daemon debug log at `~/.config/mhd/llm-proxy/daemon.log`.
 fn log_test_error(msg: &str) {
     let log_dir = llm_proxy::config::config_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
     let path = log_dir.join("daemon.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
