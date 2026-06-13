@@ -89,7 +89,6 @@ pub enum Control {
     },
 
     // ── Shortcuts‑page controls ─────────────────────────────────
-
     /// A binding‑row body (background rounded rect + trigger/action/param
     /// text).  The delete‑X button is a separate `Button` pushed immediately
     /// after so it wins the first‑match region scan.
@@ -131,15 +130,14 @@ pub enum Control {
 
     /// Scrollbar track + thumb.
     Scrollbar {
-        rect: RECT,         // hit‑test area
-        track_rect: RECT,   // visual track
-        thumb_rect: RECT,   // visual thumb
+        rect: RECT,       // hit‑test area
+        track_rect: RECT, // visual track
+        thumb_rect: RECT, // visual thumb
         thumb_color: Argb,
         hit: SettingsHit,
     },
 
     // ── Meta‑controls (clipping) ─────────────────────────────
-
     /// Begin a clipped rendering region.  All subsequent controls until
     /// [`Control::ClipEnd`] are clipped to `rect`.
     ClipStart { rect: RECT },
@@ -164,7 +162,12 @@ impl Control {
             | Control::AccordionHelp { rect, .. } => *rect,
             Control::Scrollbar { rect, .. } => *rect,
             Control::ClipStart { rect } => *rect,
-            Control::ClipEnd => RECT { left: 0, top: 0, right: 0, bottom: 0 }, // never hit-tested
+            Control::ClipEnd => RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }, // never hit-tested
         }
     }
 
@@ -201,11 +204,9 @@ impl HitRegion {
     }
 
     /// True if (x, y) falls inside this region.
+    #[allow(dead_code)]
     pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.rect.left
-            && x < self.rect.right
-            && y >= self.rect.top
-            && y < self.rect.bottom
+        x >= self.rect.left && x < self.rect.right && y >= self.rect.top && y < self.rect.bottom
     }
 }
 
@@ -253,7 +254,12 @@ impl ControlList {
                             let right = curr.right.min(rect.right);
                             let bottom = curr.bottom.min(rect.bottom);
                             if left < right && top < bottom {
-                                Some(RECT { left, top, right, bottom })
+                                Some(RECT {
+                                    left,
+                                    top,
+                                    right,
+                                    bottom,
+                                })
                             } else {
                                 None // fully clipped away
                             }
@@ -277,7 +283,12 @@ impl ControlList {
                             let right = cr.right.min(clip.right);
                             let bottom = cr.bottom.min(clip.bottom);
                             if left < right && top < bottom {
-                                cr = RECT { left, top, right, bottom };
+                                cr = RECT {
+                                    left,
+                                    top,
+                                    right,
+                                    bottom,
+                                };
                                 r.push(HitRegion::new(cr, hit));
                             }
                             // else: fully clipped → no region

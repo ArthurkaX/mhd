@@ -24,12 +24,25 @@ pub fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
 
     // ── Footer buttons (always accessible) ──────────────────────
     if y >= lay.btn_y() && y < lay.btn_y() + lay.btn_h() {
+        if x >= lay.save_x() && x < lay.save_x() + lay.btn_w() {
+            return SettingsHit::SaveBtn;
+        }
         if x >= lay.apply_x() && x < lay.apply_x() + lay.btn_w() {
             return SettingsHit::ApplyBtn;
         }
         if x >= lay.close_x() && x < lay.close_x() + lay.btn_w() {
             return SettingsHit::CloseBtn;
         }
+    }
+
+    // ── Content scrollbar (right edge of content area) ─────────
+    let scrollbar_x = lay.win_w() - lay.pad() - lay.scrollbar_w();
+    if x >= scrollbar_x
+        && x < scrollbar_x + lay.scrollbar_w()
+        && y >= lay.content_y()
+        && y < lay.content_y() + lay.content_visible_h()
+    {
+        return SettingsHit::Scrollbar;
     }
 
     // ── Tab bar inside header (right-aligned) ──────────
@@ -48,8 +61,19 @@ pub fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
     // ── Page-specific controls (resolved via region list) ────────
     // Controls are pushed in draw order (back-to-front).  Scanning
     // backwards finds the topmost (last-drawn) control first.
+    // NOTE: hit_regions contain the *unscrolled* coordinates from the
+    // paint pass.  We compensate for the current scroll offset so that
+    // controls drawn at natural Y positions map to screen coords.
     for region in state.hit_regions.iter().rev() {
-        if region.contains(x, y) {
+        // Translate the region rect by -scroll_y to match the viewport
+        // shift applied in paint_settings.
+        let adjusted = windows::Win32::Foundation::RECT {
+            left: region.rect.left,
+            top: region.rect.top - state.content_scroll_y,
+            right: region.rect.right,
+            bottom: region.rect.bottom - state.content_scroll_y,
+        };
+        if x >= adjusted.left && x < adjusted.right && y >= adjusted.top && y < adjusted.bottom {
             return region.hit;
         }
     }

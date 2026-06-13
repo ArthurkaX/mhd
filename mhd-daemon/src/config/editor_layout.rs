@@ -180,14 +180,17 @@ pub struct CommonLayout {
     pub btn_h: i32,
     pub btn_w: i32,
     pub btn_y: i32,
-    pub apply_x: i32,
+    pub save_x: i32,
     pub close_x: i32,
+    pub apply_x: i32,
 
     pub radius: i32,
     pub label_w: i32,
     pub section_gap: i32,
     pub section_header_h: i32,
     pub control_row_h: i32,
+    pub content_visible_h: i32,
+    pub scrollbar_w: i32,
 }
 
 /// Geometry specific to the General (Appearance, Startup, Quick Note) page.
@@ -319,6 +322,15 @@ impl Layout {
     pub fn close_x(&self) -> i32 {
         self.common.close_x
     }
+    pub fn save_x(&self) -> i32 {
+        self.common.save_x
+    }
+    pub fn content_visible_h(&self) -> i32 {
+        self.common.content_visible_h
+    }
+    pub fn scrollbar_w(&self) -> i32 {
+        self.common.scrollbar_w
+    }
 
     // General page
     pub fn appearance_y(&self) -> i32 {
@@ -433,6 +445,9 @@ fn compute_common_layout(scale: f32) -> CommonLayout {
     let control_row_h = (CONTROL_ROW_HEIGHT_BASE as f32 * scale) as i32;
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
 
+    let content_visible_h = btn_y - content_y - (8.0 * scale) as i32;
+    let scrollbar_w = (8.0 * scale).max(6.0) as i32;
+
     CommonLayout {
         scale,
         win_w,
@@ -445,11 +460,14 @@ fn compute_common_layout(scale: f32) -> CommonLayout {
         tab_gap,
         tab_bar_y,
         content_y,
+        content_visible_h,
+        scrollbar_w,
         btn_h,
         btn_w,
         btn_y,
         apply_x: win_w - pad - btn_w,
         close_x: win_w - pad - btn_w * 2 - (8.0 * scale) as i32,
+        save_x: win_w - pad - btn_w * 3 - (16.0 * scale) as i32,
         radius,
         label_w,
         section_gap,

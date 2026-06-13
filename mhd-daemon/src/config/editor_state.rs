@@ -1,8 +1,8 @@
 //! State types and transitions for the settings editor.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use windows::Win32::Foundation::HWND;
 
@@ -42,6 +42,7 @@ pub enum SettingsHit {
     Tab(usize),
     ThemeCombo,
     AutostartToggle,
+    SaveBtn,
     ApplyBtn,
     CloseBtn,
     AddBtn,
@@ -124,10 +125,10 @@ pub struct SettingsState {
 
     /// List of bindings being edited
     pub bindings: Vec<UIBinding>,
-    /// Vertical scroll offset per section
-    #[allow(dead_code)] // reserved for General tab scrolling
-    pub general_scroll_y: i32,
+    /// Vertical scroll offset for the shortcuts list.
     pub bindings_scroll_y: i32,
+    /// Vertical scroll offset for the content area (General / Advanced pages).
+    pub content_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)
     pub recording_info: Option<(usize, bool)>,
     /// Index of binding with the accordion editor expanded (None = collapsed)
