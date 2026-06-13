@@ -34,6 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::editor_layout::*;
+use crate::hook::WM_BINDING_CAPTURED;
 use crate::config::editor_state::ButtonStyle;
 use crate::config::editor_theme::{
     draw_button, draw_plain_label, draw_readonly_text_field, draw_rounded_border_in_buffer,
@@ -56,6 +57,7 @@ const POPUP_FIELD_HEIGHT: i32 = 30;
 
 // ── Popup state ────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub struct BindingPopupState {
     pub hwnd: HWND,
     pub parent_hwnd: HWND,
@@ -79,7 +81,9 @@ pub struct BindingPopupState {
 
     // Combo popup
     pub kind_combo_open: bool,
-    pub kind_combo_hover: Option<usize>,
+
+    // Signal the modal loop to exit
+    pub should_close: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +172,7 @@ pub fn open_binding_popup(
         hovered_target: BindingPopupHit::None,
         action_names,
         kind_combo_open: false,
-        kind_combo_hover: None,
+        should_close: false,
     });
     let popup_ptr = Box::into_raw(popup_state);
 
@@ -223,17 +227,17 @@ pub fn open_binding_popup(
 
     // Enable layered alpha
     unsafe {
-        SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
     }
 
     // Show the window
     unsafe {
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
     }
 
     // Disable parent window
     unsafe {
-        EnableWindow(parent_hwnd, false);
+        let _ = EnableWindow(parent_hwnd, false);
     }
 
     // Initial paint
@@ -241,32 +245,47 @@ pub fn open_binding_popup(
         paint_binding_popup(hwnd, popup_ptr);
     }
 
-    // Modal message loop
-    let mut msg = MSG::default();
+    // Modal message loop - check should_close flag from Save/Cancel
     loop {
-        let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-        if !ret.as_bool() || msg.message == WM_QUIT {
-            break;
-        }
         unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            // Non-blocking peek to avoid race with should_close
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
 
-        // Check if popup was destroyed
         let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
         if state_ptr == 0 {
             break;
         }
+        let should_close = unsafe { (*(state_ptr as *mut BindingPopupState)).should_close };
+        if should_close {
+            break;
+        }
+
+        // Yield to avoid busy-waiting
+        unsafe { let _ = WaitMessage(); }
     }
 
     // Re-enable parent and bring it to front
     unsafe {
-        EnableWindow(parent_hwnd, true);
-        SetForegroundWindow(parent_hwnd);
+        let _ = EnableWindow(parent_hwnd, true);
+        let _ = SetForegroundWindow(parent_hwnd);
     }
 
-    // Cleanup - the popup box was freed in WM_NCDESTROY
+    // Cleanup window
+    if !hwnd.is_invalid() {
+        unsafe { DestroyWindow(hwnd).ok(); }
+    }
+    // Free the popup state box (WM_NCDESTROY no longer frees it)
+    unsafe {
+        let _ = Box::from_raw(popup_ptr);
+    }
 }
 
 // ── Paint ─────────────────────────────────────────────────────────────
@@ -686,7 +705,7 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) { u
 
     let cur_pos = {
         let mut wr = RECT::default();
-        GetWindowRect(hwnd, &mut wr);
+        let _ = GetWindowRect(hwnd, &mut wr);
         (wr.left, wr.top)
     };
     frame.present_layered(hwnd, cur_pos.0, cur_pos.1, 255);
@@ -807,11 +826,11 @@ unsafe extern "system" fn binding_popup_wndproc(
                         parent.bindings[state.binding_idx].param = state.param.clone();
                     }
                     crate::hook::set_recording_window(None);
-                    DestroyWindow(hwnd).ok();
+                    state.should_close = true;
                 }
                 BindingPopupHit::CancelBtn => {
                     crate::hook::set_recording_window(None);
-                    DestroyWindow(hwnd).ok();
+                    state.should_close = true;
                 }
                 BindingPopupHit::KindItem(idx) => {
                     state.kind_idx = idx;
@@ -863,14 +882,12 @@ unsafe extern "system" fn binding_popup_wndproc(
         WM_DESTROY | WM_NCDESTROY => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BindingPopupState;
             if !state_ptr.is_null() {
-                let _ = Box::from_raw(state_ptr);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
-            PostQuitMessage(0);
             LRESULT(0)
         }
 
-        _WM_BINDING_CAPTURED => {
+        WM_BINDING_CAPTURED => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BindingPopupState;
             if !state_ptr.is_null() {
                 let state = &mut *state_ptr;
@@ -894,7 +911,8 @@ unsafe extern "system" fn binding_popup_wndproc(
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-}}
+}
+}
 
 // ── Hit-test ──────────────────────────────────────────────────────────
 

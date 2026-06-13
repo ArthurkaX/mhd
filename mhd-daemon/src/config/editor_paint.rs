@@ -1194,6 +1194,7 @@ fn theme_surface(state: &SettingsState) -> Argb {
 fn theme_hover(state: &SettingsState) -> Argb {
     state.theme.hover
 }
+#[allow(dead_code)]
 fn theme_accent(state: &SettingsState) -> Argb {
     state.theme.accent
 }

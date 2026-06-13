@@ -129,6 +129,7 @@ pub enum Control {
     },
 
     /// Scrollbar track + thumb.
+    #[allow(dead_code)]
     Scrollbar {
         rect: RECT,       // hit‑test area
         track_rect: RECT, // visual track
