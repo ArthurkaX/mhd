@@ -932,7 +932,7 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         text_color: theme_text(state),
     });
 
-    // ── Target model field ───────────────────────────────────────────
+    // ── Target model combo ───────────────────────────────────────────
     let target_y = toggle_y + row_h + gap;
     ctls.push(Control::Label {
         rect: RECT {
@@ -946,34 +946,39 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         text_color: theme_text(state),
     });
 
-    let is_editing_target = state.proxy_editing_field == Some(ProxyEditField::OpusDowngradeTarget);
-    let target_display = if is_editing_target {
-        &state.edit_text
-    } else {
-        &state.opus_downgrade_target
+    let combo_h = field_h;
+    let combo_rect = RECT {
+        left: field_x,
+        top: target_y,
+        right: win_w_val - pad,
+        bottom: target_y + combo_h,
     };
-    let target_is_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeField;
-    let target_border = if is_editing_target {
-        state.theme.accent
-    } else if target_is_hovered {
-        state.theme.text
+    let is_combo_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeCombo;
+    let combo_bg = if is_combo_hovered {
+        theme_hover(state).blend_over(theme_surface(state))
     } else {
-        state.theme.border
+        theme_surface(state)
     };
-    ctls.push(Control::TextField {
-        rect: RECT {
-            left: field_x,
-            top: target_y,
-            right: win_w_val - pad,
-            bottom: target_y + field_h,
-        },
-        text: target_display.to_string(),
-        placeholder: None,
+    let combo_border = if is_combo_hovered {
+        theme_text(state)
+    } else {
+        theme_border(state)
+    };
+    let arrow_color = if is_combo_hovered {
+        theme_text(state)
+    } else {
+        theme_text_muted(state)
+    };
+    ctls.push(Control::Combo {
+        rect: combo_rect,
+        arrow_width: (20.0 * scale) as i32,
+        selected: state.opus_downgrade_target.clone(),
         font: FontChoice::Small,
-        bg_color: theme_surface(state).blend_over(theme_background(state)),
-        border_color: target_border,
+        bg_color: combo_bg,
+        border_color: combo_border,
         text_color: theme_text(state),
-        hit: SettingsHit::ProxyOpusDowngradeField,
+        arrow_color,
+        hit: SettingsHit::ProxyOpusDowngradeCombo,
     });
 
     // ── Divider ────────────────────────────────────────────────────
