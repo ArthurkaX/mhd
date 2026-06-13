@@ -15,6 +15,8 @@ use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
+use crate::config::editor_state::ButtonStyle;
+use crate::config::editor_theme::draw_button;
 use crate::core::native_theme::NativeTheme;
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -186,6 +188,7 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         None => return,
     };
     let dib_dc = frame.dc();
+    let bits = frame.pixels_mut().as_mut_ptr() as *mut core::ffi::c_void;
 
     let radius = (RADIUS_BASE * scale) as i32;
     crate::osd::draw_rounded_rect(frame.pixels_mut(), win_w, win_h, radius, theme.background);
@@ -254,6 +257,33 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             DT_RIGHT | DT_SINGLELINE,
         );
     }
+
+    // Debug button
+    let debug_btn_w = (42.0 * scale) as i32;
+    let debug_btn_h = (20.0 * scale) as i32;
+    let debug_btn_x = close_btn_x - (4.0 * scale) as i32 - debug_btn_w;
+    let debug_btn_y = close_btn_y + (close_btn_w - debug_btn_h) / 2;
+    let debug_on = crate::llm_proxy::is_debug_logging();
+    let debug_style = if debug_on {
+        ButtonStyle::Success
+    } else {
+        ButtonStyle::Secondary
+    };
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        debug_btn_x,
+        debug_btn_y,
+        debug_btn_w,
+        debug_btn_h,
+        if debug_on { "LOG" } else { "LOG" },
+        theme,
+        hfont_small,
+        false,
+        debug_style,
+    );
 
     // Draw close × button
     let close_btn_rect = RECT {
@@ -462,14 +492,29 @@ unsafe extern "system" fn panel_wndproc(
                 };
                 let pad = (PAD_BASE as f32 * scale) as i32;
                 let btn_size = (20.0 * scale) as i32;
+                let close_btn_w = btn_size;
+                let debug_btn_w = (42.0 * scale) as i32;
+                let debug_btn_h = (20.0 * scale) as i32;
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
                 let win_w = wr.right - wr.left;
+                let close_btn_x = win_w - pad - close_btn_w;
+                let debug_btn_x = close_btn_x - (4.0 * scale) as i32 - debug_btn_w;
+                let debug_btn_y = pad + (close_btn_w - debug_btn_h) / 2;
+                // Check close button first
                 let btn_left = win_w - pad - btn_size;
                 if pt.x >= btn_left - 4
                     && pt.x < win_w - pad + 4
                     && pt.y >= pad - 4
                     && pt.y < pad + btn_size + 4
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
+                // Check debug button
+                if pt.x >= debug_btn_x
+                    && pt.x < debug_btn_x + debug_btn_w
+                    && pt.y >= debug_btn_y
+                    && pt.y < debug_btn_y + debug_btn_h
                 {
                     return LRESULT(HTCLIENT as isize);
                 }
@@ -494,11 +539,27 @@ unsafe extern "system" fn panel_wndproc(
                 };
                 let pad = (PAD_BASE as f32 * scale) as i32;
                 let btn_size = (20.0 * scale) as i32;
+                let debug_btn_w = (42.0 * scale) as i32;
+                let debug_btn_h = (20.0 * scale) as i32;
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
                 let win_w = wr.right - wr.left;
                 let x = (lparam.0 as i16) as i32;
                 let y = ((lparam.0 >> 16) as i16) as i32;
+                let close_btn_x = win_w - pad - btn_size;
+                let debug_btn_x = close_btn_x - (4.0 * scale) as i32 - debug_btn_w;
+                let debug_btn_y = pad + (btn_size - debug_btn_h) / 2;
+                // Check debug button
+                if x >= debug_btn_x
+                    && x < debug_btn_x + debug_btn_w
+                    && y >= debug_btn_y
+                    && y < debug_btn_y + debug_btn_h
+                {
+                    crate::llm_proxy::toggle_debug_logging();
+                    paint_panel(hwnd, 0.0, 0, 0);
+                    return LRESULT(0);
+                }
+                // Check close button
                 let btn_left = win_w - pad - btn_size;
                 if x >= btn_left - 4
                     && x < win_w - pad + 4

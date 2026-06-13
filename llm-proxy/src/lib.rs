@@ -104,6 +104,11 @@ impl ProxyControl {
         *self.state.log_level.write().unwrap() = crate::state::DebugLevel::parse(level);
     }
 
+    /// Current debug log level.
+    pub fn log_level(&self) -> String {
+        self.state.log_level.read().unwrap().as_str().to_string()
+    }
+
     /// Snapshot of recent routing decisions.
     pub fn trace(&self) -> Vec<TraceEntry> {
         self.state.trace_snapshot()

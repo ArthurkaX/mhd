@@ -119,6 +119,29 @@ pub fn get_trace() -> Vec<TraceEntry> {
         .unwrap_or_default()
 }
 
+/// Whether debug (minimal) logging is enabled on the proxy.
+pub fn is_debug_logging() -> bool {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.log_level() != "none")
+        .unwrap_or(false)
+}
+
+/// Toggle debug logging on the proxy (none ↔ minimal).
+pub fn toggle_debug_logging() -> bool {
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref c) = *guard {
+        let current = c.log_level();
+        let new = if current == "none" { "minimal" } else { "none" };
+        c.set_log_level(new);
+        new != "none"
+    } else {
+        false
+    }
+}
+
 /// Set a tier's target. `slot` is "opus"/"sonnet"/"haiku"/"fable"; `target` is "native"
 /// or an upstream model id. Returns false if the proxy is off or the slot is unknown.
 pub fn set_target(slot: &str, target: &str) -> bool {
