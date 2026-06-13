@@ -1476,16 +1476,14 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                             // hover tooltip / highlight and live monitoring data are
                             // visible even while the mouse is in motion over the panel.
                             repaint = true;
-                            if msg.message == WM_KEYDOWN || msg.message == WM_CHAR {
-                                if handle_key(&msg, &mut st, &mut hidden) {
+                            if (msg.message == WM_KEYDOWN || msg.message == WM_CHAR)
+                                && handle_key(&msg, &mut st, &mut hidden) {
                                     repaint = true;
                                 }
-                            }
-                            if msg.message == WM_MOUSEWHEEL {
-                                if handle_wheel(&msg, &mut st, sc) {
+                            if msg.message == WM_MOUSEWHEEL
+                                && handle_wheel(&msg, &mut st, sc) {
                                     repaint = true;
                                 }
-                            }
                             if msg.message == WM_TIMER && msg.wParam.0 == TIMER_MONITOR {
                                 handle_monitor_timer(&mut st);
                                 repaint = true;
@@ -1558,7 +1556,7 @@ fn handle_monitor_timer(st: &mut PanelState) {
 fn update_freq_scale(mon: &mut MonitorState) {
     let peak = mon.core_freq_mhz.iter().copied().max().unwrap_or(0);
     let want = mon.base_mhz.max(peak);
-    let want = ((want + 99) / 100) * 100; // round up to 100 MHz
+    let want = want.div_ceil(100) * 100; // round up to 100 MHz
     if want > mon.freq_scale_mhz {
         mon.freq_scale_mhz = want;
     }
@@ -3091,11 +3089,10 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     // Draw tooltip on top of everything else, but only after the cursor has
     // rested on the row for a short dwell delay (the 500ms monitor timer tick
     // triggers the repaint that makes it appear).
-    if let (Some(hover_row), Some(since)) = (st.hover_row, st.hover_since) {
-        if since.elapsed() >= std::time::Duration::from_millis(350) {
+    if let (Some(hover_row), Some(since)) = (st.hover_row, st.hover_since)
+        && since.elapsed() >= std::time::Duration::from_millis(350) {
             draw_tooltip(mem, hover_row, st.hover_pos, w, h, s, &st.theme);
         }
-    }
 
     frame.fix_gdi_alpha(st.theme.background);
 

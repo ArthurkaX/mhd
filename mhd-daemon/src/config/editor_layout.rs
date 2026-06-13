@@ -2,6 +2,8 @@
 //!
 //! All constants are defined at a 96 DPI base and scaled at runtime by
 //! the DPI factor.
+
+#![allow(dead_code)]
 //!
 //! `Layout` is a composition of [`CommonLayout`] (window, header, footer,
 //! tab bar, button bar) plus per-page sub-structs. This mirrors the page
@@ -103,6 +105,7 @@ pub const ADVANCED_BUTTONS: &[(&str, &str)] = &[
 ];
 
 /// Group definitions: (name, start_index, end_index_exclusive, is_danger)
+#[allow(dead_code)]
 pub const ADVANCED_GROUPS: &[(&str, usize, usize, bool)] = &[
     ("Config Files", 0, 2, false),
     ("Logs", 2, 4, false),
@@ -253,54 +256,142 @@ unsafe impl Sync for Layout {}
 /// These accessors forward to the new sub-struct fields. New code should
 /// read `lay.common.win_w` etc. directly.
 impl Layout {
-    pub fn win_w(&self) -> i32 { self.common.win_w }
-    pub fn win_h(&self) -> i32 { self.common.win_h }
-    pub fn scale(&self) -> f32 { self.common.scale }
-    pub fn pad(&self) -> i32 { self.common.pad }
-    pub fn header_h(&self) -> i32 { self.common.header_h }
-    pub fn footer_h(&self) -> i32 { self.common.footer_h }
-    pub fn radius(&self) -> i32 { self.common.radius }
-    pub fn label_w(&self) -> i32 { self.common.label_w }
-    pub fn section_gap(&self) -> i32 { self.common.section_gap }
-    pub fn section_header_h(&self) -> i32 { self.common.section_header_h }
-    pub fn control_row_h(&self) -> i32 { self.common.control_row_h }
-    pub fn tab_h(&self) -> i32 { self.common.tab_h }
-    pub fn tab_w(&self) -> i32 { self.common.tab_w }
-    pub fn tab_gap(&self) -> i32 { self.common.tab_gap }
-    pub fn tab_bar_y(&self) -> i32 { self.common.tab_bar_y }
-    pub fn content_y(&self) -> i32 { self.common.content_y }
-    pub fn btn_h(&self) -> i32 { self.common.btn_h }
-    pub fn btn_w(&self) -> i32 { self.common.btn_w }
-    pub fn btn_y(&self) -> i32 { self.common.btn_y }
-    pub fn apply_x(&self) -> i32 { self.common.apply_x }
-    pub fn close_x(&self) -> i32 { self.common.close_x }
+    pub fn win_w(&self) -> i32 {
+        self.common.win_w
+    }
+    pub fn win_h(&self) -> i32 {
+        self.common.win_h
+    }
+    pub fn scale(&self) -> f32 {
+        self.common.scale
+    }
+    pub fn pad(&self) -> i32 {
+        self.common.pad
+    }
+    pub fn header_h(&self) -> i32 {
+        self.common.header_h
+    }
+    pub fn footer_h(&self) -> i32 {
+        self.common.footer_h
+    }
+    pub fn radius(&self) -> i32 {
+        self.common.radius
+    }
+    pub fn label_w(&self) -> i32 {
+        self.common.label_w
+    }
+    pub fn section_gap(&self) -> i32 {
+        self.common.section_gap
+    }
+    pub fn section_header_h(&self) -> i32 {
+        self.common.section_header_h
+    }
+    pub fn control_row_h(&self) -> i32 {
+        self.common.control_row_h
+    }
+    pub fn tab_h(&self) -> i32 {
+        self.common.tab_h
+    }
+    pub fn tab_w(&self) -> i32 {
+        self.common.tab_w
+    }
+    pub fn tab_gap(&self) -> i32 {
+        self.common.tab_gap
+    }
+    pub fn tab_bar_y(&self) -> i32 {
+        self.common.tab_bar_y
+    }
+    pub fn content_y(&self) -> i32 {
+        self.common.content_y
+    }
+    pub fn btn_h(&self) -> i32 {
+        self.common.btn_h
+    }
+    pub fn btn_w(&self) -> i32 {
+        self.common.btn_w
+    }
+    pub fn btn_y(&self) -> i32 {
+        self.common.btn_y
+    }
+    pub fn apply_x(&self) -> i32 {
+        self.common.apply_x
+    }
+    pub fn close_x(&self) -> i32 {
+        self.common.close_x
+    }
 
     // General page
-    pub fn appearance_y(&self) -> i32 { self.general.appearance_y }
-    pub fn combo_x(&self) -> i32 { self.general.combo_x }
-    pub fn combo_w(&self) -> i32 { self.general.combo_w }
-    pub fn combo_y(&self) -> i32 { self.general.combo_y }
-    pub fn arrow_x(&self) -> i32 { self.general.arrow_x }
-    pub fn arrow_w(&self) -> i32 { self.general.arrow_w }
-    pub fn autostart_y(&self) -> i32 { self.general.autostart_y }
-    pub fn toggle_w(&self) -> i32 { self.general.toggle_w }
-    pub fn toggle_h(&self) -> i32 { self.general.toggle_h }
-    pub fn notes_path_y(&self) -> i32 { self.general.notes_path_y }
-    pub fn draw_path_y(&self) -> i32 { self.general.draw_path_y }
-    pub fn browse_btn_w(&self) -> i32 { self.general.browse_btn_w }
-    pub fn notes_row_h(&self) -> i32 { self.general.notes_row_h }
+    pub fn appearance_y(&self) -> i32 {
+        self.general.appearance_y
+    }
+    pub fn combo_x(&self) -> i32 {
+        self.general.combo_x
+    }
+    pub fn combo_w(&self) -> i32 {
+        self.general.combo_w
+    }
+    pub fn combo_y(&self) -> i32 {
+        self.general.combo_y
+    }
+    pub fn arrow_x(&self) -> i32 {
+        self.general.arrow_x
+    }
+    pub fn arrow_w(&self) -> i32 {
+        self.general.arrow_w
+    }
+    pub fn autostart_y(&self) -> i32 {
+        self.general.autostart_y
+    }
+    pub fn toggle_w(&self) -> i32 {
+        self.general.toggle_w
+    }
+    pub fn toggle_h(&self) -> i32 {
+        self.general.toggle_h
+    }
+    pub fn notes_path_y(&self) -> i32 {
+        self.general.notes_path_y
+    }
+    pub fn draw_path_y(&self) -> i32 {
+        self.general.draw_path_y
+    }
+    pub fn browse_btn_w(&self) -> i32 {
+        self.general.browse_btn_w
+    }
+    pub fn notes_row_h(&self) -> i32 {
+        self.general.notes_row_h
+    }
 
     // Shortcuts page
-    pub fn shortcuts_y(&self) -> i32 { self.shortcuts.shortcuts_y }
-    pub fn list_y(&self) -> i32 { self.shortcuts.list_y }
-    pub fn list_h(&self) -> i32 { self.shortcuts.list_h }
-    pub fn row_h(&self) -> i32 { self.shortcuts.row_h }
-    pub fn accordion_h(&self) -> i32 { self.shortcuts.accordion_h }
-    pub fn trig_w(&self) -> i32 { self.shortcuts.trig_w }
-    pub fn kind_w(&self) -> i32 { self.shortcuts.kind_w }
-    pub fn del_w(&self) -> i32 { self.shortcuts.del_w }
-    pub fn scroll_w(&self) -> i32 { self.shortcuts.scroll_w }
-    pub fn table_header_y(&self) -> i32 { self.shortcuts.table_header_y }
+    pub fn shortcuts_y(&self) -> i32 {
+        self.shortcuts.shortcuts_y
+    }
+    pub fn list_y(&self) -> i32 {
+        self.shortcuts.list_y
+    }
+    pub fn list_h(&self) -> i32 {
+        self.shortcuts.list_h
+    }
+    pub fn row_h(&self) -> i32 {
+        self.shortcuts.row_h
+    }
+    pub fn accordion_h(&self) -> i32 {
+        self.shortcuts.accordion_h
+    }
+    pub fn trig_w(&self) -> i32 {
+        self.shortcuts.trig_w
+    }
+    pub fn kind_w(&self) -> i32 {
+        self.shortcuts.kind_w
+    }
+    pub fn del_w(&self) -> i32 {
+        self.shortcuts.del_w
+    }
+    pub fn scroll_w(&self) -> i32 {
+        self.shortcuts.scroll_w
+    }
+    pub fn table_header_y(&self) -> i32 {
+        self.shortcuts.table_header_y
+    }
 }
 
 /// Compute the scaled layout for a given DPI scaling factor.
@@ -441,7 +532,5 @@ fn compute_advanced_layout(c: &CommonLayout) -> AdvancedLayout {
 }
 
 fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
-    LlmProxyLayout {
-        top_y: c.content_y,
-    }
+    LlmProxyLayout { top_y: c.content_y }
 }

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -34,7 +33,7 @@ pub async fn post_messages(
     let tier = Tier::from_model(&model);
     let stream = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if *state.debug_dump.read().unwrap() {
+    if state.log_level.read().unwrap().dump_bodies() {
         // Show how Claude Code authenticated (helps verify OAuth passthrough).
         let auth = headers
             .get("authorization")
@@ -63,8 +62,7 @@ pub async fn post_messages(
     if stream {
         let body = match &target {
             Target::Native => {
-                let resp = providers::anthropic::stream_request(&state, payload, &headers).await?;
-                Body::from_stream(resp.bytes_stream())
+                providers::anthropic::stream_request(&state, payload, &headers).await?
             }
             Target::Model(id) => {
                 providers::upstream::stream_request(&state, payload, id, &model).await?
@@ -119,7 +117,7 @@ pub async fn set_model(
     let target = Target::parse(&q.id);
     if !state.set_target(&slot, target.clone()) {
         return Err(AppError::bad_request(format!(
-            "Unknown slot '{slot}'. Use: opus, sonnet, haiku"
+            "Unknown slot '{slot}'. Use: opus, sonnet, haiku, fable"
         )));
     }
 
@@ -141,17 +139,23 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<Value> {
         "opus": state.opus_target.read().unwrap().as_str(),
         "sonnet": state.sonnet_target.read().unwrap().as_str(),
         "haiku": state.haiku_target.read().unwrap().as_str(),
+        "fable": state.fable_target.read().unwrap().as_str(),
         "upstream_base_url": *state.upstream_base_url.read().unwrap(),
         "anthropic_key_set": !state.anthropic_key.read().unwrap().is_empty(),
         "upstream_key_set": !state.upstream_key.read().unwrap().is_empty(),
+        "log_level": state.log_level.read().unwrap().as_str(),
     }))
 }
 
 /// `GET /debug` — toggle debug dump mode.
 pub async fn toggle_debug(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let mut debug = state.debug_dump.write().unwrap();
-    *debug = !*debug;
-    Json(serde_json::json!({ "debug_dump": *debug }))
+    let mut ll = state.log_level.write().unwrap();
+    let new = match *ll {
+        crate::state::DebugLevel::None => crate::state::DebugLevel::Maximal,
+        _ => crate::state::DebugLevel::None,
+    };
+    *ll = new;
+    Json(serde_json::json!({ "log_level": new.as_str() }))
 }
 
 /// `GET /health` — health check.

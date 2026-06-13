@@ -70,7 +70,7 @@ pub struct ProxyControl {
 }
 
 impl ProxyControl {
-    /// Set a tier's routing target. `slot` is "opus"/"sonnet"/"haiku"; `target`
+    /// Set a tier's routing target. `slot` is "opus"/"sonnet"/"haiku"/"fable"; `target`
     /// is "native" or an upstream model id. Persists to the proxy config.
     pub fn set_target(&self, slot: &str, target: &str) -> bool {
         let ok = self.state.set_target(slot, Target::parse(target));
@@ -82,13 +82,20 @@ impl ProxyControl {
         ok
     }
 
-    /// Current (opus, sonnet, haiku) targets.
-    pub fn targets(&self) -> (String, String, String) {
+    /// Current (opus, sonnet, haiku, fable) targets.
+    pub fn targets(&self) -> (String, String, String, String) {
         (
             self.state.target_for(Tier::Opus).as_str().to_string(),
             self.state.target_for(Tier::Sonnet).as_str().to_string(),
             self.state.target_for(Tier::Haiku).as_str().to_string(),
+            self.state.target_for(Tier::Fable).as_str().to_string(),
         )
+    }
+
+    /// Set the debug log level on the embedded state (no disk persist).
+    pub fn set_log_level(&self, level: &str) {
+        *self.state.log_level.write().unwrap() =
+            crate::state::DebugLevel::parse(level);
     }
 
     /// Shut the server down gracefully and join its thread.

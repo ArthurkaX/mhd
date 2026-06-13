@@ -150,18 +150,16 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             crate::overlays::pomodoro::show(handle.theme(), bb);
         }
         Action::BrightnessUp { value } => {
-            if ddc::adjust_brightness(*value as i32).is_ok() {
-                if let Ok((new_val, name)) = ddc::get_brightness() {
+            if ddc::adjust_brightness(*value as i32).is_ok()
+                && let Ok((new_val, name)) = ddc::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
-            }
         }
         Action::BrightnessDown { value } => {
-            if ddc::adjust_brightness(-(*value as i32)).is_ok() {
-                if let Ok((new_val, name)) = ddc::get_brightness() {
+            if ddc::adjust_brightness(-(*value as i32)).is_ok()
+                && let Ok((new_val, name)) = ddc::get_brightness() {
                     handle.osd.show_brightness(new_val, name);
                 }
-            }
         }
         Action::SetBrightness { relative, value } => {
             let res = if *relative {

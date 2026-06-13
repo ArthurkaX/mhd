@@ -6,6 +6,7 @@
 //! effect on the proxy's next request, so in-flight Claude Code work is never
 //! interrupted.
 
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 
 use llm_proxy::ProxyControl;
@@ -14,6 +15,9 @@ use crate::config::LlmProxyConfig;
 
 /// The embedded proxy handle, present while the proxy is running.
 static CONTROL: Mutex<Option<ProxyControl>> = Mutex::new(None);
+
+/// Last port the proxy was started on (used for port-change detection).
+static LAST_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// Whether the embedded proxy is currently running.
 pub fn is_running() -> bool {
@@ -26,25 +30,28 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
     if guard.is_some() {
         return true;
     }
-    // Build the proxy config entirely from the daemon config — single source
-    // of truth, no separate llm-proxy config file.
+    let main = cfg.providers.first();
     let pcfg = llm_proxy::Config {
         anthropic_key: cfg.anthropic_key.clone(),
-        upstream_base_url: cfg.endpoint.clone(),
-        upstream_key: cfg.api_key.clone(),
+        upstream_base_url: main.map(|p| p.endpoint.clone()).unwrap_or_default(),
+        upstream_key: main.map(|p| p.api_key.clone()).unwrap_or_default(),
         opus_target: cfg.opus.clone(),
         sonnet_target: cfg.sonnet.clone(),
         haiku_target: cfg.haiku.clone(),
+        fable_target: cfg.fable.clone(),
+        log_level: cfg.log_level.clone(),
     };
-    // `persist = false`: runtime switches stay in memory; the daemon config is
-    // the source of truth for defaults.
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false) {
         Ok(control) => {
+            LAST_PORT.store(cfg.port, Ordering::Relaxed);
             *guard = Some(control);
             true
         }
         Err(e) => {
-            eprintln!("mhd: failed to start embedded llm-proxy on port {}: {e}", cfg.port);
+            eprintln!(
+                "mhd: failed to start embedded llm-proxy on port {}: {e}",
+                cfg.port
+            );
             false
         }
     }
@@ -67,25 +74,44 @@ pub fn toggle(cfg: &LlmProxyConfig) -> bool {
     }
 }
 
-/// Restart the embedded proxy with new config. If the proxy is off, starts it.
-/// In-flight requests are aborted by the underlying `stop()` + `start()` cycle.
-/// No-op if the proxy is off and `start` returns false.
+/// Soft reload the embedded proxy with new config. Runtime targets and log
+/// level are updated without restarting. Only a port change triggers a full
+/// stop + start cycle.
 ///
-/// The caller is responsible for detecting whether the config has actually
-/// changed before calling this.
+/// If the proxy is off and `enabled` is true, starts it. No-op if the proxy
+/// is off and enabled is false.
 pub fn reload(cfg: &LlmProxyConfig) -> bool {
-    stop();
-    start(cfg)
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref control) = *guard {
+        control.set_target("opus", &cfg.opus);
+        control.set_target("sonnet", &cfg.sonnet);
+        control.set_target("haiku", &cfg.haiku);
+        control.set_target("fable", &cfg.fable);
+        control.set_log_level(&cfg.log_level);
+
+        if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
+            drop(guard);
+            stop();
+            return start(cfg);
+        }
+        true
+    } else {
+        drop(guard);
+        if cfg.enabled {
+            start(cfg)
+        } else {
+            false
+        }
+    }
 }
 
-/// Current per-tier targets (opus, sonnet, haiku). None if the proxy is off.
-pub fn get_targets() -> Option<(String, String, String)> {
+/// Current per-tier targets (opus, sonnet, haiku, fable). None if the proxy is off.
+pub fn get_targets() -> Option<(String, String, String, String)> {
     CONTROL.lock().unwrap().as_ref().map(|c| c.targets())
 }
 
-/// Set a tier's target. `slot` is "opus"/"sonnet"/"haiku"; `target` is "native"
-/// or an upstream model id. Returns false if the proxy is off or the slot is
-/// unknown.
+/// Set a tier's target. `slot` is "opus"/"sonnet"/"haiku"/"fable"; `target` is "native"
+/// or an upstream model id. Returns false if the proxy is off or the slot is unknown.
 pub fn set_target(slot: &str, target: &str) -> bool {
     CONTROL
         .lock()

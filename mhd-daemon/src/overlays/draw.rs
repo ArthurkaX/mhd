@@ -576,19 +576,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     if ch == 0x08 {
                         te.buf.pop();
                         paint(hwnd, st, s);
-                    } else if ch >= 0x20 && (ch < 0xD800 || ch > 0xDFFF) {
-                        if let Some(c) = char::from_u32(ch as u32) {
+                    } else if ch >= 0x20 && !(0xD800..=0xDFFF).contains(&ch)
+                        && let Some(c) = char::from_u32(ch as u32) {
                             te.buf.push(c);
                             paint(hwnd, st, s);
                         }
-                    }
                 }
                 return LRESULT(0);
             }
             WM_MOUSEWHEEL => {
                 let delta = (wp.0 >> 16) as i16;
-                if let Some(ref mut te) = st.text {
-                    if te.buf.is_empty() {
+                if let Some(ref mut te) = st.text
+                    && te.buf.is_empty() {
                         if delta > 0 {
                             te.font_pt = (te.font_pt + 1).min(96);
                         } else if delta < 0 {
@@ -597,7 +596,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         paint(hwnd, st, s);
                         return LRESULT(0);
                     }
-                }
                 if delta > 0 {
                     st.thickness = (st.thickness + 1).min(20);
                 } else if delta < 0 {
@@ -1144,7 +1142,7 @@ fn paint(hwnd: HWND, st: &State, s: f32) {
     unsafe {
         std::ptr::copy_nonoverlapping(st.pixels.as_ptr(), bits as *mut u32, st.pixels.len());
     }
-    let mut bits_slice =
+    let bits_slice =
         unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, st.pixels.len()) };
 
     // ── Text preview (transient, before toolbar) ─────────────────────
@@ -1318,7 +1316,7 @@ fn paint(hwnd: HWND, st: &State, s: f32) {
         let circle_r = ((st.thickness.min(8) as f32 * s) as i32).max(1);
         let cx = left + sw / 3;
         let cy = ty + th / 2;
-        fill_circle(&mut bits_slice, st.width, st.height, cx, cy, circle_r, color);
+        fill_circle(bits_slice, st.width, st.height, cx, cy, circle_r, color);
 
         unsafe {
             let _ = SetTextColor(mem, COLORREF(0x00EEEEEEu32));

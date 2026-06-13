@@ -35,11 +35,21 @@ fn default_draw_dir() -> PathBuf {
         .join("screenshots")
 }
 
-/// One selectable alternative model in the LLM proxy selector.
-#[derive(Debug, Clone)]
-pub struct LlmModel {
+/// One upstream provider (OpenAI-compatible).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Provider {
     pub name: String,
+    pub endpoint: String,
+    pub api_key: String,
+}
+
+/// One selectable alternative model in the LLM proxy selector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LlmModel {
+    pub provider: String,
     pub id: String,
+    pub display_name: String,
+    pub tags: Vec<String>,
 }
 
 /// Validated `[llm_proxy]` config.
@@ -47,10 +57,8 @@ pub struct LlmModel {
 pub struct LlmProxyConfig {
     pub enabled: bool,
     pub port: u16,
-    /// Upstream gateway base URL (OpenAI-compatible, includes `/v1`).
-    pub endpoint: String,
-    /// Bearer key for the upstream gateway.
-    pub api_key: String,
+    pub log_level: String,
+    pub providers: Vec<Provider>,
     /// Optional Anthropic API key for native passthrough (usually empty — OAuth
     /// from Claude Code is forwarded instead).
     pub anthropic_key: String,
@@ -58,6 +66,7 @@ pub struct LlmProxyConfig {
     pub opus: String,
     pub sonnet: String,
     pub haiku: String,
+    pub fable: String,
     /// Shared pool of alternative models offered for every tier.
     pub models: Vec<LlmModel>,
 }
@@ -67,12 +76,13 @@ impl Default for LlmProxyConfig {
         Self {
             enabled: false,
             port: 3456,
-            endpoint: "http://89.22.226.188:8080/v1".to_string(),
-            api_key: String::new(),
+            log_level: "none".to_string(),
+            providers: Vec::new(),
             anthropic_key: String::new(),
             opus: "native".to_string(),
             sonnet: "native".to_string(),
             haiku: "native".to_string(),
+            fable: "native".to_string(),
             models: Vec::new(),
         }
     }
@@ -262,60 +272,91 @@ impl AppConfig {
                 .unwrap_or_else(default_draw_dir),
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,
-            llm_proxy: LlmProxyConfig {
-                enabled: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.enabled)
-                    .unwrap_or(false),
-                port: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.port)
-                    .unwrap_or(3456),
-                endpoint: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.endpoint.clone())
-                    .unwrap_or_else(|| "http://89.22.226.188:8080/v1".to_string()),
-                api_key: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.api_key.clone())
-                    .unwrap_or_default(),
-                anthropic_key: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.anthropic_key.clone())
-                    .unwrap_or_default(),
-                opus: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.opus.clone())
-                    .unwrap_or_else(|| "native".to_string()),
-                sonnet: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.sonnet.clone())
-                    .unwrap_or_else(|| "native".to_string()),
-                haiku: raw
-                    .llm_proxy
-                    .as_ref()
-                    .and_then(|l| l.haiku.clone())
-                    .unwrap_or_else(|| "native".to_string()),
-                models: raw
-                    .llm_proxy
-                    .as_ref()
-                    .map(|l| {
-                        l.model
-                            .iter()
-                            .map(|m| LlmModel {
-                                name: m.name.clone(),
-                                id: m.id.clone(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+            llm_proxy: {
+                let raw_lp = raw.llm_proxy;
+                // Backward compat: if no provider entries but old endpoint is set,
+                // migrate to a single "Default" provider.
+                let providers = if raw_lp.as_ref().is_none_or(|r| r.provider.is_empty())
+                    && raw_lp.as_ref().and_then(|r| r.endpoint.clone()).is_some()
+                {
+                    vec![Provider {
+                        name: "Default".into(),
+                        endpoint: raw_lp.as_ref().unwrap().endpoint.clone().unwrap(),
+                        api_key: raw_lp.as_ref().and_then(|r| r.api_key.clone()).unwrap_or_default(),
+                    }]
+                } else {
+                    raw_lp
+                        .as_ref()
+                        .map(|r| {
+                            r.provider
+                                .iter()
+                                .map(|rp| Provider {
+                                    name: rp.name.clone(),
+                                    endpoint: rp.endpoint.clone(),
+                                    api_key: rp.api_key.clone(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let default_provider = providers
+                    .first()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                LlmProxyConfig {
+                    enabled: raw_lp.as_ref().and_then(|r| r.enabled).unwrap_or(false),
+                    port: raw_lp.as_ref().and_then(|r| r.port).unwrap_or(3456),
+                    log_level: raw_lp
+                        .as_ref()
+                        .and_then(|r| r.log_level.clone())
+                        .unwrap_or_else(|| "none".to_string()),
+                    providers,
+                    anthropic_key: raw_lp
+                        .as_ref()
+                        .and_then(|r| r.anthropic_key.clone())
+                        .unwrap_or_default(),
+                    opus: raw_lp
+                        .as_ref()
+                        .and_then(|r| r.opus.clone())
+                        .unwrap_or_else(|| "native".to_string()),
+                    sonnet: raw_lp
+                        .as_ref()
+                        .and_then(|r| r.sonnet.clone())
+                        .unwrap_or_else(|| "native".to_string()),
+                    haiku: raw_lp
+                        .as_ref()
+                        .and_then(|r| r.haiku.clone())
+                        .unwrap_or_else(|| "native".to_string()),
+                    fable: raw_lp
+                        .as_ref()
+                        .and_then(|r| r.fable.clone())
+                        .unwrap_or_else(|| "native".to_string()),
+                    models: raw_lp
+                        .as_ref()
+                        .map(|r| {
+                            r.model
+                                .iter()
+                                .map(|m| {
+                                    let display_name = m
+                                        .display_name
+                                        .clone()
+                                        .or_else(|| m.name.clone())
+                                        .unwrap_or_else(|| m.id.clone());
+                                    LlmModel {
+                                        provider: if m.provider.is_empty() {
+                                            default_provider.clone()
+                                        } else {
+                                            m.provider.clone()
+                                        },
+                                        id: m.id.clone(),
+                                        display_name,
+                                        tags: m.tags.clone(),
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }
             },
         })
     }
@@ -327,13 +368,13 @@ impl AppConfig {
         let mut map = HashMap::new();
         for (i, binding) in bindings.iter().enumerate() {
             if binding.scheme == active_scheme {
-                if map.contains_key(&binding.trigger) {
+                if let std::collections::hash_map::Entry::Vacant(e) = map.entry(binding.trigger) {
+                    e.insert(i);
+                } else {
                     eprintln!(
                         "mhd: warning — duplicate trigger '{}' in scheme '{}', ignoring",
                         binding.trigger_name, active_scheme
                     );
-                } else {
-                    map.insert(binding.trigger, i);
                 }
             }
         }

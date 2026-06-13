@@ -42,7 +42,7 @@ struct PhysicalMonitor {
 
 // ── Dxva2 singleton ─────────────────────────────────────────────────────
 
-static DXVA2: LazyLock<Result<Dxva2, String>> = LazyLock::new(|| Dxva2::load());
+static DXVA2: LazyLock<Result<Dxva2, String>> = LazyLock::new(Dxva2::load);
 
 struct Dxva2 {
     get_number: GetNumberOfPhysicalMonitorsFromHMONITORFn,

@@ -60,9 +60,9 @@ use crate::config::editor_layout::{
 // Re‑exports for backward compatibility (used by other modules)
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
-    ADVANCED_BUTTONS, ADVANCED_GROUPS, COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT,
+    COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT,
     COMBO_POPUP_MAX_VISIBLE, COMBO_POPUP_WIDTH, FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE,
-    Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE, WIN_HEIGHT_BASE, WIN_WIDTH_BASE,
+    Layout, SECTION_HEADER_HEIGHT_BASE, WIN_HEIGHT_BASE, WIN_WIDTH_BASE,
     WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_state::{
@@ -71,7 +71,7 @@ pub use crate::config::editor_state::{
 };
 pub use crate::config::editor_paint::{build_advanced_controls, build_general_controls, build_shortcuts_controls, paint_page};
 pub use crate::config::editor_theme::{
-    clear_rect_in_buffer, draw_button, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
+    draw_button, draw_rounded_rect_in_buffer,
     to_utf16_z,
 };
 
@@ -311,13 +311,11 @@ fn build_theme_list(_default_theme: &NativeTheme) -> Vec<String> {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            if let Some(_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Ok(t) = load_theme_from_path(&path) {
-                    if !names.contains(&t.name) {
+            if let Some(_stem) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(t) = load_theme_from_path(&path)
+                    && !names.contains(&t.name) {
                         names.push(t.name.clone());
                     }
-                }
-            }
         }
     }
 
@@ -828,12 +826,11 @@ fn apply_settings(state: &mut SettingsState) {
                     continue;
                 }
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(t) = load_theme_from_path(&path) {
-                        if t.name == theme_name {
+                    if let Ok(t) = load_theme_from_path(&path)
+                        && t.name == theme_name {
                             found = stem.to_string();
                             break;
                         }
-                    }
                     if stem == theme_name {
                         found = stem.to_string();
                         break;
@@ -1270,8 +1267,8 @@ unsafe extern "system" fn settings_wndproc(
                     SettingsHit::AccordionSaveBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        if let Some(idx) = state.expanded_idx {
-                            if idx < state.bindings.len() {
+                        if let Some(idx) = state.expanded_idx
+                            && idx < state.bindings.len() {
                                 state.acc_is_recording = false;
                                 crate::hook::set_recording_window(None);
                                 let trigger = state.acc_trigger.trim().to_lowercase();
@@ -1305,7 +1302,6 @@ unsafe extern "system" fn settings_wndproc(
                                 state.bindings[idx].is_recording_trigger = false;
                                 state.bindings[idx].is_recording_param = false;
                             }
-                        }
                         state.expanded_idx = None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
@@ -1321,8 +1317,8 @@ unsafe extern "system" fn settings_wndproc(
                     SettingsHit::AccordionDeleteBtn => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        if let Some(idx) = state.expanded_idx {
-                            if idx < state.bindings.len() {
+                        if let Some(idx) = state.expanded_idx
+                            && idx < state.bindings.len() {
                                 state.bindings.remove(idx);
                                 if let Some((ri_idx, is_trig)) = state.recording_info {
                                     if ri_idx == idx {
@@ -1333,7 +1329,6 @@ unsafe extern "system" fn settings_wndproc(
                                     }
                                 }
                             }
-                        }
                         state.acc_is_recording = false;
                         state.acc_is_recording_param = false;
                         crate::hook::set_recording_window(None);
@@ -1771,15 +1766,14 @@ unsafe extern "system" fn settings_wndproc(
                     if state.edit_idx.is_some() {
                         let ch = (wparam.0 as u32) as u8 as char;
                         if ch.is_ascii_graphic() || ch == ' ' {
-                            if let Some(sel) = state.edit_select_start {
-                                if sel != state.edit_cursor {
+                            if let Some(sel) = state.edit_select_start
+                                && sel != state.edit_cursor {
                                     let (s, e) =
                                         (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
                                     state.edit_text.drain(s..e);
                                     state.edit_cursor = s;
                                     state.edit_select_start = None;
                                 }
-                            }
                             state.edit_text.insert(state.edit_cursor, ch);
                             state.edit_cursor += 1;
                             paint_settings(hwnd, state_ptr, &state.layout);
@@ -2024,27 +2018,24 @@ unsafe extern "system" fn param_edit_rich_edit_subclass(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match msg {
-        WM_CHAR => {
-            let ch = (wparam.0 as u16) as u8 as char;
-            if ch == '\r' {
-                if let Ok(parent) = unsafe { GetParent(hwnd) } {
-                    unsafe {
-                        let _ = SendMessageW(parent, WM_PARAM_EDIT_COMMIT, WPARAM(0), LPARAM(0));
-                    }
+    if msg == WM_CHAR {
+        let ch = (wparam.0 as u16) as u8 as char;
+        if ch == '\r' {
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                unsafe {
+                    let _ = SendMessageW(parent, WM_PARAM_EDIT_COMMIT, WPARAM(0), LPARAM(0));
                 }
-                return LRESULT(0);
             }
-            if ch == '\x1b' {
-                if let Ok(parent) = unsafe { GetParent(hwnd) } {
-                    unsafe {
-                        let _ = DestroyWindow(parent);
-                    }
-                }
-                return LRESULT(0);
-            }
+            return LRESULT(0);
         }
-        _ => {}
+        if ch == '\x1b' {
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                unsafe {
+                    let _ = DestroyWindow(parent);
+                }
+            }
+            return LRESULT(0);
+        }
     }
     let old_proc = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
     if old_proc != 0 {
@@ -2174,8 +2165,8 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState };
                 if !state_ptr.is_null() {
                     let state = unsafe { &mut *state_ptr };
-                    if let Some(idx) = state.param_edit_idx {
-                        if idx < state.bindings.len() {
+                    if let Some(idx) = state.param_edit_idx
+                        && idx < state.bindings.len() {
                             if state.expanded_idx == Some(idx) {
                                 state.acc_param = new_text;
                             } else {
@@ -2183,7 +2174,6 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                             }
                             paint_settings(state.hwnd, state_ptr, &state.layout);
                         }
-                    }
                     state.param_edit_popup = None;
                     state.param_edit_idx = None;
                 }

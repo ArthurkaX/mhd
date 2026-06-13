@@ -138,7 +138,7 @@ fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
     }];
     for m in &cfg.models {
         options.push(Opt {
-            label: m.name.clone(),
+            label: m.display_name.clone(),
             target: m.id.clone(),
         });
     }
@@ -159,7 +159,7 @@ fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
 /// Mark the selected option for each tier from the proxy's live config.
 fn refresh_selection(state: &mut PanelState) {
     state.running = crate::llm_proxy::is_running();
-    if let Some((opus, sonnet, haiku)) = crate::llm_proxy::get_targets() {
+    if let Some((opus, sonnet, haiku, _fable)) = crate::llm_proxy::get_targets() {
         let targets = [opus, sonnet, haiku];
         for (tier, current) in state.tiers.iter_mut().zip(targets.iter()) {
             tier.selected = tier
@@ -681,11 +681,10 @@ fn wheel_delta_from_wparam(wparam: WPARAM) -> i16 {
 }
 
 extern "system" fn panel_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_SETCURSOR {
-        if let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
+    if msg == WM_SETCURSOR
+        && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
             unsafe { SetCursor(cursor) };
             return LRESULT(1);
         }
-    }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }

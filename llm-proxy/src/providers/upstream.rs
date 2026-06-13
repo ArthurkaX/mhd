@@ -15,6 +15,8 @@ use std::sync::Arc;
 use crate::state::AppState;
 use crate::transform;
 
+use super::{now_ms, InflightGuard};
+
 /// Send an Anthropic-format request to the upstream gateway, forcing the given
 /// upstream model id.
 pub async fn send_request(
@@ -24,7 +26,7 @@ pub async fn send_request(
 ) -> Result<Value> {
     let base_url = state.upstream_base_url.read().unwrap().clone();
     let api_key = state.upstream_key.read().unwrap().clone();
-    let debug = *state.debug_dump.read().unwrap();
+    let debug = state.log_level.read().unwrap().dump_bodies();
 
     // Anthropic → OpenAI, then force the real upstream model id.
     let mut openai_payload = transform::anthropic_to_openai(payload);
@@ -41,8 +43,23 @@ pub async fn send_request(
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let resp = client
+
+    // Observability: log timing + concurrency under `maximal`. This is how you
+    // confirm whether parallel requests are queueing behind one another.
+    let log = state.log_level.read().unwrap().log_errors();
+    let req_id = state.next_req_id();
+    let _guard = InflightGuard::new(state.clone());
+    let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    if log {
+        state.log_line(&format!(
+            "{} #{req_id} upstream START model={target_model} inflight={inflight}",
+            now_ms()
+        ));
+    }
+
+    let resp = state
+        .http
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
@@ -53,10 +70,26 @@ pub async fn send_request(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        if log {
+            state.log_line(&format!(
+                "{} #{req_id} upstream ERROR {} after {} ms",
+                now_ms(),
+                status,
+                started.elapsed().as_millis()
+            ));
+        }
         anyhow::bail!("Upstream error (HTTP {}): {}", status, body);
     }
 
     let openai_resp: Value = resp.json().await?;
+    if log {
+        state.log_line(&format!(
+            "{} #{req_id} upstream DONE after {} ms (inflight now {})",
+            now_ms(),
+            started.elapsed().as_millis(),
+            state.inflight.load(std::sync::atomic::Ordering::SeqCst) - 1
+        ));
+    }
     let anthropic_resp = transform::openai_to_anthropic(openai_resp);
 
     if debug {
@@ -90,14 +123,40 @@ pub async fn stream_request(
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let resp = client
+
+    // Observability: streaming is the path Claude Code actually uses. Log the
+    // concurrency at send time so overlapping parallel requests are visible.
+    let log = state.log_level.read().unwrap().log_errors();
+    let req_id = state.next_req_id();
+    let started = std::time::Instant::now();
+    // Guard is moved into the stream below, so the in-flight count stays
+    // elevated for the full duration of the stream (and decrements on drop even
+    // if the client disconnects mid-stream).
+    let guard = InflightGuard::new(state.clone());
+    if log {
+        let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
+        state.log_line(&format!(
+            "{} #{req_id} stream START model={target_model} inflight={inflight}",
+            now_ms()
+        ));
+    }
+
+    let resp = state
+        .http
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
         .json(&openai_payload)
         .send()
         .await?;
+
+    if log {
+        state.log_line(&format!(
+            "{} #{req_id} stream headers after {} ms",
+            now_ms(),
+            started.elapsed().as_millis()
+        ));
+    }
 
     let status = resp.status();
     if !status.is_success() {
@@ -115,8 +174,14 @@ pub async fn stream_request(
     );
     let mut byte_stream = resp.bytes_stream();
 
+    // Clone the Arc so the stream has its own handle to log DONE/ERROR.
+    let state_for_log = state.clone();
+
     let s = async_stream::stream! {
         use std::collections::HashMap;
+
+        // Hold the in-flight guard for the lifetime of the stream.
+        let _guard = guard;
 
         // ── opening events ──────────────────────────────────────────
         let start = json!({
@@ -139,6 +204,7 @@ pub async fn stream_request(
         let mut buf = String::new();
         let mut stop_reason = "end_turn".to_string();
         let mut output_tokens: u64 = 0;
+        let mut had_error = false;
 
         // Content-block bookkeeping. Blocks are opened lazily so text and tool
         // calls each get their own Anthropic index; the previously open block is
@@ -151,7 +217,7 @@ pub async fn stream_request(
         let mut any_tool = false;
 
         while let Some(item) = byte_stream.next().await {
-            let chunk = match item { Ok(c) => c, Err(_) => break };
+            let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
             buf.push_str(&String::from_utf8_lossy(&chunk));
 
             // Process complete lines.
@@ -316,6 +382,23 @@ pub async fn stream_request(
             }
         }
 
+        // ── end-of-stream log ──────────────────────────────────────
+        if log {
+            if had_error {
+                state_for_log.log_line(&format!(
+                    "{} #{req_id} stream ERROR after {} ms",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
+            } else {
+                state_for_log.log_line(&format!(
+                    "{} #{req_id} stream DONE after {} ms",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
+            }
+        }
+
         // ── closing events ──────────────────────────────────────────
         match open_index {
             Some(oi) => {
@@ -358,9 +441,10 @@ pub async fn stream_request(
     Ok(Body::from_stream(s))
 }
 
+/// Wall-clock timestamp helper and the in-flight guard live in `providers::mod`.
+
 /// Format a single Anthropic SSE event frame.
-fn sse(event: &str, data: &Value) -> Bytes {
-    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
+fn sse(event: &str, data: &Value) -> Bytes {    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
 }
 
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).
@@ -370,8 +454,8 @@ pub async fn send_raw_openai(state: &Arc<AppState>, payload: Value) -> Result<Va
     let api_key = state.upstream_key.read().unwrap().clone();
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = state
+        .http
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")

@@ -434,19 +434,17 @@ fn refresh_sessions(state: &mut MixerState) {
     state.volume_controls.push(None);
 
     // Enumerate per-app sessions
-    if let Ok(manager) = get_session_manager(&device) {
-        if let Ok(enumerator) = unsafe { manager.GetSessionEnumerator() } {
+    if let Ok(manager) = get_session_manager(&device)
+        && let Ok(enumerator) = unsafe { manager.GetSessionEnumerator() } {
             let count = unsafe { enumerator.GetCount().unwrap_or(0) };
             for i in 0..count {
-                if let Ok(control) = unsafe { enumerator.GetSession(i) } {
-                    if let Ok(sd) = add_session_from_control(&control) {
+                if let Ok(control) = unsafe { enumerator.GetSession(i) }
+                    && let Ok(sd) = add_session_from_control(&control) {
                         state.sessions.push(sd.info);
                         state.volume_controls.push(sd.control);
                     }
-                }
             }
         }
-    }
 
     // Sort (Master first, then alphabetically)
     if state.sessions.len() > 1 {
@@ -950,12 +948,11 @@ fn set_row_volume(state: &mut MixerState, row: usize, volume: f32) {
 // ── Window procedure ───────────────────────────────────────────────────
 
 extern "system" fn mixer_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_SETCURSOR {
-        if let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
+    if msg == WM_SETCURSOR
+        && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
             unsafe { SetCursor(cursor) };
             return LRESULT(1);
         }
-    }
 
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }

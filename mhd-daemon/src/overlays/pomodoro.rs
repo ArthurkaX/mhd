@@ -307,7 +307,7 @@ fn run_overlay(
             .unwrap()
             .as_ref()
             .map(|d| d.hwnd.0)
-            .unwrap_or(HWND::default())
+            .unwrap_or_default()
     };
     if daemon_hwnd != HWND::default() {
         unsafe {
@@ -447,7 +447,7 @@ unsafe extern "system" fn overlay_wndproc(
                             .unwrap()
                             .as_ref()
                             .map(|d| d.hwnd.0)
-                            .unwrap_or(HWND::default())
+                            .unwrap_or_default()
                     };
                     let len =
                         SendMessageW(os.text_host.hwnd(), WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0
@@ -509,7 +509,7 @@ fn handle_overlay_click(os: &OverlayState, _hwnd: HWND, x: i32, y: i32) {
             .unwrap()
             .as_ref()
             .map(|d| d.hwnd.0)
-            .unwrap_or(HWND::default())
+            .unwrap_or_default()
     };
     if daemon_hwnd == HWND::default() {
         return;
@@ -958,37 +958,34 @@ unsafe extern "system" fn edit_wndproc(
             extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
         >(old_proc));
 
-        match msg {
-            WM_KEYDOWN => {
-                let vk = wparam.0 as u32;
-                if vk == VK_RETURN.0 as u32 {
-                    let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                    if !ctrl_down {
-                        if let Ok(_parent) = GetParent(hwnd) {
-                            let daemon_hwnd = {
-                                DAEMON
-                                    .lock()
-                                    .unwrap()
-                                    .as_ref()
-                                    .map(|d| d.hwnd.0)
-                                    .unwrap_or(HWND::default())
-                            };
-                            if daemon_hwnd != HWND::default() {
-                                let _ =
-                                    PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
-                            }
+        if msg == WM_KEYDOWN {
+            let vk = wparam.0 as u32;
+            if vk == VK_RETURN.0 as u32 {
+                let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+                if !ctrl_down {
+                    if let Ok(_parent) = GetParent(hwnd) {
+                        let daemon_hwnd = {
+                            DAEMON
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .map(|d| d.hwnd.0)
+                                .unwrap_or_default()
+                        };
+                        if daemon_hwnd != HWND::default() {
+                            let _ =
+                                PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
                         }
-                        return LRESULT(0);
-                    }
-                }
-                if vk == VK_ESCAPE.0 as u32 {
-                    if let Ok(parent) = GetParent(hwnd) {
-                        let _ = PostMessageW(parent, WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
                     return LRESULT(0);
                 }
             }
-            _ => {}
+            if vk == VK_ESCAPE.0 as u32 {
+                if let Ok(parent) = GetParent(hwnd) {
+                    let _ = PostMessageW(parent, WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                return LRESULT(0);
+            }
         }
 
         CallWindowProcW(old, hwnd, msg, wparam, lparam)

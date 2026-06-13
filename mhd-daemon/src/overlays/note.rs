@@ -360,13 +360,12 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             // TextHost::drop will clean up the EDIT background brush.
             // The EDIT child is destroyed automatically by DestroyWindow.
             // Clean up the GDI font we created.
-            if let Some(st) = s() {
-                if !st.edit_font.is_invalid() {
+            if let Some(st) = s()
+                && !st.edit_font.is_invalid() {
                     unsafe {
                         let _ = DeleteObject(st.edit_font);
                     }
                 }
-            }
             unsafe {
                 PostQuitMessage(0);
             }
@@ -427,29 +426,26 @@ fn edit_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         }
         let old_proc: WNDPROC = std::mem::transmute(old_ptr);
 
-        match msg {
-            WM_KEYDOWN => {
-                let vk = wp.0 as u16;
-                if vk == VK_ESCAPE.0 {
-                    qn_log("edit: Escape");
-                    if let Ok(parent) = GetParent(hwnd) {
-                        let _ = PostMessageW(parent, WM_APP_CANCEL, WPARAM(0), LPARAM(0));
-                    }
-                    return LRESULT(0);
-                } else if vk == VK_RETURN.0 {
-                    qn_log("edit: Return");
-                    let shift = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
-                    let ctrl = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                    if shift || ctrl {
-                        return CallWindowProcW(old_proc, hwnd, msg, wp, lp);
-                    }
-                    if let Ok(parent) = GetParent(hwnd) {
-                        let _ = PostMessageW(parent, WM_APP_SAVE, WPARAM(0), LPARAM(0));
-                    }
-                    return LRESULT(0);
+        if msg == WM_KEYDOWN {
+            let vk = wp.0 as u16;
+            if vk == VK_ESCAPE.0 {
+                qn_log("edit: Escape");
+                if let Ok(parent) = GetParent(hwnd) {
+                    let _ = PostMessageW(parent, WM_APP_CANCEL, WPARAM(0), LPARAM(0));
                 }
+                return LRESULT(0);
+            } else if vk == VK_RETURN.0 {
+                qn_log("edit: Return");
+                let shift = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
+                let ctrl = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+                if shift || ctrl {
+                    return CallWindowProcW(old_proc, hwnd, msg, wp, lp);
+                }
+                if let Ok(parent) = GetParent(hwnd) {
+                    let _ = PostMessageW(parent, WM_APP_SAVE, WPARAM(0), LPARAM(0));
+                }
+                return LRESULT(0);
             }
-            _ => {}
         }
 
         CallWindowProcW(old_proc, hwnd, msg, wp, lp)

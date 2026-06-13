@@ -7,11 +7,12 @@
 //! Fallback registry path:
 //!   HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows::Win32::System::Registry::*;
-use windows::core::PCWSTR;
 
 /// Registry value name for the mHD autostart entry.
 const VALUE_NAME: &str = "mHD";
@@ -48,6 +49,7 @@ fn decode_process_output(bytes: &[u8]) -> String {
 fn run_schtasks(args: &[&str]) -> Result<String, String> {
     let output = Command::new("schtasks")
         .args(args)
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash
         .output()
         .map_err(|e| format!("cannot run schtasks: {e}"))?;
 

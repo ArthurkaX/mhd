@@ -47,40 +47,70 @@ pub struct RawBlackbox {
 /// Raw TOML `[[llm_proxy.model]]` entry — one selectable alternative model.
 #[derive(Debug, Deserialize)]
 pub struct RawLlmModel {
-    /// Short display label shown in the selector (e.g. "DeepSeek V4 Pro").
-    pub name: String,
-    /// Upstream model id sent to the gateway (e.g. "sva-opencode/deepseek-v4-pro").
+    /// Provider name (must match a RawProvider.name). Empty = migrated to the
+    /// first provider at parse time (back-compat with the old single-endpoint
+    /// format, where models had no provider).
+    #[serde(default)]
+    pub provider: String,
+    /// Upstream model id sent to the gateway.
     pub id: String,
+    /// Display name shown in selectors. Falls back to id.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Deprecated: old config used `name` for the display name. Migrated to
+    /// `display_name` at parse time when the latter is absent.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Tier tags: "opus", "sonnet", "haiku", "fable".
+    /// Empty = hidden from quick-switch menus.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Raw TOML `[[llm_proxy.provider]]` entry — one upstream provider.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawProvider {
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 /// Raw TOML `[llm_proxy]` section.
 #[derive(Debug, Deserialize)]
 pub struct RawLlmProxy {
-    /// Launch the proxy automatically when the daemon starts. Default: `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// Port the proxy listens on. Default: `3456`.
     #[serde(default)]
     pub port: Option<u16>,
-    /// OpenAI-compatible upstream gateway base URL (includes `/v1`).
+    /// Debug log level: "none" | "minimal" | "maximal".
     #[serde(default)]
-    pub endpoint: Option<String>,
-    /// Bearer key for the upstream gateway.
+    pub log_level: Option<String>,
+    /// Ordered list of upstream providers (OpenAI-compatible).
     #[serde(default)]
-    pub api_key: Option<String>,
+    pub provider: Vec<RawProvider>,
     /// Optional Anthropic API key (for native passthrough when not using OAuth).
     #[serde(default)]
     pub anthropic_key: Option<String>,
-    /// Default routing target for each tier: "native" or an upstream model id.
+    /// Default routing target per tier: "native" or upstream model id.
     #[serde(default)]
     pub opus: Option<String>,
     #[serde(default)]
     pub sonnet: Option<String>,
     #[serde(default)]
     pub haiku: Option<String>,
-    /// Selectable alternative models (the shared pool for all tiers).
+    #[serde(default)]
+    pub fable: Option<String>,
+    /// Selectable alternative models (shared pool).
     #[serde(default)]
     pub model: Vec<RawLlmModel>,
+    // ── Deprecated fields (migrated to provider[0] at parse time) ──
+    /// Deprecated: use `[[llm_proxy.provider]]` instead.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Deprecated: use `[[llm_proxy.provider]]` api_key instead.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 /// Raw TOML `[quicknote]` section.

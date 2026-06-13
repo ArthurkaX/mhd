@@ -355,11 +355,10 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
                                 repaint = false;
                             }
                         }
-                        if let Some(cd) = st.cd_hwnd {
-                            if msg.hwnd == cd {
+                        if let Some(cd) = st.cd_hwnd
+                            && msg.hwnd == cd {
                                 DispatchMessageW(&msg);
                             }
-                        }
                     }
                 }
                 tick(&mut st, hwnd, sc);
@@ -382,14 +381,13 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
 
 fn tick(st: &mut State, main_hwnd: HWND, sc: f32) {
     // Awake timed expiry
-    if let AwakeMode::Timed { end_sec } = st.awake {
-        if now_secs() >= end_sec {
+    if let AwakeMode::Timed { end_sec } = st.awake
+        && now_secs() >= end_sec {
             st.awake = AwakeMode::Off;
             unsafe {
                 let _ = SetThreadExecutionState(ES_CONTINUOUS);
             }
         }
-    }
 
     // Pending action
     if let Some(ref p) = st.pending {
@@ -767,7 +765,7 @@ fn hit_act(x: i32, y: i32, sc: f32) -> Option<PowerOp> {
     let gap = (ACT_BTN_GAP as f32 * sc) as i32;
     let sx = (PAD as f32 * sc) as i32;
     for i in 0..3 {
-        let bx = sx + i as i32 * (bw + gap);
+        let bx = sx + i * (bw + gap);
         if x >= bx && x < bx + bw {
             return Some(match i {
                 0 => PowerOp::Sleep,

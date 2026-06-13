@@ -14,16 +14,16 @@
 //! ```
 
 use std::ffi::c_void;
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection,
-    CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
-    DRAW_TEXT_FORMAT, DeleteDC, DeleteObject, DrawTextW, FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect,
-    GetDC, HDC, OUT_DEFAULT_PRECIS, RGBQUAD, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
+    DrawTextW, FillRect, GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, BITMAPINFO,
+    BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
+    DRAW_TEXT_FORMAT, FF_DONTCARE, FW_BOLD, FW_NORMAL, HDC, OUT_DEFAULT_PRECIS, RGBQUAD,
     TRANSPARENT,
 };
-use windows::Win32::UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow};
-use windows::core::PCWSTR;
+use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 use crate::core::native_theme::{Argb, NativeTheme};
 
@@ -367,6 +367,20 @@ pub fn create_font(height: i32, bold: bool, family: &str) -> windows::Win32::Gra
 
 // ── String helpers ────────────────────────────────────────────────────
 
+/// Tell the OS it can reclaim physical RAM pages that the process has
+/// freed but is no longer actively touching.
+///
+/// Call after a blocking UI operation (e.g. settings window, overlay
+/// popup) that temporarily allocated significant memory, so the process
+/// working set returns to its baseline.
+pub fn trim_working_set() {
+    #[cfg(windows)]
+    unsafe {
+        let process = windows::Win32::System::Threading::GetCurrentProcess();
+        let _ = windows::Win32::System::ProcessStatus::EmptyWorkingSet(process);
+    }
+}
+
 /// Convert a Rust `&str` to a null‑terminated UTF‑16 vector for use
 /// with Win32 `PCWSTR` parameters.
 pub fn to_utf16_z(s: &str) -> Vec<u16> {
@@ -498,7 +512,7 @@ impl ShellRenderer {
 
 /// Return the work area rectangle of the primary monitor.
 pub fn primary_monitor_work_rect() -> RECT {
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO, MonitorFromWindow};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO};
     use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
     // SAFETY: Standard GDI calls.
     unsafe {

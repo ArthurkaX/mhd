@@ -70,18 +70,33 @@ pub use overlays::{
     about, autostart, cpu_plan, draw, monitor, note, power, suspend, throttle, topmost, tray,
     volume,
 };
-// Re-export config/editor as config_editor for backward compat.
-pub use config::editor as config_editor;
-
 use std::env;
 use std::process::ExitCode;
 #[cfg(not(feature = "debug-dump"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole};
+use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+use windows::core::PCWSTR;
 
 use crate::app::DaemonControl;
 use crate::config::path::{create_bundled_themes, create_example_config, resolve_config_path};
+
+/// Show a blocking error dialog. Used for fatal startup failures (e.g. an
+/// unparseable config) that the user must see even when mhd is launched with
+/// `windows_subsystem = "windows"` and no console is attached.
+fn show_error_dialog(title: &str, message: &str) {
+    let msg = crate::renderer::to_utf16_z(message);
+    let title = crate::renderer::to_utf16_z(title);
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR::from_raw(msg.as_ptr()),
+            PCWSTR::from_raw(title.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
 
 /// Install a panic hook that writes the panic message and backtrace to
 /// `<config_dir>/crash.log` for post‑mortem analysis.
@@ -217,6 +232,13 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("mhd: {e}");
+                show_error_dialog(
+                    "mhd — Config Error",
+                    &format!(
+                        "Failed to load configuration:\n\n{e}\n\nFile: {}",
+                        config_path.display()
+                    ),
+                );
                 return ExitCode::FAILURE;
             }
         }
@@ -230,6 +252,10 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(e) => {
             eprintln!("mhd: {e}");
+            show_error_dialog(
+                "mhd — Init Error",
+                &format!("Failed to initialize application:\n\n{e}"),
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -247,11 +273,10 @@ fn main() -> ExitCode {
         if let Err(e) = crate::autostart::install_autostart() {
             eprintln!("mhd: failed to sync autostart (install): {e}");
         }
-    } else if !config_autostart && reg_autostart {
-        if let Err(e) = crate::autostart::remove_autostart() {
+    } else if !config_autostart && reg_autostart
+        && let Err(e) = crate::autostart::remove_autostart() {
             eprintln!("mhd: failed to sync autostart (remove): {e}");
         }
-    }
 
     // Start the llm-proxy child if enabled in config.
     {

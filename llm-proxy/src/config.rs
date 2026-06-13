@@ -37,6 +37,14 @@ pub struct Config {
     /// Routing target for the `haiku` tier.
     #[serde(default = "default_haiku_target")]
     pub haiku_target: String,
+
+    /// Routing target for the `fable` tier.
+    #[serde(default = "default_fable_target")]
+    pub fable_target: String,
+
+    /// Debug log level: "none", "minimal", "maximal".
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
 }
 
 fn default_upstream_base_url() -> String {
@@ -51,6 +59,12 @@ fn default_sonnet_target() -> String {
 fn default_haiku_target() -> String {
     "sva-opencode/deepseek-v4-flash".to_string()
 }
+fn default_fable_target() -> String {
+    "native".to_string()
+}
+fn default_log_level() -> String {
+    "none".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -61,6 +75,8 @@ impl Default for Config {
             opus_target: default_opus_target(),
             sonnet_target: default_sonnet_target(),
             haiku_target: default_haiku_target(),
+            fable_target: default_fable_target(),
+            log_level: default_log_level(),
         }
     }
 }

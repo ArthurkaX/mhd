@@ -169,7 +169,7 @@ pub fn toggle_suspended() -> bool {
 pub fn is_suspended() -> bool {
     HOOK_STATE
         .get()
-        .map_or(false, |s| s.suspended.load(Ordering::Acquire))
+        .is_some_and(|s| s.suspended.load(Ordering::Acquire))
 }
 
 pub(crate) fn signal_tray_to_quit() {
@@ -185,11 +185,10 @@ pub(crate) fn signal_tray_to_quit() {
         if let Ok(hwnd) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        ) {
-            if hwnd != HWND::default() {
+        )
+            && hwnd != HWND::default() {
                 let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
             }
-        }
     }
 }
 

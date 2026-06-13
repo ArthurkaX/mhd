@@ -16,7 +16,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, HICON, IMAGE_ICON, InsertMenuW,
-    LR_LOADFROMFILE, LoadImageW, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
+    LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadImageW, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
     PostQuitMessage, RegisterClassW, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
     TrackPopupMenu, TranslateMessage, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
     WNDCLASSW, WS_OVERLAPPEDWINDOW,
@@ -69,9 +69,10 @@ fn load_tray_icon() -> HICON {
         let hinst = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
 
         // Try to load embedded icon (IDI_MHD = 1)
+        const IDI_MHD: u32 = 1;
         if let Ok(h) = LoadImageW(
             hinst,
-            PCWSTR(1 as *const u16),
+            PCWSTR(IDI_MHD as *const u16),
             IMAGE_ICON,
             0,
             0,
@@ -80,12 +81,12 @@ fn load_tray_icon() -> HICON {
             return HICON(h.0);
         }
 
-        // Fallback to mHD_32.png next to the exe
+        // Fallback to mhd.ico next to the exe (copied by build.rs)
         let exe_dir = env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("."));
-        let icon_path = exe_dir.join("mHD_32.png");
+        let icon_path = exe_dir.join("mhd.ico");
         let wide_icon: Vec<u16> = icon_path
             .to_string_lossy()
             .encode_utf16()
@@ -98,7 +99,7 @@ fn load_tray_icon() -> HICON {
             IMAGE_ICON,
             0,
             0,
-            LR_LOADFROMFILE,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
         ) {
             Ok(h) => HICON(h.0),
             Err(_) => HICON::default(),
@@ -305,7 +306,7 @@ unsafe extern "system" fn wnd_proc(
                         draw::show(state.app.theme(), state.app.draw_dir());
                     }
                     CMD_EDIT_CONFIG => {
-                        crate::config_editor::show_config_editor(state.app.clone());
+                        crate::config::editor::show_config_editor(state.app.clone());
                     }
                     CMD_CPU_PANEL => {
                         cpu_plan::show_panel(state.app.theme());
@@ -320,7 +321,7 @@ unsafe extern "system" fn wnd_proc(
                         let cfg = state.app.llm_proxy_config();
                         crate::llm_proxy::toggle(&cfg);
                     }
-                    cmd if cmd >= CMD_POWER_PLAN_BASE && cmd < CMD_POWER_PLAN_BASE + 20 => {
+                    cmd if (CMD_POWER_PLAN_BASE..CMD_POWER_PLAN_BASE + 20).contains(&cmd) => {
                         let index = cmd - CMD_POWER_PLAN_BASE;
                         cpu_plan::switch_plan_by_index(index, &state.app.osd);
                     }
@@ -374,11 +375,10 @@ pub fn run(app: AppHandle) {
         if let Ok(h) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        ) {
-            if h != HWND::default() {
+        )
+            && h != HWND::default() {
                 return;
             }
-        }
     }
 
     let hinst = unsafe { GetModuleHandleW(PCWSTR::null()).unwrap_or_default() };
