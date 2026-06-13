@@ -795,6 +795,7 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let list_y = lay.list_y();
     let list_h = lay.list_h();
     let win_w_val = lay.win_w();
+    let scroll_y = state.content_scroll_y;
 
     // Table headers
     let table_header_y = list_y - (24.0 * scale) as i32;
@@ -847,7 +848,10 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
         }
         + row_h;
 
-    // Clipped list area begins here
+    // Clipped list area begins here.
+    // The clip rect is in content space (unscrolled), same as control rects.
+    // This ensures that regions() produces hit regions in content space,
+    // which hit_test_settings then adjusts by -content_scroll_y.
     ctls.push(Control::ClipStart {
         rect: RECT {
             left: pad,
@@ -860,7 +864,13 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
     // Binding rows
     let mut row_y = list_y;
     for (i, b) in state.bindings.iter().enumerate() {
-        let row_visible = row_y + row_h >= list_y && row_y < list_y + list_h;
+        // Only draw rows that overlap the visible list band.
+        // We check against the scrolled viewport (content space + scroll_y)
+        // because SetViewportOrgEx shifts drawing so that logical_y maps to
+        // device_y = logical_y − scroll_y.  Rows whose logical-Y range does
+        // not intersect the visible device band are off-screen and can be
+        // skipped entirely.
+        let row_visible = row_y + row_h > list_y + scroll_y && row_y < list_y + list_h + scroll_y;
 
         if row_visible {
             let desc = editor_action_desc(b.kind_idx);
@@ -915,7 +925,8 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
 
         // Accordion editor below the expanded row
         if Some(i) == state.expanded_idx && i < state.bindings.len() {
-            let acc_visible = row_y + lay.accordion_h() >= list_y && row_y < list_y + list_h;
+            let acc_visible =
+                row_y + lay.accordion_h() > list_y + scroll_y && row_y < list_y + list_h + scroll_y;
 
             if acc_visible {
                 let gap = (8.0 * scale) as i32;
@@ -1152,7 +1163,7 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
     }
 
     // ── "Add New" button ──
-    let add_btn_visible = row_y + row_h >= list_y && row_y < list_y + list_h;
+    let add_btn_visible = row_y + row_h > list_y + scroll_y && row_y < list_y + list_h + scroll_y;
     if add_btn_visible {
         let add_btn_w = (80.0 * scale) as i32;
         let is_add_hovered = state.hovered_target == SettingsHit::AddBtn;
