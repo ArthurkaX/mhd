@@ -8,6 +8,7 @@ use windows::Win32::Foundation::HWND;
 
 use crate::app::AppHandle;
 use crate::config::editor_layout::Layout;
+use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::core::native_theme::NativeTheme;
 
 // ── UI Binding (row data) ─────────────────────────────────────────
@@ -41,6 +42,7 @@ pub struct UiProvider {
     pub name: String,
     pub endpoint: String,
     pub api_key: String,
+    pub models: Vec<String>,
 }
 
 /// Result from the centralized hit‑test function.
@@ -56,6 +58,10 @@ pub enum SettingsHit {
     AddBtn,
     /// Click on a provider row to edit it.
     ProviderRow(usize),
+    /// Edit button on a provider row.
+    ProviderEditBtn(usize),
+    /// Models button on a provider row.
+    ProviderModelsBtn(usize),
     /// Delete button on a provider row.
     ProviderDelete(usize),
     /// Add a new provider.
@@ -127,6 +133,11 @@ pub struct SettingsState {
     pub combo_popup: Option<HWND>,
     /// Whether the combo popup is open
     pub combo_open: Arc<AtomicBool>,
+
+    /// Search dropdown items for theme selection
+    pub theme_search_items: Vec<SearchDropdownItem>,
+    /// Search dropdown state for theme selection
+    pub theme_dropdown: SearchDropdownState,
 
     /// Autostart at user logon (via scheduled task)
     pub autostart: bool,

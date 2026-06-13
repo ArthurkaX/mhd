@@ -1,0 +1,22 @@
+{
+  "name": "Moss",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Moss",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#2B3339",
+          "surface": "#333C43",
+          "border": "#475258",
+          "text": "#D3C6AA",
+          "text.muted": "#9DA9A0",
+          "element.active": "#A7C080",
+          "element.selected": "#384148",
+          "element.hover": "#303840"
+        }
+      }
+    }
+  ]
+}

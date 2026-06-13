@@ -1,0 +1,22 @@
+{
+  "name": "Solar",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Solar",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#00212B",
+          "surface": "#073642",
+          "border": "#1A5260",
+          "text": "#93A1A1",
+          "text.muted": "#657B83",
+          "element.active": "#2AA198",
+          "element.selected": "#004454",
+          "element.hover": "#003847"
+        }
+      }
+    }
+  ]
+}

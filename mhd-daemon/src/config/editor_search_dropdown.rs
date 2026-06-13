@@ -57,10 +57,17 @@ impl SearchDropdownState {
         self.clamp_scroll(items, visible_rows);
     }
 
-    pub fn scroll_by(&mut self, delta_rows: i32, items: &[SearchDropdownItem], visible_rows: usize) {
+    pub fn scroll_by(
+        &mut self,
+        delta_rows: i32,
+        items: &[SearchDropdownItem],
+        visible_rows: usize,
+    ) {
         let max_scroll = self.filtered_count(items).saturating_sub(visible_rows);
         if delta_rows < 0 {
-            self.scroll = self.scroll.saturating_sub(delta_rows.unsigned_abs() as usize);
+            self.scroll = self
+                .scroll
+                .saturating_sub(delta_rows.unsigned_abs() as usize);
         } else {
             self.scroll = (self.scroll + delta_rows as usize).min(max_scroll);
         }
@@ -104,7 +111,10 @@ impl SearchDropdownState {
         self.scroll = self.scroll.min(max_scroll);
     }
 
-    fn filtered_items<'a>(&self, items: &'a [SearchDropdownItem]) -> Vec<&'a SearchDropdownItem> {
+    pub fn filtered_items<'a>(
+        &self,
+        items: &'a [SearchDropdownItem],
+    ) -> Vec<&'a SearchDropdownItem> {
         let query = self.filter.trim().to_lowercase();
         items
             .iter()

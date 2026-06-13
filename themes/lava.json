@@ -1,0 +1,22 @@
+{
+  "name": "Lava",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Lava",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#201014",
+          "surface": "#2E1818",
+          "border": "#4A2828",
+          "text": "#F0E6E0",
+          "text.muted": "#B08880",
+          "element.active": "#E85D40",
+          "element.selected": "#4A2020",
+          "element.hover": "#382020"
+        }
+      }
+    }
+  ]
+}

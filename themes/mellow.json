@@ -1,0 +1,22 @@
+{
+  "name": "Mellow",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Mellow",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#1E1E2E",
+          "surface": "#302D41",
+          "border": "#45425A",
+          "text": "#D9E0EE",
+          "text.muted": "#988BA2",
+          "element.active": "#CBA6F7",
+          "element.selected": "#363258",
+          "element.hover": "#2A2740"
+        }
+      }
+    }
+  ]
+}

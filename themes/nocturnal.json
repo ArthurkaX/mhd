@@ -1,0 +1,22 @@
+{
+  "name": "Nocturnal",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Nocturnal",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#282A36",
+          "surface": "#3A3C4E",
+          "border": "#565761",
+          "text": "#F8F8F2",
+          "text.muted": "#6272A4",
+          "element.active": "#BD93F9",
+          "element.selected": "#44475A",
+          "element.hover": "#3A3C4E"
+        }
+      }
+    }
+  ]
+}

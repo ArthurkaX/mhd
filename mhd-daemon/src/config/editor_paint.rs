@@ -766,7 +766,7 @@ pub fn build_general_controls(lay: &Layout, state: &SettingsState) -> ControlLis
 
 // ── LLM Proxy page controls ───────────────────────────────────────────
 
-/// Build the LLM Proxy page control list — currently the providers list.
+/// Build the LLM Proxy page control list — providers list.
 pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlList {
     let mut ctls = ControlList::new();
     let scale = (lay.win_w() as f32) / WIN_WIDTH_BASE as f32;
@@ -795,6 +795,7 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
     let col_h = (16.0 * scale) as i32;
 
+    // ── Column header: Name ────────────────────────────────────────
     ctls.push(Control::Label {
         rect: RECT {
             left: pad + 6,
@@ -807,6 +808,7 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         text_color: theme_text_muted(state),
     });
 
+    // ── Column header: Endpoint ────────────────────────────────────
     ctls.push(Control::Label {
         rect: RECT {
             left: name_end_x + 6,
@@ -819,10 +821,10 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         text_color: theme_text_muted(state),
     });
 
-    // Content height
+    // Content height for scroll calculation
     let _content_h = state.providers.len() as i32 * row_h + row_h;
 
-    // Clipped list area
+    // ── Clipped list area ──────────────────────────────────────────
     ctls.push(Control::ClipStart {
         rect: RECT {
             left: pad,
@@ -832,40 +834,121 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         },
     });
 
-    // Provider rows
+    // Button sizes (right-aligned in each row)
+    let del_w = lay.provider_del_w();
+    let edit_btn_w = (50.0 * scale) as i32;
+    let models_btn_w = (60.0 * scale) as i32;
+    let btn_gap = (4.0 * scale) as i32;
+    let btn_top_pad = (row_h - (24.0 * scale) as i32) / 2;
+    let btn_h = (24.0 * scale) as i32;
+
+    // ── Provider rows ──────────────────────────────────────────────
     let mut row_y = list_y;
     for (i, p) in state.providers.iter().enumerate() {
-        let row_visible = row_y + row_h > list_y + scroll_y && row_y < list_y + list_h + scroll_y;
-
-        if row_visible {
+        if row_y + row_h > list_y + scroll_y && row_y < list_y + list_h + scroll_y {
             let is_row_hovered = state.hovered_target == SettingsHit::ProviderRow(i);
             let zebra_on = i % 2 == 1;
 
-            ctls.push(Control::BindingRow {
+            // Row background
+            let bg = if is_row_hovered {
+                Some(state.theme.hover)
+            } else if zebra_on {
+                Some(state.theme.surface.blend_over(state.theme.background))
+            } else {
+                None
+            };
+            if let Some(bg_color) = bg {
+                ctls.push(Control::TextField {
+                    rect: RECT {
+                        left: pad,
+                        top: row_y,
+                        right: win_w_val - pad,
+                        bottom: row_y + row_h,
+                    },
+                    text: String::new(),
+                    placeholder: None,
+                    font: FontChoice::Body,
+                    bg_color: bg_color,
+                    border_color: Argb::new(0, 0, 0, 0), // transparent border
+                    text_color: theme_text(state),
+                    hit: SettingsHit::ProviderRow(i),
+                });
+            }
+
+            // Buttons are positioned from the right edge
+            let del_x = win_w_val - pad - del_w;
+            let models_x = del_x - btn_gap - models_btn_w;
+            let edit_x = models_x - btn_gap - edit_btn_w;
+
+            // Endpoint label fills the space between name and buttons
+            let name_label_end = pad + lay.provider_name_w() + 6;
+
+            // Name label
+            ctls.push(Control::Label {
                 rect: RECT {
-                    left: pad,
+                    left: pad + 6,
                     top: row_y,
-                    right: win_w_val - pad,
+                    right: name_label_end,
                     bottom: row_y + row_h,
                 },
-                trigger: p.name.clone(),
-                kind_label: "Provider".into(),
-                param: p.endpoint.clone(),
-                is_selected: false,
-                is_hovered: is_row_hovered,
-                zebra: zebra_on,
-                hit: SettingsHit::ProviderRow(i),
+                label: p.name.clone(),
+                font: FontChoice::Body,
+                text_color: theme_text(state),
+            });
+
+            // Endpoint label
+            ctls.push(Control::Label {
+                rect: RECT {
+                    left: name_label_end + (4.0 * scale) as i32,
+                    top: row_y,
+                    right: edit_x - (4.0 * scale) as i32,
+                    bottom: row_y + row_h,
+                },
+                label: p.endpoint.clone(),
+                font: FontChoice::Body,
+                text_color: theme_text_muted(state),
+            });
+
+            // Edit button
+            let is_edit_hovered = state.hovered_target == SettingsHit::ProviderEditBtn(i);
+            ctls.push(Control::Button {
+                rect: RECT {
+                    left: edit_x,
+                    top: row_y + btn_top_pad,
+                    right: edit_x + edit_btn_w,
+                    bottom: row_y + btn_top_pad + btn_h,
+                },
+                label: "Edit".into(),
+                font: FontChoice::Small,
+                is_hovered: is_edit_hovered,
+                style: ButtonStyle::Secondary,
+                hit: SettingsHit::ProviderEditBtn(i),
+            });
+
+            // Models button
+            let is_models_hovered = state.hovered_target == SettingsHit::ProviderModelsBtn(i);
+            ctls.push(Control::Button {
+                rect: RECT {
+                    left: models_x,
+                    top: row_y + btn_top_pad,
+                    right: models_x + models_btn_w,
+                    bottom: row_y + btn_top_pad + btn_h,
+                },
+                label: "Models".into(),
+                font: FontChoice::Small,
+                is_hovered: is_models_hovered,
+                style: ButtonStyle::Secondary,
+                hit: SettingsHit::ProviderModelsBtn(i),
             });
 
             // Delete X button
-            let del_x = win_w_val - pad - lay.provider_del_w();
             let is_del_hovered = state.hovered_target == SettingsHit::ProviderDelete(i);
             ctls.push(Control::Button {
                 rect: RECT {
                     left: del_x,
-                    top: row_y + (row_h - lay.provider_del_w()) / 2,
-                    right: del_x + lay.provider_del_w(),
-                    bottom: row_y + (row_h + lay.provider_del_w()) / 2,
+                    top: row_y + (row_h - del_w) / 2,
+                    right: del_x + del_w,
+                    bottom: row_y + (row_h + del_w) / 2,
                 },
                 label: "X".into(),
                 font: FontChoice::Small,

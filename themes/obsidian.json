@@ -1,0 +1,22 @@
+{
+  "name": "Obsidian",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Obsidian",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#1E2127",
+          "surface": "#282C34",
+          "border": "#3E4451",
+          "text": "#ABB2BF",
+          "text.muted": "#5C6370",
+          "element.active": "#E5C07B",
+          "element.selected": "#2C313A",
+          "element.hover": "#2C323C"
+        }
+      }
+    }
+  ]
+}

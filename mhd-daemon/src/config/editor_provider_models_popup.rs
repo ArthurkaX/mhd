@@ -1,0 +1,1054 @@
+//! Models list editor modal popup for a provider.
+//!
+//! Opens a small modal dialog showing a scrollable list of model ID
+//! strings.  Each row can be inline-edited, deleted, and new models
+//! can be added.  Follows the same pattern as `editor_provider_popup`.
+
+use std::ffi::c_void;
+
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::PCWSTR;
+
+use crate::config::editor_layout::*;
+use crate::config::editor_state::ButtonStyle;
+use crate::config::editor_theme::{
+    draw_button, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer, to_utf16_z,
+};
+use crate::core::native_theme::NativeTheme;
+
+// ── Constants ────────────────────────────────────────────────────────
+
+const POPUP_WIDTH_BASE: i32 = 460;
+const POPUP_HEIGHT_BASE: i32 = 420;
+const POPUP_HEADER_HEIGHT_BASE: i32 = 48;
+const POPUP_FOOTER_HEIGHT_BASE: i32 = 52;
+const POPUP_RADIUS_BASE: f32 = 12.0;
+const POPUP_PADDING: i32 = 20;
+const POPUP_FIELD_HEIGHT: i32 = 30;
+const POPUP_ROW_HEIGHT: i32 = 32;
+
+// ── Hit targets ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelsPopupHit {
+    None,
+    /// Click on a model row field to start inline editing.
+    ModelField(usize),
+    /// Delete button on a model row.
+    ModelDelete(usize),
+    /// "+ Add Model" button.
+    AddBtn,
+    /// Scrollbar (the hit area is the list's right edge).
+    Scrollbar,
+    SaveBtn,
+    CancelBtn,
+}
+
+// ── Popup state ──────────────────────────────────────────────────────
+
+struct ModelsPopupState {
+    hwnd: HWND,
+    _parent_hwnd: HWND,
+
+    /// The live-edited model list.
+    models: Vec<String>,
+
+    // Inline editing state for a single row at a time
+    editing_idx: Option<usize>,
+    edit_text: String,
+    edit_cursor: usize,
+    edit_old_value: String,
+
+    // Scrolling state
+    content_scroll_y: i32,
+    list_area_h: i32, // available height for the list
+
+    // UI state
+    theme: NativeTheme,
+    scale: f32,
+    win_w: i32,
+    win_h: i32,
+    hovered_target: ModelsPopupHit,
+    /// True when dragging the scrollbar thumb.
+    is_dragging_scroll: bool,
+    scroll_drag_start_y: i32,
+    scroll_drag_start_offset: i32,
+    should_close: bool,
+    saved: bool,
+}
+
+// ── Window registration ──────────────────────────────────────────────
+
+static POPUP_CLASS: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn ensure_popup_class() -> u16 {
+    *POPUP_CLASS.get_or_init(|| {
+        let hinst: HINSTANCE = unsafe {
+            HINSTANCE(
+                windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                    .unwrap_or_default()
+                    .0,
+            )
+        };
+        let class_name = to_utf16_z("mhd_ModelsEditorPopup");
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(models_popup_wndproc),
+            cbClsExtra: 0,
+            cbWndExtra: std::mem::size_of::<isize>() as i32,
+            hInstance: hinst,
+            hIcon: HICON::default(),
+            hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
+            hbrBackground: HBRUSH::default(),
+            lpszMenuName: PCWSTR::null(),
+            lpszClassName: PCWSTR::from_raw(class_name.as_ptr()),
+        };
+        unsafe { RegisterClassW(&wc) }
+    })
+}
+
+// ── Open popup ───────────────────────────────────────────────────────
+
+/// Open the models list editor as a modal dialog.
+/// `models` is the initial list of model IDs.
+/// Returns `Some(updated_list)` if saved, or `None` if cancelled.
+pub fn open_models_popup(
+    parent_hwnd: HWND,
+    theme: &NativeTheme,
+    scale: f32,
+    models: Vec<String>,
+) -> Option<Vec<String>> {
+    let win_w = (POPUP_WIDTH_BASE as f32 * scale) as i32;
+    let win_h = (POPUP_HEIGHT_BASE as f32 * scale) as i32;
+
+    // Center on parent window
+    let mut parent_rc = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(parent_hwnd, &mut parent_rc);
+    }
+    let cx = parent_rc.left + (parent_rc.right - parent_rc.left - win_w) / 2;
+    let cy = parent_rc.top + (parent_rc.bottom - parent_rc.top - win_h) / 2;
+
+    let header_h = (POPUP_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
+    let pad = (POPUP_PADDING as f32 * scale) as i32;
+    let list_area_h = win_h - header_h - footer_h - pad;
+
+    let popup_state = Box::new(ModelsPopupState {
+        hwnd: HWND::default(),
+        _parent_hwnd: parent_hwnd,
+        models,
+        editing_idx: None,
+        edit_text: String::new(),
+        edit_cursor: 0,
+        edit_old_value: String::new(),
+        content_scroll_y: 0,
+        list_area_h,
+        theme: theme.clone(),
+        scale,
+        win_w,
+        win_h,
+        hovered_target: ModelsPopupHit::None,
+        is_dragging_scroll: false,
+        scroll_drag_start_y: 0,
+        scroll_drag_start_offset: 0,
+        should_close: false,
+        saved: false,
+    });
+    let popup_ptr = Box::into_raw(popup_state);
+
+    let class_atom = ensure_popup_class();
+    let hinst: HINSTANCE = unsafe {
+        HINSTANCE(
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                .unwrap_or_default()
+                .0,
+        )
+    };
+
+    let class_wz = to_utf16_z("#32770");
+    let class_ptr = if class_atom != 0 {
+        PCWSTR::from_raw(class_atom as *const u16)
+    } else {
+        PCWSTR::from_raw(class_wz.as_ptr())
+    };
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            class_ptr,
+            PCWSTR::from_raw(to_utf16_z("Edit Models").as_ptr()),
+            WS_POPUP,
+            0,
+            0,
+            win_w,
+            win_h,
+            None,
+            None,
+            hinst,
+            Some(popup_ptr as *mut c_void),
+        )
+    }
+    .ok();
+
+    let hwnd = match hwnd {
+        Some(h) => h,
+        None => {
+            let _ = unsafe { Box::from_raw(popup_ptr) };
+            return None;
+        }
+    };
+
+    unsafe {
+        (*popup_ptr).hwnd = hwnd;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, popup_ptr as isize);
+    }
+
+    // Disable parent window
+    unsafe {
+        let _ = EnableWindow(parent_hwnd, false);
+    }
+
+    // Position and show
+    unsafe {
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, cx, cy, win_w, win_h, SWP_SHOWWINDOW);
+    }
+
+    // Initial paint
+    unsafe {
+        paint_models_popup(hwnd, popup_ptr);
+    }
+
+    // Modal message loop
+    loop {
+        unsafe {
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+
+        let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+        if state_ptr == 0 {
+            break;
+        }
+        let should_close = unsafe { (*(state_ptr as *mut ModelsPopupState)).should_close };
+        if should_close {
+            break;
+        }
+
+        unsafe {
+            let _ = WaitMessage();
+        }
+    }
+
+    // Re-enable parent and bring it to front
+    unsafe {
+        let _ = EnableWindow(parent_hwnd, true);
+        let _ = SetForegroundWindow(parent_hwnd);
+    }
+
+    let saved = unsafe { (*popup_ptr).saved };
+    let result = if saved {
+        unsafe { Some((*popup_ptr).models.clone()) }
+    } else {
+        None
+    };
+
+    // Cleanup
+    if !hwnd.is_invalid() {
+        unsafe {
+            DestroyWindow(hwnd).ok();
+        }
+    }
+    unsafe {
+        let _ = Box::from_raw(popup_ptr);
+    }
+    result
+}
+
+// ── Paint ────────────────────────────────────────────────────────────
+
+unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
+    unsafe {
+        let state = &*state_ptr;
+        let theme = &state.theme;
+        let w = state.win_w;
+        let h = state.win_h;
+        let scale = state.scale;
+
+        let mut frame = match crate::renderer::DibFrame::new(w, h) {
+            Some(f) => f,
+            None => return,
+        };
+        let dib_dc = frame.dc();
+        let bits = frame.pixels_mut().as_mut_ptr() as *mut c_void;
+
+        let popup_bg = theme.surface.blend_over(theme.background);
+        let radius = (POPUP_RADIUS_BASE * scale) as i32;
+        crate::osd::draw_rounded_rect(frame.pixels_mut(), w, h, radius, popup_bg);
+
+        let _ = SetBkMode(dib_dc, TRANSPARENT);
+
+        // Fonts
+        let title_font = crate::renderer::create_font(
+            -(FONT_TITLE_SIZE as f32 * scale) as i32,
+            true,
+            "Segoe UI Variable",
+        );
+        let body_font = crate::renderer::create_font(
+            -(FONT_BODY_SIZE as f32 * scale) as i32,
+            false,
+            "Segoe UI Variable",
+        );
+        let small_font = crate::renderer::create_font(
+            -(FONT_SMALL_SIZE as f32 * scale) as i32,
+            false,
+            "Segoe UI Variable",
+        );
+        let _old_font = SelectObject(dib_dc, title_font);
+
+        // ── Header title ──────────────────────────────────────────
+        SetTextColor(dib_dc, theme.text.to_colorref());
+        let header_h = (POPUP_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+        let pad = (POPUP_PADDING as f32 * scale) as i32;
+        let mut title_wz = to_utf16_z("Edit Models");
+        let mut title_rc = RECT {
+            left: pad,
+            top: pad / 2,
+            right: w - pad,
+            bottom: pad / 2 + 18 + 4,
+        };
+        DrawTextW(
+            dib_dc,
+            &mut title_wz,
+            &mut title_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
+
+        // Separator under header
+        let sep_brush = CreateSolidBrush(theme.border.to_colorref());
+        FillRect(
+            dib_dc,
+            &RECT {
+                left: pad,
+                top: header_h - 1,
+                right: w - pad,
+                bottom: header_h,
+            },
+            sep_brush,
+        );
+
+        // ── List area ──────────────────────────────────────────────
+        let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
+        let footer_y = h - footer_h;
+        let list_y = header_h + pad;
+        let list_h = state.list_area_h;
+        let row_h = (POPUP_ROW_HEIGHT as f32 * scale) as i32;
+        let field_h = (POPUP_FIELD_HEIGHT as f32 * scale) as i32;
+        let del_w = (28.0 * scale) as i32;
+        let scroll_y = state.content_scroll_y;
+
+        // Total content height
+        let total_rows = state.models.len() as i32;
+        let add_btn_h = row_h;
+        let content_h = total_rows * row_h + add_btn_h;
+
+        // ── Clip to list area using SaveDC/RestoreDC ──────────────
+        let saved_dc = SaveDC(dib_dc);
+        let list_rect = RECT {
+            left: pad,
+            top: list_y,
+            right: w - pad,
+            bottom: list_y + list_h,
+        };
+        let clip_rgn = CreateRectRgn(
+            list_rect.left,
+            list_rect.top,
+            list_rect.right,
+            list_rect.bottom,
+        );
+        let _ = SelectClipRgn(dib_dc, clip_rgn);
+        let _ = DeleteObject(clip_rgn); // DC uses a copy
+
+        // ── Draw "Models" label above the list ─────────────────────
+        let _ = SelectObject(dib_dc, small_font);
+        SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        let mut header_wz = to_utf16_z("Model ID");
+        let mut header_rc = RECT {
+            left: pad,
+            top: list_y,
+            right: w - pad,
+            bottom: list_y + (16.0 * scale) as i32,
+        };
+        let _ = DrawTextW(
+            dib_dc,
+            &mut header_wz,
+            &mut header_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
+
+        let list_content_top = list_y + (16.0 * scale) as i32;
+        let scrollbar_w = (8.0 * scale) as i32;
+        let scrollbar_x = w - pad - scrollbar_w;
+
+        // ── Model rows ───────────────────────────────────────────
+        for (i, model_id) in state.models.iter().enumerate() {
+            let ry = list_content_top + i as i32 * row_h - scroll_y;
+            let row_visible = ry + row_h > list_y && ry < list_y + list_h;
+
+            if !row_visible {
+                continue;
+            }
+
+            let is_editing = state.editing_idx == Some(i);
+            let is_hovered = state.hovered_target == ModelsPopupHit::ModelField(i);
+
+            // Row background (zebra)
+            if i % 2 == 1 && !is_editing {
+                let bg = theme.surface.blend_over(theme.background);
+                draw_rounded_rect_in_buffer(
+                    bits,
+                    w,
+                    h,
+                    RECT {
+                        left: pad,
+                        top: ry,
+                        right: w - pad - scrollbar_w,
+                        bottom: ry + row_h,
+                    },
+                    0,
+                    bg,
+                );
+            }
+
+            // Text field background + border
+            let field_left = pad;
+            let field_right = w - pad - scrollbar_w - del_w - (4.0 * scale) as i32;
+
+            let bg = if is_editing {
+                theme.surface.blend_over(theme.background)
+            } else if is_hovered {
+                theme
+                    .hover
+                    .blend_over(theme.surface.blend_over(theme.background))
+            } else {
+                theme.surface.blend_over(theme.background)
+            };
+            let border = if is_editing {
+                theme.accent
+            } else if is_hovered {
+                theme.text
+            } else {
+                theme.border
+            };
+
+            let field_rect = RECT {
+                left: field_left,
+                top: ry + (row_h - field_h) / 2,
+                right: field_right,
+                bottom: ry + (row_h + field_h) / 2,
+            };
+            draw_rounded_rect_in_buffer(bits, w, h, field_rect, (4.0 * scale) as i32, bg);
+            draw_rounded_border_in_buffer(bits, w, h, field_rect, (4.0 * scale) as i32, 1, border);
+
+            // Draw text clipped to field interior
+            let display_text = if is_editing {
+                &state.edit_text
+            } else {
+                model_id
+            };
+            let mut text_rect = RECT {
+                left: field_rect.left + (6.0 * scale) as i32,
+                top: field_rect.top,
+                right: field_rect.right - (6.0 * scale) as i32,
+                bottom: field_rect.bottom,
+            };
+            SelectObject(dib_dc, body_font);
+            SetTextColor(dib_dc, theme.text.to_colorref());
+            let mut text_wz = to_utf16_z(display_text);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut text_wz,
+                &mut text_rect,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+
+            // Draw cursor if editing
+            if is_editing && state.edit_cursor <= display_text.len() {
+                let prefix = &display_text[..state.edit_cursor];
+                let prefix_wz: Vec<u16> = prefix.encode_utf16().collect();
+                let mut sz = SIZE::default();
+                let _ = GetTextExtentPoint32W(dib_dc, &prefix_wz, &mut sz);
+                let cursor_x = text_rect.left + sz.cx;
+                let cursor_y = field_rect.top + (field_h - (12.0 * scale) as i32) / 2;
+                let cursor_height = (12.0 * scale) as i32;
+                let cursor_pen = CreatePen(PS_SOLID, 1, theme.text.to_colorref());
+                let _ = SelectObject(dib_dc, cursor_pen);
+                let _ = MoveToEx(dib_dc, cursor_x, cursor_y, None);
+                let _ = LineTo(dib_dc, cursor_x, cursor_y + cursor_height);
+                let _ = DeleteObject(cursor_pen);
+            }
+
+            // Delete X button
+            let del_x = w - pad - scrollbar_w - del_w;
+            let is_del_hovered = state.hovered_target == ModelsPopupHit::ModelDelete(i);
+            let del_btn_h = (20.0 * scale) as i32;
+            draw_button(
+                dib_dc,
+                bits,
+                w,
+                h,
+                del_x,
+                ry + (row_h - del_btn_h) / 2,
+                del_w,
+                del_btn_h,
+                "X",
+                theme,
+                body_font,
+                is_del_hovered,
+                ButtonStyle::DangerGhost,
+            );
+        }
+
+        // ── Add Model button ───────────────────────────────────────
+        let add_y = list_content_top + total_rows * row_h - scroll_y;
+        let is_add_hovered = state.hovered_target == ModelsPopupHit::AddBtn;
+        draw_button(
+            dib_dc,
+            bits,
+            w,
+            h,
+            pad,
+            add_y,
+            (120.0 * scale) as i32,
+            row_h - (4.0 * scale) as i32,
+            "+ Add Model",
+            theme,
+            body_font,
+            is_add_hovered,
+            ButtonStyle::Secondary,
+        );
+
+        // ── Restore clip ────────────────────────────────────────────
+        let _ = RestoreDC(dib_dc, saved_dc);
+
+        // ── Scrollbar ─────────────────────────────────────────────
+        if content_h > list_h {
+            let thumb_h = (list_h as f32 * list_h as f32 / content_h as f32).max(20.0) as i32;
+            let max_scroll = content_h - list_h;
+            let thumb_y = if max_scroll > 0 {
+                list_y + (scroll_y as f32 / max_scroll as f32 * (list_h - thumb_h) as f32) as i32
+            } else {
+                list_y
+            };
+
+            let track_rect = RECT {
+                left: scrollbar_x,
+                top: list_y,
+                right: scrollbar_x + scrollbar_w,
+                bottom: list_y + list_h,
+            };
+            draw_rounded_rect_in_buffer(
+                bits,
+                w,
+                h,
+                track_rect,
+                0,
+                theme.surface.blend_over(theme.background),
+            );
+            let thumb_rect = RECT {
+                left: scrollbar_x,
+                top: thumb_y,
+                right: scrollbar_x + scrollbar_w,
+                bottom: (thumb_y + thumb_h).min(list_y + list_h),
+            };
+            draw_rounded_rect_in_buffer(
+                bits,
+                w,
+                h,
+                thumb_rect,
+                (scrollbar_w / 2).max(1),
+                theme.text_muted,
+            );
+        }
+
+        // ── Separator above footer ─────────────────────────────────
+        let sep2_brush = CreateSolidBrush(theme.border.to_colorref());
+        FillRect(
+            dib_dc,
+            &RECT {
+                left: pad,
+                top: footer_y,
+                right: w - pad,
+                bottom: footer_y + 1,
+            },
+            sep2_brush,
+        );
+
+        // ── Footer buttons ──────────────────────────────────────────
+        let btn_h = (30.0 * scale) as i32;
+        let btn_w = (90.0 * scale) as i32;
+        let btn_y = footer_y + (footer_h - btn_h) / 2;
+        let save_x = w - pad - btn_w;
+        let cancel_x = save_x - btn_w - (8.0 * scale) as i32;
+
+        let is_save_hovered = state.hovered_target == ModelsPopupHit::SaveBtn;
+        draw_button(
+            dib_dc,
+            bits,
+            w,
+            h,
+            save_x,
+            btn_y,
+            btn_w,
+            btn_h,
+            "Save",
+            theme,
+            body_font,
+            is_save_hovered,
+            ButtonStyle::Primary,
+        );
+
+        let is_cancel_hovered = state.hovered_target == ModelsPopupHit::CancelBtn;
+        draw_button(
+            dib_dc,
+            bits,
+            w,
+            h,
+            cancel_x,
+            btn_y,
+            btn_w,
+            btn_h,
+            "Cancel",
+            theme,
+            body_font,
+            is_cancel_hovered,
+            ButtonStyle::Secondary,
+        );
+
+        // ── Final render ───────────────────────────────────────────
+        let _ = DeleteObject(title_font);
+        let _ = DeleteObject(body_font);
+        let _ = DeleteObject(small_font);
+
+        frame.fix_gdi_alpha(theme.background);
+
+        let cur_pos = {
+            let mut wr = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut wr);
+            (wr.left, wr.top)
+        };
+        frame.present_layered(hwnd, cur_pos.0, cur_pos.1, 255);
+    }
+}
+
+// ── Hit-test ─────────────────────────────────────────────────────────
+
+fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopupHit {
+    let scale = state.scale;
+    let pad = (POPUP_PADDING as f32 * scale) as i32;
+    let header_h = (POPUP_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
+    let footer_y = state.win_h - footer_h;
+    let w = state.win_w;
+    let _h = state.win_h;
+    let row_h = (POPUP_ROW_HEIGHT as f32 * scale) as i32;
+    let field_h = (POPUP_FIELD_HEIGHT as f32 * scale) as i32;
+    let del_w = (28.0 * scale) as i32;
+    let scrollbar_w = (8.0 * scale) as i32;
+    let scroll_y = state.content_scroll_y;
+
+    let list_y = header_h + pad;
+    let list_h = state.list_area_h;
+    let list_content_top = list_y + (16.0 * scale) as i32;
+
+    // Footer buttons
+    let btn_h = (30.0 * scale) as i32;
+    let btn_w = (90.0 * scale) as i32;
+    let btn_y = footer_y + (footer_h - btn_h) / 2;
+    let save_x = w - pad - btn_w;
+    let cancel_x = save_x - btn_w - (8.0 * scale) as i32;
+
+    if y >= btn_y && y < btn_y + btn_h {
+        if x >= save_x && x < save_x + btn_w {
+            return ModelsPopupHit::SaveBtn;
+        }
+        if x >= cancel_x && x < cancel_x + btn_w {
+            return ModelsPopupHit::CancelBtn;
+        }
+    }
+
+    // Scrollbar area
+    let scrollbar_x = w - pad - scrollbar_w;
+    if x >= scrollbar_x && x < scrollbar_x + scrollbar_w && y >= list_y && y < list_y + list_h {
+        return ModelsPopupHit::Scrollbar;
+    }
+
+    // Model rows + add button (inside list area, clipped)
+    if y >= list_y && y < list_y + list_h {
+        let total_rows = state.models.len() as i32;
+        let add_btn_y = list_content_top + total_rows * row_h - scroll_y;
+
+        // Check add button
+        if y >= add_btn_y && y < add_btn_y + row_h {
+            if x >= pad && x < pad + (120.0 * scale) as i32 {
+                return ModelsPopupHit::AddBtn;
+            }
+        }
+
+        // Check each model row
+        for i in 0..total_rows {
+            let ry = list_content_top + i * row_h - scroll_y;
+            if y >= ry && y < ry + row_h {
+                // Check delete X button (right side)
+                let del_x = w - pad - scrollbar_w - del_w;
+                if x >= del_x && x < del_x + del_w {
+                    return ModelsPopupHit::ModelDelete(i as usize);
+                }
+                // Check text field
+                let field_left = pad;
+                let field_right = w - pad - scrollbar_w - del_w - (4.0 * scale) as i32;
+                let field_top = ry + (row_h - field_h) / 2;
+                let field_bottom = ry + (row_h + field_h) / 2;
+                if x >= field_left && x < field_right && y >= field_top && y < field_bottom {
+                    return ModelsPopupHit::ModelField(i as usize);
+                }
+            }
+        }
+    }
+
+    ModelsPopupHit::None
+}
+
+// ── Inline editing helpers ───────────────────────────────────────────
+
+fn commit_model_edit(state: &mut ModelsPopupState) {
+    if let Some(idx) = state.editing_idx {
+        // Don't remove models on commit, just save the text
+        if idx < state.models.len() {
+            state.models[idx] = state.edit_text.clone();
+        }
+    }
+    state.editing_idx = None;
+    state.edit_text.clear();
+    state.edit_cursor = 0;
+    state.edit_old_value.clear();
+}
+
+fn cancel_model_edit(state: &mut ModelsPopupState) {
+    if state.editing_idx.is_none() {
+        return;
+    }
+    // Restore original value
+    state.edit_text = state.edit_old_value.clone();
+    state.edit_cursor = state.edit_old_value.len();
+    commit_model_edit(state);
+}
+
+fn begin_model_edit(state: &mut ModelsPopupState, idx: usize) {
+    commit_model_edit(state);
+    if idx < state.models.len() {
+        state.editing_idx = Some(idx);
+        state.edit_text = state.models[idx].clone();
+        state.edit_cursor = state.edit_text.len();
+        state.edit_old_value = state.edit_text.clone();
+    }
+}
+
+// ── Window procedure ─────────────────────────────────────────────────
+
+unsafe extern "system" fn models_popup_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_CREATE => LRESULT(0),
+
+            WM_NCHITTEST => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if state_ptr.is_null() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                let state = &*state_ptr;
+                let screen_x = (lparam.0 as i16) as i32;
+                let screen_y = ((lparam.0 >> 16) as i16) as i32;
+                let mut pt = POINT {
+                    x: screen_x,
+                    y: screen_y,
+                };
+                let _ = ScreenToClient(hwnd, &mut pt);
+
+                let header_h = (POPUP_HEADER_HEIGHT_BASE as f32 * state.scale) as i32;
+                if pt.y < header_h {
+                    return LRESULT(HTCAPTION as isize);
+                }
+                LRESULT(HTCLIENT as isize)
+            }
+
+            WM_PAINT => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    paint_models_popup(hwnd, state_ptr);
+                }
+                LRESULT(0)
+            }
+
+            WM_LBUTTONDOWN => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if state_ptr.is_null() {
+                    return LRESULT(0);
+                }
+                let state = &mut *state_ptr;
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let hit = hit_test_models_popup(state, x, y);
+
+                // If editing a field and clicking elsewhere, commit the edit
+                if state.editing_idx.is_some()
+                    && hit != state.hovered_target
+                    && hit != ModelsPopupHit::None
+                {
+                    commit_model_edit(state);
+                }
+
+                // Handle scrollbar dragging
+                if hit == ModelsPopupHit::Scrollbar {
+                    state.is_dragging_scroll = true;
+                    state.scroll_drag_start_y = y;
+                    state.scroll_drag_start_offset = state.content_scroll_y;
+                    return LRESULT(0);
+                }
+
+                match hit {
+                    ModelsPopupHit::ModelField(i) => {
+                        begin_model_edit(state, i);
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+                    ModelsPopupHit::ModelDelete(i) => {
+                        cancel_model_edit(state); // commit any in-progress edit first
+                        if i < state.models.len() {
+                            state.models.remove(i);
+                            // Adjust editing_idx if needed
+                            if state.editing_idx == Some(i) {
+                                state.editing_idx = None;
+                            } else if let Some(ei) = state.editing_idx {
+                                if ei > i {
+                                    state.editing_idx = Some(ei - 1);
+                                }
+                            }
+                            paint_models_popup(hwnd, state_ptr);
+                        }
+                    }
+                    ModelsPopupHit::AddBtn => {
+                        cancel_model_edit(state);
+                        state.models.push(String::new());
+                        let new_idx = state.models.len() - 1;
+                        begin_model_edit(state, new_idx);
+                        // Scroll to bottom to show the new item
+                        let row_h = (POPUP_ROW_HEIGHT as f32 * state.scale) as i32;
+                        let total_rows = state.models.len() as i32;
+                        let content_h = total_rows * row_h + row_h;
+                        let max_scroll = (content_h - state.list_area_h).max(0);
+                        state.content_scroll_y = max_scroll;
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+                    ModelsPopupHit::SaveBtn => {
+                        commit_model_edit(state);
+                        // Filter out empty models before saving
+                        state.models.retain(|m| !m.is_empty());
+                        state.saved = true;
+                        state.should_close = true;
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+                    ModelsPopupHit::CancelBtn => {
+                        state.should_close = true;
+                    }
+                    ModelsPopupHit::None | ModelsPopupHit::Scrollbar => {}
+                }
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    state.is_dragging_scroll = false;
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let x = (lparam.0 as i16) as i32;
+                    let y = ((lparam.0 >> 16) as i16) as i32;
+
+                    if state.is_dragging_scroll {
+                        let dy = y - state.scroll_drag_start_y;
+                        let total_rows = state.models.len() as i32;
+                        let row_h = (POPUP_ROW_HEIGHT as f32 * state.scale) as i32;
+                        let content_h = total_rows * row_h + row_h;
+                        let max_scroll = (content_h - state.list_area_h).max(0);
+                        let new_scroll = (state.scroll_drag_start_offset + dy).clamp(0, max_scroll);
+                        if new_scroll != state.content_scroll_y {
+                            state.content_scroll_y = new_scroll;
+                            paint_models_popup(hwnd, state_ptr);
+                        }
+                        return LRESULT(0);
+                    }
+
+                    let hit = hit_test_models_popup(state, x, y);
+                    if state.hovered_target != hit {
+                        state.hovered_target = hit;
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+
+                    let mut tme = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut tme);
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSELEAVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.hovered_target != ModelsPopupHit::None {
+                        state.hovered_target = ModelsPopupHit::None;
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSEWHEEL => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let delta = (wparam.0 >> 16) as i16 as i32;
+                    let total_rows = state.models.len() as i32;
+                    let row_h = (POPUP_ROW_HEIGHT as f32 * state.scale) as i32;
+                    let content_h = total_rows * row_h + row_h;
+                    if content_h > state.list_area_h {
+                        let max_scroll = content_h - state.list_area_h;
+                        let scroll_amount = (row_h as i32).max(16);
+                        let new_scroll = if delta > 0 {
+                            (state.content_scroll_y - scroll_amount).max(0)
+                        } else {
+                            (state.content_scroll_y + scroll_amount).min(max_scroll)
+                        };
+                        if new_scroll != state.content_scroll_y {
+                            state.content_scroll_y = new_scroll;
+                            paint_models_popup(hwnd, state_ptr);
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_KEYDOWN => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if state_ptr.is_null() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                let state = &mut *state_ptr;
+                if state.editing_idx.is_some() {
+                    let vk = wparam.0 as u32;
+                    match vk {
+                        0x0D /* VK_RETURN */ => {
+                            commit_model_edit(state);
+                            paint_models_popup(hwnd, state_ptr);
+                            return LRESULT(0);
+                        }
+                        0x1B /* VK_ESCAPE */ => {
+                            cancel_model_edit(state);
+                            paint_models_popup(hwnd, state_ptr);
+                            return LRESULT(0);
+                        }
+                        0x08 /* VK_BACK */ => {
+                            if state.edit_cursor > 0 {
+                                let idx = state.edit_cursor - 1;
+                                state.edit_text.remove(idx);
+                                state.edit_cursor -= 1;
+                                paint_models_popup(hwnd, state_ptr);
+                            }
+                            return LRESULT(0);
+                        }
+                        0x2E /* VK_DELETE */ => {
+                            if state.edit_cursor < state.edit_text.len() {
+                                state.edit_text.remove(state.edit_cursor);
+                                paint_models_popup(hwnd, state_ptr);
+                            }
+                            return LRESULT(0);
+                        }
+                        0x25 /* VK_LEFT */ => {
+                            if state.edit_cursor > 0 {
+                                state.edit_cursor -= 1;
+                                paint_models_popup(hwnd, state_ptr);
+                            }
+                            return LRESULT(0);
+                        }
+                        0x27 /* VK_RIGHT */ => {
+                            if state.edit_cursor < state.edit_text.len() {
+                                state.edit_cursor += 1;
+                                paint_models_popup(hwnd, state_ptr);
+                            }
+                            return LRESULT(0);
+                        }
+                        0x23 /* VK_END */ => {
+                            state.edit_cursor = state.edit_text.len();
+                            paint_models_popup(hwnd, state_ptr);
+                            return LRESULT(0);
+                        }
+                        0x24 /* VK_HOME */ => {
+                            state.edit_cursor = 0;
+                            paint_models_popup(hwnd, state_ptr);
+                            return LRESULT(0);
+                        }
+                        _ => {}
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_CHAR => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if state_ptr.is_null() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                let state = &mut *state_ptr;
+                if state.editing_idx.is_some() {
+                    let ch = (wparam.0 as u32) as u16;
+                    if ch >= 0x20 && ch != 0x7F {
+                        if let Some(c) = char::from_u32(ch as u32) {
+                            state.edit_text.insert(state.edit_cursor, c);
+                            state.edit_cursor += 1;
+                            paint_models_popup(hwnd, state_ptr);
+                            return LRESULT(0);
+                        }
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}

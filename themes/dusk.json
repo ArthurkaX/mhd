@@ -1,0 +1,22 @@
+{
+  "name": "Dusk",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Dusk",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#0B0E14",
+          "surface": "#1A1F29",
+          "border": "#2D3640",
+          "text": "#B3B1AD",
+          "text.muted": "#707A8C",
+          "element.active": "#FF8F40",
+          "element.selected": "#222732",
+          "element.hover": "#1C212B"
+        }
+      }
+    }
+  ]
+}

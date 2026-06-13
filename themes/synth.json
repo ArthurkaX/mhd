@@ -1,0 +1,22 @@
+{
+  "name": "Synth",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Synth",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#1A1625",
+          "surface": "#262335",
+          "border": "#3D3550",
+          "text": "#E2D8F0",
+          "text.muted": "#9788B0",
+          "element.active": "#F97E72",
+          "element.selected": "#37294D",
+          "element.hover": "#2E2740"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "Code",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Code",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#0D1117",
+          "surface": "#161B22",
+          "border": "#30363D",
+          "text": "#E6EDF3",
+          "text.muted": "#8B949E",
+          "element.active": "#58A6FF",
+          "element.selected": "#1C2128",
+          "element.hover": "#1A1F26"
+        }
+      }
+    }
+  ]
+}

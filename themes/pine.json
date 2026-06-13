@@ -1,0 +1,22 @@
+{
+  "name": "Pine",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Pine",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#191724",
+          "surface": "#1F1D2E",
+          "border": "#312F44",
+          "text": "#E0DEF4",
+          "text.muted": "#908CAA",
+          "element.active": "#EB6F92",
+          "element.selected": "#26233A",
+          "element.hover": "#211F32"
+        }
+      }
+    }
+  ]
+}

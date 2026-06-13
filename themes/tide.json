@@ -1,0 +1,22 @@
+{
+  "name": "Tide",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Tide",
+      "appearance": "light",
+      "style": {
+        "colors": {
+          "background": "#EFF1F5",
+          "surface": "#E6E8EE",
+          "border": "#CCD0DA",
+          "text": "#2E3440",
+          "text.muted": "#6C7284",
+          "element.active": "#5C7CBA",
+          "element.selected": "#D8DEED",
+          "element.hover": "#DEE2EC"
+        }
+      }
+    }
+  ]
+}

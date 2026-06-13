@@ -1,0 +1,22 @@
+{
+  "name": "Tokyo",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Tokyo",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#1A1B26",
+          "surface": "#24283B",
+          "border": "#363B54",
+          "text": "#C0CBF5",
+          "text.muted": "#7A82A0",
+          "element.active": "#7AA2F7",
+          "element.selected": "#2F3550",
+          "element.hover": "#282D44"
+        }
+      }
+    }
+  ]
+}

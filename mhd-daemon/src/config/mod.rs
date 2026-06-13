@@ -5,6 +5,7 @@ pub mod editor_hittest;
 pub mod editor_key_combo;
 pub mod editor_layout;
 pub mod editor_paint;
+pub mod editor_provider_models_popup;
 pub mod editor_provider_popup;
 pub mod editor_search_dropdown;
 pub mod editor_state;

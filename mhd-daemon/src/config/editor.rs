@@ -61,18 +61,20 @@ use crate::config::editor_layout::{
 // Re‑exports for backward compatibility (used by other modules)
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
-    COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, COMBO_POPUP_WIDTH,
-    FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, WIN_HEIGHT_BASE, WIN_WIDTH_BASE,
-    WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
+    COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, FONT_BODY_SIZE,
+    FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, WIN_HEIGHT_BASE, WIN_WIDTH_BASE, WM_MOUSELEAVE,
+    WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_paint::{
     build_advanced_controls, build_general_controls, build_llm_proxy_controls,
     build_shortcuts_controls, paint_page,
 };
-pub use crate::config::editor_state::{
+pub use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
+use crate::config::editor_state::{
     ButtonStyle, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState, UIBinding,
     UiProvider,
 };
+pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
 
 const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "Advanced"];
@@ -212,11 +214,13 @@ pub fn show_config_editor(handle: AppHandle) {
         theme: theme.clone(),
         hwnd,
         layout,
-        theme_names,
+        theme_names: theme_names.clone(),
         theme_sel,
         hover_sel: None,
         combo_popup: None,
         combo_open,
+        theme_search_items: build_theme_search_items(&theme_names),
+        theme_dropdown: SearchDropdownState::default(),
         active_section: SettingsPage::General,
         autostart: crate::autostart::is_autostart_enabled(),
         notes_dir,
@@ -240,12 +244,14 @@ pub fn show_config_editor(handle: AppHandle) {
                         } else {
                             String::new()
                         },
+                        models: Vec::new(),
                     })
                     .collect(),
                 Err(_) => vec![UiProvider {
                     name: "Default".into(),
                     endpoint: "http://89.22.226.188:8080/v1".into(),
                     api_key: upstream_key,
+                    models: Vec::new(),
                 }],
             }
         },
@@ -351,6 +357,14 @@ fn build_theme_list(_default_theme: &NativeTheme) -> Vec<String> {
     });
     names.dedup();
     names
+}
+
+fn build_theme_search_items(names: &[String]) -> Vec<SearchDropdownItem> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| SearchDropdownItem::new(i, name.clone(), vec![name.to_lowercase()]))
+        .collect()
 }
 
 fn load_ui_bindings(handle: &AppHandle) -> Vec<UIBinding> {
@@ -668,6 +682,11 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let rgn = CreateRectRgn(0, 0, lay.win_w(), lay.win_h());
         SelectClipRgn(dib_dc, rgn);
         let _ = DeleteObject(rgn);
+    }
+
+    // ── Theme search dropdown overlay (on top of page content) ───────
+    if state.active_section == SettingsPage::General && state.theme_dropdown.is_open {
+        draw_theme_dropdown(dib_dc, bits, lay, state, body_font, small_font);
     }
 
     // Separator above footer
@@ -1152,6 +1171,64 @@ unsafe extern "system" fn settings_wndproc(
                 }
                 let state = &mut *state_ptr;
 
+                // ── Theme search dropdown hit test (manual overlay) ───
+                if state.theme_dropdown.is_open && state.active_section == SettingsPage::General {
+                    let scale = state.layout.scale();
+                    let combo_x = state.layout.combo_x();
+                    let combo_y = state.layout.combo_y();
+                    let combo_w = state.layout.combo_w();
+                    let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * scale) as i32);
+                    let dropdown_top = combo_y + combo_h;
+                    let item_h = (24.0 * scale) as i32;
+                    let search_h = (30.0 * scale) as i32;
+                    let visible_rows = 8;
+                    let filtered_count = state
+                        .theme_dropdown
+                        .filtered_count(&state.theme_search_items);
+                    let max_visible = filtered_count.min(visible_rows);
+                    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+                    let dropdown_w = combo_w;
+
+                    // Click on the combo button itself → let it reach normal ThemeCombo handler
+                    let on_combo_button = y >= combo_y
+                        && y < combo_y + combo_h
+                        && x >= combo_x
+                        && x < combo_x + combo_w;
+
+                    // Click inside the dropdown popup area
+                    let on_dropdown = y >= dropdown_top
+                        && y < dropdown_top + dropdown_h
+                        && x >= combo_x
+                        && x < combo_x + dropdown_w;
+
+                    if on_combo_button {
+                        // Fall through to normal hit test (triggers toggle)
+                    } else if on_dropdown {
+                        if y >= dropdown_top + search_h {
+                            // Click on a list item
+                            let item_idx = (y - (dropdown_top + search_h)) / item_h;
+                            let visible_items = state
+                                .theme_dropdown
+                                .visible_items(&state.theme_search_items, visible_rows);
+                            if (item_idx as usize) < visible_items.len() {
+                                let selected_id = visible_items[item_idx as usize].id;
+                                if selected_id < state.theme_names.len() {
+                                    state.theme_sel = selected_id;
+                                    apply_settings(state);
+                                    close_combo_popup(state);
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                        }
+                        return LRESULT(0);
+                    } else {
+                        // Click outside dropdown → close it and consume the click
+                        close_combo_popup(state);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+                }
+
                 let hit = hit_test_settings(state, x, y);
                 match hit {
                     SettingsHit::Tab(ti) => {
@@ -1292,7 +1369,7 @@ unsafe extern "system" fn settings_wndproc(
                         }
                     }
                     // ── LLM Proxy: provider list ─────────────────────
-                    SettingsHit::ProviderRow(i) => {
+                    SettingsHit::ProviderRow(i) | SettingsHit::ProviderEditBtn(i) => {
                         close_combo_popup(state);
                         close_kind_popup(state);
                         if i < state.providers.len() {
@@ -1305,6 +1382,24 @@ unsafe extern "system" fn settings_wndproc(
                                 )
                             {
                                 state.providers[i] = updated;
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                        }
+                    }
+                    SettingsHit::ProviderModelsBtn(i) => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if i < state.providers.len() {
+                            let models = state.providers[i].models.clone();
+                            if let Some(updated_models) =
+                                crate::config::editor_provider_models_popup::open_models_popup(
+                                    hwnd,
+                                    &state.theme,
+                                    state.layout.scale(),
+                                    models,
+                                )
+                            {
+                                state.providers[i].models = updated_models;
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                         }
@@ -1682,6 +1777,18 @@ unsafe extern "system" fn settings_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
+
+                    // Theme search dropdown scroll
+                    if state.theme_dropdown.is_open && state.active_section == SettingsPage::General
+                    {
+                        let delta_rows = if delta > 0 { -3 } else { 3 };
+                        state
+                            .theme_dropdown
+                            .scroll_by(delta_rows, &state.theme_search_items, 8);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+
                     let lay = state.layout;
                     let content_h = page_control_content_height(state, &lay);
                     let max_scroll = (content_h - lay.content_visible_h()).max(0);
@@ -1921,6 +2028,54 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
+
+                    // Theme search dropdown keyboard handling
+                    if state.theme_dropdown.is_open {
+                        let vk = wparam.0 as u32;
+                        match vk {
+                            0x0D /* VK_RETURN */ => {
+                                // Select first visible item (or current selection)
+                                let visible = state.theme_dropdown.visible_items(
+                                    &state.theme_search_items,
+                                    8,
+                                );
+                                if let Some(first) = visible.first() {
+                                    if first.id < state.theme_names.len() {
+                                        state.theme_sel = first.id;
+                                        apply_settings(state);
+                                        close_combo_popup(state);
+                                        paint_settings(hwnd, state_ptr, &state.layout);
+                                    }
+                                }
+                            }
+                            0x1B /* VK_ESCAPE */ => {
+                                close_combo_popup(state);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x08 /* VK_BACK */ => {
+                                state.theme_dropdown.backspace(&state.theme_search_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x26 /* VK_UP */ => {
+                                state.theme_dropdown.scroll_by(-1, &state.theme_search_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x28 /* VK_DOWN */ => {
+                                state.theme_dropdown.scroll_by(1, &state.theme_search_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x21 /* VK_PRIOR */ => {
+                                state.theme_dropdown.scroll_by(-8, &state.theme_search_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x22 /* VK_NEXT */ => {
+                                state.theme_dropdown.scroll_by(8, &state.theme_search_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            _ => {}
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -1943,6 +2098,18 @@ unsafe extern "system" fn settings_wndproc(
                             }
                             state.edit_text.insert(state.edit_cursor, ch);
                             state.edit_cursor += 1;
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                        return LRESULT(0);
+                    }
+
+                    // Theme search dropdown character input
+                    if state.theme_dropdown.is_open {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            state
+                                .theme_dropdown
+                                .input_char(ch, &state.theme_search_items, 8);
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                         return LRESULT(0);
@@ -2391,73 +2558,26 @@ fn loword(dw: u32) -> u16 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Combo popup management
+// Theme search dropdown
 // ═══════════════════════════════════════════════════════════════════════
 
 fn toggle_combo_popup(state: &mut SettingsState) {
     close_kind_popup(state);
     if state.combo_open.load(Ordering::SeqCst) {
         close_combo_popup(state);
+        paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
     } else {
-        open_combo_popup(state);
-    }
-}
-
-fn open_combo_popup(state: &mut SettingsState) {
-    if state.combo_open.load(Ordering::SeqCst) {
-        return;
-    }
-
-    let parent = state.hwnd;
-    let lay = state.layout;
-    let state_ptr = state as *mut SettingsState;
-
-    let mut combo_pt = POINT {
-        x: lay.combo_x(),
-        y: lay.combo_y(),
-    };
-    unsafe {
-        let _ = ClientToScreen(parent, &mut combo_pt);
-    }
-
-    let popup_w = COMBO_POPUP_WIDTH.max((COMBO_POPUP_WIDTH as f32 * lay.scale()) as i32);
-    let item_h = COMBO_POPUP_ITEM_HEIGHT.max((COMBO_POPUP_ITEM_HEIGHT as f32 * lay.scale()) as i32);
-    let count = state
-        .theme_names
-        .len()
-        .min(COMBO_POPUP_MAX_VISIBLE as usize);
-    let popup_h = (count as i32) * item_h + 2;
-
-    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
-    let hinstance: HINSTANCE = hinst.into();
-    let cls_name = to_utf16_z("mhd_combo_popup_cls");
-
-    let popup = unsafe {
-        CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            PCWSTR::from_raw(cls_name.as_ptr()),
-            PCWSTR::null(),
-            WS_POPUP,
-            combo_pt.x,
-            combo_pt.y + COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * lay.scale()) as i32),
-            popup_w,
-            popup_h,
-            parent,
-            HMENU::default(),
-            hinstance,
-            None,
-        )
-    };
-
-    let Ok(popup) = popup else { return };
-    unsafe {
-        let _ = SetWindowLongPtrW(popup, GWLP_USERDATA, state_ptr as isize);
-    }
-
-    state.combo_popup = Some(popup);
-    state.combo_open.store(true, Ordering::SeqCst);
-    unsafe {
-        let _ = ShowWindow(popup, SW_SHOWNA);
+        // Destroy old HWND popup if any (legacy), then open search dropdown
+        if let Some(popup) = state.combo_popup.take() {
+            unsafe {
+                DestroyWindow(popup).ok();
+            }
+        }
+        state.combo_open.store(true, Ordering::SeqCst);
+        state
+            .theme_dropdown
+            .open(&state.theme_search_items, state.theme_sel, 8);
+        paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
     }
 }
 
@@ -2468,6 +2588,7 @@ fn close_combo_popup(state: &mut SettingsState) {
         }
     }
     state.combo_open.store(false, Ordering::SeqCst);
+    state.theme_dropdown.close();
 }
 
 fn close_kind_popup(_state: &mut SettingsState) {
@@ -2610,6 +2731,192 @@ fn pick_program_file(parent: HWND) -> Option<String> {
         }
     }
     None
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Theme search dropdown painting
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Draw the theme search dropdown overlay.
+fn draw_theme_dropdown(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    lay: &Layout,
+    state: &SettingsState,
+    body_font: HFONT,
+    small_font: HFONT,
+) {
+    let theme = &state.theme;
+    let scale = lay.scale();
+    let combo_x = lay.combo_x();
+    let combo_y = lay.combo_y();
+    let combo_w = lay.combo_w();
+    let combo_h = COMBO_HIT_HEIGHT.max((COMBO_HIT_HEIGHT as f32 * scale) as i32);
+    let dropdown_top = combo_y + combo_h;
+    let item_h = (24.0 * scale) as i32;
+    let search_h = (30.0 * scale) as i32;
+    let visible_rows = 8;
+    let filtered_count = state
+        .theme_dropdown
+        .filtered_count(&state.theme_search_items);
+    let max_visible = filtered_count.min(visible_rows);
+    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+    let dropdown_w = combo_w;
+
+    let dropdown_rect = RECT {
+        left: combo_x,
+        top: dropdown_top,
+        right: combo_x + dropdown_w,
+        bottom: dropdown_top + dropdown_h,
+    };
+
+    // Background
+    let bg = theme.surface.blend_over(theme.background);
+    draw_rounded_rect_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
+    );
+
+    // Search field
+    let search_rect = RECT {
+        left: combo_x + 4,
+        top: dropdown_top + 2,
+        right: combo_x + dropdown_w - 4,
+        bottom: dropdown_top + 2 + search_h,
+    };
+    let search_bg = theme.background;
+    draw_rounded_rect_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        search_bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
+    );
+
+    unsafe {
+        let _ = SelectObject(dib_dc, body_font);
+        let search_text = if state.theme_dropdown.filter.is_empty() {
+            "Search themes…"
+        } else {
+            state.theme_dropdown.filter.as_str()
+        };
+        let _ = SetTextColor(
+            dib_dc,
+            if state.theme_dropdown.filter.is_empty() {
+                theme.text_muted
+            } else {
+                theme.text
+            }
+            .to_colorref(),
+        );
+        let mut search_wz = to_utf16_z(search_text);
+        let mut search_text_rc = RECT {
+            left: search_rect.left + 4,
+            top: search_rect.top,
+            right: search_rect.right - 4,
+            bottom: search_rect.bottom,
+        };
+        let _ = DrawTextW(
+            dib_dc,
+            &mut search_wz,
+            &mut search_text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // Items list
+    let visible_items = state
+        .theme_dropdown
+        .visible_items(&state.theme_search_items, visible_rows);
+    let list_top = dropdown_top + 2 + search_h;
+
+    for (i, item) in visible_items.iter().enumerate() {
+        let item_rect = RECT {
+            left: combo_x + 4,
+            top: list_top + i as i32 * item_h,
+            right: combo_x + dropdown_w - 4,
+            bottom: list_top + (i as i32 + 1) * item_h,
+        };
+
+        let is_selected = state.theme_sel == item.id;
+        let highlight = if is_selected {
+            Some(theme.selected)
+        } else {
+            None
+        };
+        if let Some(c) = highlight {
+            draw_rounded_rect_in_buffer(
+                bits,
+                lay.win_w(),
+                lay.win_h(),
+                item_rect,
+                (2.0 * scale) as i32,
+                c,
+            );
+        }
+
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            let mut label_wz = to_utf16_z(&item.label);
+            let mut label_rc = RECT {
+                left: item_rect.left + 4,
+                top: item_rect.top,
+                right: item_rect.right - 4,
+                bottom: item_rect.bottom,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut label_wz,
+                &mut label_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
+
+    // No results message
+    if visible_items.is_empty() {
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            let mut empty_wz = to_utf16_z("No matching themes");
+            let mut empty_rc = RECT {
+                left: combo_x + 4,
+                top: list_top,
+                right: combo_x + dropdown_w - 4,
+                bottom: list_top + item_h,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut empty_wz,
+                &mut empty_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

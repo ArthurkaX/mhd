@@ -1,0 +1,22 @@
+{
+  "name": "Glacier",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Glacier",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#2E3440",
+          "surface": "#3B4252",
+          "border": "#4C566A",
+          "text": "#ECEFF4",
+          "text.muted": "#81A1C1",
+          "element.active": "#88C0D0",
+          "element.selected": "#434C5E",
+          "element.hover": "#3B4252"
+        }
+      }
+    }
+  ]
+}

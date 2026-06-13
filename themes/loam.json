@@ -1,0 +1,22 @@
+{
+  "name": "Loam",
+  "author": "mhd-community",
+  "themes": [
+    {
+      "name": "Loam",
+      "appearance": "dark",
+      "style": {
+        "colors": {
+          "background": "#282828",
+          "surface": "#3C3836",
+          "border": "#504945",
+          "text": "#EBDBB2",
+          "text.muted": "#A89984",
+          "element.active": "#D79921",
+          "element.selected": "#3C3836",
+          "element.hover": "#32302F"
+        }
+      }
+    }
+  ]
+}

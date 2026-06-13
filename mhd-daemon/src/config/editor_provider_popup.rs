@@ -6,6 +6,8 @@
 //! no recordings.
 
 use std::ffi::c_void;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -19,12 +21,12 @@ use crate::config::editor_theme::{
     draw_button, draw_plain_label, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
     to_utf16_z,
 };
-use crate::core::native_theme::NativeTheme;
+use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const POPUP_WIDTH_BASE: i32 = 460;
-const POPUP_HEIGHT_BASE: i32 = 320;
+const POPUP_HEIGHT_BASE: i32 = 420;
 const POPUP_HEADER_HEIGHT_BASE: i32 = 48;
 const POPUP_FOOTER_HEIGHT_BASE: i32 = 52;
 const POPUP_RADIUS_BASE: f32 = 12.0;
@@ -32,6 +34,11 @@ const POPUP_PADDING: i32 = 20;
 const POPUP_FIELD_HEIGHT: i32 = 30;
 const POPUP_LABEL_WIDTH: i32 = 80;
 const POPUP_ROW_HEIGHT: i32 = 32;
+
+/// Custom message posted by the test worker thread back to the popup.
+/// `WPARAM` = 0 (in-progress), 1 (success), 2 (failure).
+/// `LPARAM` = pointer to a heap-allocated String with the status message.
+const WM_PROVIDER_TEST_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
 
 // ── Which field is currently being inline-edited ─────────────────────
 
@@ -54,15 +61,25 @@ struct ProviderPopupState {
     name: String,
     endpoint: String,
     api_key: String,
+    models: Vec<String>,
     _original_name: String,
     _original_endpoint: String,
     _original_api_key: String,
+    _original_models: Vec<String>,
 
     // Inline editing state
     editing_field: EditField,
     edit_text: String,
     edit_cursor: usize,
     edit_old_value: String,
+
+    // Test state
+    test_in_progress: bool,
+    test_success: bool,
+    test_message: String,
+    /// Shared flag that the background thread checks periodically.
+    /// Set to true when the popup closes.
+    cancelled: Arc<AtomicBool>,
 
     // UI state
     theme: NativeTheme,
@@ -80,6 +97,7 @@ enum ProviderPopupHit {
     NameField,
     EndpointField,
     ApiKeyField,
+    TestBtn,
     SaveBtn,
     CancelBtn,
 }
@@ -138,9 +156,14 @@ pub fn open_provider_popup(
 
     let theme = unsafe { (*parent_ptr).theme.clone() };
 
-    let (name, endpoint, api_key) = match provider {
-        Some(ref p) => (p.name.clone(), p.endpoint.clone(), p.api_key.clone()),
-        None => (String::new(), String::new(), String::new()),
+    let (name, endpoint, api_key, models) = match provider {
+        Some(ref p) => (
+            p.name.clone(),
+            p.endpoint.clone(),
+            p.api_key.clone(),
+            p.models.clone(),
+        ),
+        None => (String::new(), String::new(), String::new(), Vec::new()),
     };
 
     let popup_state = Box::new(ProviderPopupState {
@@ -150,13 +173,19 @@ pub fn open_provider_popup(
         name: name.clone(),
         endpoint: endpoint.clone(),
         api_key: api_key.clone(),
+        models: models.clone(),
         _original_name: name,
         _original_endpoint: endpoint,
         _original_api_key: api_key,
+        _original_models: models,
         editing_field: EditField::None,
         edit_text: String::new(),
         edit_cursor: 0,
         edit_old_value: String::new(),
+        test_in_progress: false,
+        test_success: false,
+        test_message: String::new(),
+        cancelled: Arc::new(AtomicBool::new(false)),
         theme,
         scale,
         win_w,
@@ -269,13 +298,17 @@ pub fn open_provider_popup(
                 name: (*popup_ptr).name.clone(),
                 endpoint: (*popup_ptr).endpoint.clone(),
                 api_key: (*popup_ptr).api_key.clone(),
+                models: (*popup_ptr).models.clone(),
             })
         }
     } else {
         None
     };
 
-    // Cleanup
+    // Cleanup — signal the test thread to stop
+    unsafe {
+        (*popup_ptr).cancelled.store(true, Ordering::SeqCst);
+    }
     if !hwnd.is_invalid() {
         unsafe {
             DestroyWindow(hwnd).ok();
@@ -561,9 +594,98 @@ unsafe fn paint_provider_popup(hwnd: HWND, state_ptr: *mut ProviderPopupState) {
             if ak_is_editing { state.edit_cursor } else { 0 },
         );
 
-        // ── Footer buttons ────────────────────────────────────────
+        // ── Test button & status ───────────────────────────────────
         let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
         let footer_y = h - footer_h;
+
+        let test_y = apikey_label_y + row_h + (12.0 * scale) as i32;
+        let test_btn_h = (28.0 * scale) as i32;
+        let test_btn_w = (100.0 * scale) as i32;
+        let test_btn_x = field_x;
+
+        let is_test_hovered = state.hovered_target == ProviderPopupHit::TestBtn;
+
+        if state.test_in_progress {
+            // Dimmed button while test is running
+            draw_button(
+                dib_dc,
+                bits,
+                w,
+                h,
+                test_btn_x,
+                test_y,
+                test_btn_w,
+                test_btn_h,
+                "Testing…",
+                theme,
+                body_font,
+                false,
+                ButtonStyle::Secondary,
+            );
+        } else {
+            draw_button(
+                dib_dc,
+                bits,
+                w,
+                h,
+                test_btn_x,
+                test_y,
+                test_btn_w,
+                test_btn_h,
+                "Test Connection",
+                theme,
+                body_font,
+                is_test_hovered,
+                ButtonStyle::Secondary,
+            );
+        }
+
+        // Test status message
+        if !state.test_message.is_empty() {
+            let status_y = test_y + test_btn_h + (6.0 * scale) as i32;
+            let status_h = (footer_y - status_y - (4.0 * scale) as i32).max(0);
+            if status_h > 0 {
+                // Draw a subtle background box for the status text
+                let status_rect = RECT {
+                    left: field_x,
+                    top: status_y,
+                    right: w - pad,
+                    bottom: status_y + status_h,
+                };
+                draw_rounded_rect_in_buffer(
+                    bits,
+                    w,
+                    h,
+                    status_rect,
+                    (4.0 * scale) as i32,
+                    theme.surface.blend_over(theme.background),
+                );
+
+                let status_color = if state.test_in_progress {
+                    theme.text_muted
+                } else if state.test_success {
+                    Argb::new(255, 80, 220, 120) // green
+                } else {
+                    Argb::new(255, 255, 100, 100) // red
+                };
+
+                SelectObject(dib_dc, small_font);
+                SetTextColor(dib_dc, status_color.to_colorref());
+                let mut status_text = to_utf16_z(&state.test_message);
+                let mut status_text_rc = RECT {
+                    left: status_rect.left + (6.0 * scale) as i32,
+                    top: status_rect.top + (4.0 * scale) as i32,
+                    right: status_rect.right - (6.0 * scale) as i32,
+                    bottom: status_rect.bottom - (4.0 * scale) as i32,
+                };
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut status_text,
+                    &mut status_text_rc,
+                    DT_LEFT | DT_WORDBREAK,
+                );
+            }
+        }
         let sep2_brush = CreateSolidBrush(theme.border.to_colorref());
         FillRect(
             dib_dc,
@@ -713,6 +835,20 @@ fn hit_test_popup(state: &ProviderPopupState, x: i32, y: i32) -> ProviderPopupHi
         return ProviderPopupHit::ApiKeyField;
     }
 
+    // Test button
+    let test_y = apikey_label_y + row_h + (12.0 * scale) as i32;
+    let test_btn_h = (28.0 * scale) as i32;
+    let test_btn_w = (100.0 * scale) as i32;
+    let test_btn_x = field_x;
+    if !state.test_in_progress
+        && y >= test_y
+        && y < test_y + test_btn_h
+        && x >= test_btn_x
+        && x < test_btn_x + test_btn_w
+    {
+        return ProviderPopupHit::TestBtn;
+    }
+
     ProviderPopupHit::None
 }
 
@@ -756,6 +892,236 @@ fn cancel_edit_field(state: &mut ProviderPopupState) {
     state.edit_text = state.edit_old_value.clone();
     state.edit_cursor = state.edit_old_value.len();
     commit_edit_field(state);
+}
+
+// ── Background provider test ─────────────────────────────────────────
+
+/// Post an update from the background thread to the popup window.
+/// `kind`: 0 = in-progress, 1 = success (final), 2 = failure (final).
+fn post_test_update(hwnd: HWND, kind: u32, message: String) {
+    let msg_ptr = Box::into_raw(Box::new(message));
+    let _ = unsafe {
+        PostMessageW(
+            hwnd,
+            WM_PROVIDER_TEST_UPDATE,
+            WPARAM(kind as usize),
+            LPARAM(msg_ptr as isize),
+        )
+    };
+}
+
+/// Run on a background thread to test a provider endpoint.
+/// Posts `WM_PROVIDER_TEST_UPDATE` messages back to `hwnd` for each step.
+fn run_provider_test(endpoint: &str, api_key: &str, cancelled: &AtomicBool, hwnd: HWND) {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            post_test_update(hwnd, 2, format!("Failed to create HTTP client: {e}"));
+            return;
+        }
+    };
+
+    let base = endpoint.trim_end_matches('/');
+    let models_url = format!("{base}/models");
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if !api_key.is_empty() {
+        let Ok(hdr) = format!("Bearer {api_key}").parse::<reqwest::header::HeaderValue>() else {
+            post_test_update(hwnd, 2, "Invalid API key format".into());
+            return;
+        };
+        headers.insert(reqwest::header::AUTHORIZATION, hdr);
+    }
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+
+    if cancelled.load(Ordering::SeqCst) {
+        post_test_update(hwnd, 2, "Test cancelled".into());
+        return;
+    }
+
+    // ── Step 1: Fetch models ────────────────────────────────────────
+    post_test_update(hwnd, 0, "Step 1/3: Fetching available models…".into());
+
+    let resp = match client.get(&models_url).headers(headers.clone()).send() {
+        Ok(r) => r,
+        Err(e) => {
+            post_test_update(hwnd, 2, format!("Step 1/3: Connection failed — {e}"));
+            return;
+        }
+    };
+
+    if !resp.status().is_success() {
+        post_test_update(
+            hwnd,
+            2,
+            format!("Step 1/3: Models endpoint returned HTTP {}", resp.status()),
+        );
+        return;
+    }
+
+    let body: serde_json::Value = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            post_test_update(hwnd, 2, format!("Step 1/3: Invalid JSON — {e}"));
+            return;
+        }
+    };
+
+    // Extract model list — OpenAI returns { "data": [...] }, some return a plain array.
+    let models_list: &[serde_json::Value] = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| body.as_array())
+        .map_or(&[], |v| v.as_slice());
+
+    let model_count = models_list.len();
+    if model_count == 0 {
+        post_test_update(
+            hwnd,
+            1,
+            "Connected! No models found (check the endpoint URL).".into(),
+        );
+        return;
+    }
+
+    if cancelled.load(Ordering::SeqCst) {
+        post_test_update(hwnd, 2, "Test cancelled".into());
+        return;
+    }
+
+    // ── Step 2: Pick a model (flash preferred) ──────────────────────
+    let chosen = models_list
+        .iter()
+        .find(|m| {
+            m.get("id")
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_lowercase().contains("flash"))
+                .unwrap_or(false)
+        })
+        .or_else(|| models_list.first());
+
+    let model_id = match chosen.and_then(|m| m.get("id").and_then(|id| id.as_str())) {
+        Some(id) => id,
+        None => {
+            post_test_update(
+                hwnd,
+                1,
+                format!("Connected! {model_count} models found, but none have an 'id' field."),
+            );
+            return;
+        }
+    };
+
+    post_test_update(
+        hwnd,
+        0,
+        format!("Step 2/3: {model_count} models found — using {model_id}…"),
+    );
+
+    if cancelled.load(Ordering::SeqCst) {
+        post_test_update(hwnd, 2, "Test cancelled".into());
+        return;
+    }
+
+    // ── Step 3: Send ping ───────────────────────────────────────────
+    post_test_update(hwnd, 0, format!("Step 3/3: Sending ping to {model_id}…"));
+
+    let chat_url = format!("{base}/chat/completions");
+    let ping_body = serde_json::json!({
+        "model": model_id,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 5,
+        "stream": false,
+    });
+
+    let start = std::time::Instant::now();
+    let ping_resp = match client
+        .post(&chat_url)
+        .headers(headers)
+        .json(&ping_body)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            post_test_update(
+                hwnd,
+                2,
+                format!("Models OK ({model_count}, using {model_id}) but ping failed: {e}"),
+            );
+            return;
+        }
+    };
+
+    if cancelled.load(Ordering::SeqCst) {
+        post_test_update(hwnd, 2, "Test cancelled".into());
+        return;
+    }
+
+    let elapsed = start.elapsed();
+    let ms = elapsed.as_millis();
+
+    if !ping_resp.status().is_success() {
+        post_test_update(
+            hwnd,
+            2,
+            format!(
+                "Models OK ({model_count}, using {model_id}) but ping returned HTTP {}",
+                ping_resp.status()
+            ),
+        );
+        return;
+    }
+
+    let ping_body: serde_json::Value = match ping_resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            post_test_update(
+                hwnd,
+                1,
+                format!(
+                    "Connected ({model_count}, using {model_id}) but ping response unparseable: {e}"
+                ),
+            );
+            return;
+        }
+    };
+
+    let content = ping_body
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("(no content)");
+
+    let has_pong = content.to_lowercase().contains("pong");
+
+    if has_pong {
+        post_test_update(
+            hwnd,
+            1,
+            format!(
+                "✓ All done!\n\
+                 • {model_count} models available\n\
+                 • Using model: {model_id}\n\
+                 • Ping → Pong in {ms}ms"
+            ),
+        );
+    } else {
+        post_test_update(
+            hwnd,
+            1,
+            format!(
+                "✓ Connected (no pong)\n\
+                 • {model_count} models available\n\
+                 • Using model: {model_id}\n\
+                 • Response in {ms}ms: {content}"
+            ),
+        );
+    }
 }
 
 // ── Window procedure ─────────────────────────────────────────────────
@@ -818,6 +1184,34 @@ unsafe extern "system" fn provider_popup_wndproc(
                 }
 
                 match hit {
+                    ProviderPopupHit::TestBtn => {
+                        // Commit any in-flight edit first
+                        commit_edit_field(state);
+
+                        // Don't start a new test if one is already running
+                        if !state.test_in_progress {
+                            let ep = state.endpoint.clone();
+                            let ak = state.api_key.clone();
+                            let cancelled = state.cancelled.clone();
+                            // HWND is !Send; pass the raw pointer as isize
+                            let test_hwnd = state.hwnd.0 as isize;
+
+                            state.test_in_progress = true;
+                            state.test_success = false;
+                            state.test_message = String::new();
+                            paint_provider_popup(hwnd, state_ptr);
+
+                            // Spawn a background thread to run the test
+                            std::thread::spawn(move || {
+                                run_provider_test(
+                                    &ep,
+                                    &ak,
+                                    &cancelled,
+                                    HWND(test_hwnd as *mut c_void),
+                                );
+                            });
+                        }
+                    }
                     ProviderPopupHit::NameField => {
                         begin_edit_field(state, EditField::Name);
                         paint_provider_popup(hwnd, state_ptr);
@@ -842,6 +1236,28 @@ unsafe extern "system" fn provider_popup_wndproc(
                         state.should_close = true;
                     }
                     ProviderPopupHit::None => {}
+                }
+                LRESULT(0)
+            }
+
+            WM_PROVIDER_TEST_UPDATE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ProviderPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    // Recover the heap-allocated message string
+                    let msg_ptr = lparam.0 as *mut String;
+                    if !msg_ptr.is_null() {
+                        let msg = Box::from_raw(msg_ptr);
+                        state.test_message = *msg;
+                    }
+                    let kind = wparam.0;
+                    if kind == 0 {
+                        // In-progress: keep test_in_progress true, preserve old test_success
+                    } else {
+                        state.test_success = kind == 1;
+                        state.test_in_progress = false;
+                    }
+                    paint_provider_popup(hwnd, state_ptr);
                 }
                 LRESULT(0)
             }
