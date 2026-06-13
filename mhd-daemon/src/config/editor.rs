@@ -232,19 +232,36 @@ pub fn show_config_editor(handle: AppHandle) {
             let upstream_key = llm_proxy::config::load_secrets()
                 .map(|s| s.upstream_key)
                 .unwrap_or_default();
+
+            // Load models and group them by provider name.
+            let models_by_provider: std::collections::HashMap<String, Vec<String>> = {
+                let mut map: std::collections::HashMap<String, Vec<String>> =
+                    std::collections::HashMap::new();
+                if let Ok(models) = llm_proxy::config::load_models() {
+                    for m in models {
+                        map.entry(m.provider).or_default().push(m.id);
+                    }
+                }
+                map
+            };
+
             match llm_proxy::config::load_providers() {
                 Ok(list) => list
                     .into_iter()
                     .enumerate()
-                    .map(|(i, p)| UiProvider {
-                        name: p.name,
-                        endpoint: p.endpoint,
-                        api_key: if i == 0 {
+                    .map(|(i, p)| {
+                        let api_key = if i == 0 {
                             upstream_key.clone()
                         } else {
                             String::new()
-                        },
-                        models: Vec::new(),
+                        };
+                        let models = models_by_provider.get(&p.name).cloned().unwrap_or_default();
+                        UiProvider {
+                            name: p.name,
+                            endpoint: p.endpoint,
+                            api_key,
+                            models,
+                        }
                     })
                     .collect(),
                 Err(_) => vec![UiProvider {
