@@ -278,7 +278,7 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         debug_btn_y,
         debug_btn_w,
         debug_btn_h,
-        if debug_on { "LOG" } else { "LOG" },
+        "Debug",
         theme,
         hfont_small,
         false,
