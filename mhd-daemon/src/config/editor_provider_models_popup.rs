@@ -1135,14 +1135,24 @@ fn run_single_model_test(
         .send()
     {
         Ok(r) => r,
-        Err(_) => return false,
+        Err(e) => {
+            eprintln!("mhd: model test failed for '{model_id}': {e}");
+            return false;
+        }
     };
 
     if cancelled.load(Ordering::SeqCst) {
         return false;
     }
 
-    resp.status().is_success()
+    let ok = resp.status().is_success();
+    if !ok {
+        eprintln!(
+            "mhd: model test for '{model_id}' returned HTTP {}",
+            resp.status()
+        );
+    }
+    ok
 }
 
 // ── Window procedure ─────────────────────────────────────────────────
