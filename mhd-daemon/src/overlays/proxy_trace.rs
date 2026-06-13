@@ -28,7 +28,7 @@ const HEADER_H_BASE: i32 = 28;
 const ROW_H_BASE: i32 = 22;
 const HIDE_TIMEOUT_MS: u32 = 60_000;
 const HIDE_TIMER_ID: usize = 1;
-const MAX_HEIGHT_RATIO: f32 = 0.85;
+const REFRESH_TIMER_ID: usize = 2;
 
 // ── Safe wrapper for the event handle ────────────────────────────────
 
@@ -39,29 +39,17 @@ unsafe impl Sync for SafeHandle {}
 // ── Toggle / show ───────────────────────────────────────────────────
 
 pub fn show(theme: &NativeTheme) {
-    use std::sync::Mutex;
-    static PANEL_STATE: Mutex<Option<(SafeHandle, Arc<AtomicBool>)>> = Mutex::new(None);
-    let mut guard = PANEL_STATE.lock().unwrap();
-    if let Some((ref hdl, ref dying)) = *guard {
-        // Toggle: if visible, close; if hidden, show
-        unsafe { SetEvent(hdl.0) };
-        return;
-    }
-
     let event = unsafe { CreateEventW(None, false, false, None).unwrap() };
+    let handle = SafeHandle(event);
     let dying = Arc::new(AtomicBool::new(false));
-    let event_clone = SafeHandle(event);
-    let dying_clone = dying.clone();
     let theme_clone = theme.clone();
 
     std::thread::Builder::new()
         .name("mhd-proxy-trace".into())
         .spawn(move || {
-            panel_thread(event_clone, dying_clone, theme_clone);
+            panel_thread(handle, dying, theme_clone);
         })
         .ok();
-
-    *guard = Some((SafeHandle(event), dying));
 }
 
 fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
@@ -133,6 +121,11 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
         );
     }
 
+    // Start auto-refresh timer (1 second)
+    unsafe {
+        let _ = SetTimer(hwnd, REFRESH_TIMER_ID, 1000, None);
+    }
+
     // Paint
     paint_panel(hwnd, scale, win_w, win_h);
 
@@ -170,7 +163,19 @@ fn primary_monitor_work_rect() -> RECT {
     crate::renderer::primary_monitor_work_rect()
 }
 
-fn paint_panel(hwnd: HWND, scale: f32, win_w: i32, win_h: i32) {
+fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
+    if win_w == 0 || win_h == 0 {
+        let mut wr = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(hwnd, &mut wr);
+        }
+        win_w = wr.right - wr.left;
+        win_h = wr.bottom - wr.top;
+        if scale == 0.0 {
+            let dpi = unsafe { GetDpiForWindow(hwnd) as f32 };
+            scale = dpi / 96.0;
+        }
+    }
     let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme };
     if state_ptr.is_null() {
         return;
@@ -183,6 +188,7 @@ fn paint_panel(hwnd: HWND, scale: f32, win_w: i32, win_h: i32) {
     };
     let dib_dc = frame.dc();
     let bits = frame.pixels_mut().as_mut_ptr() as *mut c_void;
+    let _ = bits;
 
     let radius = (RADIUS_BASE * scale) as i32;
     crate::osd::draw_rounded_rect(frame.pixels_mut(), win_w, win_h, radius, theme.background);
@@ -406,6 +412,11 @@ unsafe extern "system" fn panel_wndproc(
         }
         WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
             let _ = ShowWindow(hwnd, SW_HIDE);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == REFRESH_TIMER_ID => {
+            // Auto-refresh trace every second
+            paint_panel(hwnd, 0.0, 0, 0);
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 as u32 == 0x1B /* VK_ESCAPE */ => {
