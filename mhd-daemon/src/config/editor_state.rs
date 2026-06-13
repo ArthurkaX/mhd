@@ -154,6 +154,10 @@ pub struct SettingsState {
     pub bindings: Vec<UIBinding>,
     /// List of providers being edited (LLM Proxy page).
     pub providers: Vec<UiProvider>,
+    /// Anthropic API key for native passthrough (global proxy setting).
+    pub anthropic_key: String,
+    /// Proxy bind address like "127.0.0.1:3456".
+    pub proxy_bind_address: String,
     /// Vertical scroll offset for the content area (all pages).
     pub content_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)

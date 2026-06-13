@@ -126,11 +126,11 @@ impl Drop for ProxyControl {
 /// target changes there.
 pub fn start_embedded(port: u16) -> std::io::Result<ProxyControl> {
     let cfg = load_config().map_err(|e| std::io::Error::other(e.to_string()))?;
-    start_embedded_with(cfg, port, true)
+    start_embedded_with(cfg, port, true, "127.0.0.1")
 }
 
 /// Start the proxy embedded in the current process from an explicit config,
-/// listening on `127.0.0.1:<port>`. Spawns a dedicated thread with its own Tokio
+/// listening on `<bind_address>:<port>`. Spawns a dedicated thread with its own Tokio
 /// runtime and blocks only until the listener is bound (or fails).
 ///
 /// `persist` controls whether runtime target changes are written back to the
@@ -140,6 +140,7 @@ pub fn start_embedded_with(
     mut cfg: Config,
     port: u16,
     persist: bool,
+    bind_address: &str,
 ) -> std::io::Result<ProxyControl> {
     // Env-var fallbacks for keys (handy in dev / CI).
     apply_env_fallbacks(&mut cfg);
@@ -151,6 +152,7 @@ pub fn start_embedded_with(
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::io::Result<()>>();
 
     let server_state = state.clone();
+    let bind_addr = bind_address.to_string();
     let join = std::thread::Builder::new()
         .name("llm-proxy-server".into())
         .spawn(move || {
@@ -166,7 +168,20 @@ pub fn start_embedded_with(
             };
 
             rt.block_on(async move {
-                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                let ip: std::net::IpAddr = if bind_addr.is_empty() {
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
+                } else {
+                    match bind_addr.parse() {
+                        Ok(ip) => ip,
+                        Err(_) => {
+                            let _ = ready_tx.send(Err(std::io::Error::other(format!(
+                                "invalid bind address: {bind_addr}"
+                            ))));
+                            return;
+                        }
+                    }
+                };
+                let addr = std::net::SocketAddr::new(ip, port);
                 let listener = match tokio::net::TcpListener::bind(addr).await {
                     Ok(l) => l,
                     Err(e) => {

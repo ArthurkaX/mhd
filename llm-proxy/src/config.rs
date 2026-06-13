@@ -56,6 +56,10 @@ pub struct Settings {
     /// Debug log level: "none", "minimal", "maximal".
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Bind IP address.
+    #[serde(default = "default_bind_ip")]
+    pub bind_ip: String,
 }
 
 impl Default for Settings {
@@ -69,6 +73,7 @@ impl Default for Settings {
             haiku_target: default_haiku_target(),
             fable_target: default_fable_target(),
             log_level: default_log_level(),
+            bind_ip: default_bind_ip(),
         }
     }
 }
@@ -152,6 +157,7 @@ impl Config {
             haiku_target: self.haiku_target.clone(),
             fable_target: self.fable_target.clone(),
             log_level: self.log_level.clone(),
+            bind_ip: String::new(),
         }
     }
 
@@ -214,6 +220,10 @@ fn default_fable_target() -> String {
 
 fn default_log_level() -> String {
     "none".to_string()
+}
+
+fn default_bind_ip() -> String {
+    "127.0.0.1".to_string()
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────

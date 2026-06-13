@@ -41,7 +41,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         fable_target: cfg.fable.clone(),
         log_level: cfg.log_level.clone(),
     };
-    match llm_proxy::start_embedded_with(pcfg, cfg.port, false) {
+    match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
             LAST_PORT.store(cfg.port, Ordering::Relaxed);
             *guard = Some(control);

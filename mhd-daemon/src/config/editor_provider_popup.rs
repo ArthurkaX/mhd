@@ -26,13 +26,13 @@ use crate::core::native_theme::{Argb, NativeTheme};
 // ── Constants ────────────────────────────────────────────────────────
 
 const POPUP_WIDTH_BASE: i32 = 460;
-const POPUP_HEIGHT_BASE: i32 = 420;
+const POPUP_HEIGHT_BASE: i32 = 520;
 const POPUP_HEADER_HEIGHT_BASE: i32 = 48;
 const POPUP_FOOTER_HEIGHT_BASE: i32 = 52;
 const POPUP_RADIUS_BASE: f32 = 12.0;
 const POPUP_PADDING: i32 = 20;
 const POPUP_FIELD_HEIGHT: i32 = 30;
-const POPUP_LABEL_WIDTH: i32 = 80;
+const POPUP_LABEL_WIDTH: i32 = 100;
 const POPUP_ROW_HEIGHT: i32 = 32;
 
 /// Custom message posted by the test worker thread back to the popup.
@@ -48,6 +48,8 @@ enum EditField {
     Name,
     Endpoint,
     ApiKey,
+    AnthropicKey,
+    BindAddress,
 }
 
 // ── Popup state ──────────────────────────────────────────────────────
@@ -61,10 +63,14 @@ struct ProviderPopupState {
     name: String,
     endpoint: String,
     api_key: String,
+    anthropic_key: String,
+    bind_address: String,
     models: Vec<String>,
     _original_name: String,
     _original_endpoint: String,
     _original_api_key: String,
+    _original_anthropic_key: String,
+    _original_bind_address: String,
     _original_models: Vec<String>,
 
     // Inline editing state
@@ -97,6 +103,8 @@ enum ProviderPopupHit {
     NameField,
     EndpointField,
     ApiKeyField,
+    AnthropicKeyField,
+    BindAddressField,
     TestBtn,
     SaveBtn,
     CancelBtn,
@@ -166,6 +174,10 @@ pub fn open_provider_popup(
         None => (String::new(), String::new(), String::new(), Vec::new()),
     };
 
+    // Read global proxy settings from parent state
+    let anthropic_key = unsafe { (*parent_ptr).anthropic_key.clone() };
+    let bind_address = unsafe { (*parent_ptr).proxy_bind_address.clone() };
+
     let popup_state = Box::new(ProviderPopupState {
         hwnd: HWND::default(),
         _parent_hwnd: parent_hwnd,
@@ -173,10 +185,14 @@ pub fn open_provider_popup(
         name: name.clone(),
         endpoint: endpoint.clone(),
         api_key: api_key.clone(),
+        anthropic_key: anthropic_key.clone(),
+        bind_address: bind_address.clone(),
         models: models.clone(),
         _original_name: name,
         _original_endpoint: endpoint,
         _original_api_key: api_key,
+        _original_anthropic_key: anthropic_key,
+        _original_bind_address: bind_address,
         _original_models: models,
         editing_field: EditField::None,
         edit_text: String::new(),
@@ -292,6 +308,15 @@ pub fn open_provider_popup(
     }
 
     let saved = unsafe { (*popup_ptr).saved };
+
+    // Write back global proxy settings to parent state
+    if saved {
+        unsafe {
+            (*parent_ptr).anthropic_key = (*popup_ptr).anthropic_key.clone();
+            (*parent_ptr).proxy_bind_address = (*popup_ptr).bind_address.clone();
+        }
+    }
+
     let result = if saved {
         unsafe {
             Some(UiProvider {
@@ -594,11 +619,107 @@ unsafe fn paint_provider_popup(hwnd: HWND, state_ptr: *mut ProviderPopupState) {
             if ak_is_editing { state.edit_cursor } else { 0 },
         );
 
+        // ── Anthropic Key row ─────────────────────────────────────
+        let anth_label_y = apikey_label_y + row_h + (8.0 * scale) as i32;
+        draw_plain_label(
+            dib_dc,
+            RECT {
+                left: pad,
+                top: anth_label_y,
+                right: pad + label_w,
+                bottom: anth_label_y + row_h,
+            },
+            "Anthropic Key",
+            body_font,
+            theme.text,
+        );
+
+        let anth_field_rect = RECT {
+            left: field_x,
+            top: anth_label_y,
+            right: w - pad,
+            bottom: anth_label_y + field_h,
+        };
+        let anth_is_hovered = state.hovered_target == ProviderPopupHit::AnthropicKeyField;
+        let anth_is_editing = state.editing_field == EditField::AnthropicKey;
+        let anth_display: String = if anth_is_editing {
+            state.edit_text.clone()
+        } else if state.anthropic_key.is_empty() {
+            "(not set — uses OAuth)".into()
+        } else {
+            let prefix: String = state.anthropic_key.chars().take(8).collect();
+            let masked: String = (0..state.anthropic_key.chars().skip(8).count())
+                .map(|_| '\u{2022}')
+                .collect();
+            prefix + &masked
+        };
+        draw_text_field(
+            dib_dc,
+            bits,
+            w,
+            h,
+            scale,
+            anth_field_rect,
+            &anth_display,
+            anth_is_hovered,
+            anth_is_editing,
+            if anth_is_editing {
+                state.edit_cursor
+            } else {
+                0
+            },
+        );
+
+        // ── Bind Address row ───────────────────────────────────────
+        let bind_label_y = anth_label_y + row_h + (8.0 * scale) as i32;
+        draw_plain_label(
+            dib_dc,
+            RECT {
+                left: pad,
+                top: bind_label_y,
+                right: pad + label_w,
+                bottom: bind_label_y + row_h,
+            },
+            "Bind Address",
+            body_font,
+            theme.text,
+        );
+
+        let bind_field_rect = RECT {
+            left: field_x,
+            top: bind_label_y,
+            right: w - pad,
+            bottom: bind_label_y + field_h,
+        };
+        let bind_is_hovered = state.hovered_target == ProviderPopupHit::BindAddressField;
+        let bind_is_editing = state.editing_field == EditField::BindAddress;
+        let bind_display = if bind_is_editing {
+            &state.edit_text
+        } else {
+            &state.bind_address
+        };
+        draw_text_field(
+            dib_dc,
+            bits,
+            w,
+            h,
+            scale,
+            bind_field_rect,
+            bind_display,
+            bind_is_hovered,
+            bind_is_editing,
+            if bind_is_editing {
+                state.edit_cursor
+            } else {
+                0
+            },
+        );
+
         // ── Test button & status ───────────────────────────────────
         let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
         let footer_y = h - footer_h;
 
-        let test_y = apikey_label_y + row_h + (12.0 * scale) as i32;
+        let test_y = bind_label_y + row_h + (12.0 * scale) as i32;
         let test_btn_h = (28.0 * scale) as i32;
         let test_btn_w = (100.0 * scale) as i32;
         let test_btn_x = field_x;
@@ -771,6 +892,8 @@ fn hit_test_popup(state: &ProviderPopupState, x: i32, y: i32) -> ProviderPopupHi
     let name_label_y = content_y;
     let endpoint_label_y = name_label_y + row_h + (8.0 * scale) as i32;
     let apikey_label_y = endpoint_label_y + row_h + (8.0 * scale) as i32;
+    let anth_label_y = apikey_label_y + row_h + (8.0 * scale) as i32;
+    let bind_label_y = anth_label_y + row_h + (8.0 * scale) as i32;
 
     // Footer buttons
     let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
@@ -835,8 +958,38 @@ fn hit_test_popup(state: &ProviderPopupState, x: i32, y: i32) -> ProviderPopupHi
         return ProviderPopupHit::ApiKeyField;
     }
 
+    // Anthropic Key field
+    let anth_field_rect = RECT {
+        left: field_x,
+        top: anth_label_y,
+        right: w - pad,
+        bottom: anth_label_y + field_h,
+    };
+    if x >= anth_field_rect.left
+        && x < anth_field_rect.right
+        && y >= anth_field_rect.top
+        && y < anth_field_rect.bottom
+    {
+        return ProviderPopupHit::AnthropicKeyField;
+    }
+
+    // Bind Address field
+    let bind_field_rect = RECT {
+        left: field_x,
+        top: bind_label_y,
+        right: w - pad,
+        bottom: bind_label_y + field_h,
+    };
+    if x >= bind_field_rect.left
+        && x < bind_field_rect.right
+        && y >= bind_field_rect.top
+        && y < bind_field_rect.bottom
+    {
+        return ProviderPopupHit::BindAddressField;
+    }
+
     // Test button
-    let test_y = apikey_label_y + row_h + (12.0 * scale) as i32;
+    let test_y = bind_label_y + row_h + (12.0 * scale) as i32;
     let test_btn_h = (28.0 * scale) as i32;
     let test_btn_w = (100.0 * scale) as i32;
     let test_btn_x = field_x;
@@ -862,6 +1015,8 @@ fn begin_edit_field(state: &mut ProviderPopupState, field: EditField) {
         EditField::Name => state.name.clone(),
         EditField::Endpoint => state.endpoint.clone(),
         EditField::ApiKey => state.api_key.clone(),
+        EditField::AnthropicKey => state.anthropic_key.clone(),
+        EditField::BindAddress => state.bind_address.clone(),
         EditField::None => return,
     };
     state.edit_cursor = state.edit_text.len();
@@ -877,6 +1032,8 @@ fn commit_edit_field(state: &mut ProviderPopupState) {
         EditField::Name => state.name = val,
         EditField::Endpoint => state.endpoint = val,
         EditField::ApiKey => state.api_key = val,
+        EditField::AnthropicKey => state.anthropic_key = val,
+        EditField::BindAddress => state.bind_address = val,
         EditField::None => {}
     }
     state.editing_field = EditField::None;
@@ -1222,6 +1379,14 @@ unsafe extern "system" fn provider_popup_wndproc(
                     }
                     ProviderPopupHit::ApiKeyField => {
                         begin_edit_field(state, EditField::ApiKey);
+                        paint_provider_popup(hwnd, state_ptr);
+                    }
+                    ProviderPopupHit::AnthropicKeyField => {
+                        begin_edit_field(state, EditField::AnthropicKey);
+                        paint_provider_popup(hwnd, state_ptr);
+                    }
+                    ProviderPopupHit::BindAddressField => {
+                        begin_edit_field(state, EditField::BindAddress);
                         paint_provider_popup(hwnd, state_ptr);
                     }
                     ProviderPopupHit::SaveBtn => {

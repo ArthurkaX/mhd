@@ -64,6 +64,8 @@ pub struct LlmProxyConfig {
     pub enabled: bool,
     pub port: u16,
     pub log_level: String,
+    /// Bind IP address (e.g. "127.0.0.1").
+    pub bind_address: String,
     pub providers: Vec<Provider>,
     /// Optional Anthropic API key for native passthrough (usually empty — OAuth
     /// from Claude Code is forwarded instead).
@@ -86,6 +88,7 @@ impl Default for LlmProxyConfig {
             port: 3456,
             log_level: "none".to_string(),
             providers: Vec::new(),
+            bind_address: "127.0.0.1".to_string(),
             anthropic_key: String::new(),
             upstream_key: String::new(),
             opus: "native".to_string(),
@@ -351,6 +354,10 @@ impl AppConfig {
                     tags: m.tags,
                 })
                 .collect(),
+            bind_address: settings
+                .as_ref()
+                .map(|s| s.bind_ip.clone())
+                .unwrap_or_else(|| "127.0.0.1".to_string()),
         }
     }
 

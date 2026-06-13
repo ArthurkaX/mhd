@@ -226,6 +226,13 @@ pub fn show_config_editor(handle: AppHandle) {
         notes_dir,
         draw_dir,
         bindings,
+        // Load global proxy settings: anthropic key + bind address
+        anthropic_key: llm_proxy::config::load_secrets()
+            .map(|s| s.anthropic_key)
+            .unwrap_or_default(),
+        proxy_bind_address: llm_proxy::config::load_settings()
+            .map(|s| format!("{}:{}", s.bind_ip, s.port))
+            .unwrap_or_else(|_| "127.0.0.1:3456".to_string()),
         providers: {
             // Load providers from the proxy JSON files.
             // Also load secrets for the API key (first provider gets the upstream key).
@@ -1050,8 +1057,6 @@ fn apply_settings(state: &mut SettingsState) {
         }
 
         // Save the API key from the first provider as upstream_key.
-        // Preserve the existing anthropic_key from secrets.json if present.
-        let existing_secrets = llm_proxy::config::load_secrets().ok();
         let api_key = state.providers.first().and_then(|p| {
             if p.api_key.is_empty() {
                 None
@@ -1059,16 +1064,29 @@ fn apply_settings(state: &mut SettingsState) {
                 Some(p.api_key.clone())
             }
         });
-        if api_key.is_some() || existing_secrets.is_some() {
+        if api_key.is_some() || !state.anthropic_key.is_empty() {
             let secrets = llm_proxy::config::Secrets {
-                anthropic_key: existing_secrets
-                    .as_ref()
-                    .map(|s| s.anthropic_key.clone())
-                    .unwrap_or_default(),
+                anthropic_key: state.anthropic_key.clone(),
                 upstream_key: api_key.unwrap_or_default(),
             };
             if let Err(e) = llm_proxy::config::save_secrets(&secrets) {
                 eprintln!("mhd: failed to save secrets: {e}");
+            }
+        }
+
+        // Save proxy bind address (port + IP) to settings.json
+        if let Ok(mut settings) = llm_proxy::config::load_settings() {
+            // Parse bind address like "127.0.0.1:3456"
+            if let Some((ip, port_str)) = state.proxy_bind_address.rsplit_once(':') {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    settings.port = port;
+                }
+                if !ip.is_empty() {
+                    settings.bind_ip = ip.to_string();
+                }
+            }
+            if let Err(e) = llm_proxy::config::save_settings(&settings) {
+                eprintln!("mhd: failed to save proxy settings: {e}");
             }
         }
     }
