@@ -9,6 +9,7 @@ pub mod monitor;
 pub mod note;
 pub mod pomodoro;
 pub mod power;
+pub mod proxy_trace;
 pub mod suspend;
 pub mod throttle;
 pub mod topmost;

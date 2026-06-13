@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use llm_proxy::ProxyControl;
+use llm_proxy::state::TraceEntry;
 
 use crate::config::LlmProxyConfig;
 
@@ -106,6 +107,16 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
 /// Current per-tier targets (opus, sonnet, haiku, fable). None if the proxy is off.
 pub fn get_targets() -> Option<(String, String, String, String)> {
     CONTROL.lock().unwrap().as_ref().map(|c| c.targets())
+}
+
+/// Snapshot of recent proxy routing decisions.
+pub fn get_trace() -> Vec<TraceEntry> {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.trace())
+        .unwrap_or_default()
 }
 
 /// Set a tier's target. `slot` is "opus"/"sonnet"/"haiku"/"fable"; `target` is "native"

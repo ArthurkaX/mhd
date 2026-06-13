@@ -19,7 +19,7 @@ use axum::{
 };
 
 pub use config::{Config, Secrets, Settings};
-pub use state::{AppState, Target, Tier};
+pub use state::{AppState, Target, Tier, TraceEntry};
 
 /// Build the Axum router for a given shared state.
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -102,6 +102,11 @@ impl ProxyControl {
     /// Set the debug log level on the embedded state (no disk persist).
     pub fn set_log_level(&self, level: &str) {
         *self.state.log_level.write().unwrap() = crate::state::DebugLevel::parse(level);
+    }
+
+    /// Snapshot of recent routing decisions.
+    pub fn trace(&self) -> Vec<TraceEntry> {
+        self.state.trace_snapshot()
     }
 
     /// Shut the server down gracefully and join its thread.

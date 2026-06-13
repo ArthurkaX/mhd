@@ -42,7 +42,8 @@ const CMD_NOTE: usize = 5;
 const CMD_DRAW: usize = 6;
 const CMD_CPU_PANEL: usize = 10;
 const CMD_LLM_MODELS: usize = 11;
-const CMD_LLM_PROXY_TOGGLE: usize = 12;
+const CMD_PROXY_TRACE: usize = 12;
+const CMD_LLM_PROXY_TOGGLE: usize = 13;
 const CMD_POWER_PLAN_BASE: usize = 100;
 const CMD_ABOUT: usize = 7;
 const CMD_QUIT: usize = 8;
@@ -174,6 +175,12 @@ fn show_menu(hwnd: HWND) {
             MF_BYPOSITION | MF_STRING,
             CMD_LLM_MODELS,
             "LLM Models",
+        );
+        item(
+            menu,
+            MF_BYPOSITION | MF_STRING,
+            CMD_PROXY_TRACE,
+            "Proxy Trace",
         );
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
@@ -321,6 +328,9 @@ unsafe extern "system" fn wnd_proc(
                             state.app.theme(),
                             state.app.llm_proxy_config(),
                         );
+                    }
+                    CMD_PROXY_TRACE => {
+                        crate::overlays::proxy_trace::show(&state.app.theme());
                     }
                     CMD_LLM_PROXY_TOGGLE => {
                         let cfg = state.app.llm_proxy_config();

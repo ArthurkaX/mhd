@@ -77,6 +77,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "switch_power_plan",
     "show_cpu_panel",
     "show_llm_models",
+    "show_proxy_trace",
     "toggle_llm_proxy",
     "quit",
 ];

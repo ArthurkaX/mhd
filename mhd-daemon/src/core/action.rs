@@ -71,6 +71,8 @@ pub enum Action {
     ShowCpuPanel,
     /// Show the LLM model selector overlay (per-tier routing for Claude Code).
     ShowLlmModels,
+    /// Show the real-time proxy trace window.
+    ShowProxyTrace,
     /// Toggle the llm-proxy process on/off.
     ToggleLlmProxy,
     Quit,
@@ -164,6 +166,7 @@ impl Action {
             }
             "show_cpu_panel" => Ok(Action::ShowCpuPanel),
             "show_llm_models" => Ok(Action::ShowLlmModels),
+            "show_proxy_trace" => Ok(Action::ShowProxyTrace),
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
             "power_actions" => Ok(Action::PowerActions),
             "quit" => Ok(Action::Quit),
@@ -330,6 +333,7 @@ impl Action {
             Action::SwitchPowerPlan { .. } => "switch_power_plan",
             Action::ShowCpuPanel => "show_cpu_panel",
             Action::ShowLlmModels => "show_llm_models",
+            Action::ShowProxyTrace => "show_proxy_trace",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
             Action::Pomodoro => "pomodoro",
             Action::Quit => "quit",
@@ -383,6 +387,7 @@ impl Action {
             | Action::SwitchPowerPlan { .. }
             | Action::ShowCpuPanel
             | Action::ShowLlmModels
+            | Action::ShowProxyTrace
             | Action::ToggleLlmProxy
             | Action::Pomodoro
             | Action::Quit => self.name().to_string(),
@@ -681,6 +686,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "toggle_llm_proxy",
         label: "Toggle LLM Proxy",
         description: "Enable or disable the local LLM proxy.",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "show_proxy_trace",
+        label: "Proxy Trace",
+        description: "Open the proxy routing trace window.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,6 +90,20 @@ pub enum Target {
     Model(String),
 }
 
+/// A single proxy routing decision recorded for the live trace overlay.
+#[derive(Debug, Clone)]
+pub struct TraceEntry {
+    pub seq: u64,
+    pub tier: Tier,
+    pub effective_tier: Tier,
+    pub target: String,
+    pub model: String,
+    pub downgraded: bool,
+    pub reason: String,
+}
+
+pub const MAX_TRACE_ENTRIES: usize = 500;
+
 /// The sentinel string used on the wire / in config to mean "Anthropic native".
 pub const NATIVE: &str = "native";
 
@@ -140,6 +155,8 @@ pub struct AppState {
     /// Timing/concurrency lines go here so they're visible regardless of how the
     /// host process redirects stderr.
     pub log_path: PathBuf,
+    /// Ring buffer of recent routing decisions, newest at the back.
+    pub trace: RwLock<VecDeque<TraceEntry>>,
 }
 
 impl AppState {
@@ -159,6 +176,7 @@ impl AppState {
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
             log_path: crate::config::config_dir().join("proxy.log"),
+            trace: RwLock::new(VecDeque::with_capacity(MAX_TRACE_ENTRIES)),
         })
     }
 
@@ -172,6 +190,21 @@ impl AppState {
         {
             let _ = writeln!(f, "{msg}");
         }
+    }
+
+    /// Record a routing decision into the ring buffer, evicting the oldest
+    /// entry if the buffer is full.
+    pub fn push_trace(&self, entry: TraceEntry) {
+        let mut trace = self.trace.write().unwrap();
+        if trace.len() >= MAX_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(entry);
+    }
+
+    /// Snapshot of recent routing decisions (newest at the end).
+    pub fn trace_snapshot(&self) -> Vec<TraceEntry> {
+        self.trace.read().unwrap().iter().cloned().collect()
     }
 
     /// Allocate the next request id.

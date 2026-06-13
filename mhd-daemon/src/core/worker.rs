@@ -214,6 +214,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ShowLlmModels => {
             crate::overlays::llm_models::show(handle.theme(), handle.llm_proxy_config());
         }
+        Action::ShowProxyTrace => {
+            crate::overlays::proxy_trace::show(&handle.theme());
+        }
         Action::ToggleLlmProxy => {
             let cfg = handle.llm_proxy_config();
             let on = crate::llm_proxy::toggle(&cfg);

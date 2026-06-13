@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::providers;
-use crate::state::{AppState, Target, Tier};
+use crate::state::{AppState, Target, Tier, TraceEntry};
 
 /// Handler for `POST /v1/messages` — main Anthropic Messages API endpoint.
 ///
@@ -91,6 +91,19 @@ pub async fn post_messages(
 
     // Resolve where this tier routes: Anthropic native, or an upstream model.
     let target = state.target_for(effective_tier);
+
+    // Record routing decision in the trace ring buffer.
+    let downgraded = effective_tier != tier;
+    let reason = if downgraded { "no thinking" } else { "" };
+    state.push_trace(TraceEntry {
+        seq: state.next_req_id(),
+        tier,
+        effective_tier,
+        target: target.as_str().to_string(),
+        model: model.clone(),
+        downgraded,
+        reason: reason.to_string(),
+    });
 
     if stream {
         let body = match &target {
