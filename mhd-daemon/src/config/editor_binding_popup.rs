@@ -28,7 +28,7 @@
 use std::ffi::c_void;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -225,24 +225,21 @@ pub fn open_binding_popup(
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, popup_ptr as isize);
     }
 
-    // Enable layered alpha
-    unsafe {
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
-    }
-
-    // Show the window
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-    }
-
     // Disable parent window
     unsafe {
         let _ = EnableWindow(parent_hwnd, false);
     }
 
-    // Initial paint
+    // Initial paint BEFORE ShowWindow — for WS_EX_LAYERED, the first
+    // UpdateLayeredWindow establishes the window visual; ShowWindow
+    // then makes it visible with that content.
     unsafe {
         paint_binding_popup(hwnd, popup_ptr);
+    }
+
+    // Now show the window (already has content from the initial paint)
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
     }
 
     // Modal message loop - check should_close flag from Save/Cancel
