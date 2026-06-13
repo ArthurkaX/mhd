@@ -36,6 +36,10 @@ const POPUP_ROW_HEIGHT: i32 = 32;
 /// `WPARAM` = model index, `LPARAM` = pointer to a heap-allocated bool (true=success).
 const WM_MODEL_TEST_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 3;
 
+/// Custom message for fetch-models completion.
+/// `LPARAM` = pointer to a heap-allocated `Vec<String>` (or null on failure/cancellation).
+const WM_FETCH_MODELS_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
+
 // ── Hit targets ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +55,7 @@ enum ModelsPopupHit {
     AddBtn,
     /// Scrollbar (the hit area is the list's right edge).
     Scrollbar,
+    FetchModelsBtn,
     SaveBtn,
     CancelBtn,
 }
@@ -79,6 +84,8 @@ struct ModelsPopupState {
     model_test_results: Vec<Option<bool>>,
     /// Index of model currently being tested.
     testing_idx: Option<usize>,
+    /// True while a background fetch-models request is in flight.
+    fetching_models: bool,
     /// Cancellation flag for the background test thread.
     cancelled: Arc<AtomicBool>,
 
@@ -173,6 +180,7 @@ pub fn open_models_popup(
         edit_old_value: String::new(),
         model_test_results,
         testing_idx: None,
+        fetching_models: false,
         cancelled: Arc::new(AtomicBool::new(false)),
         content_scroll_y: 0,
         list_area_h,
@@ -363,6 +371,33 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
             &mut title_wz,
             &mut title_rc,
             DT_LEFT | DT_SINGLELINE,
+        );
+
+        // ── Fetch Models button (right-aligned in header) ────────────
+        let fetch_btn_w = (100.0 * scale) as i32;
+        let fetch_btn_h = (28.0 * scale) as i32;
+        let fetch_btn_x = w - pad - fetch_btn_w;
+        let fetch_btn_y = (header_h - fetch_btn_h) / 2;
+        let is_fetch_hovered = state.hovered_target == ModelsPopupHit::FetchModelsBtn;
+        let fetch_label = if state.fetching_models {
+            "Getting.."
+        } else {
+            "Get Models"
+        };
+        draw_button(
+            dib_dc,
+            bits,
+            w,
+            h,
+            fetch_btn_x,
+            fetch_btn_y,
+            fetch_btn_w,
+            fetch_btn_h,
+            fetch_label,
+            theme,
+            body_font,
+            is_fetch_hovered,
+            ButtonStyle::Secondary,
         );
 
         // Separator under header
@@ -736,6 +771,19 @@ fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopu
     let list_h = state.list_area_h;
     let list_content_top = list_y + (16.0 * scale) as i32;
 
+    // Fetch Models button (header area)
+    let fetch_btn_w = (100.0 * scale) as i32;
+    let fetch_btn_h = (28.0 * scale) as i32;
+    let fetch_btn_x = w - pad - fetch_btn_w;
+    let fetch_btn_y = (header_h - fetch_btn_h) / 2;
+    if y >= fetch_btn_y
+        && y < fetch_btn_y + fetch_btn_h
+        && x >= fetch_btn_x
+        && x < fetch_btn_x + fetch_btn_w
+    {
+        return ModelsPopupHit::FetchModelsBtn;
+    }
+
     // Footer buttons
     let btn_h = (30.0 * scale) as i32;
     let btn_w = (90.0 * scale) as i32;
@@ -836,6 +884,63 @@ fn begin_model_edit(state: &mut ModelsPopupState, idx: usize) {
     }
 }
 
+// ── Background model fetch ────────────────────────────────────────────
+
+/// Query the provider's `/models` endpoint and return the list of model IDs.
+fn fetch_available_models(endpoint: &str, api_key: &str) -> Option<Vec<String>> {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    let base = endpoint.trim_end_matches('/');
+    let models_url = format!("{base}/models");
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if !api_key.is_empty() {
+        let Ok(hdr) = format!("Bearer {api_key}").parse::<reqwest::header::HeaderValue>() else {
+            return None;
+        };
+        headers.insert(reqwest::header::AUTHORIZATION, hdr);
+    }
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+
+    let resp = match client.get(&models_url).headers(headers).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return None,
+    };
+
+    let body: serde_json::Value = match resp.json() {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    // OpenAI returns { "data": [{ "id": "..." }, ...] }, some providers return a plain array.
+    let models_list: &[serde_json::Value] = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| body.as_array())
+        .map_or(&[], |v| v.as_slice());
+
+    let ids: Vec<String> = models_list
+        .iter()
+        .filter_map(|v| {
+            v.get("id")
+                .and_then(|id| id.as_str())
+                .or_else(|| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    if ids.is_empty() { None } else { Some(ids) }
+}
+
 // ── Background model test ────────────────────────────────────────────
 
 /// Send a minimal ping to a specific model and return true if successful.
@@ -923,7 +1028,20 @@ unsafe extern "system" fn models_popup_wndproc(
                 let _ = ScreenToClient(hwnd, &mut pt);
 
                 let header_h = (POPUP_HEADER_HEIGHT_BASE as f32 * state.scale) as i32;
+                let pad = (POPUP_PADDING as f32 * state.scale) as i32;
                 if pt.y < header_h {
+                    // Check if the click is on the Get Models button — if so, treat as client area
+                    let get_btn_w = (100.0 * state.scale) as i32;
+                    let get_btn_h = (28.0 * state.scale) as i32;
+                    let get_btn_x = state.win_w - pad - get_btn_w;
+                    let get_btn_y = (header_h - get_btn_h) / 2;
+                    if pt.x >= get_btn_x
+                        && pt.x < get_btn_x + get_btn_w
+                        && pt.y >= get_btn_y
+                        && pt.y < get_btn_y + get_btn_h
+                    {
+                        return LRESULT(HTCLIENT as isize);
+                    }
                     return LRESULT(HTCAPTION as isize);
                 }
                 LRESULT(HTCLIENT as isize)
@@ -1031,6 +1149,32 @@ unsafe extern "system" fn models_popup_wndproc(
                         state.content_scroll_y = max_scroll;
                         paint_models_popup(hwnd, state_ptr);
                     }
+                    ModelsPopupHit::FetchModelsBtn => {
+                        if state.fetching_models {
+                            return LRESULT(0);
+                        }
+                        commit_model_edit(state);
+                        let ep = state.endpoint.clone();
+                        let ak = state.api_key.clone();
+                        let fetch_hwnd = state.hwnd.0 as isize;
+
+                        state.fetching_models = true;
+                        paint_models_popup(hwnd, state_ptr);
+
+                        std::thread::spawn(move || {
+                            let result = fetch_available_models(&ep, &ak);
+                            let result_ptr = match result {
+                                Some(models) => Box::into_raw(Box::new(models)) as *mut c_void,
+                                None => std::ptr::null_mut(),
+                            };
+                            let _ = PostMessageW(
+                                HWND(fetch_hwnd as *mut c_void),
+                                WM_FETCH_MODELS_RESULT,
+                                WPARAM(0),
+                                LPARAM(result_ptr as isize),
+                            );
+                        });
+                    }
                     ModelsPopupHit::SaveBtn => {
                         commit_model_edit(state);
                         // Filter out empty models before saving
@@ -1070,6 +1214,24 @@ unsafe extern "system" fn models_popup_wndproc(
                         }
                     }
                     state.testing_idx = None;
+                    paint_models_popup(hwnd, state_ptr);
+                }
+                LRESULT(0)
+            }
+
+            WM_FETCH_MODELS_RESULT => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ModelsPopupState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let result_ptr = lparam.0 as *mut Vec<String>;
+                    if !result_ptr.is_null() {
+                        let fetched = Box::from_raw(result_ptr);
+                        state.models = *fetched.clone();
+                        state.model_test_results = (0..state.models.len()).map(|_| None).collect();
+                        // Reset scroll position
+                        state.content_scroll_y = 0;
+                    }
+                    state.fetching_models = false;
                     paint_models_popup(hwnd, state_ptr);
                 }
                 LRESULT(0)
