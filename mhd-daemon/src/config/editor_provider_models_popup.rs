@@ -1429,7 +1429,19 @@ unsafe extern "system" fn models_popup_wndproc(
                         let row_h = (POPUP_ROW_HEIGHT as f32 * state.scale) as i32;
                         let content_h = total_rows * row_h + row_h;
                         let max_scroll = (content_h - state.list_area_h).max(0);
-                        let new_scroll = (state.scroll_drag_start_offset + dy).clamp(0, max_scroll);
+                        // Scale mouse delta by the track-to-content ratio so
+                        // the thumb follows the cursor exactly.
+                        let list_h = state.list_area_h;
+                        let thumb_h =
+                            (list_h as f32 * list_h as f32 / content_h as f32).max(20.0) as i32;
+                        let track_px = (list_h - thumb_h).max(1);
+                        let scaled_dy = if max_scroll > 0 {
+                            (dy as f64 * max_scroll as f64 / track_px as f64) as i32
+                        } else {
+                            0
+                        };
+                        let new_scroll =
+                            (state.scroll_drag_start_offset + scaled_dy).clamp(0, max_scroll);
                         if new_scroll != state.content_scroll_y {
                             state.content_scroll_y = new_scroll;
                             paint_models_popup(hwnd, state_ptr);
