@@ -81,11 +81,31 @@ pub async fn send_request(
         ));
     }
 
-    let resp = build_request(state, incoming)
+    let resp = match build_request(state, incoming)
         .await
         .json(&payload)
         .send()
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let kind = if e.is_connect() {
+                "CONNECT_FAILED"
+            } else if e.is_timeout() {
+                "TIMEOUT"
+            } else {
+                "SEND_ERR"
+            };
+            if log {
+                state.log_line(&format!(
+                    "{} #{req_id} native SEND_ERROR {kind} after {} ms: {e}",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
+            }
+            return Err(e.into());
+        }
+    };
 
     let status = resp.status();
     if !status.is_success() {
@@ -154,11 +174,31 @@ pub async fn stream_request(
         ));
     }
 
-    let resp = build_request(state, incoming)
+    let resp = match build_request(state, incoming)
         .await
         .json(&payload)
         .send()
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let kind = if e.is_connect() {
+                "CONNECT_FAILED"
+            } else if e.is_timeout() {
+                "TIMEOUT"
+            } else {
+                "SEND_ERR"
+            };
+            if log {
+                state.log_line(&format!(
+                    "{} #{req_id} native stream SEND_ERROR {kind} after {} ms: {e}",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
+            }
+            return Err(e.into());
+        }
+    };
 
     if log {
         state.log_line(&format!(

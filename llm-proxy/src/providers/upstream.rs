@@ -28,14 +28,28 @@ async fn post_chat_completions(
     let base_url = state.upstream_base_url.read().unwrap().clone();
     let api_key = state.upstream_key.read().unwrap().clone();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let resp = state
+    let req_builder = state
         .http
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
-        .json(payload)
-        .send()
-        .await?;
+        .json(payload);
+
+    let resp = match req_builder.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let kind = if e.is_connect() {
+                "CONNECT_FAILED"
+            } else if e.is_timeout() {
+                "TIMEOUT"
+            } else {
+                "SEND_ERR"
+            };
+            eprintln!("[llm-proxy] upstream SEND_ERROR {kind}: {e}");
+            state.log_line(&format!("{} upstream SEND_ERROR {kind}: {e}", now_ms()));
+            return Err(e.into());
+        }
+    };
 
     let status = resp.status();
     if !status.is_success() {

@@ -33,10 +33,11 @@ pub async fn post_messages(
     let tier = Tier::from_model(&model);
     let req_id = state.next_req_id();
 
-    // Smart routing: downgrade opus if thinking is not requested.
-    let effective_tier = if tier == Tier::Opus && *state.opus_downgrade_enabled.read().unwrap() {
-        // Anthropic Messages API enables thinking via:
-        //   { "thinking": { "type": "enabled", "budget_tokens": 16000 } }
+    // Smart routing: downgrade if thinking is not requested.
+    // Applied to Opus and Sonnet (expensive tiers) when enabled.
+    let effective_tier = if *state.opus_downgrade_enabled.read().unwrap()
+        && (tier == Tier::Opus || tier == Tier::Sonnet)
+    {
         let has_thinking = payload
             .get("thinking")
             .and_then(|t| t.get("type"))
@@ -45,20 +46,16 @@ pub async fn post_messages(
             .unwrap_or(false);
         if has_thinking {
             state.log_line(&format!(
-                "{} #{req_id} OPUS KEEP (thinking enabled)",
+                "{} #{req_id} {tier:?} KEEP (thinking enabled)",
                 crate::providers::now_ms()
             ));
             tier
         } else {
             let dt = state.opus_downgrade_target.read().unwrap().clone();
             state.log_line(&format!(
-                "{} #{req_id} OPUS DOWNGRADE → {dt} (no thinking in request)",
+                "{} #{req_id} {tier:?} DOWNGRADE → {dt} (no thinking)",
                 crate::providers::now_ms()
             ));
-            if state.log_level.read().unwrap().dump_bodies() {
-                eprintln!("[llm-proxy] opus downgraded to {dt} (no thinking)");
-            }
-            // Map to target tier
             Tier::from_model(&dt)
         }
     } else {
