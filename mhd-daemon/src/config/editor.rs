@@ -1615,6 +1615,8 @@ unsafe extern "system" fn settings_wndproc(
 
             WM_MOUSEWHEEL => {
                 let delta = (wparam.0 as i32 >> 16) as i16;
+                let screen_x = (lparam.0 as i16) as i32;
+                let screen_y = ((lparam.0 >> 16) as i16) as i32;
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
@@ -1625,6 +1627,16 @@ unsafe extern "system" fn settings_wndproc(
                         - (delta as i32 / 120) * 40)
                         .clamp(0, max_scroll);
                     paint_settings(hwnd, state_ptr, &lay);
+
+                    // Recompute hover at the cursor position from the message
+                    // so the highlight follows scrolling immediately.
+                    let mut pt = POINT { x: screen_x, y: screen_y };
+                    let _ = ScreenToClient(hwnd, &mut pt);
+                    let new_target = hit_test_settings(state, pt.x, pt.y);
+                    if state.hovered_target != new_target {
+                        state.hovered_target = new_target;
+                        paint_settings(hwnd, state_ptr, &lay);
+                    }
                 }
                 LRESULT(0)
             }
