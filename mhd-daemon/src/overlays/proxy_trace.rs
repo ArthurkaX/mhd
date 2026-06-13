@@ -227,6 +227,37 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     // Status (right-aligned)
+    let close_btn_w = (20.0 * scale) as i32;
+    let close_btn_x = win_w - pad - close_btn_w;
+    let close_btn_y = pad;
+    // Draw close × button
+    let close_btn_rect = RECT {
+        left: close_btn_x,
+        top: close_btn_y,
+        right: close_btn_x + close_btn_w,
+        bottom: close_btn_y + close_btn_w,
+    };
+    let close_brush =
+        unsafe { CreateSolidBrush(theme.hover.blend_over(theme.background).to_colorref()) };
+    unsafe {
+        FillRect(dib_dc, &close_btn_rect, close_brush);
+        DeleteObject(close_brush);
+    }
+    unsafe {
+        let _ = SelectObject(dib_dc, hfont);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let mut close_wz = crate::osd::to_utf16_z("\u{00D7}");
+    let mut close_text_rc = close_btn_rect;
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut close_wz,
+            &mut close_text_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
     let running = crate::llm_proxy::is_running();
     let status = if running { "proxy: on" } else { "proxy: off" };
     let status_color = if running {
@@ -415,6 +446,22 @@ unsafe extern "system" fn panel_wndproc(
                 return LRESULT(1);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_LBUTTONDOWN => {
+            let x = (lparam.0 as i16) as i32;
+            let y = ((lparam.0 >> 16) as i16) as i32;
+            // Close button is at top-right corner
+            let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
+            let pad = (PAD_BASE as f32 * scale) as i32;
+            let btn_size = (20.0 * scale) as i32;
+            let mut wr = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut wr);
+            let btn_left = (wr.right - wr.left) - pad - btn_size;
+            let btn_right = (wr.right - wr.left) - pad;
+            if x >= btn_left && x < btn_right && y >= pad && y < pad + btn_size {
+                let _ = DestroyWindow(hwnd);
+            }
+            LRESULT(0)
         }
         WM_PAINT => {
             let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
