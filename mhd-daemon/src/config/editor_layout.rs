@@ -584,8 +584,9 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
     let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
     let gap = (8.0 * c.scale) as i32;
-    // Proxy settings section: header + Anthropic Key + Bind Address + divider
-    let proxy_h = section_h + row_h + gap + row_h + gap + gap / 2 + 1;
+    let col_h = (16.0 * c.scale) as i32; // column header height
+    // Proxy settings: header + Anthropic Key + Bind Address + space for column headers + divider
+    let proxy_h = section_h + row_h + gap + row_h + gap + (gap / 2) + col_h + gap + (gap / 2) + 1;
     let list_y = c.content_y + proxy_h;
     let list_h = c.content_visible_h - proxy_h;
     LlmProxyLayout {

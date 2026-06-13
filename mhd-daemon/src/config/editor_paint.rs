@@ -890,7 +890,7 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     });
 
     // ── Divider ────────────────────────────────────────────────────
-    let divider_y = bind_y + row_h + gap / 2;
+    let divider_y = bind_y + row_h + gap;
     ctls.push(Control::Divider {
         rect: RECT {
             left: pad,
@@ -905,8 +905,9 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let list_h = lay.llm_proxy.list_h;
     let scroll_y = state.content_scroll_y;
 
-    // Table headers (pinned above scrolling, compensated for scroll)
-    let table_header_y = list_y + scroll_y - (20.0 * scale) as i32;
+    // Table headers, positioned just below divider, scroll with content.
+    // (Placed outside ClipStart so they disappear when scrolled past.)
+    let table_header_y = divider_y + (4.0 * scale) as i32 + scroll_y;
     let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
     let col_h = (16.0 * scale) as i32;
 
