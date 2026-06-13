@@ -17,7 +17,7 @@ use crate::config::editor_layout::{
     ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
     WIN_WIDTH_BASE, editor_action_desc,
 };
-use crate::config::editor_state::{ButtonStyle, SettingsHit, SettingsState};
+use crate::config::editor_state::{ButtonStyle, ProxyEditField, SettingsHit, SettingsState};
 use crate::config::editor_theme::{
     draw_button, draw_collapsed_combo_box, draw_plain_label, draw_readonly_text_field,
     draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer, draw_section_header,
@@ -772,23 +772,138 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let scale = (lay.win_w() as f32) / WIN_WIDTH_BASE as f32;
     let row_h = lay.provider_row_h();
     let pad = lay.pad();
-    let list_y = lay.provider_list_y();
-    let list_h = lay.provider_list_h();
     let win_w_val = lay.win_w();
-    let scroll_y = state.content_scroll_y;
 
-    // Title header
+    // ── Proxy Settings section header ──────────────────────────────
+    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let gap = (8.0 * scale) as i32;
     ctls.push(Control::Header {
         rect: RECT {
             left: pad,
-            top: lay.llm_proxy.top_y,
+            top: lay.llm_proxy.proxy_y,
             right: win_w_val - pad,
-            bottom: lay.llm_proxy.top_y + (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32,
+            bottom: lay.llm_proxy.proxy_y + section_h,
         },
-        label: "Providers".into(),
+        label: "Proxy Settings".into(),
         font: FontChoice::Title,
         text_color: theme_text(state),
     });
+
+    let label_w = (80.0 * scale) as i32;
+    let field_x = pad + label_w + (8.0 * scale) as i32;
+    let field_h = (30.0 * scale) as i32;
+
+    // Current editing state
+    let is_editing_anth = state.proxy_editing_field == Some(ProxyEditField::AnthropicKey);
+    let is_editing_bind = state.proxy_editing_field == Some(ProxyEditField::BindAddress);
+
+    // ── Anthropic Key row ──────────────────────────────────────────
+    let anth_y = lay.llm_proxy.proxy_y + section_h + gap;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: anth_y,
+            right: pad + label_w,
+            bottom: anth_y + row_h,
+        },
+        label: "Anthropic Key".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    let anth_display: String = if is_editing_anth {
+        state.edit_text.clone()
+    } else if state.anthropic_key.is_empty() {
+        "(not set \u{2014} uses OAuth)".into()
+    } else {
+        let prefix: String = state.anthropic_key.chars().take(8).collect();
+        let masked: String = (0..state.anthropic_key.chars().skip(8).count())
+            .map(|_| '\u{2022}')
+            .collect();
+        prefix + &masked
+    };
+    let anth_is_hovered = state.hovered_target == SettingsHit::ProxyAnthropicKeyField;
+    let anth_border = if is_editing_anth {
+        state.theme.accent
+    } else if anth_is_hovered {
+        state.theme.text
+    } else {
+        state.theme.border
+    };
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: field_x,
+            top: anth_y,
+            right: win_w_val - pad,
+            bottom: anth_y + field_h,
+        },
+        text: anth_display,
+        placeholder: None,
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: anth_border,
+        text_color: theme_text(state),
+        hit: SettingsHit::ProxyAnthropicKeyField,
+    });
+
+    // ── Bind Address row ───────────────────────────────────────────
+    let bind_y = anth_y + row_h + gap;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: bind_y,
+            right: pad + label_w,
+            bottom: bind_y + row_h,
+        },
+        label: "Bind Address".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    let bind_display = if is_editing_bind {
+        &state.edit_text
+    } else {
+        &state.proxy_bind_address
+    };
+    let bind_is_hovered = state.hovered_target == SettingsHit::ProxyBindAddressField;
+    let bind_border = if is_editing_bind {
+        state.theme.accent
+    } else if bind_is_hovered {
+        state.theme.text
+    } else {
+        state.theme.border
+    };
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: field_x,
+            top: bind_y,
+            right: win_w_val - pad,
+            bottom: bind_y + field_h,
+        },
+        text: bind_display.to_string(),
+        placeholder: None,
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: bind_border,
+        text_color: theme_text(state),
+        hit: SettingsHit::ProxyBindAddressField,
+    });
+
+    // ── Divider ────────────────────────────────────────────────────
+    let divider_y = bind_y + row_h + gap / 2;
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: divider_y,
+            right: win_w_val - pad,
+            bottom: divider_y + 1,
+        },
+    });
+
+    // ── Provider list section ──────────────────────────────────────
+    let list_y = lay.llm_proxy.list_y;
+    let list_h = lay.llm_proxy.list_h;
+    let scroll_y = state.content_scroll_y;
 
     // Table headers (pinned above scrolling, compensated for scroll)
     let table_header_y = list_y + scroll_y - (20.0 * scale) as i32;

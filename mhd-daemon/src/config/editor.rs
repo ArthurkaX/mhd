@@ -71,8 +71,8 @@ pub use crate::config::editor_paint::{
 };
 pub use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::{
-    ButtonStyle, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState, UIBinding,
-    UiProvider,
+    ButtonStyle, ParamEditCreateInfo, ProxyEditField, SettingsHit, SettingsPage, SettingsState,
+    UIBinding, UiProvider,
 };
 pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
@@ -293,6 +293,7 @@ pub fn show_config_editor(handle: AppHandle) {
         edit_cursor: 0,
         edit_select_start: None,
         edit_old_value: String::new(),
+        proxy_editing_field: None,
         hovered_target: SettingsHit::None,
         is_dragging_scroll: false,
         scroll_drag_start_y: 0,
@@ -850,8 +851,10 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
         }
         SettingsPage::LlmProxy => {
             let n = state.providers.len() as i32;
-            let last_y = lay.provider_list_y() + n * lay.provider_row_h() + lay.provider_row_h();
-            last_y + (16.0 * lay.scale()) as i32 - lay.content_y()
+            // Include proxy settings section + provider list
+            let proxy_section_h = lay.llm_proxy.proxy_h;
+            let list_end = lay.provider_list_y() + n * lay.provider_row_h() + lay.provider_row_h();
+            (list_end + (16.0 * lay.scale()) as i32 - lay.content_y()).max(proxy_section_h)
         }
     }
 }
@@ -940,6 +943,18 @@ fn spawn_inline_edit(state: &mut SettingsState, idx: usize, rc: RECT) {
 }
 
 fn finish_inline_edit(state: &mut SettingsState) {
+    if let Some(field) = state.proxy_editing_field.take() {
+        let val = std::mem::take(&mut state.edit_text);
+        match field {
+            ProxyEditField::AnthropicKey => state.anthropic_key = val,
+            ProxyEditField::BindAddress => state.proxy_bind_address = val,
+        }
+        state.edit_cursor = 0;
+        state.edit_select_start = None;
+        state.edit_old_value.clear();
+        paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
+        return;
+    }
     if let Some(idx) = state.edit_idx.take() {
         if state.expanded_idx == Some(idx) {
             state.acc_param = std::mem::take(&mut state.edit_text);
@@ -954,6 +969,13 @@ fn finish_inline_edit(state: &mut SettingsState) {
 }
 
 fn cancel_inline_edit(state: &mut SettingsState) {
+    if state.proxy_editing_field.take().is_some() {
+        state.edit_text.clear();
+        state.edit_cursor = 0;
+        state.edit_select_start = None;
+        paint_settings(state.hwnd, state as *mut SettingsState, &state.layout);
+        return;
+    }
     if let Some(idx) = state.edit_idx.take() {
         if state.expanded_idx == Some(idx) {
             state.acc_param = std::mem::take(&mut state.edit_old_value);
@@ -1459,6 +1481,23 @@ unsafe extern "system" fn settings_wndproc(
                             state.draw_dir = path;
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
+                    }
+                    // ── LLM Proxy: global settings ────────────────────
+                    SettingsHit::ProxyAnthropicKeyField => {
+                        finish_inline_edit(state);
+                        state.edit_text = state.anthropic_key.clone();
+                        state.edit_cursor = state.anthropic_key.len();
+                        state.edit_old_value = state.anthropic_key.clone();
+                        state.proxy_editing_field = Some(ProxyEditField::AnthropicKey);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::ProxyBindAddressField => {
+                        finish_inline_edit(state);
+                        state.edit_text = state.proxy_bind_address.clone();
+                        state.edit_cursor = state.proxy_bind_address.len();
+                        state.edit_old_value = state.proxy_bind_address.clone();
+                        state.proxy_editing_field = Some(ProxyEditField::BindAddress);
+                        paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     // ── LLM Proxy: provider list ─────────────────────
                     SettingsHit::ProviderRow(i) | SettingsHit::ProviderEditBtn(i) => {
@@ -1969,7 +2008,7 @@ unsafe extern "system" fn settings_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if state.edit_idx.is_some() {
+                    if state.edit_idx.is_some() || state.proxy_editing_field.is_some() {
                         let vk = wparam.0 as u32;
                         let ctrl_down = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
                         let shift_down = GetAsyncKeyState(VK_SHIFT.0 as i32) < 0;
@@ -2180,7 +2219,7 @@ unsafe extern "system" fn settings_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if state.edit_idx.is_some() {
+                    if state.edit_idx.is_some() || state.proxy_editing_field.is_some() {
                         let ch = (wparam.0 as u32) as u8 as char;
                         if ch.is_ascii_graphic() || ch == ' ' {
                             if let Some(sel) = state.edit_select_start

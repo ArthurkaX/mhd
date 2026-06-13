@@ -239,7 +239,11 @@ pub struct AdvancedLayout {
 #[derive(Copy, Clone)]
 pub struct LlmProxyLayout {
     pub top_y: i32,
-    /// Y offset of the provider list (below the section header).
+    /// Y offset of the "Proxy Settings" section.
+    pub proxy_y: i32,
+    /// Height of the proxy settings section (fields + header).
+    pub proxy_h: i32,
+    /// Y offset of the provider list (below the proxy settings).
     pub list_y: i32,
     /// Available height of the provider list area.
     pub list_h: i32,
@@ -577,16 +581,20 @@ fn compute_advanced_layout(c: &CommonLayout) -> AdvancedLayout {
 }
 
 fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
-    let list_y =
-        c.content_y + (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32 + (8.0 * c.scale) as i32;
-    let list_h = c.content_visible_h
-        - (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32
-        - (8.0 * c.scale) as i32;
+    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32;
+    let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
+    let gap = (8.0 * c.scale) as i32;
+    // Proxy settings section: header + Anthropic Key + Bind Address + divider
+    let proxy_h = section_h + row_h + gap + row_h + gap + gap / 2 + 1;
+    let list_y = c.content_y + proxy_h;
+    let list_h = c.content_visible_h - proxy_h;
     LlmProxyLayout {
         top_y: c.content_y,
+        proxy_y: c.content_y,
+        proxy_h,
         list_y,
         list_h,
-        row_h: (ROW_HEIGHT_BASE as f32 * c.scale) as i32,
+        row_h,
         name_w: (260.0 * c.scale) as i32,
         del_w: (28.0 * c.scale) as i32,
     }

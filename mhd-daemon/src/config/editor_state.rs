@@ -86,6 +86,17 @@ pub enum SettingsHit {
     AccordionSaveBtn,
     AccordionCancelBtn,
     AccordionDeleteBtn,
+    /// Inline-editable Anthropic Key field.
+    ProxyAnthropicKeyField,
+    /// Inline-editable bind address field.
+    ProxyBindAddressField,
+}
+
+/// Which global proxy field is being inline-edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyEditField {
+    AnthropicKey,
+    BindAddress,
 }
 
 // ── Button style ──────────────────────────────────────────────────
@@ -186,6 +197,8 @@ pub struct SettingsState {
     pub edit_select_start: Option<usize>,
     /// Previous value to restore on Escape
     pub edit_old_value: String,
+    /// Which proxy field is being inline-edited (None = no proxy field editing).
+    pub proxy_editing_field: Option<ProxyEditField>,
 
     /// Hovered interactive target
     pub hovered_target: SettingsHit,
