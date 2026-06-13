@@ -125,9 +125,7 @@ pub struct SettingsState {
 
     /// List of bindings being edited
     pub bindings: Vec<UIBinding>,
-    /// Vertical scroll offset for the shortcuts list.
-    pub bindings_scroll_y: i32,
-    /// Vertical scroll offset for the content area (General / Advanced pages).
+    /// Vertical scroll offset for the content area (all pages).
     pub content_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)
     pub recording_info: Option<(usize, bool)>,

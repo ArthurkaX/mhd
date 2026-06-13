@@ -223,7 +223,6 @@ pub fn show_config_editor(handle: AppHandle) {
         notes_dir,
         draw_dir,
         bindings,
-        bindings_scroll_y: 0,
         content_scroll_y: 0,
         recording_info: None,
         expanded_idx: None,
@@ -536,8 +535,6 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         SelectClipRgn(dib_dc, content_clip);
         let _ = DeleteObject(content_clip);
 
-        // Translate so controls paint at their natural Y but we only
-        // see the scrolled window.
         let mut old_org = POINT { x: 0, y: 0 };
         let _ = SetViewportOrgEx(dib_dc, 0, -state.content_scroll_y, Some(&mut old_org));
 
@@ -1151,7 +1148,7 @@ unsafe extern "system" fn settings_wndproc(
                         if state.active_section != new_section {
                             state.active_section = new_section;
                             state.content_scroll_y = 0;
-                            state.bindings_scroll_y = 0;
+                            state.content_scroll_y = 0;
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                     }
@@ -1194,67 +1191,30 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         let lay = state.layout;
+                        let content_h = page_control_content_height(state, &lay);
+                        let max_scroll = (content_h - lay.content_visible_h()).max(0);
+                        let scrollbar_h = lay.content_visible_h();
+                        let thumb_h = ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
+                        let thumb_h = thumb_h.max((16.0 * lay.scale()) as i32);
+                        let thumb_travel = (scrollbar_h - thumb_h).max(1);
+                        let thumb_y = lay.content_y()
+                            + ((state.content_scroll_y as f32 / max_scroll as f32) * thumb_travel as f32) as i32;
 
-                        if state.active_section == SettingsPage::Shortcuts {
-                            // Shortcuts page uses its own scroll fields.
-                            let content_h = state.bindings.len() as i32 * lay.row_h()
-                                + if state.expanded_idx.is_some() {
-                                    lay.accordion_h()
-                                } else {
-                                    0
-                                }
-                                + lay.row_h();
-                            let thumb_h =
-                                ((lay.list_h() as f32 / content_h as f32) * lay.list_h() as f32) as i32;
-                            let thumb_h = thumb_h.max((30.0 * lay.scale()) as i32);
-                            let max_scroll = content_h - lay.list_h();
-                            let thumb_y = lay.list_y()
-                                + ((state.bindings_scroll_y as f32 / max_scroll as f32)
-                                    * (lay.list_h() - thumb_h) as f32)
-                                    as i32;
-
-                            if y >= thumb_y && y < thumb_y + thumb_h {
-                                state.is_dragging_scroll = true;
-                                state.scroll_drag_start_y = y;
-                                state.scroll_drag_start_offset = state.bindings_scroll_y;
-                            } else {
-                                let track_click_y = y - lay.list_y() - thumb_h / 2;
-                                let pct = track_click_y as f32 / (lay.list_h() - thumb_h) as f32;
-                                state.bindings_scroll_y = (pct * max_scroll as f32) as i32;
-                                state.bindings_scroll_y = state.bindings_scroll_y.clamp(0, max_scroll);
-                                state.is_dragging_scroll = true;
-                                state.scroll_drag_start_y = y;
-                                state.scroll_drag_start_offset = state.bindings_scroll_y;
-                                paint_settings(hwnd, state_ptr, &lay);
-                            }
-                            let _ = SetCapture(hwnd);
+                        if y >= thumb_y && y < thumb_y + thumb_h {
+                            state.is_dragging_scroll = true;
+                            state.scroll_drag_start_y = y;
+                            state.scroll_drag_start_offset = state.content_scroll_y;
                         } else {
-                            // Generic scroll for General / Advanced / LLM Proxy.
-                            let content_h = page_control_content_height(state, &lay);
-                            let max_scroll = (content_h - lay.content_visible_h()).max(0);
-                            let scrollbar_h = lay.content_visible_h();
-                            let thumb_h = ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
-                            let thumb_h = thumb_h.max((16.0 * lay.scale()) as i32);
-                            let thumb_travel = (scrollbar_h - thumb_h).max(1);
-                            let thumb_y = lay.content_y()
-                                + ((state.content_scroll_y as f32 / max_scroll as f32) * thumb_travel as f32) as i32;
-
-                            if y >= thumb_y && y < thumb_y + thumb_h {
-                                state.is_dragging_scroll = true;
-                                state.scroll_drag_start_y = y;
-                                state.scroll_drag_start_offset = state.content_scroll_y;
-                            } else {
-                                let track_click_y = y - lay.content_y() - thumb_h / 2;
-                                let pct = track_click_y as f32 / thumb_travel as f32;
-                                state.content_scroll_y = (pct * max_scroll as f32) as i32;
-                                state.content_scroll_y = state.content_scroll_y.clamp(0, max_scroll);
-                                state.is_dragging_scroll = true;
-                                state.scroll_drag_start_y = y;
-                                state.scroll_drag_start_offset = state.content_scroll_y;
-                                paint_settings(hwnd, state_ptr, &lay);
-                            }
-                            let _ = SetCapture(hwnd);
+                            let track_click_y = y - lay.content_y() - thumb_h / 2;
+                            let pct = track_click_y as f32 / thumb_travel as f32;
+                            state.content_scroll_y = (pct * max_scroll as f32) as i32;
+                            state.content_scroll_y = state.content_scroll_y.clamp(0, max_scroll);
+                            state.is_dragging_scroll = true;
+                            state.scroll_drag_start_y = y;
+                            state.scroll_drag_start_offset = state.content_scroll_y;
+                            paint_settings(hwnd, state_ptr, &lay);
                         }
+                        let _ = SetCapture(hwnd);
                     }
                     SettingsHit::RowClick(i) => {
                         close_combo_popup(state);
@@ -1281,7 +1241,7 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         finish_inline_edit(state);
-                        let row_y = state.layout.list_y() - state.bindings_scroll_y
+                        let row_y = state.layout.list_y() - state.content_scroll_y
                             + (i as i32) * state.layout.row_h();
                         handle_list_click(state, i, x, y, row_y);
                     }
@@ -1548,7 +1508,7 @@ unsafe extern "system" fn settings_wndproc(
                             };
                             let pw =
                                 state.layout.win_w() - state.layout.pad() * 2 - gap * 2 - pw_adjust;
-                            let accordion_y = state.layout.list_y() - state.bindings_scroll_y
+                            let accordion_y = state.layout.list_y() - state.content_scroll_y
                                 + (idx as i32 + 1) * state.layout.row_h()
                                 + (12.0 * state.layout.scale()) as i32;
                             let field_rect = RECT {
@@ -1607,44 +1567,19 @@ unsafe extern "system" fn settings_wndproc(
                     let lay = state.layout;
 
                     if state.is_dragging_scroll {
-                        if state.active_section == SettingsPage::Shortcuts {
-                            let content_h = state.bindings.len() as i32 * lay.row_h()
-                                + if state.expanded_idx.is_some() {
-                                    lay.accordion_h()
-                                } else {
-                                    0
-                                }
-                                + lay.row_h();
-                            let thumb_h =
-                                ((lay.list_h() as f32 / content_h as f32) * lay.list_h() as f32) as i32;
-                            let thumb_h = thumb_h.max((30.0 * lay.scale()) as i32);
-                            let max_scroll = content_h - lay.list_h();
-                            let thumb_travel = lay.list_h() - thumb_h;
-                            if thumb_travel > 0 {
-                                let dy = y - state.scroll_drag_start_y;
-                                let scroll_delta =
-                                    (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
-                                state.bindings_scroll_y = (state.scroll_drag_start_offset
-                                    + scroll_delta)
-                                    .clamp(0, max_scroll);
-                                paint_settings(hwnd, state_ptr, &lay);
-                            }
-                        } else {
-                            // Generic scroll drag
-                            let content_h = page_control_content_height(state, &lay);
-                            let max_scroll = (content_h - lay.content_visible_h()).max(0);
-                            let scrollbar_h = lay.content_visible_h();
-                            let thumb_h = ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
-                            let thumb_h = thumb_h.max((16.0 * lay.scale()) as i32);
-                            let thumb_travel = (scrollbar_h - thumb_h).max(1);
-                            let dy = y - state.scroll_drag_start_y;
-                            let scroll_delta =
-                                (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
-                            state.content_scroll_y = (state.scroll_drag_start_offset
-                                + scroll_delta)
-                                .clamp(0, max_scroll);
-                            paint_settings(hwnd, state_ptr, &lay);
-                        }
+                        let content_h = page_control_content_height(state, &lay);
+                        let max_scroll = (content_h - lay.content_visible_h()).max(0);
+                        let scrollbar_h = lay.content_visible_h();
+                        let thumb_h = ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
+                        let thumb_h = thumb_h.max((16.0 * lay.scale()) as i32);
+                        let thumb_travel = (scrollbar_h - thumb_h).max(1);
+                        let dy = y - state.scroll_drag_start_y;
+                        let scroll_delta =
+                            (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
+                        state.content_scroll_y = (state.scroll_drag_start_offset
+                            + scroll_delta)
+                            .clamp(0, max_scroll);
+                        paint_settings(hwnd, state_ptr, &lay);
                     } else {
                         let target = hit_test_settings(state, x, y);
 
@@ -1695,27 +1630,12 @@ unsafe extern "system" fn settings_wndproc(
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
                     let lay = state.layout;
-                    if state.active_section == SettingsPage::Shortcuts {
-                        let content_h = state.bindings.len() as i32 * lay.row_h()
-                            + if state.expanded_idx.is_some() {
-                                lay.accordion_h()
-                            } else {
-                                0
-                            }
-                            + lay.row_h();
-                        let max_scroll = (content_h - lay.list_h()).max(0);
-                        state.bindings_scroll_y = (state.bindings_scroll_y
-                            - (delta as i32 / 120) * 40)
-                            .clamp(0, max_scroll);
-                        paint_settings(hwnd, state_ptr, &lay);
-                    } else {
-                        let content_h = page_control_content_height(state, &lay);
-                        let max_scroll = (content_h - lay.content_visible_h()).max(0);
-                        state.content_scroll_y = (state.content_scroll_y
-                            - (delta as i32 / 120) * 40)
-                            .clamp(0, max_scroll);
-                        paint_settings(hwnd, state_ptr, &lay);
-                    }
+                    let content_h = page_control_content_height(state, &lay);
+                    let max_scroll = (content_h - lay.content_visible_h()).max(0);
+                    state.content_scroll_y = (state.content_scroll_y
+                        - (delta as i32 / 120) * 40)
+                        .clamp(0, max_scroll);
+                    paint_settings(hwnd, state_ptr, &lay);
                 }
                 LRESULT(0)
             }

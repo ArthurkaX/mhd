@@ -14,8 +14,8 @@ use windows::Win32::Graphics::Gdi::*;
 use crate::action::ActionParamSchema;
 use crate::config::editor_control::{Control, ControlList, FontChoice, HitRegion};
 use crate::config::editor_layout::{
-    editor_action_desc, ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, SECTION_GAP_BASE,
-    SECTION_HEADER_HEIGHT_BASE, Layout, WIN_WIDTH_BASE,
+    editor_action_desc, Layout, ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, SECTION_GAP_BASE,
+    SECTION_HEADER_HEIGHT_BASE, WIN_WIDTH_BASE,
 };
 use crate::config::editor_state::{ButtonStyle, SettingsHit, SettingsState};
 use crate::config::editor_theme::{
@@ -27,13 +27,21 @@ use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── Convenience: resolve a FontChoice to an HFONT ───────────────────
 
-fn select_font(dib_dc: HDC, font: FontChoice, title_font: HFONT, body_font: HFONT, small_font: HFONT) -> HFONT {
+fn select_font(
+    dib_dc: HDC,
+    font: FontChoice,
+    title_font: HFONT,
+    body_font: HFONT,
+    small_font: HFONT,
+) -> HFONT {
     let h = match font {
         FontChoice::Title => title_font,
         FontChoice::Body => body_font,
         FontChoice::Small => small_font,
     };
-    unsafe { let _ = SelectObject(dib_dc, h); }
+    unsafe {
+        let _ = SelectObject(dib_dc, h);
+    }
     h
 }
 
@@ -55,42 +63,129 @@ pub fn paint_control(
     small_font: HFONT,
 ) {
     match c {
-        Control::Header { rect, label, font, text_color } => {
-            draw_section_header(dib_dc, *rect, label, select_font(dib_dc, *font, title_font, body_font, small_font), *text_color);
+        Control::Header {
+            rect,
+            label,
+            font,
+            text_color,
+        } => {
+            draw_section_header(
+                dib_dc,
+                *rect,
+                label,
+                select_font(dib_dc, *font, title_font, body_font, small_font),
+                *text_color,
+            );
         }
-        Control::Label { rect, label, font, text_color } => {
-            draw_plain_label(dib_dc, *rect, label, select_font(dib_dc, *font, title_font, body_font, small_font), *text_color);
+        Control::Label {
+            rect,
+            label,
+            font,
+            text_color,
+        } => {
+            draw_plain_label(
+                dib_dc,
+                *rect,
+                label,
+                select_font(dib_dc, *font, title_font, body_font, small_font),
+                *text_color,
+            );
         }
         Control::Divider { rect } => {
             draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, 0, theme.border);
         }
-        Control::Combo { rect, arrow_width, selected, font, bg_color, border_color, text_color, arrow_color, .. } => {
+        Control::Combo {
+            rect,
+            arrow_width,
+            selected,
+            font,
+            bg_color,
+            border_color,
+            text_color,
+            arrow_color,
+            ..
+        } => {
             draw_collapsed_combo_box(
-                dib_dc, bits, win_w, win_h, *rect, *arrow_width, selected,
+                dib_dc,
+                bits,
+                win_w,
+                win_h,
+                *rect,
+                *arrow_width,
+                selected,
                 select_font(dib_dc, *font, title_font, body_font, small_font),
-                *bg_color, *border_color, *text_color, *arrow_color,
+                *bg_color,
+                *border_color,
+                *text_color,
+                *arrow_color,
             );
         }
-        Control::Toggle { rect, is_on, is_hovered, .. } => {
+        Control::Toggle {
+            rect,
+            is_on,
+            is_hovered,
+            ..
+        } => {
             draw_toggle_switch(bits, win_w, win_h, *rect, *is_on, *is_hovered, theme);
         }
-        Control::TextField { rect, text, placeholder, font, bg_color, border_color, text_color, .. } => {
+        Control::TextField {
+            rect,
+            text,
+            placeholder,
+            font,
+            bg_color,
+            border_color,
+            text_color,
+            ..
+        } => {
             draw_readonly_text_field(
-                dib_dc, bits, win_w, win_h, *rect, text, placeholder.as_deref(),
+                dib_dc,
+                bits,
+                win_w,
+                win_h,
+                *rect,
+                text,
+                placeholder.as_deref(),
                 select_font(dib_dc, *font, title_font, body_font, small_font),
-                *bg_color, *border_color, *text_color,
+                *bg_color,
+                *border_color,
+                *text_color,
             );
         }
-        Control::Button { rect, label, font, is_hovered, style, .. } => {
+        Control::Button {
+            rect,
+            label,
+            font,
+            is_hovered,
+            style,
+            ..
+        } => {
             draw_button(
-                dib_dc, bits, win_w, win_h,
-                rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-                label, theme,
+                dib_dc,
+                bits,
+                win_w,
+                win_h,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                label,
+                theme,
                 select_font(dib_dc, *font, title_font, body_font, small_font),
-                *is_hovered, *style,
+                *is_hovered,
+                *style,
             );
         }
-        Control::BindingRow { rect, trigger, kind_label, param, is_selected, is_hovered, zebra, .. } => {
+        Control::BindingRow {
+            rect,
+            trigger,
+            kind_label,
+            param,
+            is_selected,
+            is_hovered,
+            zebra,
+            ..
+        } => {
             // Background rounded rect. Even, unselected, unhovered rows draw
             // no fill (the zebra effect) — but must still render their text,
             // so skip only the fill here instead of returning early.
@@ -121,14 +216,21 @@ pub fn paint_control(
                 bottom: rect.bottom,
             };
             unsafe {
-                let _ = DrawTextW(dib_dc, &mut trig_wz, &mut trig_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut trig_wz,
+                    &mut trig_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
             }
 
             // Kind label
             unsafe {
                 let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
             }
-            let kind_x = rect.left + lay_trig_w(win_w) + (8.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
+            let kind_x = rect.left
+                + lay_trig_w(win_w)
+                + (8.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
             let mut kind_wz = to_utf16_z(kind_label);
             let mut kind_rc = RECT {
                 left: kind_x + 8,
@@ -137,11 +239,17 @@ pub fn paint_control(
                 bottom: rect.bottom,
             };
             unsafe {
-                let _ = DrawTextW(dib_dc, &mut kind_wz, &mut kind_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut kind_wz,
+                    &mut kind_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
             }
 
             // Param text
-            let param_x = kind_x + lay_kind_w(win_w) + (8.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
+            let param_x =
+                kind_x + lay_kind_w(win_w) + (8.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
             let param_w = win_w - rect.left - lay_del_w(win_w) - param_x;
             if !param.is_empty() {
                 let mut param_wz = to_utf16_z(param);
@@ -152,22 +260,42 @@ pub fn paint_control(
                     bottom: rect.bottom,
                 };
                 unsafe {
-                    let _ = DrawTextW(dib_dc, &mut param_wz, &mut param_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut param_wz,
+                        &mut param_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                    );
                 }
             }
         }
-        Control::AccordionPanel { rect, bg_color, border_color, radius } => {
+        Control::AccordionPanel {
+            rect,
+            bg_color,
+            border_color,
+            radius,
+        } => {
             draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, *radius, *bg_color);
             if border_color.a > 0 {
                 draw_rounded_border_in_buffer(bits, win_w, win_h, *rect, *radius, 1, *border_color);
             }
         }
-        Control::AccordionField { rect, text, font, bg_color, text_color, .. } => {
+        Control::AccordionField {
+            rect,
+            text,
+            font,
+            bg_color,
+            text_color,
+            ..
+        } => {
             let scale = win_w as f32 / WIN_WIDTH_BASE as f32;
             let radius = (4.0 * scale) as i32;
             draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, radius, *bg_color);
             unsafe {
-                let _ = SelectObject(dib_dc, select_font(dib_dc, *font, title_font, body_font, small_font));
+                let _ = SelectObject(
+                    dib_dc,
+                    select_font(dib_dc, *font, title_font, body_font, small_font),
+                );
                 let _ = SetTextColor(dib_dc, text_color.to_colorref());
             }
             let mut wz = to_utf16_z(text);
@@ -178,10 +306,19 @@ pub fn paint_control(
                 bottom: rect.bottom,
             };
             unsafe {
-                let _ = DrawTextW(dib_dc, &mut wz, &mut text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut wz,
+                    &mut text_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
             }
         }
-        Control::AccordionHelp { rect, text, text_color } => {
+        Control::AccordionHelp {
+            rect,
+            text,
+            text_color,
+        } => {
             unsafe {
                 let _ = SelectObject(dib_dc, small_font);
                 let _ = SetTextColor(dib_dc, text_color.to_colorref());
@@ -189,26 +326,47 @@ pub fn paint_control(
             let mut wz = to_utf16_z(text);
             let mut rc = *rect;
             unsafe {
-                let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut wz,
+                    &mut rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
             }
         }
-        Control::Scrollbar { rect: _, track_rect, thumb_rect, thumb_color, .. } => {
+        Control::Scrollbar {
+            rect: _,
+            track_rect,
+            thumb_rect,
+            thumb_color,
+            ..
+        } => {
             let scroll_w = thumb_rect.right - thumb_rect.left;
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, *track_rect, scroll_w / 2, theme.border);
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, *thumb_rect, scroll_w / 2, *thumb_color);
+            draw_rounded_rect_in_buffer(
+                bits,
+                win_w,
+                win_h,
+                *track_rect,
+                scroll_w / 2,
+                theme.border,
+            );
+            draw_rounded_rect_in_buffer(
+                bits,
+                win_w,
+                win_h,
+                *thumb_rect,
+                scroll_w / 2,
+                *thumb_color,
+            );
         }
-        Control::ClipStart { rect } => {
-            unsafe {
-                let _ = IntersectClipRect(dib_dc, rect.left, rect.top, rect.right, rect.bottom);
-            }
-        }
-        Control::ClipEnd => {
-            unsafe {
-                let rgn = CreateRectRgn(0, 0, win_w, win_h);
-                let _ = SelectClipRgn(dib_dc, rgn);
-                let _ = DeleteObject(rgn);
-            }
-        }
+        Control::ClipStart { rect } => unsafe {
+            let _ = IntersectClipRect(dib_dc, rect.left, rect.top, rect.right, rect.bottom);
+        },
+        Control::ClipEnd => unsafe {
+            let rgn = CreateRectRgn(0, 0, win_w, win_h);
+            let _ = SelectClipRgn(dib_dc, rgn);
+            let _ = DeleteObject(rgn);
+        },
     }
 }
 
@@ -226,7 +384,9 @@ pub fn paint_page(
     small_font: HFONT,
 ) -> Vec<HitRegion> {
     for c in &controls.controls {
-        paint_control(c, dib_dc, bits, win_w, win_h, theme, title_font, body_font, small_font);
+        paint_control(
+            c, dib_dc, bits, win_w, win_h, theme, title_font, body_font, small_font,
+        );
     }
     controls.regions()
 }
@@ -249,10 +409,7 @@ fn lay_del_w(win_w: i32) -> i32 {
 // ── General page controls ────────────────────────────────────────────
 
 /// Build the General page control list (no drawing).
-pub fn build_general_controls(
-    lay: &Layout,
-    state: &SettingsState,
-) -> ControlList {
+pub fn build_general_controls(lay: &Layout, state: &SettingsState) -> ControlList {
     let mut ctls = ControlList::new();
     let scale = (lay.win_w() as f32) / WIN_WIDTH_BASE as f32;
     let section_header_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
@@ -572,10 +729,7 @@ pub fn build_general_controls(
 // ── Advanced page controls ───────────────────────────────────────────
 
 /// Build the Advanced page control list (no drawing).
-pub fn build_advanced_controls(
-    lay: &Layout,
-    state: &SettingsState,
-) -> ControlList {
+pub fn build_advanced_controls(lay: &Layout, state: &SettingsState) -> ControlList {
     let mut ctls = ControlList::new();
     let scale = (lay.win_w() as f32) / WIN_WIDTH_BASE as f32;
     let section_header_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
@@ -632,10 +786,7 @@ pub fn build_advanced_controls(
 // ── Shortcuts page controls ───────────────────────────────────────────
 
 /// Build the Shortcuts page control list (no drawing).
-pub fn build_shortcuts_controls(
-    lay: &Layout,
-    state: &SettingsState,
-) -> ControlList {
+pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlList {
     let mut ctls = ControlList::new();
     let scale = (lay.win_w() as f32) / WIN_WIDTH_BASE as f32;
     let row_h = lay.row_h();
@@ -643,19 +794,6 @@ pub fn build_shortcuts_controls(
     let list_y = lay.list_y();
     let list_h = lay.list_h();
     let win_w_val = lay.win_w();
-
-    // Title
-    ctls.push(Control::Header {
-        rect: RECT {
-            left: pad,
-            top: lay.shortcuts_y(),
-            right: win_w_val - pad,
-            bottom: lay.shortcuts_y() + (24.0 * scale) as i32,
-        },
-        label: "Shortcuts".into(),
-        font: FontChoice::Title,
-        text_color: theme_text(state),
-    });
 
     // Table headers
     let table_header_y = list_y - (24.0 * scale) as i32;
@@ -700,7 +838,7 @@ pub fn build_shortcuts_controls(
     });
 
     // Content height (for scrollbar and positioning)
-    let content_h = state.bindings.len() as i32 * row_h
+    let _content_h = state.bindings.len() as i32 * row_h
         + if state.expanded_idx.is_some() {
             lay.accordion_h()
         } else {
@@ -719,7 +857,7 @@ pub fn build_shortcuts_controls(
     });
 
     // Binding rows
-    let mut row_y = list_y - state.bindings_scroll_y;
+    let mut row_y = list_y - state.content_scroll_y;
     for (i, b) in state.bindings.iter().enumerate() {
         let row_visible = row_y + row_h >= list_y && row_y < list_y + list_h;
 
@@ -840,7 +978,11 @@ pub fn build_shortcuts_controls(
                         right: record_x + btn_h,
                         bottom: acc_cur_y + btn_h,
                     },
-                    label: if state.acc_is_recording { "Rec".into() } else { "Bind".into() },
+                    label: if state.acc_is_recording {
+                        "Rec".into()
+                    } else {
+                        "Bind".into()
+                    },
                     font: FontChoice::Small,
                     is_hovered: is_rec_hovered,
                     style: ButtonStyle::Primary,
@@ -868,11 +1010,7 @@ pub fn build_shortcuts_controls(
 
                 // ── Row 2: parameter field ──
                 let is_key_mapping = desc.param_schema == ActionParamSchema::KeyMapping;
-                let param_field_w = if is_key_mapping {
-                    pw - btn_h - gap
-                } else {
-                    pw
-                };
+                let param_field_w = if is_key_mapping { pw - btn_h - gap } else { pw };
 
                 match desc.param_schema {
                     ActionParamSchema::None | ActionParamSchema::PowerAction => {
@@ -893,7 +1031,8 @@ pub fn build_shortcuts_controls(
                         } else {
                             state.acc_param.clone()
                         };
-                        let is_param_hovered = state.hovered_target == SettingsHit::AccordionParamField;
+                        let is_param_hovered =
+                            state.hovered_target == SettingsHit::AccordionParamField;
                         let p_bg = if is_param_hovered {
                             theme_hover(state).blend_over(panel_bg)
                         } else {
@@ -915,7 +1054,8 @@ pub fn build_shortcuts_controls(
 
                         if is_key_mapping {
                             let param_record_x = field_x + param_field_w + gap;
-                            let is_param_rec_hovered = state.hovered_target == SettingsHit::AccordionParamRecordBtn;
+                            let is_param_rec_hovered =
+                                state.hovered_target == SettingsHit::AccordionParamRecordBtn;
                             ctls.push(Control::Button {
                                 rect: RECT {
                                     left: param_record_x,
@@ -923,7 +1063,11 @@ pub fn build_shortcuts_controls(
                                     right: param_record_x + btn_h,
                                     bottom: acc_cur_y + btn_h,
                                 },
-                                label: if state.acc_is_recording_param { "Rec".into() } else { "Bind".into() },
+                                label: if state.acc_is_recording_param {
+                                    "Rec".into()
+                                } else {
+                                    "Bind".into()
+                                },
                                 font: FontChoice::Small,
                                 is_hovered: is_param_rec_hovered,
                                 style: ButtonStyle::Primary,
@@ -1029,61 +1173,29 @@ pub fn build_shortcuts_controls(
     // End clipped list area
     ctls.push(Control::ClipEnd);
 
-    // ── Scrollbar ──
-    if content_h > list_h {
-        let scroll_w = (6.0 * scale) as i32;
-        let scroll_x = win_w_val - pad + (pad - scroll_w) / 2;
-        let track_rect = RECT {
-            left: scroll_x,
-            top: list_y,
-            right: scroll_x + scroll_w,
-            bottom: list_y + list_h,
-        };
-
-        let thumb_h = ((list_h as f32 / content_h as f32) * list_h as f32) as i32;
-        let thumb_h = thumb_h.max((30.0 * scale) as i32);
-        let max_scroll = content_h - list_h;
-        let thumb_y = list_y
-            + ((state.bindings_scroll_y as f32 / max_scroll as f32) * (list_h - thumb_h) as f32)
-                as i32;
-        let thumb_rect = RECT {
-            left: scroll_x,
-            top: thumb_y,
-            right: scroll_x + scroll_w,
-            bottom: thumb_y + thumb_h,
-        };
-
-        let is_thumb_active =
-            state.hovered_target == SettingsHit::Scrollbar || state.is_dragging_scroll;
-        let thumb_color = if is_thumb_active {
-            theme_accent(state)
-        } else {
-            theme_text_muted(state)
-        };
-
-        ctls.push(Control::Scrollbar {
-            rect: RECT {
-                left: scroll_x - 4,
-                top: list_y,
-                right: scroll_x + scroll_w + 4,
-                bottom: list_y + list_h,
-            },
-            track_rect,
-            thumb_rect,
-            thumb_color,
-            hit: SettingsHit::Scrollbar,
-        });
-    }
-
     ctls
 }
 
 // ── Theme accessor shims (we don't have a &NativeTheme in build fns) ─
 
-fn theme_text(state: &SettingsState) -> Argb { state.theme.text }
-fn theme_text_muted(state: &SettingsState) -> Argb { state.theme.text_muted }
-fn theme_border(state: &SettingsState) -> Argb { state.theme.border }
-fn theme_surface(state: &SettingsState) -> Argb { state.theme.surface }
-fn theme_hover(state: &SettingsState) -> Argb { state.theme.hover }
-fn theme_accent(state: &SettingsState) -> Argb { state.theme.accent }
-fn theme_background(state: &SettingsState) -> Argb { state.theme.background }
+fn theme_text(state: &SettingsState) -> Argb {
+    state.theme.text
+}
+fn theme_text_muted(state: &SettingsState) -> Argb {
+    state.theme.text_muted
+}
+fn theme_border(state: &SettingsState) -> Argb {
+    state.theme.border
+}
+fn theme_surface(state: &SettingsState) -> Argb {
+    state.theme.surface
+}
+fn theme_hover(state: &SettingsState) -> Argb {
+    state.theme.hover
+}
+fn theme_accent(state: &SettingsState) -> Argb {
+    state.theme.accent
+}
+fn theme_background(state: &SettingsState) -> Argb {
+    state.theme.background
+}
