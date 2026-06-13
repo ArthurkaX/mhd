@@ -196,7 +196,7 @@ pub fn open_binding_popup(
 
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class_ptr,
             PCWSTR::from_raw(to_utf16_z("Edit Shortcut").as_ptr()),
             WS_POPUP,
