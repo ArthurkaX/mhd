@@ -139,8 +139,13 @@ fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
         target: "native".to_string(),
     }];
     for m in &cfg.models {
+        let label = if m.display_name.is_empty() {
+            m.id.clone()
+        } else {
+            m.display_name.clone()
+        };
         options.push(Opt {
-            label: m.display_name.clone(),
+            label,
             target: m.id.clone(),
         });
     }

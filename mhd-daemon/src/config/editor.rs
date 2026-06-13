@@ -1068,7 +1068,7 @@ fn apply_settings(state: &mut SettingsState) {
                 p.models.iter().map(|m| llm_proxy::config::Model {
                     provider: p.name.clone(),
                     id: m.clone(),
-                    display_name: String::new(),
+                    display_name: m.clone(),
                     tags: vec![],
                 })
             })
