@@ -205,7 +205,7 @@ pub fn paint_control(
 
             // Trigger text
             unsafe {
-                let _ = SelectObject(dib_dc, small_font);
+                let _ = SelectObject(dib_dc, body_font);
                 let _ = SetTextColor(dib_dc, theme.text.to_colorref());
             }
             let mut trig_wz = to_utf16_z(trigger);
@@ -226,6 +226,7 @@ pub fn paint_control(
 
             // Kind label
             unsafe {
+                let _ = SelectObject(dib_dc, body_font);
                 let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
             }
             let kind_x = rect.left
@@ -857,7 +858,7 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
     });
 
     // Binding rows
-    let mut row_y = list_y - state.content_scroll_y;
+    let mut row_y = list_y;
     for (i, b) in state.bindings.iter().enumerate() {
         let row_visible = row_y + row_h >= list_y && row_y < list_y + list_h;
 
@@ -1162,7 +1163,7 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
                 right: pad + add_btn_w,
                 bottom: row_y + (row_h + lay.btn_h()) / 2,
             },
-            label: "+ Add".into(),
+            label: "new".into(),
             font: FontChoice::Small,
             is_hovered: is_add_hovered,
             style: ButtonStyle::Secondary,

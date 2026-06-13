@@ -29,8 +29,8 @@ pub const SECTION_HEADER_HEIGHT_BASE: i32 = 28;
 
 // Fonts
 pub const FONT_TITLE_SIZE: i32 = 16;
-pub const FONT_BODY_SIZE: i32 = 12;
-pub const FONT_SMALL_SIZE: i32 = 10;
+pub const FONT_BODY_SIZE: i32 = 13;
+pub const FONT_SMALL_SIZE: i32 = 11;
 
 // ── Combo popup constants ──────────────────────────────────────────
 

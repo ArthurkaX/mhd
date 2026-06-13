@@ -181,11 +181,11 @@ pub fn open_binding_popup(
         )
     };
 
-    // Build class atom string for CreateWindowExW
+    // Build class atom (MAKEINTRESOURCEW) for CreateWindowExW
     let class_wz = to_utf16_z("#32770"); // fallback dialog class if atom fails
     let class_ptr = if class_atom != 0 {
-        // Use the registered class atom as a string
-        PCWSTR::from_raw(&class_atom as *const u16)
+        // Cast atom value directly to pointer (MAKEINTRESOURCEW semantics)
+        PCWSTR::from_raw(class_atom as *const u16)
     } else {
         PCWSTR::from_raw(class_wz.as_ptr())
     };
