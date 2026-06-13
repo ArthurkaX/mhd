@@ -368,14 +368,27 @@ pub fn show_config_editor(handle: AppHandle) {
 
     // Nested message loop
     let mut msg = MSG::default();
-    loop {
-        let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-        if !ret.as_bool() {
-            break;
-        }
-        unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+    unsafe {
+        loop {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    // WM_QUIT — the window was already destroyed,
+                    // just exit the nested loop.
+                    return;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            // Check if the daemon is shutting down
+            if !handle.status() {
+                let _ = DestroyWindow(hwnd);
+                return;
+            }
+
+            // Wait for new messages with a 200ms timeout so we can
+            // detect daemon shutdown within a reasonable time.
+            let _ = MsgWaitForMultipleObjects(None, false, 200, QS_ALLINPUT);
         }
     }
 
@@ -1676,6 +1689,7 @@ unsafe extern "system" fn settings_wndproc(
                                     models,
                                     &endpoint,
                                     &api_key,
+                                    &state.handle,
                                 )
                             {
                                 state.providers[i].models = updated_models;

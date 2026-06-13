@@ -14,6 +14,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
+use crate::app::DaemonControl;
 use crate::config::editor_layout::*;
 use crate::config::editor_state::ButtonStyle;
 use crate::config::editor_theme::{
@@ -155,6 +156,7 @@ pub fn open_models_popup(
     models: Vec<String>,
     endpoint: &str,
     api_key: &str,
+    handle: &crate::app::AppHandle,
 ) -> Option<Vec<String>> {
     let win_w = (POPUP_WIDTH_BASE as f32 * scale) as i32;
     let win_h = (POPUP_HEIGHT_BASE as f32 * scale) as i32;
@@ -268,30 +270,46 @@ pub fn open_models_popup(
     }
 
     // Modal message loop
-    loop {
-        unsafe {
+    let mut daemon_shutdown = false;
+    unsafe {
+        loop {
             let mut msg = MSG::default();
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
+                    daemon_shutdown = true;
                     break;
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
-        }
 
-        let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-        if state_ptr == 0 {
-            break;
-        }
-        let should_close = unsafe { (*(state_ptr as *mut ModelsPopupState)).should_close };
-        if should_close {
-            break;
-        }
+            if daemon_shutdown {
+                break;
+            }
 
-        unsafe {
-            let _ = WaitMessage();
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if state_ptr == 0 {
+                break;
+            }
+            let should_close = (*(state_ptr as *mut ModelsPopupState)).should_close;
+            if should_close {
+                break;
+            }
+
+            // Check if the daemon is shutting down
+            if !handle.status() {
+                daemon_shutdown = true;
+                break;
+            }
+
+            let _ = MsgWaitForMultipleObjects(None, false, 200, QS_ALLINPUT);
         }
+    }
+
+    if daemon_shutdown {
+        // The daemon is shutting down — don't bother with cleanup,
+        // the process will exit.
+        return None;
     }
 
     // Re-enable parent and bring it to front
