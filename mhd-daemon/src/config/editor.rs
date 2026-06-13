@@ -1219,22 +1219,11 @@ unsafe extern "system" fn settings_wndproc(
                     SettingsHit::RowClick(i) => {
                         close_combo_popup(state);
                         close_kind_popup(state);
-                        if state.expanded_idx == Some(i) {
-                            state.expanded_idx = None;
-                            state.acc_is_recording = false;
-                            state.acc_is_recording_param = false;
-                            crate::hook::set_recording_window(None);
-                        } else {
-                            if i < state.bindings.len() {
-                                state.acc_trigger = state.bindings[i].trigger.clone();
-                                state.acc_kind_idx = state.bindings[i].kind_idx;
-                                state.acc_param = state.bindings[i].param.clone();
-                                state.acc_is_recording = false;
-                                state.acc_save_error = None;
-                                state.expanded_idx = Some(i);
-                                crate::hook::set_recording_window(None);
-                            }
-                        }
+                        // Open modal binding editor popup instead of inline accordion.
+                        crate::config::editor_binding_popup::open_binding_popup(
+                            hwnd, state_ptr, i,
+                        );
+                        // On return, redraw the settings window to reflect any changes.
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     SettingsHit::RowDelete(i) => {
