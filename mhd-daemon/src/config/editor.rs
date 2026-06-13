@@ -1108,7 +1108,20 @@ unsafe extern "system" fn settings_wndproc(
                 let state = &*state_ptr;
                 let lay = &state.layout;
 
+                // Tab area inside header → HTCLIENT, not HTCAPTION,
+                // so clicks on tabs work instead of dragging the window.
                 if pt.y < lay.header_h() {
+                    if pt.y >= lay.tab_bar_y() && pt.y < lay.tab_bar_y() + lay.tab_h() {
+                        let n = state.tab_titles.len() as i32;
+                        let tab_total_w = n * lay.tab_w() + (n - 1) * lay.tab_gap();
+                        let tab_start_x = lay.win_w() - lay.pad() - tab_total_w;
+                        for i in 0..n {
+                            let tx = tab_start_x + i * (lay.tab_w() + lay.tab_gap());
+                            if pt.x >= tx && pt.x < tx + lay.tab_w() {
+                                return LRESULT(HTCLIENT as isize);
+                            }
+                        }
+                    }
                     return LRESULT(HTCAPTION as isize);
                 }
                 LRESULT(HTCLIENT as isize)
