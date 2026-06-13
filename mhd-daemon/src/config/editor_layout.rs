@@ -13,9 +13,9 @@
 // ── Layout constants (96 dpi base) ─────────────────────────────────
 
 pub const WIN_WIDTH_BASE: i32 = 780;
-pub const WIN_HEIGHT_BASE: i32 = 580;
+pub const WIN_HEIGHT_BASE: i32 = 556;
 pub const PADDING: i32 = 24;
-pub const HEADER_HEIGHT_BASE: i32 = 64;
+pub const HEADER_HEIGHT_BASE: i32 = 56;
 pub const FOOTER_HEIGHT_BASE: i32 = 52;
 pub const ROW_HEIGHT_BASE: i32 = 32;
 pub const LABEL_WIDTH_BASE: i32 = 120; // Increased for better alignment
@@ -40,10 +40,10 @@ pub const COMBO_POPUP_MAX_VISIBLE: i32 = 8;
 
 // ── Tab bar constants ──────────────────────────────────────────────
 
-pub const TAB_WIDTH_BASE: i32 = 90;
-pub const TAB_HEIGHT_BASE: i32 = 28;
-pub const TAB_BAR_GAP_BASE: i32 = 8;
-pub const TAB_CONTENT_GAP_BASE: i32 = 12;
+pub const TAB_WIDTH_BASE: i32 = 100;
+pub const TAB_HEIGHT_BASE: i32 = 26;
+pub const TAB_BAR_GAP_BASE: i32 = 4;
+pub const TAB_CONTENT_GAP_BASE: i32 = 8;
 
 // ── Editor action names ────────────────────────────────────────────
 
@@ -423,8 +423,8 @@ fn compute_common_layout(scale: f32) -> CommonLayout {
     let tab_h = (TAB_HEIGHT_BASE as f32 * scale) as i32;
     let tab_w = (TAB_WIDTH_BASE as f32 * scale) as i32;
     let tab_gap = (TAB_BAR_GAP_BASE as f32 * scale) as i32;
-    let tab_bar_y = header_h + (4.0 * scale) as i32;
-    let content_y = tab_bar_y + tab_h + (TAB_CONTENT_GAP_BASE as f32 * scale) as i32;
+    let tab_bar_y = (header_h - tab_h) / 2;
+    let content_y = header_h + (TAB_CONTENT_GAP_BASE as f32 * scale) as i32;
 
     let btn_y = win_h - footer_h + (footer_h - btn_h) / 2;
     let label_w = (LABEL_WIDTH_BASE as f32 * scale) as i32;

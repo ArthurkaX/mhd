@@ -32,11 +32,11 @@ pub fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         }
     }
 
-    // ── Tab bar (horizontal, below header separator) ──────────
+    // ── Tab bar inside header (right-aligned) ──────────
     if y >= lay.tab_bar_y() && y < lay.tab_bar_y() + lay.tab_h() {
         let n = state.tab_titles.len() as i32;
         let tab_total_w = n * lay.tab_w() + (n - 1) * lay.tab_gap();
-        let tab_start_x = (lay.win_w() - tab_total_w) / 2;
+        let tab_start_x = lay.win_w() - lay.pad() - tab_total_w;
         for i in 0..n {
             let tx = tab_start_x + i * (lay.tab_w() + lay.tab_gap());
             if x >= tx && x < tx + lay.tab_w() {

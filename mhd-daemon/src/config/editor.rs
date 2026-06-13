@@ -451,11 +451,11 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         );
     }
 
-    // ── Tab bar (horizontal navigation at the top) ───────────────
+    // ── Tab bar inside header (right-aligned, same row as title) ──
     let tab_names: &[&str] = TAB_NAMES;
     let n = tab_names.len() as i32;
     let tab_total_w = n * lay.tab_w() + (n - 1) * lay.tab_gap();
-    let tab_start_x = (lay.win_w() - tab_total_w) / 2;
+    let tab_start_x = lay.win_w() - lay.pad() - tab_total_w;
 
     for (ti, &name) in tab_names.iter().enumerate() {
         let tx = tab_start_x + ti as i32 * (lay.tab_w() + lay.tab_gap());
@@ -503,7 +503,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         };
         unsafe {
             let _ = SetTextColor(dib_dc, fg.to_colorref());
-            let _ = SetBkColor(dib_dc, bg.to_colorref());
+            let _ = SetBkColor(dib_dc, Argb::new(0, 0, 0, 0).to_colorref());
             let _ = SelectObject(dib_dc, small_font);
         }
         let mut label = to_utf16_z(name);
