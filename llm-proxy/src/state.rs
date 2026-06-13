@@ -48,6 +48,8 @@ pub enum DebugLevel {
     None,
     /// Errors only.
     Minimal,
+    /// Log everything except content bodies (headers, tools, message structure).
+    Detailed,
     /// Full session dump including request/response bodies.
     Maximal,
 }
@@ -56,6 +58,7 @@ impl DebugLevel {
     pub fn parse(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
             "minimal" => Self::Minimal,
+            "detailed" => Self::Detailed,
             "maximal" | "max" | "full" => Self::Maximal,
             _ => Self::None,
         }
@@ -65,6 +68,7 @@ impl DebugLevel {
         match self {
             Self::None => "none",
             Self::Minimal => "minimal",
+            Self::Detailed => "detailed",
             Self::Maximal => "maximal",
         }
     }
@@ -72,6 +76,11 @@ impl DebugLevel {
     /// True if we should dump full request/response bodies.
     pub fn dump_bodies(&self) -> bool {
         matches!(self, Self::Maximal)
+    }
+
+    /// True if we should log detailed request/response info (without bodies).
+    pub fn log_detailed(&self) -> bool {
+        matches!(self, Self::Detailed | Self::Maximal)
     }
 
     /// True if we should log errors.

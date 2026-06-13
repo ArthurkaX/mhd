@@ -55,7 +55,7 @@ pub async fn send_request(
     let debug = state.log_level.read().unwrap().dump_bodies();
 
     // Anthropic → OpenAI, then force the real upstream model id.
-    let mut openai_payload = transform::anthropic_to_openai(payload);
+    let mut openai_payload = transform::anthropic_to_openai(payload.clone());
     if let Value::Object(ref mut map) = openai_payload {
         map.insert("model".to_string(), Value::String(target_model.to_string()));
     }
@@ -82,6 +82,14 @@ pub async fn send_request(
             now_ms()
         ));
     }
+    let detailed = state.log_level.read().unwrap().log_detailed();
+    if detailed {
+        state.log_line(&format!(
+            "{} #{req_id} upstream REQ {}",
+            now_ms(),
+            super::summarize_payload(&payload)
+        ));
+    }
 
     let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
     let openai_resp: Value = resp.json().await?;
@@ -94,6 +102,22 @@ pub async fn send_request(
         ));
     }
     let anthropic_resp = transform::openai_to_anthropic(openai_resp);
+    if detailed {
+        let stop_reason = anthropic_resp
+            .get("stop_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let usage = anthropic_resp
+            .get("usage")
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        state.log_line(&format!(
+            "{} #{req_id} upstream RESP stop={} usage={}",
+            now_ms(),
+            stop_reason,
+            usage
+        ));
+    }
 
     if debug {
         eprintln!(
@@ -412,7 +436,7 @@ pub async fn stream_request(
     target_model: &str,
     requested_model: &str,
 ) -> Result<Body> {
-    let mut openai_payload = transform::anthropic_to_openai(payload);
+    let mut openai_payload = transform::anthropic_to_openai(payload.clone());
     if let Value::Object(ref mut map) = openai_payload {
         map.insert("model".to_string(), Value::String(target_model.to_string()));
         map.insert("stream".to_string(), Value::Bool(true));
@@ -437,6 +461,14 @@ pub async fn stream_request(
         state.log_line(&format!(
             "{} #{req_id} stream START model={target_model} inflight={inflight}",
             now_ms()
+        ));
+    }
+    let detailed = state.log_level.read().unwrap().log_detailed();
+    if detailed {
+        state.log_line(&format!(
+            "{} #{req_id} stream REQ {}",
+            now_ms(),
+            super::summarize_payload(&payload)
         ));
     }
 

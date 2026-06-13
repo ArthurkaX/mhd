@@ -34,17 +34,18 @@ pub async fn post_messages(
 
     // Smart routing: downgrade opus if thinking is not requested.
     let effective_tier = if tier == Tier::Opus && *state.opus_downgrade_enabled.read().unwrap() {
+        // Anthropic Messages API enables thinking via:
+        //   { "thinking": { "type": "enabled", "budget_tokens": 16000 } }
         let has_thinking = payload
-            .get("betas")
-            .and_then(|b| b.as_array())
-            .map(|arr| arr.iter().any(|v| v.as_str() == Some("thinking")))
+            .get("thinking")
+            .and_then(|t| t.get("type"))
+            .and_then(|t| t.as_str())
+            .map(|t| t == "enabled")
             .unwrap_or(false);
         if has_thinking {
             tier
         } else {
-            // Route to the downgrade target instead. We make a model-less
-            // tier so that the routing below picks the right target.
-            // We override the target directly.
+            // Route to the downgrade target.
             if state.log_level.read().unwrap().dump_bodies() {
                 let dt = state.opus_downgrade_target.read().unwrap().clone();
                 eprintln!("[llm-proxy] opus downgraded to {dt} (no thinking)");

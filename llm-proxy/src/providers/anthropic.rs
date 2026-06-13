@@ -72,6 +72,14 @@ pub async fn send_request(
             now_ms()
         ));
     }
+    let detailed = state.log_level.read().unwrap().log_detailed();
+    if detailed {
+        state.log_line(&format!(
+            "{} #{req_id} native REQ {}",
+            now_ms(),
+            super::summarize_payload(&payload)
+        ));
+    }
 
     let resp = build_request(state, incoming)
         .await
@@ -101,6 +109,19 @@ pub async fn send_request(
             started.elapsed().as_millis()
         ));
     }
+    if detailed {
+        let stop_reason = json
+            .get("stop_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let usage = json.get("usage").map(|u| u.to_string()).unwrap_or_default();
+        state.log_line(&format!(
+            "{} #{req_id} native RESP stop={} usage={}",
+            now_ms(),
+            stop_reason,
+            usage
+        ));
+    }
     Ok(json)
 }
 
@@ -122,6 +143,14 @@ pub async fn stream_request(
         state.log_line(&format!(
             "{} #{req_id} native stream START inflight={inflight}",
             now_ms()
+        ));
+    }
+    let detailed = state.log_level.read().unwrap().log_detailed();
+    if detailed {
+        state.log_line(&format!(
+            "{} #{req_id} native stream REQ {}",
+            now_ms(),
+            super::summarize_payload(&payload)
         ));
     }
 

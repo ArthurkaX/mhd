@@ -119,7 +119,7 @@ pub fn get_trace() -> Vec<TraceEntry> {
         .unwrap_or_default()
 }
 
-/// Whether debug (minimal) logging is enabled on the proxy.
+/// Whether debug logging is enabled on the proxy.
 pub fn is_debug_logging() -> bool {
     CONTROL
         .lock()
@@ -129,12 +129,16 @@ pub fn is_debug_logging() -> bool {
         .unwrap_or(false)
 }
 
-/// Toggle debug logging on the proxy (none ↔ minimal).
+/// Toggle debug logging on the proxy (none ↔ detailed).
 pub fn toggle_debug_logging() -> bool {
     let guard = CONTROL.lock().unwrap();
     if let Some(ref c) = *guard {
         let current = c.log_level();
-        let new = if current == "none" { "minimal" } else { "none" };
+        let new = if current == "none" {
+            "detailed"
+        } else {
+            "none"
+        };
         c.set_log_level(new);
         new != "none"
     } else {
