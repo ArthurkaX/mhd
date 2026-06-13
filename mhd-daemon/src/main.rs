@@ -273,10 +273,12 @@ fn main() -> ExitCode {
         if let Err(e) = crate::autostart::install_autostart() {
             eprintln!("mhd: failed to sync autostart (install): {e}");
         }
-    } else if !config_autostart && reg_autostart
-        && let Err(e) = crate::autostart::remove_autostart() {
-            eprintln!("mhd: failed to sync autostart (remove): {e}");
-        }
+    } else if !config_autostart
+        && reg_autostart
+        && let Err(e) = crate::autostart::remove_autostart()
+    {
+        eprintln!("mhd: failed to sync autostart (remove): {e}");
+    }
 
     // Start the llm-proxy child if enabled in config.
     {

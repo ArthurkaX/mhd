@@ -1,8 +1,8 @@
 //! State types and transitions for the settings editor.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use windows::Win32::Foundation::HWND;
 

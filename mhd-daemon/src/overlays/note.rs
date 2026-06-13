@@ -361,11 +361,12 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             // The EDIT child is destroyed automatically by DestroyWindow.
             // Clean up the GDI font we created.
             if let Some(st) = s()
-                && !st.edit_font.is_invalid() {
-                    unsafe {
-                        let _ = DeleteObject(st.edit_font);
-                    }
+                && !st.edit_font.is_invalid()
+            {
+                unsafe {
+                    let _ = DeleteObject(st.edit_font);
                 }
+            }
             unsafe {
                 PostQuitMessage(0);
             }

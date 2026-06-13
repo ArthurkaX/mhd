@@ -14,8 +14,8 @@ pub mod transform;
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use tower_http::cors::CorsLayer;
 
@@ -26,7 +26,10 @@ pub use state::{AppState, Target, Tier};
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/messages", post(handlers::post_messages))
-        .route("/v1/chat/completions", post(handlers::post_chat_completions))
+        .route(
+            "/v1/chat/completions",
+            post(handlers::post_chat_completions),
+        )
         .route("/set_model/{slot}", get(handlers::set_model))
         .route("/config", get(handlers::get_config))
         .route("/debug", get(handlers::toggle_debug))
@@ -94,8 +97,7 @@ impl ProxyControl {
 
     /// Set the debug log level on the embedded state (no disk persist).
     pub fn set_log_level(&self, level: &str) {
-        *self.state.log_level.write().unwrap() =
-            crate::state::DebugLevel::parse(level);
+        *self.state.log_level.write().unwrap() = crate::state::DebugLevel::parse(level);
     }
 
     /// Shut the server down gracefully and join its thread.
@@ -196,6 +198,8 @@ pub fn start_embedded_with(
             persist,
         }),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(std::io::Error::other("proxy server thread died during startup")),
+        Err(_) => Err(std::io::Error::other(
+            "proxy server thread died during startup",
+        )),
     }
 }

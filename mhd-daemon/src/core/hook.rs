@@ -185,10 +185,10 @@ pub(crate) fn signal_tray_to_quit() {
         if let Ok(hwnd) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        )
-            && hwnd != HWND::default() {
-                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
+        ) && hwnd != HWND::default()
+        {
+            let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
     }
 }
 

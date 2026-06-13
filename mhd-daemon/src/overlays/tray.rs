@@ -16,10 +16,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, HICON, IMAGE_ICON, InsertMenuW,
-    LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadImageW, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
-    PostQuitMessage, RegisterClassW, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TrackPopupMenu, TranslateMessage, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_USER,
-    WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadImageW, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
+    MF_STRING, MSG, PostQuitMessage, RegisterClassW, SetForegroundWindow, TPM_BOTTOMALIGN,
+    TPM_LEFTALIGN, TrackPopupMenu, TranslateMessage, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
@@ -169,7 +169,12 @@ fn show_menu(hwnd: HWND) {
         item(menu, MF_BYPOSITION | MF_STRING, CMD_VOLUME, "Volume");
         item(menu, MF_BYPOSITION | MF_STRING, CMD_MONITOR, "Monitor");
         item(menu, MF_BYPOSITION | MF_STRING, CMD_CPU_PANEL, "CPU Power");
-        item(menu, MF_BYPOSITION | MF_STRING, CMD_LLM_MODELS, "LLM Models");
+        item(
+            menu,
+            MF_BYPOSITION | MF_STRING,
+            CMD_LLM_MODELS,
+            "LLM Models",
+        );
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
@@ -375,10 +380,10 @@ pub fn run(app: AppHandle) {
         if let Ok(h) = FindWindowW(
             PCWSTR::from_raw(class.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-        )
-            && h != HWND::default() {
-                return;
-            }
+        ) && h != HWND::default()
+        {
+            return;
+        }
     }
 
     let hinst = unsafe { GetModuleHandleW(PCWSTR::null()).unwrap_or_default() };

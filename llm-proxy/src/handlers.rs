@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -31,7 +31,10 @@ pub async fn post_messages(
         .unwrap_or("")
         .to_string();
     let tier = Tier::from_model(&model);
-    let stream = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let stream = payload
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if state.log_level.read().unwrap().dump_bodies() {
         // Show how Claude Code authenticated (helps verify OAuth passthrough).

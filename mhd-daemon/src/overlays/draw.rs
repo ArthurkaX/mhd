@@ -12,13 +12,13 @@ use windows::Win32::Foundation::{
     COLORREF, CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CLIP_DEFAULT_PRECIS,
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET,
-    DEFAULT_QUALITY, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_SINGLELINE,
-    DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FF_DONTCARE, FW_NORMAL, FillRect, GetDC,
-    GetMonitorInfoW, HDC, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-    OUT_DEFAULT_PRECIS, RGBQUAD, ReleaseDC, ScreenToClient, SelectObject, SetBkMode,
-    SetTextColor, TRANSPARENT, BitBlt, GdiFlush, SRCCOPY,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BitBlt,
+    CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush,
+    DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER,
+    DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FF_DONTCARE, FW_NORMAL,
+    FillRect, GdiFlush, GetDC, GetMonitorInfoW, HDC, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromWindow, OUT_DEFAULT_PRECIS, RGBQUAD, ReleaseDC, SRCCOPY, ScreenToClient,
+    SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
@@ -31,9 +31,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWLP_USERDATA, GetCursorPos, GetDesktopWindow, GetWindowLongPtrW, GetWindowRect, IDC_ARROW,
     IDC_CROSS, LoadCursorW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
     RegisterClassW, SW_HIDE, SW_SHOW, SetCursor, SetForegroundWindow, SetWindowLongPtrW,
-    ShowWindow, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WM_ACTIVATE, WM_KEYDOWN,
-    WM_CHAR, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    ShowWindow, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WM_ACTIVATE, WM_CHAR, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -184,7 +185,12 @@ fn argb_pixel(r: u8, g: u8, b: u8) -> u32 {
 
 // ── Thread main ────────────────────────────────────────────────────────
 
-fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _theme: NativeTheme, draw_dir: std::path::PathBuf) {
+fn thread_main(
+    hdl: SafeHandle,
+    dying: Arc<std::sync::atomic::AtomicBool>,
+    _theme: NativeTheme,
+    draw_dir: std::path::PathBuf,
+) {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -366,8 +372,12 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
                     }
                     ToolbarAction::Save => {
                         // Hide, flush, sleep to capture clean backdrop
-                        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
-                        unsafe { let _ = GdiFlush(); }
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        unsafe {
+                            let _ = GdiFlush();
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(64));
 
                         // Capture desktop at window position
@@ -392,25 +402,47 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
                                     bmiColors: [RGBQUAD::default(); 1],
                                 };
                                 let mut bits: *mut c_void = std::ptr::null_mut();
-                                if let Ok(dib) = unsafe { CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) } {
+                                if let Ok(dib) = unsafe {
+                                    CreateDIBSection(
+                                        hdc_mem,
+                                        &bmi,
+                                        DIB_RGB_COLORS,
+                                        &mut bits,
+                                        None,
+                                        0,
+                                    )
+                                } {
                                     let _old_obj = unsafe { SelectObject(hdc_mem, dib) };
                                     let mut wr = RECT::default();
-                                    unsafe { let _ = GetWindowRect(hwnd, &mut wr); }
                                     unsafe {
-                                        let _ = BitBlt(hdc_mem, 0, 0, st.width, st.height, hdc_screen, wr.left, wr.top, SRCCOPY);
+                                        let _ = GetWindowRect(hwnd, &mut wr);
+                                    }
+                                    unsafe {
+                                        let _ = BitBlt(
+                                            hdc_mem, 0, 0, st.width, st.height, hdc_screen,
+                                            wr.left, wr.top, SRCCOPY,
+                                        );
                                     }
                                     backdrop_pixels = unsafe {
-                                        std::slice::from_raw_parts(bits as *const u32, (st.width * st.height) as usize)
-                                    }.to_vec();
+                                        std::slice::from_raw_parts(
+                                            bits as *const u32,
+                                            (st.width * st.height) as usize,
+                                        )
+                                    }
+                                    .to_vec();
                                     captured = true;
                                     unsafe {
                                         let _ = SelectObject(hdc_mem, _old_obj);
                                         let _ = DeleteObject(dib);
                                     }
                                 }
-                                unsafe { let _ = DeleteDC(hdc_mem); }
+                                unsafe {
+                                    let _ = DeleteDC(hdc_mem);
+                                }
                             }
-                            unsafe { let _ = ReleaseDC(desktop, hdc_screen); }
+                            unsafe {
+                                let _ = ReleaseDC(desktop, hdc_screen);
+                            }
                         }
 
                         // Show window ALWAYS before any fallible steps
@@ -429,13 +461,15 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
                             let ty = (TOOL_Y as f32 * s) as i32;
                             let th = (TOOL_H as f32 * s) as i32;
 
-                            let mut composited: Vec<u32> = Vec::with_capacity(backdrop_pixels.len());
+                            let mut composited: Vec<u32> =
+                                Vec::with_capacity(backdrop_pixels.len());
                             for y in 0..st.height {
                                 for x in 0..st.width {
                                     let idx = (y * st.width + x) as usize;
                                     let ink = st.pixels[idx];
                                     let back = backdrop_pixels[idx];
-                                    let in_toolbar = y >= ty && y < ty + th && x >= tx && x < tx + tw_val;
+                                    let in_toolbar =
+                                        y >= ty && y < ty + th && x >= tx && x < tx + tw_val;
                                     let pixel = if in_toolbar {
                                         back
                                     } else {
@@ -467,12 +501,17 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, _them
                             let st_now = unsafe { GetLocalTime() };
                             let filename = format!(
                                 "mhd-draw-{:04}{:02}{:02}-{:02}{:02}{:02}.png",
-                                st_now.wYear, st_now.wMonth, st_now.wDay,
-                                st_now.wHour, st_now.wMinute, st_now.wSecond
+                                st_now.wYear,
+                                st_now.wMonth,
+                                st_now.wDay,
+                                st_now.wHour,
+                                st_now.wMinute,
+                                st_now.wSecond
                             );
                             let filepath = screenshots_dir.join(&filename);
                             if let Ok(file) = std::fs::File::create(&filepath) {
-                                let mut encoder = png::Encoder::new(file, st.width as u32, st.height as u32);
+                                let mut encoder =
+                                    png::Encoder::new(file, st.width as u32, st.height as u32);
                                 encoder.set_color(png::ColorType::Rgba);
                                 encoder.set_depth(png::BitDepth::Eight);
                                 if let Ok(mut writer) = encoder.write_header() {
@@ -576,26 +615,29 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     if ch == 0x08 {
                         te.buf.pop();
                         paint(hwnd, st, s);
-                    } else if ch >= 0x20 && !(0xD800..=0xDFFF).contains(&ch)
-                        && let Some(c) = char::from_u32(ch as u32) {
-                            te.buf.push(c);
-                            paint(hwnd, st, s);
-                        }
+                    } else if ch >= 0x20
+                        && !(0xD800..=0xDFFF).contains(&ch)
+                        && let Some(c) = char::from_u32(ch as u32)
+                    {
+                        te.buf.push(c);
+                        paint(hwnd, st, s);
+                    }
                 }
                 return LRESULT(0);
             }
             WM_MOUSEWHEEL => {
                 let delta = (wp.0 >> 16) as i16;
                 if let Some(ref mut te) = st.text
-                    && te.buf.is_empty() {
-                        if delta > 0 {
-                            te.font_pt = (te.font_pt + 1).min(96);
-                        } else if delta < 0 {
-                            te.font_pt = (te.font_pt - 1).max(8);
-                        }
-                        paint(hwnd, st, s);
-                        return LRESULT(0);
+                    && te.buf.is_empty()
+                {
+                    if delta > 0 {
+                        te.font_pt = (te.font_pt + 1).min(96);
+                    } else if delta < 0 {
+                        te.font_pt = (te.font_pt - 1).max(8);
                     }
+                    paint(hwnd, st, s);
+                    return LRESULT(0);
+                }
                 if delta > 0 {
                     st.thickness = (st.thickness + 1).min(20);
                 } else if delta < 0 {
@@ -630,9 +672,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                             let dx = x - first.0;
                             let dy = y - first.1;
                             let close_tol = (POLY_CLOSE_TOL as f32 * s) as i32;
-                            if dx * dx + dy * dy <= close_tol * close_tol
-                                && st.poly.len() >= 3
-                            {
+                            if dx * dx + dy * dy <= close_tol * close_tol && st.poly.len() >= 3 {
                                 if st.history.len() >= 10 {
                                     st.history.remove(0);
                                 }
@@ -1142,8 +1182,7 @@ fn paint(hwnd: HWND, st: &State, s: f32) {
     unsafe {
         std::ptr::copy_nonoverlapping(st.pixels.as_ptr(), bits as *mut u32, st.pixels.len());
     }
-    let bits_slice =
-        unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, st.pixels.len()) };
+    let bits_slice = unsafe { std::slice::from_raw_parts_mut(bits as *mut u32, st.pixels.len()) };
 
     // ── Text preview (transient, before toolbar) ─────────────────────
     if let Some(ref te) = st.text {

@@ -1477,13 +1477,13 @@ fn thread_main(hdl: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
                             // visible even while the mouse is in motion over the panel.
                             repaint = true;
                             if (msg.message == WM_KEYDOWN || msg.message == WM_CHAR)
-                                && handle_key(&msg, &mut st, &mut hidden) {
-                                    repaint = true;
-                                }
-                            if msg.message == WM_MOUSEWHEEL
-                                && handle_wheel(&msg, &mut st, sc) {
-                                    repaint = true;
-                                }
+                                && handle_key(&msg, &mut st, &mut hidden)
+                            {
+                                repaint = true;
+                            }
+                            if msg.message == WM_MOUSEWHEEL && handle_wheel(&msg, &mut st, sc) {
+                                repaint = true;
+                            }
                             if msg.message == WM_TIMER && msg.wParam.0 == TIMER_MONITOR {
                                 handle_monitor_timer(&mut st);
                                 repaint = true;
@@ -3090,9 +3090,10 @@ fn paint_panel(hwnd: HWND, st: &PanelState, w: i32, h: i32, sc: f32) {
     // rested on the row for a short dwell delay (the 500ms monitor timer tick
     // triggers the repaint that makes it appear).
     if let (Some(hover_row), Some(since)) = (st.hover_row, st.hover_since)
-        && since.elapsed() >= std::time::Duration::from_millis(350) {
-            draw_tooltip(mem, hover_row, st.hover_pos, w, h, s, &st.theme);
-        }
+        && since.elapsed() >= std::time::Duration::from_millis(350)
+    {
+        draw_tooltip(mem, hover_row, st.hover_pos, w, h, s, &st.theme);
+    }
 
     frame.fix_gdi_alpha(st.theme.background);
 

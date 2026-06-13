@@ -401,20 +401,14 @@ fn panel_thread(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, them
                                         let delta = wheel_delta_from_wparam(msg.wParam);
                                         let step = (delta as f32 / 120.0) * 0.02;
                                         if let Some(param) = state.monitors[mi].params.get(pi)
-                                            && let Some(current) = param_current_value(param) {
-                                                let new_val = (current as f32 + step * 100.0)
-                                                    .clamp(0.0, 100.0);
-                                                set_param_value(
-                                                    &mut state,
-                                                    mi,
-                                                    pi,
-                                                    new_val / 100.0,
-                                                );
-                                                paint_panel(
-                                                    hwnd, &mut state, &work, panel_w, scale,
-                                                );
-                                                continue;
-                                            }
+                                            && let Some(current) = param_current_value(param)
+                                        {
+                                            let new_val =
+                                                (current as f32 + step * 100.0).clamp(0.0, 100.0);
+                                            set_param_value(&mut state, mi, pi, new_val / 100.0);
+                                            paint_panel(hwnd, &mut state, &work, panel_w, scale);
+                                            continue;
+                                        }
                                     }
 
                                     // Otherwise → scroll
@@ -524,33 +518,34 @@ fn detect_features(m: &PhysicalMonitorInfo) -> Vec<ParamInfo> {
 
     // Input Source (0x60)
     if let Some(list) = supported_ref
-        && let Some(sv) = list.iter().find(|sv| sv.code == VCP_INPUT_SOURCE) {
-            let current = m
-                .get_vcp(VCP_INPUT_SOURCE)
-                .ok()
-                .map(|v| v.current)
-                .unwrap_or(0);
-            let values = if let Some(ref vals) = sv.values {
-                vals.iter()
-                    .map(|&code| (code, input_source_name(code)))
-                    .collect::<Vec<_>>()
-            } else {
-                // Fallback: common input source values
-                vec![
-                    (0x01, "HDMI 1".into()),
-                    (0x02, "HDMI 2".into()),
-                    (0x03, "HDMI 3".into()),
-                    (0x04, "DP 1".into()),
-                    (0x05, "DP 2".into()),
-                    (0x06, "USB-C".into()),
-                    (0x0F, "DVI-D".into()),
-                    (0x10, "VGA".into()),
-                ]
-            };
-            params.push(ParamInfo {
-                kind: ParamKind::InputSource { current, values },
-            });
-        }
+        && let Some(sv) = list.iter().find(|sv| sv.code == VCP_INPUT_SOURCE)
+    {
+        let current = m
+            .get_vcp(VCP_INPUT_SOURCE)
+            .ok()
+            .map(|v| v.current)
+            .unwrap_or(0);
+        let values = if let Some(ref vals) = sv.values {
+            vals.iter()
+                .map(|&code| (code, input_source_name(code)))
+                .collect::<Vec<_>>()
+        } else {
+            // Fallback: common input source values
+            vec![
+                (0x01, "HDMI 1".into()),
+                (0x02, "HDMI 2".into()),
+                (0x03, "HDMI 3".into()),
+                (0x04, "DP 1".into()),
+                (0x05, "DP 2".into()),
+                (0x06, "USB-C".into()),
+                (0x0F, "DVI-D".into()),
+                (0x10, "VGA".into()),
+            ]
+        };
+        params.push(ParamInfo {
+            kind: ParamKind::InputSource { current, values },
+        });
+    }
 
     params
 }
@@ -1374,10 +1369,11 @@ fn set_vcp_direct(handle: PhysicalMonitorHandle, code: u8, value: u32) -> Result
 
 extern "system" fn panel_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_SETCURSOR
-        && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
-            unsafe { SetCursor(cursor) };
-            return LRESULT(1);
-        }
+        && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) }
+    {
+        unsafe { SetCursor(cursor) };
+        return LRESULT(1);
+    }
 
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }

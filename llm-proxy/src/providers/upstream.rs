@@ -9,13 +9,13 @@ use anyhow::Result;
 use axum::body::Body;
 use bytes::Bytes;
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::state::AppState;
 use crate::transform;
 
-use super::{now_ms, InflightGuard};
+use super::{InflightGuard, now_ms};
 
 /// Send an Anthropic-format request to the upstream gateway, forcing the given
 /// upstream model id.
@@ -119,7 +119,10 @@ pub async fn stream_request(
         map.insert("model".to_string(), Value::String(target_model.to_string()));
         map.insert("stream".to_string(), Value::Bool(true));
         // Ask the gateway to include token usage in the final chunk if it can.
-        map.insert("stream_options".to_string(), json!({ "include_usage": true }));
+        map.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -444,7 +447,8 @@ pub async fn stream_request(
 /// Wall-clock timestamp helper and the in-flight guard live in `providers::mod`.
 
 /// Format a single Anthropic SSE event frame.
-fn sse(event: &str, data: &Value) -> Bytes {    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
+fn sse(event: &str, data: &Value) -> Bytes {
+    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
 }
 
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).

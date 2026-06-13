@@ -3,7 +3,16 @@
 //! Opens when the user clicks a shortcut row in the settings editor.
 //! A small layered window with full GDI drawing — no child HWNDs.
 //!
-//! Layout:
+//! The Parameter row adapts to the selected action's param schema:
+//!
+//!   • ActionParamSchema::None        → row hidden entirely
+//!   • ActionParamSchema::Text         → text field, no side button
+//!   • ActionParamSchema::FilePath     → text field + [Browse…]
+//!   • ActionParamSchema::KeyMapping   → text field + [Bind]
+//!   • ActionParamSchema::Number       → text field, no side button
+//!   • ActionParamSchema::PowerAction  → row hidden (no param_key)
+//!
+//! Layout (example with KeyMapping):
 //! ┌─────────────────────────────────────┐
 //! │  Edit Shortcut                      │
 //! ├─────────────────────────────────────┤
@@ -33,14 +42,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
-use crate::config::editor_layout::*;
 use crate::config::editor_key_combo::{KeyComboEditorState, KeyComboSlot};
+use crate::config::editor_layout::*;
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::ButtonStyle;
 use crate::config::editor_theme::{
-    draw_button, draw_plain_label, draw_readonly_text_field, draw_rounded_border_in_buffer,
-    draw_rounded_rect_in_buffer, to_utf16_z,
+    draw_button, draw_plain_label, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
+    to_utf16_z,
 };
+use crate::core::action::ActionParamSchema;
 use crate::core::native_theme::{Argb, NativeTheme};
 use crate::core::trigger::KeyCombo;
 use crate::hook::WM_BINDING_CAPTURED;
@@ -73,6 +83,9 @@ pub struct BindingPopupState {
     pub kind_idx: usize,
     pub param: String,
 
+    // Key-combo editor used when schema is ActionParamSchema::KeyMapping
+    pub param_editor: KeyComboEditorState,
+
     // UI state
     pub theme: NativeTheme,
     pub scale: f32,
@@ -80,6 +93,10 @@ pub struct BindingPopupState {
     pub win_h: i32,
     pub is_recording_trigger: bool,
     pub is_recording_param: bool,
+    pub is_editing_param: bool,
+    pub param_edit_cursor: usize,
+    pub param_edit_old: String,
+    pub param_save_error: Option<String>,
     pub hovered_target: BindingPopupHit,
     pub action_items: Vec<SearchDropdownItem>,
 
@@ -98,8 +115,11 @@ pub enum BindingPopupHit {
     TriggerKeyItem(usize),
     RecordTrigger,
     KindCombo,
+    ParamSlot(KeyComboSlot),
+    ParamKeyItem(usize),
     ParamField,
     RecordParam,
+    BrowseParam,
     SaveBtn,
     CancelBtn,
     KindItem(usize),
@@ -187,12 +207,17 @@ pub fn open_binding_popup(
         ),
         kind_idx: state.bindings[binding_idx].kind_idx,
         param: state.bindings[binding_idx].param.clone(),
+        param_editor: KeyComboEditorState::from_trigger_string(&state.bindings[binding_idx].param),
         theme: state.theme.clone(),
         scale,
         win_w,
         win_h,
         is_recording_trigger: false,
         is_recording_param: false,
+        is_editing_param: false,
+        param_edit_cursor: 0,
+        param_edit_old: String::new(),
+        param_save_error: None,
         hovered_target: BindingPopupHit::None,
         action_items,
         action_dropdown: SearchDropdownState::default(),
@@ -334,9 +359,12 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
         let dib_dc = frame.dc();
         let bits = frame.pixels_mut().as_mut_ptr() as *mut c_void;
 
-        // Background rounded rect
+        // Popup background — use a slightly distinct shade from the
+        // main window so the popup is visually distinguishable even in
+        // themes where background and surface are near-identical.
+        let popup_bg = theme.surface.blend_over(theme.background);
         let radius = (POPUP_RADIUS_BASE * scale) as i32;
-        crate::osd::draw_rounded_rect(frame.pixels_mut(), w, h, radius, theme.background);
+        crate::osd::draw_rounded_rect(frame.pixels_mut(), w, h, radius, popup_bg);
 
         let _ = SetBkMode(dib_dc, TRANSPARENT);
 
@@ -602,107 +630,389 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
 
-        // --- Parameter row ---
+        // --- Parameter row (only for actions with a parameter) ---
+        let desc = editor_action_desc(state.kind_idx);
+        let param_schema = desc.param_schema;
         let param_label_y = action_label_y + row_h + (4.0 * scale) as i32;
-        SelectObject(dib_dc, body_font);
-        draw_plain_label(
-            dib_dc,
-            RECT {
+
+        if desc.param_key.is_some() {
+            SelectObject(dib_dc, body_font);
+            draw_plain_label(
+                dib_dc,
+                RECT {
+                    left: pad,
+                    top: param_label_y,
+                    right: pad + label_w,
+                    bottom: param_label_y + row_h,
+                },
+                "Parameter",
+                body_font,
+                theme.text,
+            );
+
+            match param_schema {
+                ActionParamSchema::KeyMapping => {
+                    // ── KeyMapping: slot-based editor (like Trigger) ──
+                    let param_key_field_rect = RECT {
+                        left: pad + label_w + 8,
+                        top: param_label_y,
+                        right: w - pad - bind_btn_w - 8,
+                        bottom: param_label_y + field_h,
+                    };
+                    for (i, (slot, slot_rect)) in trigger_slot_rects(param_key_field_rect, scale)
+                        .iter()
+                        .enumerate()
+                    {
+                        let is_hovered = state.hovered_target == BindingPopupHit::ParamSlot(*slot);
+                        let is_open = state.param_editor.open_slot == Some(*slot);
+                        let slot_bg = if is_hovered || is_open {
+                            theme
+                                .hover
+                                .blend_over(theme.surface.blend_over(theme.background))
+                        } else {
+                            theme.surface.blend_over(theme.background)
+                        };
+                        draw_rounded_rect_in_buffer(
+                            bits,
+                            w,
+                            h,
+                            *slot_rect,
+                            (4.0 * scale) as i32,
+                            slot_bg,
+                        );
+                        draw_rounded_border_in_buffer(
+                            bits,
+                            w,
+                            h,
+                            *slot_rect,
+                            (4.0 * scale) as i32,
+                            1,
+                            if is_open { theme.text } else { theme.border },
+                        );
+
+                        SelectObject(dib_dc, small_font);
+                        SetTextColor(dib_dc, theme.text.to_colorref());
+                        let mut label_wz = to_utf16_z(&state.param_editor.slot_label(*slot));
+                        let mut label_rect = RECT {
+                            left: slot_rect.left + (6.0 * scale) as i32,
+                            top: slot_rect.top,
+                            right: slot_rect.right - (6.0 * scale) as i32,
+                            bottom: slot_rect.bottom,
+                        };
+                        DrawTextW(
+                            dib_dc,
+                            &mut label_wz,
+                            &mut label_rect,
+                            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                        );
+
+                        if i < 3 {
+                            SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                            let mut plus_wz = to_utf16_z("+");
+                            let next_left = trigger_slot_rects(param_key_field_rect, scale)[i + 1]
+                                .1
+                                .left;
+                            let mut plus_rect = RECT {
+                                left: slot_rect.right,
+                                top: slot_rect.top,
+                                right: next_left,
+                                bottom: slot_rect.bottom,
+                            };
+                            DrawTextW(
+                                dib_dc,
+                                &mut plus_wz,
+                                &mut plus_rect,
+                                DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                            );
+                        }
+                    }
+
+                    // Bind button (right of param key field)
+                    let param_bind_rect = RECT {
+                        left: w - pad - bind_btn_w,
+                        top: param_label_y,
+                        right: w - pad,
+                        bottom: param_label_y + field_h,
+                    };
+                    let is_param_bind_hovered =
+                        state.hovered_target == BindingPopupHit::RecordParam;
+                    let param_bind_bg = if state.is_recording_param {
+                        Argb::new(255, 200, 50, 50)
+                    } else if is_param_bind_hovered {
+                        theme
+                            .hover
+                            .blend_over(theme.surface.blend_over(theme.background))
+                    } else {
+                        theme.surface.blend_over(theme.background)
+                    };
+                    draw_rounded_rect_in_buffer(
+                        bits,
+                        w,
+                        h,
+                        param_bind_rect,
+                        (4.0 * scale) as i32,
+                        param_bind_bg,
+                    );
+                    SetTextColor(dib_dc, param_bind_bg.contrasting_text_color().to_colorref());
+                    SelectObject(dib_dc, small_font);
+                    let mut bind_wz = to_utf16_z(if state.is_recording_param {
+                        "Listening"
+                    } else {
+                        "Bind"
+                    });
+                    let mut bind_rc = param_bind_rect;
+                    DrawTextW(
+                        dib_dc,
+                        &mut bind_wz,
+                        &mut bind_rc,
+                        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                    );
+                    draw_rounded_border_in_buffer(
+                        bits,
+                        w,
+                        h,
+                        param_bind_rect,
+                        (4.0 * scale) as i32,
+                        1,
+                        theme.border,
+                    );
+                }
+
+                _ => {
+                    // ── Non-KeyMapping: text-field editor ──
+                    let has_side_btn = param_schema == ActionParamSchema::FilePath;
+                    let param_field_rect = RECT {
+                        left: pad + label_w + 8,
+                        top: param_label_y,
+                        right: if has_side_btn {
+                            w - pad - bind_btn_w - 8
+                        } else {
+                            w - pad
+                        },
+                        bottom: param_label_y + field_h,
+                    };
+                    let is_editing = state.is_editing_param;
+                    let is_param_hovered = state.hovered_target == BindingPopupHit::ParamField
+                        || state.hovered_target == BindingPopupHit::BrowseParam;
+                    let param_bg = if is_param_hovered {
+                        theme
+                            .hover
+                            .blend_over(theme.surface.blend_over(theme.background))
+                    } else {
+                        theme.surface.blend_over(theme.background)
+                    };
+                    let param_border = if is_editing {
+                        theme.accent
+                    } else {
+                        theme.border
+                    };
+                    let radius = (4.0 * scale) as i32;
+                    draw_rounded_rect_in_buffer(bits, w, h, param_field_rect, radius, param_bg);
+                    draw_rounded_border_in_buffer(
+                        bits,
+                        w,
+                        h,
+                        param_field_rect,
+                        radius,
+                        1,
+                        param_border,
+                    );
+
+                    let param_text = if state.param.is_empty() && !is_editing {
+                        match param_schema {
+                            ActionParamSchema::FilePath => "(click Browse to select)",
+                            _ => "",
+                        }
+                    } else {
+                        &state.param
+                    };
+                    SelectObject(dib_dc, body_font);
+                    SetTextColor(dib_dc, theme.text.to_colorref());
+                    let inset = (6.0 * scale) as i32;
+                    let mut text_rc = RECT {
+                        left: param_field_rect.left + inset,
+                        top: param_field_rect.top,
+                        right: param_field_rect.right - inset,
+                        bottom: param_field_rect.bottom,
+                    };
+
+                    if is_editing {
+                        // Draw text suitable for editing (no ellipsis so the
+                        // cursor can reach the far end)
+                        let mut wz = to_utf16_z(param_text);
+                        let _ = DrawTextW(
+                            dib_dc,
+                            &mut wz,
+                            &mut text_rc,
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+                        );
+
+                        // Draw cursor vertical bar at the cursor position
+                        let cursor_x = cursor_position_x(
+                            dib_dc,
+                            &state.param,
+                            state.param_edit_cursor,
+                            param_field_rect.left + inset,
+                        );
+                        if cursor_x < param_field_rect.right - 2 {
+                            let cursor_h = (20.0 * scale) as i32;
+                            let cy = param_field_rect.top
+                                + (param_field_rect.bottom - param_field_rect.top - cursor_h) / 2;
+                            let mut cursor_rc = RECT {
+                                left: cursor_x,
+                                top: cy,
+                                right: cursor_x + ((1.0 * scale) as i32).max(1),
+                                bottom: cy + cursor_h,
+                            };
+                            let cursor_brush = CreateSolidBrush(theme.text.to_colorref());
+                            FillRect(dib_dc, &mut cursor_rc, cursor_brush);
+                            let _ = DeleteObject(cursor_brush);
+                        }
+                    } else {
+                        let mut wz = to_utf16_z(param_text);
+                        let _ = DrawTextW(
+                            dib_dc,
+                            &mut wz,
+                            &mut text_rc,
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+                        );
+                    }
+
+                    // Browse button for FilePath
+                    if has_side_btn {
+                        let btn_rect = RECT {
+                            left: w - pad - bind_btn_w,
+                            top: param_label_y,
+                            right: w - pad,
+                            bottom: param_label_y + field_h,
+                        };
+                        let is_browse_hovered =
+                            state.hovered_target == BindingPopupHit::BrowseParam;
+                        let btn_bg = if is_browse_hovered {
+                            theme
+                                .hover
+                                .blend_over(theme.surface.blend_over(theme.background))
+                        } else {
+                            theme.surface.blend_over(theme.background)
+                        };
+                        draw_rounded_rect_in_buffer(
+                            bits,
+                            w,
+                            h,
+                            btn_rect,
+                            (4.0 * scale) as i32,
+                            btn_bg,
+                        );
+                        SetTextColor(dib_dc, btn_bg.contrasting_text_color().to_colorref());
+                        SelectObject(dib_dc, small_font);
+                        let mut btn_wz = to_utf16_z("Browse\u{2026}");
+                        let mut btn_rc = btn_rect;
+                        DrawTextW(
+                            dib_dc,
+                            &mut btn_wz,
+                            &mut btn_rc,
+                            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                        );
+                        draw_rounded_border_in_buffer(
+                            bits,
+                            w,
+                            h,
+                            btn_rect,
+                            (4.0 * scale) as i32,
+                            1,
+                            theme.border,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Description / info block ─────────────────────────────────
+        if desc.param_key.is_some() || !desc.description.is_empty() {
+            let desc_row_y = if desc.param_key.is_some() {
+                param_label_y + row_h
+            } else {
+                action_label_y + row_h
+            };
+            let desc_y = desc_row_y + (12.0 * scale) as i32;
+            let desc_h = (60.0 * scale) as i32;
+            let desc_rect = RECT {
                 left: pad,
-                top: param_label_y,
-                right: pad + label_w,
-                bottom: param_label_y + row_h,
-            },
-            "Parameter",
-            body_font,
-            theme.text,
-        );
+                top: desc_y,
+                right: w - pad,
+                bottom: desc_y + desc_h,
+            };
 
-        // Parameter field
-        let param_field_rect = RECT {
-            left: pad + label_w + 8,
-            top: param_label_y,
-            right: w - pad - bind_btn_w - 8,
-            bottom: param_label_y + field_h,
-        };
-        let is_param_hovered = state.hovered_target == BindingPopupHit::ParamField
-            || state.hovered_target == BindingPopupHit::RecordParam;
-        let param_bg = if is_param_hovered {
-            theme
-                .hover
-                .blend_over(theme.surface.blend_over(theme.background))
-        } else {
-            theme.surface.blend_over(theme.background)
-        };
-        let param_text = if state.param.is_empty() && !state.is_recording_param {
-            "(use Bind to record)"
-        } else {
-            &state.param
-        };
-        draw_readonly_text_field(
-            dib_dc,
-            bits,
-            w,
-            h,
-            param_field_rect,
-            param_text,
-            None,
-            body_font,
-            param_bg,
-            theme.border,
-            theme.text_muted,
-        );
+            // Background
+            let desc_bg = theme.surface.blend_over(theme.background).with_alpha(80);
+            draw_rounded_rect_in_buffer(bits, w, h, desc_rect, (6.0 * scale) as i32, desc_bg);
 
-        // Record button for param
-        let param_rec_rect = RECT {
-            left: w - pad - bind_btn_w,
-            top: param_label_y,
-            right: w - pad,
-            bottom: param_label_y + field_h,
-        };
-        let is_param_rec_hovered = state.hovered_target == BindingPopupHit::RecordParam;
-        let param_rec_bg = if state.is_recording_param {
-            Argb::new(255, 200, 50, 50)
-        } else if is_param_rec_hovered {
-            theme
-                .hover
-                .blend_over(theme.surface.blend_over(theme.background))
-        } else {
-            theme.surface.blend_over(theme.background)
-        };
-        draw_rounded_rect_in_buffer(
-            bits,
-            w,
-            h,
-            param_rec_rect,
-            (4.0 * scale) as i32,
-            param_rec_bg,
-        );
-        SetTextColor(dib_dc, param_rec_bg.contrasting_text_color().to_colorref());
-        SelectObject(dib_dc, small_font);
-        let mut rec2_wz = to_utf16_z(if state.is_recording_param {
-            "Listening"
-        } else {
-            "Bind"
-        });
-        let mut rec2_rc = param_rec_rect;
-        DrawTextW(
-            dib_dc,
-            &mut rec2_wz,
-            &mut rec2_rc,
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
-        draw_rounded_border_in_buffer(
-            bits,
-            w,
-            h,
-            param_rec_rect,
-            (4.0 * scale) as i32,
-            1,
-            theme.border,
-        );
+            SelectObject(dib_dc, small_font);
+            let inset = (8.0 * scale) as i32;
+
+            // Description line
+            SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            let mut text_wz = to_utf16_z(desc.description);
+            let mut text_rc = RECT {
+                left: desc_rect.left + inset,
+                top: desc_rect.top + (4.0 * scale) as i32,
+                right: desc_rect.right - inset,
+                bottom: desc_rect.top + (22.0 * scale) as i32,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut text_wz,
+                &mut text_rc,
+                DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
+            );
+
+            // Schema-specific hint / error line
+            let (hint_color, hint_text) = if let Some(ref err) = state.param_save_error {
+                (Argb::new(255, 220, 60, 60), err.clone())
+            } else {
+                let text = match param_schema {
+                    ActionParamSchema::Number { unit, min, max } => {
+                        format!("Range: {}{} to {}{}", min, unit, max, unit)
+                    }
+                    ActionParamSchema::FilePath => {
+                        "Click Browse to select a file or executable.".to_string()
+                    }
+                    ActionParamSchema::Text => {
+                        if desc.name == "run_ps" {
+                            "Example: Get-Process | Where-Object { $_.CPU -gt 10 }".to_string()
+                        } else if desc.name == "switch_power_plan" {
+                            "Enter the GUID or name of the power plan.".to_string()
+                        } else {
+                            String::new()
+                        }
+                    }
+                    ActionParamSchema::KeyMapping => {
+                        "Click Bind to record a key combination.".to_string()
+                    }
+                    ActionParamSchema::None | ActionParamSchema::PowerAction => String::new(),
+                };
+                (theme.text.with_alpha(180), text)
+            };
+            if !hint_text.is_empty() {
+                SetTextColor(dib_dc, hint_color.to_colorref());
+                let mut hint_wz = to_utf16_z(&hint_text);
+                let mut hint_rc = RECT {
+                    left: desc_rect.left + inset,
+                    top: text_rc.bottom + (2.0 * scale) as i32,
+                    right: desc_rect.right - inset,
+                    bottom: desc_rect.bottom - (4.0 * scale) as i32,
+                };
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut hint_wz,
+                    &mut hint_rc,
+                    DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
+                );
+            }
+        }
 
         // ── Footer separator ──────────────────────────────────────
+
         let footer_h = (POPUP_FOOTER_HEIGHT_BASE as f32 * scale) as i32;
         let footer_y = h - footer_h;
         FillRect(
@@ -782,14 +1092,7 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
                     bottom: slot_rect.bottom + search_h + list_rows as i32 * item_h,
                 };
                 let popup_bg = theme.surface.blend_over(theme.background);
-                draw_rounded_rect_in_buffer(
-                    bits,
-                    w,
-                    h,
-                    popup_rect,
-                    (4.0 * scale) as i32,
-                    popup_bg,
-                );
+                draw_rounded_rect_in_buffer(bits, w, h, popup_rect, (4.0 * scale) as i32, popup_bg);
                 draw_rounded_border_in_buffer(
                     bits,
                     w,
@@ -936,8 +1239,7 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
                     let max_scroll = filtered_count.saturating_sub(visible_rows).max(1);
                     let thumb_y = track_rect.top
                         + ((state.trigger_editor.dropdown.scroll as f32 / max_scroll as f32)
-                            * (travel - thumb_h).max(0) as f32)
-                            as i32;
+                            * (travel - thumb_h).max(0) as f32) as i32;
                     let thumb_rect = RECT {
                         left: track_rect.left,
                         top: thumb_y,
@@ -966,14 +1268,7 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
                 bottom: combo_rect.bottom + search_h + list_rows as i32 * item_h,
             };
             let popup_bg = theme.surface.blend_over(theme.background);
-            draw_rounded_rect_in_buffer(
-                bits,
-                w,
-                h,
-                popup_rect,
-                (4.0 * scale) as i32,
-                popup_bg,
-            );
+            draw_rounded_rect_in_buffer(bits, w, h, popup_rect, (4.0 * scale) as i32, popup_bg);
             draw_rounded_border_in_buffer(
                 bits,
                 w,
@@ -1136,7 +1431,11 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
                 .action_items
                 .iter()
                 .find(|item| item.id == described_id)
-                .filter(|item| item.description.as_deref().is_some_and(|text| !text.is_empty()))
+                .filter(|item| {
+                    item.description
+                        .as_deref()
+                        .is_some_and(|text| !text.is_empty())
+                })
             {
                 let gap = (8.0 * scale) as i32;
                 let desc_rect = RECT {
@@ -1199,6 +1498,201 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
             }
         }
 
+        // ── Param editor key dropdown (for KeyMapping schema) ───────────
+        if desc.param_key.is_some()
+            && param_schema == ActionParamSchema::KeyMapping
+            && state.param_editor.dropdown.is_open
+            && let Some(slot) = state.param_editor.open_slot
+        {
+            let param_label_y = action_label_y + row_h + (4.0 * scale) as i32;
+            let param_key_field_rect = RECT {
+                left: pad + label_w + 8,
+                top: param_label_y,
+                right: w - pad - bind_btn_w - 8,
+                bottom: param_label_y + field_h,
+            };
+            let slot_rect = {
+                let rects = trigger_slot_rects(param_key_field_rect, scale);
+                rects
+                    .into_iter()
+                    .find(|(candidate, _)| *candidate == slot)
+                    .map(|(_, rect)| rect)
+                    .unwrap_or(param_key_field_rect)
+            };
+            let key_items = state.param_editor.items_for_open_slot();
+            let item_h = (24.0 * scale) as i32;
+            let search_h = (30.0 * scale) as i32;
+            let visible_rows = key_dropdown_visible_rows();
+            let filtered_count = state.param_editor.dropdown.filtered_count(&key_items);
+            let visible_items = state
+                .param_editor
+                .dropdown
+                .visible_items(&key_items, visible_rows);
+            let list_rows = visible_items.len().max(1);
+            let popup_rect = RECT {
+                left: slot_rect.left,
+                top: slot_rect.bottom,
+                right: (slot_rect.left + (220.0 * scale) as i32).min(w - pad),
+                bottom: slot_rect.bottom + search_h + list_rows as i32 * item_h,
+            };
+            let popup_bg = theme.surface.blend_over(theme.background);
+            draw_rounded_rect_in_buffer(bits, w, h, popup_rect, (4.0 * scale) as i32, popup_bg);
+            draw_rounded_border_in_buffer(
+                bits,
+                w,
+                h,
+                popup_rect,
+                (4.0 * scale) as i32,
+                1,
+                theme.border,
+            );
+
+            let search_rect = RECT {
+                left: popup_rect.left + (6.0 * scale) as i32,
+                top: popup_rect.top + (5.0 * scale) as i32,
+                right: popup_rect.right - (6.0 * scale) as i32,
+                bottom: popup_rect.top + search_h - (5.0 * scale) as i32,
+            };
+            draw_rounded_rect_in_buffer(
+                bits,
+                w,
+                h,
+                search_rect,
+                (4.0 * scale) as i32,
+                theme.background.blend_over(popup_bg),
+            );
+            draw_rounded_border_in_buffer(
+                bits,
+                w,
+                h,
+                search_rect,
+                (4.0 * scale) as i32,
+                1,
+                theme.border,
+            );
+
+            SelectObject(dib_dc, small_font);
+            let search_text = if state.param_editor.dropdown.filter.is_empty() {
+                "Search keys..."
+            } else {
+                state.param_editor.dropdown.filter.as_str()
+            };
+            SetTextColor(
+                dib_dc,
+                if state.param_editor.dropdown.filter.is_empty() {
+                    theme.text_muted
+                } else {
+                    theme.text
+                }
+                .to_colorref(),
+            );
+            let mut search_wz = to_utf16_z(search_text);
+            let mut search_text_rect = RECT {
+                left: search_rect.left + (7.0 * scale) as i32,
+                top: search_rect.top,
+                right: search_rect.right - (7.0 * scale) as i32,
+                bottom: search_rect.bottom,
+            };
+            DrawTextW(
+                dib_dc,
+                &mut search_wz,
+                &mut search_text_rect,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+
+            let list_top = popup_rect.top + search_h;
+            for (i, item) in visible_items.iter().enumerate() {
+                let item_rect = RECT {
+                    left: popup_rect.left,
+                    top: list_top + i as i32 * item_h,
+                    right: popup_rect.right,
+                    bottom: list_top + (i as i32 + 1) * item_h,
+                };
+                let is_hovered = state.hovered_target == BindingPopupHit::ParamKeyItem(item.id);
+                if is_hovered {
+                    draw_rounded_rect_in_buffer(
+                        bits,
+                        w,
+                        h,
+                        item_rect,
+                        0,
+                        theme.hover.blend_over(popup_bg),
+                    );
+                }
+
+                SetTextColor(dib_dc, theme.text.to_colorref());
+                let mut item_wz = to_utf16_z(&item.label);
+                let mut item_text_rect = RECT {
+                    left: item_rect.left + (8.0 * scale) as i32,
+                    top: item_rect.top,
+                    right: item_rect.right - (8.0 * scale) as i32,
+                    bottom: item_rect.bottom,
+                };
+                DrawTextW(
+                    dib_dc,
+                    &mut item_wz,
+                    &mut item_text_rect,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
+
+            if visible_items.is_empty() {
+                let item_rect = RECT {
+                    left: popup_rect.left,
+                    top: list_top,
+                    right: popup_rect.right,
+                    bottom: list_top + item_h,
+                };
+                SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                let mut item_wz = to_utf16_z("No keys found");
+                let mut item_text_rect = RECT {
+                    left: item_rect.left + (8.0 * scale) as i32,
+                    top: item_rect.top,
+                    right: item_rect.right - (8.0 * scale) as i32,
+                    bottom: item_rect.bottom,
+                };
+                DrawTextW(
+                    dib_dc,
+                    &mut item_wz,
+                    &mut item_text_rect,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
+
+            if filtered_count > visible_rows {
+                let scroll_w = (4.0 * scale).max(3.0) as i32;
+                let track_rect = RECT {
+                    left: popup_rect.right - scroll_w - 2,
+                    top: list_top + 2,
+                    right: popup_rect.right - 2,
+                    bottom: popup_rect.bottom - 2,
+                };
+                draw_rounded_rect_in_buffer(
+                    bits,
+                    w,
+                    h,
+                    track_rect,
+                    scroll_w / 2,
+                    theme.border.with_alpha(60),
+                );
+                let travel = (track_rect.bottom - track_rect.top).max(1);
+                let thumb_h =
+                    ((visible_rows as f32 / filtered_count as f32) * travel as f32) as i32;
+                let thumb_h = thumb_h.max((16.0 * scale) as i32);
+                let max_scroll = filtered_count.saturating_sub(visible_rows).max(1);
+                let thumb_y = track_rect.top
+                    + ((state.param_editor.dropdown.scroll as f32 / max_scroll as f32)
+                        * (travel - thumb_h).max(0) as f32) as i32;
+                let thumb_rect = RECT {
+                    left: track_rect.left,
+                    top: thumb_y,
+                    right: track_rect.right,
+                    bottom: thumb_y + thumb_h,
+                };
+                draw_rounded_rect_in_buffer(bits, w, h, thumb_rect, scroll_w / 2, theme.hover);
+            }
+        }
+
         // ── Cleanup ────────────────────────────────────────────────
         let _ = DeleteObject(sep_brush);
         SelectObject(dib_dc, old_font);
@@ -1206,7 +1700,7 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
         let _ = DeleteObject(body_font);
         let _ = DeleteObject(small_font);
 
-        frame.fix_gdi_alpha(theme.background);
+        frame.fix_gdi_alpha(popup_bg);
 
         let cur_pos = {
             let mut wr = RECT::default();
@@ -1256,11 +1750,57 @@ fn key_dropdown_visible_rows() -> usize {
     8
 }
 
+/// Return the default param value for a given schema.
+///
+/// Called when the user switches the action kind, so stale data from the
+/// previous action is replaced with something sensible for the new one.
+fn default_param_for_schema(schema: ActionParamSchema) -> String {
+    match schema {
+        ActionParamSchema::Number { .. } => "5".to_string(),
+        ActionParamSchema::None
+        | ActionParamSchema::PowerAction
+        | ActionParamSchema::Text
+        | ActionParamSchema::FilePath
+        | ActionParamSchema::KeyMapping => String::new(),
+    }
+}
+
+/// Open a file picker dialog for FilePath action parameters.
+fn pick_param_file(parent: HWND) -> Option<String> {
+    use std::mem;
+    unsafe {
+        let mut ofn: windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW = mem::zeroed();
+        let mut buf = [0u16; 1024];
+        let filter: Vec<u16> = "All Files\0*.*\0".encode_utf16().collect();
+
+        ofn.lStructSize =
+            mem::size_of::<windows::Win32::UI::Controls::Dialogs::OPENFILENAMEW>() as u32;
+        ofn.hwndOwner = parent;
+        ofn.lpstrFilter = windows::core::PCWSTR::from_raw(filter.as_ptr());
+        ofn.lpstrFile = windows::core::PWSTR(buf.as_mut_ptr());
+        ofn.nMaxFile = buf.len() as u32;
+        ofn.lpstrTitle = windows::core::w!("Select File");
+        ofn.Flags = windows::Win32::UI::Controls::Dialogs::OFN_FILEMUSTEXIST
+            | windows::Win32::UI::Controls::Dialogs::OFN_HIDEREADONLY
+            | windows::Win32::UI::Controls::Dialogs::OFN_PATHMUSTEXIST;
+
+        if windows::Win32::UI::Controls::Dialogs::GetOpenFileNameW(&mut ofn).as_bool() {
+            let len = (0..buf.len()).find(|&i| buf[i] == 0).unwrap_or(0);
+            if len > 0 {
+                return Some(String::from_utf16_lossy(&buf[..len]));
+            }
+        }
+    }
+    None
+}
+
 fn open_kind_dropdown(state: &mut BindingPopupState) {
     state.trigger_editor.close_dropdown();
-    state
-        .action_dropdown
-        .open(&state.action_items, state.kind_idx, action_dropdown_visible_rows());
+    state.action_dropdown.open(
+        &state.action_items,
+        state.kind_idx,
+        action_dropdown_visible_rows(),
+    );
 }
 
 fn trigger_slot_rects(field_rect: RECT, scale: f32) -> Vec<(KeyComboSlot, RECT)> {
@@ -1295,6 +1835,53 @@ fn trigger_slot_rects(field_rect: RECT, scale: f32) -> Vec<(KeyComboSlot, RECT)>
         x = right + plus_w + gap * 2;
     }
     rects
+}
+
+/// Commit any in-progress param text edit, clearing the editing state.
+/// Validates number ranges and clamps them on commit.
+fn commit_param_edit(state: &mut BindingPopupState) {
+    state.is_editing_param = false;
+    state.param_edit_cursor = state.param.len();
+    state.param_save_error = None;
+
+    let schema = crate::config::editor_layout::editor_action_desc(state.kind_idx).param_schema;
+    if let ActionParamSchema::Number { min, max, .. } = schema {
+        let val: i32 = state.param.trim().parse().unwrap_or(min);
+        if val < min || val > max {
+            if val < min {
+                state.param = min.to_string();
+            } else {
+                state.param = max.to_string();
+            }
+        } else {
+            state.param = val.to_string();
+        }
+    }
+}
+
+/// Cancel any in-progress param text edit, restoring the old value.
+fn cancel_param_edit(state: &mut BindingPopupState) {
+    if state.is_editing_param {
+        state.param = std::mem::take(&mut state.param_edit_old);
+        state.is_editing_param = false;
+        state.param_edit_cursor = state.param.len();
+    }
+    state.param_save_error = None;
+}
+
+/// Compute the X coordinate of the cursor (insertion point) within the param
+/// edit field, using the current font to measure text before the cursor.
+fn cursor_position_x(dib_dc: HDC, text: &str, cursor: usize, field_left: i32) -> i32 {
+    if cursor == 0 || text.is_empty() {
+        return field_left;
+    }
+    let prefix = &text[..cursor.min(text.len())];
+    let wz: Vec<u16> = prefix.encode_utf16().collect();
+    unsafe {
+        let mut sz = windows::Win32::Foundation::SIZE::default();
+        let _ = GetTextExtentPoint32W(dib_dc, &wz, &mut sz);
+        field_left + sz.cx
+    }
 }
 
 // ── Window procedure ─────────────────────────────────────────────────
@@ -1348,9 +1935,15 @@ unsafe extern "system" fn binding_popup_wndproc(
                 let y = ((lparam.0 >> 16) as i16) as i32;
                 let hit = hit_test_popup(state, x, y);
 
+                // If editing param and clicking something else, commit the edit
+                if state.is_editing_param && hit != BindingPopupHit::ParamField {
+                    commit_param_edit(state);
+                }
+
                 match hit {
                     BindingPopupHit::TriggerSlot(slot) => {
                         state.action_dropdown.close();
+                        state.param_editor.close_dropdown();
                         if state.trigger_editor.open_slot == Some(slot)
                             && state.trigger_editor.dropdown.is_open
                         {
@@ -1362,7 +1955,22 @@ unsafe extern "system" fn binding_popup_wndproc(
                         }
                         paint_binding_popup(hwnd, state_ptr);
                     }
+                    BindingPopupHit::ParamSlot(slot) => {
+                        state.action_dropdown.close();
+                        state.trigger_editor.close_dropdown();
+                        if state.param_editor.open_slot == Some(slot)
+                            && state.param_editor.dropdown.is_open
+                        {
+                            state.param_editor.close_dropdown();
+                        } else {
+                            state
+                                .param_editor
+                                .open_dropdown(slot, key_dropdown_visible_rows());
+                        }
+                        paint_binding_popup(hwnd, state_ptr);
+                    }
                     BindingPopupHit::RecordTrigger => {
+                        state.param_editor.close_dropdown();
                         state.is_recording_trigger = !state.is_recording_trigger;
                         state.is_recording_param = false;
                         if state.is_recording_trigger {
@@ -1393,6 +2001,30 @@ unsafe extern "system" fn binding_popup_wndproc(
                         }
                         paint_binding_popup(hwnd, state_ptr);
                     }
+                    BindingPopupHit::BrowseParam => {
+                        // Open file picker for FilePath actions
+                        state.is_recording_trigger = false;
+                        state.is_recording_param = false;
+                        crate::hook::set_recording_window(None);
+                        if let Some(path) = pick_param_file(hwnd) {
+                            state.param = path;
+                        }
+                        paint_binding_popup(hwnd, state_ptr);
+                    }
+                    BindingPopupHit::ParamField => {
+                        let schema = editor_action_desc(state.kind_idx).param_schema;
+                        if matches!(
+                            schema,
+                            ActionParamSchema::Text | ActionParamSchema::Number { .. }
+                        ) {
+                            if !state.is_editing_param {
+                                state.is_editing_param = true;
+                                state.param_edit_old = state.param.clone();
+                            }
+                            state.param_edit_cursor = state.param.len();
+                        }
+                        paint_binding_popup(hwnd, state_ptr);
+                    }
                     BindingPopupHit::SaveBtn => {
                         // Write changes back to parent state
                         let parent = &mut *state.parent_ptr;
@@ -1410,13 +2042,34 @@ unsafe extern "system" fn binding_popup_wndproc(
                         state.should_close = true;
                     }
                     BindingPopupHit::KindItem(idx) => {
-                        state.kind_idx = idx;
-                        state.action_dropdown.close();
-                        paint_binding_popup(hwnd, state_ptr);
+                        if state.kind_idx == idx {
+                            // Same action — just close dropdown, no reset needed
+                            state.action_dropdown.close();
+                            paint_binding_popup(hwnd, state_ptr);
+                        } else {
+                            state.kind_idx = idx;
+                            // Reset param to a sensible default for the new schema
+                            state.param =
+                                default_param_for_schema(editor_action_desc(idx).param_schema);
+                            // Reset param_editor to match the new param value
+                            state.param_editor =
+                                KeyComboEditorState::from_trigger_string(&state.param);
+                            state.param_editor.close_dropdown();
+                            state.is_recording_param = false;
+                            crate::hook::set_recording_window(None);
+                            state.action_dropdown.close();
+                            state.param_save_error = None;
+                            paint_binding_popup(hwnd, state_ptr);
+                        }
                     }
                     BindingPopupHit::TriggerKeyItem(idx) => {
                         state.trigger_editor.choose(idx);
                         state.trigger = state.trigger_editor.to_trigger_string();
+                        paint_binding_popup(hwnd, state_ptr);
+                    }
+                    BindingPopupHit::ParamKeyItem(idx) => {
+                        state.param_editor.choose(idx);
+                        state.param = state.param_editor.to_trigger_string();
                         paint_binding_popup(hwnd, state_ptr);
                     }
                     _ => {}
@@ -1463,7 +2116,16 @@ unsafe extern "system" fn binding_popup_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BindingPopupState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if state.trigger_editor.dropdown.is_open {
+                    if state.param_editor.dropdown.is_open {
+                        let delta = (wparam.0 as i32 >> 16) as i16;
+                        let items = state.param_editor.items_for_open_slot();
+                        state.param_editor.dropdown.scroll_by(
+                            if delta < 0 { 1 } else { -1 },
+                            &items,
+                            key_dropdown_visible_rows(),
+                        );
+                        paint_binding_popup(hwnd, state_ptr);
+                    } else if state.trigger_editor.dropdown.is_open {
                         let delta = (wparam.0 as i32 >> 16) as i16;
                         let items = state.trigger_editor.items_for_open_slot();
                         state.trigger_editor.dropdown.scroll_by(
@@ -1489,14 +2151,88 @@ unsafe extern "system" fn binding_popup_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BindingPopupState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if state.trigger_editor.dropdown.is_open {
+
+                    // Param text editing keys (only when editing a Text/Number field)
+                    if state.is_editing_param {
+                        match wparam.0 as u32 {
+                            0x08 => {
+                                // Backspace
+                                if state.param_edit_cursor > 0 {
+                                    let before = state.param_edit_cursor - 1;
+                                    let after = state.param.len() - state.param_edit_cursor;
+                                    let mut s = String::with_capacity(state.param.len() - 1);
+                                    s.push_str(&state.param[..before]);
+                                    if after > 0 {
+                                        s.push_str(&state.param[state.param_edit_cursor..]);
+                                    }
+                                    state.param = s;
+                                    state.param_edit_cursor -= 1;
+                                }
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            0x2E => {
+                                // Delete
+                                if state.param_edit_cursor < state.param.len() {
+                                    let after = state.param.len() - state.param_edit_cursor - 1;
+                                    let mut s = String::with_capacity(state.param.len() - 1);
+                                    s.push_str(&state.param[..state.param_edit_cursor]);
+                                    if after > 0 {
+                                        s.push_str(&state.param[state.param_edit_cursor + 1..]);
+                                    }
+                                    state.param = s;
+                                }
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            0x25 => {
+                                // Left arrow
+                                if state.param_edit_cursor > 0 {
+                                    state.param_edit_cursor -= 1;
+                                }
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            0x27 => {
+                                // Right arrow
+                                if state.param_edit_cursor < state.param.len() {
+                                    state.param_edit_cursor += 1;
+                                }
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            0x0D => {
+                                // Enter — commit
+                                commit_param_edit(state);
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            0x1B => {
+                                // Escape — cancel
+                                cancel_param_edit(state);
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            _ => {}
+                        }
+                    } else if state.param_editor.dropdown.is_open {
+                        let items = state.param_editor.items_for_open_slot();
+                        match wparam.0 as u32 {
+                            0x08 => {
+                                state
+                                    .param_editor
+                                    .dropdown
+                                    .backspace(&items, key_dropdown_visible_rows());
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            0x1B => {
+                                state.param_editor.close_dropdown();
+                                paint_binding_popup(hwnd, state_ptr);
+                            }
+                            _ => {}
+                        }
+                    } else if state.trigger_editor.dropdown.is_open {
                         let items = state.trigger_editor.items_for_open_slot();
                         match wparam.0 as u32 {
                             0x08 => {
-                                state.trigger_editor.dropdown.backspace(
-                                    &items,
-                                    key_dropdown_visible_rows(),
-                                );
+                                state
+                                    .trigger_editor
+                                    .dropdown
+                                    .backspace(&items, key_dropdown_visible_rows());
                                 paint_binding_popup(hwnd, state_ptr);
                             }
                             0x1B => {
@@ -1528,7 +2264,48 @@ unsafe extern "system" fn binding_popup_wndproc(
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BindingPopupState;
                 if !state_ptr.is_null() {
                     let state = &mut *state_ptr;
-                    if state.trigger_editor.dropdown.is_open {
+
+                    // Param text editing — insert character
+                    if state.is_editing_param {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        let schema = editor_action_desc(state.kind_idx).param_schema;
+
+                        // Per-schema input filtering
+                        let allow = match schema {
+                            ActionParamSchema::Number { .. } => {
+                                // Allow digits, minus only at cursor 0 (start)
+                                ch.is_ascii_digit()
+                                    || (ch == '-'
+                                        && state.param_edit_cursor == 0
+                                        && !state.param.starts_with('-'))
+                            }
+                            _ => {
+                                // Text / FilePath / etc: all printable chars
+                                ch.is_ascii_graphic() || ch == ' '
+                            }
+                        };
+
+                        if allow {
+                            // Clear any previous save error when user starts typing
+                            state.param_save_error = None;
+                            let mut s = String::with_capacity(state.param.len() + 1);
+                            s.push_str(&state.param[..state.param_edit_cursor]);
+                            s.push(ch);
+                            s.push_str(&state.param[state.param_edit_cursor..]);
+                            state.param = s;
+                            state.param_edit_cursor += 1;
+                        }
+                        paint_binding_popup(hwnd, state_ptr);
+                    } else if state.param_editor.dropdown.is_open {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        let items = state.param_editor.items_for_open_slot();
+                        state.param_editor.dropdown.input_char(
+                            ch,
+                            &items,
+                            key_dropdown_visible_rows(),
+                        );
+                        paint_binding_popup(hwnd, state_ptr);
+                    } else if state.trigger_editor.dropdown.is_open {
                         let ch = (wparam.0 as u32) as u8 as char;
                         let items = state.trigger_editor.items_for_open_slot();
                         state.trigger_editor.dropdown.input_char(
@@ -1574,7 +2351,14 @@ unsafe extern "system" fn binding_popup_wndproc(
                         crate::hook::set_recording_window(None);
                         paint_binding_popup(hwnd, state_ptr);
                     } else if state.is_recording_param {
-                        state.param = key_str;
+                        let is_keymapping = editor_action_desc(state.kind_idx).param_schema
+                            == ActionParamSchema::KeyMapping;
+                        if is_keymapping {
+                            state.param_editor.set_from_capture(&key_str);
+                            state.param = state.param_editor.to_trigger_string();
+                        } else {
+                            state.param = key_str;
+                        }
                         state.is_recording_param = false;
                         crate::hook::set_recording_window(None);
                         paint_binding_popup(hwnd, state_ptr);
@@ -1608,8 +2392,8 @@ fn hit_test_popup(state: &BindingPopupState, x: i32, y: i32) -> BindingPopupHit 
     let action_label_y = trigger_label_y + row_h + (4.0 * scale) as i32;
     let param_label_y = action_label_y + row_h + (4.0 * scale) as i32;
 
-    // Open dropdown overlays the rest of the popup, so it gets first chance
-    // at the hit-test before footer/buttons underneath.
+    // Open dropdown overlays get first chance at the hit-test
+    // before any content below them.
     if state.action_dropdown.is_open
         && let Some(idx) = hover_kind_item(state, x, y)
     {
@@ -1619,6 +2403,11 @@ fn hit_test_popup(state: &BindingPopupState, x: i32, y: i32) -> BindingPopupHit 
         && let Some(idx) = hover_trigger_key_item(state, x, y)
     {
         return BindingPopupHit::TriggerKeyItem(idx);
+    }
+    if state.param_editor.dropdown.is_open
+        && let Some(idx) = hover_param_key_item(state, x, y)
+    {
+        return BindingPopupHit::ParamKeyItem(idx);
     }
 
     // Footer buttons
@@ -1679,34 +2468,83 @@ fn hit_test_popup(state: &BindingPopupState, x: i32, y: i32) -> BindingPopupHit 
         return BindingPopupHit::KindCombo;
     }
 
-    // Record param button
-    let param_rec_rect = RECT {
-        left: w - pad - bind_btn_w,
-        top: param_label_y,
-        right: w - pad,
-        bottom: param_label_y + field_h,
-    };
-    if x >= param_rec_rect.left
-        && x < param_rec_rect.right
-        && y >= param_rec_rect.top
-        && y < param_rec_rect.bottom
-    {
-        return BindingPopupHit::RecordParam;
-    }
+    // Parameter section — only for actions with a parameter
+    let desc = editor_action_desc(state.kind_idx);
+    if desc.param_key.is_some() {
+        let param_schema = desc.param_schema;
 
-    // Param field
-    let param_field_rect = RECT {
-        left: field_x,
-        top: param_label_y,
-        right: w - pad - bind_btn_w - 8,
-        bottom: param_label_y + field_h,
-    };
-    if x >= param_field_rect.left
-        && x < param_field_rect.right
-        && y >= param_field_rect.top
-        && y < param_field_rect.bottom
-    {
-        return BindingPopupHit::ParamField;
+        match param_schema {
+            ActionParamSchema::KeyMapping => {
+                // KeyMapping: slot-based editor (like Trigger)
+                // Side button (Bind)
+                let bind_btn_rect = RECT {
+                    left: w - pad - bind_btn_w,
+                    top: param_label_y,
+                    right: w - pad,
+                    bottom: param_label_y + field_h,
+                };
+                if x >= bind_btn_rect.left
+                    && x < bind_btn_rect.right
+                    && y >= bind_btn_rect.top
+                    && y < bind_btn_rect.bottom
+                {
+                    return BindingPopupHit::RecordParam;
+                }
+
+                // Slot rects
+                let param_key_field_rect = RECT {
+                    left: field_x,
+                    top: param_label_y,
+                    right: w - pad - bind_btn_w - 8,
+                    bottom: param_label_y + field_h,
+                };
+                for (slot, rect) in trigger_slot_rects(param_key_field_rect, scale) {
+                    if x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom {
+                        return BindingPopupHit::ParamSlot(slot);
+                    }
+                }
+            }
+            _ => {
+                // Non-KeyMapping: text-field editor
+                let has_side_btn = param_schema == ActionParamSchema::FilePath;
+
+                // Side button (Browse)
+                if has_side_btn {
+                    let browse_btn_rect = RECT {
+                        left: w - pad - bind_btn_w,
+                        top: param_label_y,
+                        right: w - pad,
+                        bottom: param_label_y + field_h,
+                    };
+                    if x >= browse_btn_rect.left
+                        && x < browse_btn_rect.right
+                        && y >= browse_btn_rect.top
+                        && y < browse_btn_rect.bottom
+                    {
+                        return BindingPopupHit::BrowseParam;
+                    }
+                }
+
+                // Param field
+                let param_field_rect = RECT {
+                    left: field_x,
+                    top: param_label_y,
+                    right: if has_side_btn {
+                        w - pad - bind_btn_w - 8
+                    } else {
+                        w - pad
+                    },
+                    bottom: param_label_y + field_h,
+                };
+                if x >= param_field_rect.left
+                    && x < param_field_rect.right
+                    && y >= param_field_rect.top
+                    && y < param_field_rect.bottom
+                {
+                    return BindingPopupHit::ParamField;
+                }
+            }
+        }
     }
 
     BindingPopupHit::None
@@ -1795,6 +2633,65 @@ fn hover_trigger_key_item(state: &BindingPopupState, x: i32, y: i32) -> Option<u
     let key_items = state.trigger_editor.items_for_open_slot();
     let visible_items = state
         .trigger_editor
+        .dropdown
+        .visible_items(&key_items, key_dropdown_visible_rows());
+    let list_rows = visible_items.len().max(1);
+    let popup_rect = RECT {
+        left: slot_rect.left,
+        top: slot_rect.bottom,
+        right: (slot_rect.left + (220.0 * scale) as i32).min(state.win_w - pad),
+        bottom: slot_rect.bottom + search_h + list_rows as i32 * item_h,
+    };
+    if x >= popup_rect.left && x < popup_rect.right && y >= popup_rect.top && y < popup_rect.bottom
+    {
+        if y < popup_rect.top + search_h {
+            return None;
+        }
+        let row = ((y - popup_rect.top - search_h) / item_h) as usize;
+        if let Some(item) = visible_items.get(row) {
+            return Some(item.id);
+        }
+    }
+    None
+}
+
+fn hover_param_key_item(state: &BindingPopupState, x: i32, y: i32) -> Option<usize> {
+    if !state.param_editor.dropdown.is_open {
+        return None;
+    }
+    let scale = state.scale;
+    let pad = (POPUP_PADDING as f32 * scale) as i32;
+    let field_h = (POPUP_FIELD_HEIGHT as f32 * scale) as i32;
+    let bind_btn_w = (POPUP_BIND_BUTTON_WIDTH as f32 * scale) as i32;
+    let header_h = (POPUP_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let row_h = (POPUP_ROW_HEIGHT as f32 * scale) as i32;
+    let content_y = header_h + (8.0 * scale) as i32;
+    let label_w = (POPUP_LABEL_WIDTH as f32 * scale) as i32;
+    let field_x = pad + label_w + 8;
+    let trigger_label_y = content_y;
+    let action_label_y = trigger_label_y + row_h + (4.0 * scale) as i32;
+    let param_label_y = action_label_y + row_h + (4.0 * scale) as i32;
+    let param_key_field_rect = RECT {
+        left: field_x,
+        top: param_label_y,
+        right: state.win_w - pad - bind_btn_w - 8,
+        bottom: param_label_y + field_h,
+    };
+
+    let Some(slot) = state.param_editor.open_slot else {
+        return None;
+    };
+    let slot_rect = trigger_slot_rects(param_key_field_rect, scale)
+        .into_iter()
+        .find(|(candidate, _)| *candidate == slot)
+        .map(|(_, rect)| rect)
+        .unwrap_or(param_key_field_rect);
+
+    let item_h = (24.0 * scale) as i32;
+    let search_h = (30.0 * scale) as i32;
+    let key_items = state.param_editor.items_for_open_slot();
+    let visible_items = state
+        .param_editor
         .dropdown
         .visible_items(&key_items, key_dropdown_visible_rows());
     let list_rows = visible_items.len().max(1);

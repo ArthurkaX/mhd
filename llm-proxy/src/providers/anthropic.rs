@@ -18,14 +18,11 @@ use std::sync::Arc;
 
 use crate::state::AppState;
 
-use super::{now_ms, InflightGuard};
+use super::{InflightGuard, now_ms};
 
 /// Build a request to Anthropic with auth/version/beta headers forwarded from
 /// the incoming Claude Code request.
-async fn build_request(
-    state: &Arc<AppState>,
-    incoming: &HeaderMap,
-) -> reqwest::RequestBuilder {
+async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap) -> reqwest::RequestBuilder {
     let mut req = state
         .http
         .post("https://api.anthropic.com/v1/messages")
@@ -76,7 +73,11 @@ pub async fn send_request(
         ));
     }
 
-    let resp = build_request(state, incoming).await.json(&payload).send().await?;
+    let resp = build_request(state, incoming)
+        .await
+        .json(&payload)
+        .send()
+        .await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -124,7 +125,11 @@ pub async fn stream_request(
         ));
     }
 
-    let resp = build_request(state, incoming).await.json(&payload).send().await?;
+    let resp = build_request(state, incoming)
+        .await
+        .json(&payload)
+        .send()
+        .await?;
 
     if log {
         state.log_line(&format!(

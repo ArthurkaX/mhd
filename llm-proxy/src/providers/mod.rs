@@ -13,7 +13,9 @@ pub struct InflightGuard(pub Arc<AppState>);
 
 impl InflightGuard {
     pub fn new(state: Arc<AppState>) -> Self {
-        state.inflight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        state
+            .inflight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self(state)
     }
 }

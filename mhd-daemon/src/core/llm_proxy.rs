@@ -6,8 +6,8 @@
 //! effect on the proxy's next request, so in-flight Claude Code work is never
 //! interrupted.
 
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use llm_proxy::ProxyControl;
 
@@ -97,11 +97,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         true
     } else {
         drop(guard);
-        if cfg.enabled {
-            start(cfg)
-        } else {
-            false
-        }
+        if cfg.enabled { start(cfg) } else { false }
     }
 }
 

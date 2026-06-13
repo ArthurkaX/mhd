@@ -14,16 +14,16 @@
 //! ```
 
 use std::ffi::c_void;
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, FillRect, GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, BITMAPINFO,
-    BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
-    DRAW_TEXT_FORMAT, FF_DONTCARE, FW_BOLD, FW_NORMAL, HDC, OUT_DEFAULT_PRECIS, RGBQUAD,
+    BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection,
+    CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS,
+    DRAW_TEXT_FORMAT, DeleteDC, DeleteObject, DrawTextW, FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect,
+    GetDC, HDC, OUT_DEFAULT_PRECIS, RGBQUAD, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
     TRANSPARENT,
 };
-use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+use windows::Win32::UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow};
+use windows::core::PCWSTR;
 
 use crate::core::native_theme::{Argb, NativeTheme};
 
@@ -512,7 +512,7 @@ impl ShellRenderer {
 
 /// Return the work area rectangle of the primary monitor.
 pub fn primary_monitor_work_rect() -> RECT {
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO, MonitorFromWindow};
     use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
     // SAFETY: Standard GDI calls.
     unsafe {

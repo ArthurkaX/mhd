@@ -973,8 +973,7 @@ unsafe extern "system" fn edit_wndproc(
                                 .unwrap_or_default()
                         };
                         if daemon_hwnd != HWND::default() {
-                            let _ =
-                                PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
+                            let _ = PostMessageW(daemon_hwnd, WM_POM_START, WPARAM(0), LPARAM(0));
                         }
                     }
                     return LRESULT(0);

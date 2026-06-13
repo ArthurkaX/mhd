@@ -11,7 +11,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_EVENT, WAIT_OBJECT_0, WPARAM};
+use windows::Win32::Foundation::{
+    HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_EVENT, WAIT_OBJECT_0, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DT_END_ELLIPSIS, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteObject,
     DrawTextW, FillRect, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
@@ -309,7 +311,8 @@ fn panel_thread(
                                     {
                                         apply_selection(&mut state, ti, oi);
                                         paint_panel(hwnd, &mut state, &work, panel_w, scale);
-                                        let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                                        let _ =
+                                            SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
                                         continue;
                                     }
                                 }
@@ -474,7 +477,11 @@ fn paint_panel(hwnd: HWND, state: &mut PanelState, work: &RECT, width: i32, scal
         );
     }
     // Status (right-aligned)
-    let status = if state.running { "proxy: on" } else { "proxy: off" };
+    let status = if state.running {
+        "proxy: on"
+    } else {
+        "proxy: off"
+    };
     let status_color = if state.running {
         theme.accent
     } else {
@@ -565,7 +572,11 @@ fn paint_panel(hwnd: HWND, state: &mut PanelState, work: &RECT, width: i32, scal
                 // Marker + label
                 let marker = if selected { "● " } else { "○ " };
                 let text = format!("{marker}{}", opt.label);
-                let text_color = if selected { theme.text } else { theme.text_muted };
+                let text_color = if selected {
+                    theme.text
+                } else {
+                    theme.text_muted
+                };
                 unsafe {
                     let _ = SetTextColor(frame.dc(), text_color.to_colorref());
                 }
@@ -609,7 +620,13 @@ fn paint_panel(hwnd: HWND, state: &mut PanelState, work: &RECT, width: i32, scal
 
 /// Returns (tier_idx, option_idx) for a click at client (x, y) with scroll
 /// already applied to y.
-fn hit_test_row(state: &PanelState, x: i32, y: i32, width: i32, scale: f32) -> Option<(usize, usize)> {
+fn hit_test_row(
+    state: &PanelState,
+    x: i32,
+    y: i32,
+    width: i32,
+    scale: f32,
+) -> Option<(usize, usize)> {
     let pad = (PAD_BASE as f32 * scale) as i32;
     if x < pad || x > width - pad {
         return None;
@@ -682,9 +699,10 @@ fn wheel_delta_from_wparam(wparam: WPARAM) -> i16 {
 
 extern "system" fn panel_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_SETCURSOR
-        && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) } {
-            unsafe { SetCursor(cursor) };
-            return LRESULT(1);
-        }
+        && let Ok(cursor) = unsafe { LoadCursorW(None, IDC_ARROW) }
+    {
+        unsafe { SetCursor(cursor) };
+        return LRESULT(1);
+    }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }

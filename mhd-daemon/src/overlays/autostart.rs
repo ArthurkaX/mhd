@@ -10,9 +10,9 @@
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows::Win32::System::Registry::*;
+use windows::core::PCWSTR;
 
 /// Registry value name for the mHD autostart entry.
 const VALUE_NAME: &str = "mHD";

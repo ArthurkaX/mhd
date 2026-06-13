@@ -356,9 +356,10 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
                             }
                         }
                         if let Some(cd) = st.cd_hwnd
-                            && msg.hwnd == cd {
-                                DispatchMessageW(&msg);
-                            }
+                            && msg.hwnd == cd
+                        {
+                            DispatchMessageW(&msg);
+                        }
                     }
                 }
                 tick(&mut st, hwnd, sc);
@@ -382,12 +383,13 @@ fn thread_main(hdl: SafeHandle, dying: Arc<std::sync::atomic::AtomicBool>, theme
 fn tick(st: &mut State, main_hwnd: HWND, sc: f32) {
     // Awake timed expiry
     if let AwakeMode::Timed { end_sec } = st.awake
-        && now_secs() >= end_sec {
-            st.awake = AwakeMode::Off;
-            unsafe {
-                let _ = SetThreadExecutionState(ES_CONTINUOUS);
-            }
+        && now_secs() >= end_sec
+    {
+        st.awake = AwakeMode::Off;
+        unsafe {
+            let _ = SetThreadExecutionState(ES_CONTINUOUS);
         }
+    }
 
     // Pending action
     if let Some(ref p) = st.pending {

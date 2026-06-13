@@ -69,10 +69,7 @@ pub fn anthropic_to_openai(anthropic: Value) -> Value {
         }
     }
 
-    out.insert(
-        "messages".to_string(),
-        Value::Array(openai_messages),
-    );
+    out.insert("messages".to_string(), Value::Array(openai_messages));
 
     // ── tools ──────────────────────────────────────────────────────
     if let Some(tools) = anthropic.get("tools").and_then(|v| v.as_array()) {
@@ -213,7 +210,11 @@ fn convert_message(msg: &Value, out: &mut Vec<Value>) {
         // OpenAI allows null content alongside tool_calls.
         m.insert(
             "content".to_string(),
-            if text.is_empty() { Value::Null } else { Value::String(text) },
+            if text.is_empty() {
+                Value::Null
+            } else {
+                Value::String(text)
+            },
         );
         if !reasoning.is_empty() {
             m.insert("reasoning_content".to_string(), Value::String(reasoning));
@@ -252,16 +253,10 @@ pub fn openai_to_anthropic(openai: Value) -> Value {
     out.insert("id".to_string(), Value::String(id.to_string()));
 
     // ── type ───────────────────────────────────────────────────────
-    out.insert(
-        "type".to_string(),
-        Value::String("message".to_string()),
-    );
+    out.insert("type".to_string(), Value::String("message".to_string()));
 
     // ── role ───────────────────────────────────────────────────────
-    out.insert(
-        "role".to_string(),
-        Value::String("assistant".to_string()),
-    );
+    out.insert("role".to_string(), Value::String("assistant".to_string()));
 
     // ── content (text + tool_use) ──────────────────────────────────
     let message = openai
@@ -362,10 +357,18 @@ pub fn openai_to_anthropic(openai: Value) -> Value {
     // ── usage ──────────────────────────────────────────────────────
     let mut usage = Map::new();
     if let Some(openai_usage) = openai.get("usage") {
-        if let Some(v) = openai_usage.get("input_tokens").or_else(|| openai_usage.get("prompt_tokens")).and_then(|v| v.as_u64()) {
+        if let Some(v) = openai_usage
+            .get("input_tokens")
+            .or_else(|| openai_usage.get("prompt_tokens"))
+            .and_then(|v| v.as_u64())
+        {
             usage.insert("input_tokens".to_string(), Value::Number(v.into()));
         }
-        if let Some(v) = openai_usage.get("output_tokens").or_else(|| openai_usage.get("completion_tokens")).and_then(|v| v.as_u64()) {
+        if let Some(v) = openai_usage
+            .get("output_tokens")
+            .or_else(|| openai_usage.get("completion_tokens"))
+            .and_then(|v| v.as_u64())
+        {
             usage.insert("output_tokens".to_string(), Value::Number(v.into()));
         }
     }
@@ -490,7 +493,10 @@ mod tests {
         let result = openai_to_anthropic(input);
         assert_eq!(result["content"][0]["type"], "thinking");
         assert_eq!(result["content"][0]["thinking"], "Thinking hard.");
-        assert_eq!(result["content"][0]["signature"], SYNTHETIC_THINKING_SIGNATURE);
+        assert_eq!(
+            result["content"][0]["signature"],
+            SYNTHETIC_THINKING_SIGNATURE
+        );
         assert_eq!(result["content"][1]["type"], "text");
         assert_eq!(result["content"][1]["text"], "Done.");
     }

@@ -159,7 +159,7 @@ pub fn show_config_editor(handle: AppHandle) {
 
     let hwnd = match unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_LAYERED | WS_EX_APPWINDOW,
             PCWSTR::from_raw(cls_name.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
@@ -267,7 +267,7 @@ pub fn show_config_editor(handle: AppHandle) {
     }
 
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOWNA);
+        let _ = ShowWindow(hwnd, SW_SHOW);
     }
 
     // Nested message loop
@@ -1284,8 +1284,9 @@ unsafe extern "system" fn settings_wndproc(
                         state.acc_is_recording_param = false;
                         state.acc_save_error = None;
                         state.expanded_idx = None;
-                        let saved =
-                            crate::config::editor_binding_popup::open_binding_popup(hwnd, state_ptr, idx);
+                        let saved = crate::config::editor_binding_popup::open_binding_popup(
+                            hwnd, state_ptr, idx,
+                        );
                         if !saved && idx < state.bindings.len() {
                             state.bindings.remove(idx);
                         }
@@ -1311,7 +1312,7 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         apply_settings(state);
-                        paint_settings(hwnd, state_ptr, &state.layout);
+                        DestroyWindow(hwnd).ok();
                     }
                     SettingsHit::ApplyBtn => {
                         close_combo_popup(state);
