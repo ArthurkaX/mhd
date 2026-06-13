@@ -61,20 +61,17 @@ use crate::config::editor_layout::{
 // Re‑exports for backward compatibility (used by other modules)
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
-    COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT,
-    COMBO_POPUP_MAX_VISIBLE, COMBO_POPUP_WIDTH, FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE,
-    Layout, SECTION_HEADER_HEIGHT_BASE, WIN_HEIGHT_BASE, WIN_WIDTH_BASE,
-    WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
+    COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, COMBO_POPUP_WIDTH,
+    FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, SECTION_HEADER_HEIGHT_BASE,
+    WIN_HEIGHT_BASE, WIN_WIDTH_BASE, WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
+};
+pub use crate::config::editor_paint::{
+    build_advanced_controls, build_general_controls, build_shortcuts_controls, paint_page,
 };
 pub use crate::config::editor_state::{
-    ButtonStyle, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState,
-    UIBinding,
+    ButtonStyle, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState, UIBinding,
 };
-pub use crate::config::editor_paint::{build_advanced_controls, build_general_controls, build_shortcuts_controls, paint_page};
-pub use crate::config::editor_theme::{
-    draw_button, draw_rounded_rect_in_buffer,
-    to_utf16_z,
-};
+pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
 
 const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "Advanced"];
 
@@ -313,9 +310,10 @@ fn build_theme_list(_default_theme: &NativeTheme) -> Vec<String> {
             }
             if let Some(_stem) = path.file_stem().and_then(|s| s.to_str())
                 && let Ok(t) = load_theme_from_path(&path)
-                    && !names.contains(&t.name) {
-                        names.push(t.name.clone());
-                    }
+                && !names.contains(&t.name)
+            {
+                names.push(t.name.clone());
+            }
         }
     }
 
@@ -542,22 +540,46 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             SettingsPage::General => {
                 let ctls = build_general_controls(lay, state);
                 page_regions = paint_page(
-                    &ctls, dib_dc, bits, lay.win_w(), lay.win_h(),
-                    theme, title_font, body_font, small_font,
+                    &ctls,
+                    dib_dc,
+                    bits,
+                    lay.win_w(),
+                    lay.win_h(),
+                    state.content_scroll_y,
+                    theme,
+                    title_font,
+                    body_font,
+                    small_font,
                 );
             }
             SettingsPage::Shortcuts => {
                 let ctls = build_shortcuts_controls(lay, state);
                 page_regions = paint_page(
-                    &ctls, dib_dc, bits, lay.win_w(), lay.win_h(),
-                    theme, title_font, body_font, small_font,
+                    &ctls,
+                    dib_dc,
+                    bits,
+                    lay.win_w(),
+                    lay.win_h(),
+                    state.content_scroll_y,
+                    theme,
+                    title_font,
+                    body_font,
+                    small_font,
                 );
             }
             SettingsPage::Advanced => {
                 let ctls = build_advanced_controls(lay, state);
                 page_regions = paint_page(
-                    &ctls, dib_dc, bits, lay.win_w(), lay.win_h(),
-                    theme, title_font, body_font, small_font,
+                    &ctls,
+                    dib_dc,
+                    bits,
+                    lay.win_w(),
+                    lay.win_h(),
+                    state.content_scroll_y,
+                    theme,
+                    title_font,
+                    body_font,
+                    small_font,
                 );
             }
             SettingsPage::LlmProxy => {
@@ -588,10 +610,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             right: scrollbar_x + lay.scrollbar_w(),
             bottom: lay.content_y() + scrollbar_h,
         };
-        draw_rounded_rect_in_buffer(
-            bits, lay.win_w(), lay.win_h(),
-            track_rect, 0, theme.surface,
-        );
+        draw_rounded_rect_in_buffer(bits, lay.win_w(), lay.win_h(), track_rect, 0, theme.surface);
 
         // Thumb
         let thumb_rect = RECT {
@@ -601,7 +620,9 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             bottom: thumb_y + thumb_h,
         };
         draw_rounded_rect_in_buffer(
-            bits, lay.win_w(), lay.win_h(),
+            bits,
+            lay.win_w(),
+            lay.win_h(),
             thumb_rect,
             (2.0 * lay.scale()) as i32,
             theme.hover.blend_over(theme.surface),
@@ -720,7 +741,6 @@ fn contrast_text_on(bg: Argb) -> bool {
     lum < 0.5
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Paint the LLM Proxy stub page — "coming soon" centered text.
@@ -741,17 +761,16 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
             } else {
                 0
             };
-            let last_y = lay.shortcuts.shortcuts_y + n * lay.row_h() + accordion_h + lay.row_h();
+            let last_y = lay.list_y() + n * lay.row_h() + accordion_h + lay.row_h();
             last_y + (16.0 * lay.scale()) as i32 - lay.content_y()
         }
         SettingsPage::Advanced => {
             let btn_count = ADVANCED_BUTTONS.len() as i32;
-            let last_y = lay.advanced.top_y + btn_count * (lay.advanced.btn_h + lay.advanced.btn_gap);
+            let last_y =
+                lay.advanced.top_y + btn_count * (lay.advanced.btn_h + lay.advanced.btn_gap);
             last_y + (16.0 * lay.scale()) as i32 - lay.content_y()
         }
-        SettingsPage::LlmProxy => {
-            lay.content_y() + (120.0 * lay.scale()) as i32 - lay.content_y()
-        }
+        SettingsPage::LlmProxy => lay.content_y() + (120.0 * lay.scale()) as i32 - lay.content_y(),
     }
 }
 
@@ -776,7 +795,12 @@ fn paint_llm_proxy_page(
         bottom: lay.content_y() + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut title_wz, &mut title_rc, DT_LEFT | DT_SINGLELINE);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut title_wz,
+            &mut title_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
     }
 
     // "Coming soon" message below the header.
@@ -787,12 +811,22 @@ fn paint_llm_proxy_page(
     let mut msg_wz = to_utf16_z("coming soon — LLM proxy configuration will appear here");
     let mut msg_rc = RECT {
         left: lay.pad(),
-        top: lay.content_y() + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32 + (12.0 * lay.scale()) as i32,
+        top: lay.content_y()
+            + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32
+            + (12.0 * lay.scale()) as i32,
         right: lay.win_w() - lay.pad(),
-        bottom: lay.content_y() + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32 + (12.0 * lay.scale()) as i32 + (28.0 * lay.scale()) as i32,
+        bottom: lay.content_y()
+            + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32
+            + (12.0 * lay.scale()) as i32
+            + (28.0 * lay.scale()) as i32,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut msg_wz, &mut msg_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut msg_wz,
+            &mut msg_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 }
 
@@ -931,10 +965,11 @@ fn apply_settings(state: &mut SettingsState) {
                 }
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     if let Ok(t) = load_theme_from_path(&path)
-                        && t.name == theme_name {
-                            found = stem.to_string();
-                            break;
-                        }
+                        && t.name == theme_name
+                    {
+                        found = stem.to_string();
+                        break;
+                    }
                     if stem == theme_name {
                         found = stem.to_string();
                         break;
@@ -1194,11 +1229,13 @@ unsafe extern "system" fn settings_wndproc(
                         let content_h = page_control_content_height(state, &lay);
                         let max_scroll = (content_h - lay.content_visible_h()).max(0);
                         let scrollbar_h = lay.content_visible_h();
-                        let thumb_h = ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
+                        let thumb_h =
+                            ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
                         let thumb_h = thumb_h.max((16.0 * lay.scale()) as i32);
                         let thumb_travel = (scrollbar_h - thumb_h).max(1);
                         let thumb_y = lay.content_y()
-                            + ((state.content_scroll_y as f32 / max_scroll as f32) * thumb_travel as f32) as i32;
+                            + ((state.content_scroll_y as f32 / max_scroll as f32)
+                                * thumb_travel as f32) as i32;
 
                         if y >= thumb_y && y < thumb_y + thumb_h {
                             state.is_dragging_scroll = true;
@@ -1220,9 +1257,7 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         // Open modal binding editor popup instead of inline accordion.
-                        crate::config::editor_binding_popup::open_binding_popup(
-                            hwnd, state_ptr, i,
-                        );
+                        crate::config::editor_binding_popup::open_binding_popup(hwnd, state_ptr, i);
                         // On return, redraw the settings window to reflect any changes.
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
@@ -1245,12 +1280,15 @@ unsafe extern "system" fn settings_wndproc(
                             is_recording_trigger: false,
                             is_recording_param: false,
                         });
-                        state.acc_trigger = "none".to_string();
-                        state.acc_kind_idx = 0;
-                        state.acc_param = String::new();
                         state.acc_is_recording = false;
+                        state.acc_is_recording_param = false;
                         state.acc_save_error = None;
-                        state.expanded_idx = Some(idx);
+                        state.expanded_idx = None;
+                        let saved =
+                            crate::config::editor_binding_popup::open_binding_popup(hwnd, state_ptr, idx);
+                        if !saved && idx < state.bindings.len() {
+                            state.bindings.remove(idx);
+                        }
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     SettingsHit::NotesDirBrowseBtn => {
@@ -1374,40 +1412,41 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         if let Some(idx) = state.expanded_idx
-                            && idx < state.bindings.len() {
-                                state.acc_is_recording = false;
-                                crate::hook::set_recording_window(None);
-                                let trigger = state.acc_trigger.trim().to_lowercase();
-                                if !trigger.is_empty() {
-                                    // Compare resolved triggers, not raw strings,
-                                    // so aliases of the same physical key (e.g.
-                                    // "0x13" and "pause") are caught as dupes.
-                                    let dup = match crate::core::trigger::parse_trigger(&trigger) {
-                                        Ok(new_pt) => {
-                                            state.bindings.iter().enumerate().any(|(j, b)| {
-                                                j != idx
-                                                    && crate::core::trigger::parse_trigger(&b.trigger)
-                                                        .map(|pt| pt.trigger == new_pt.trigger)
-                                                        .unwrap_or(false)
-                                            })
-                                        }
-                                        // Unparseable: fall back to string compare.
-                                        Err(_) => state.bindings.iter().enumerate().any(|(j, b)| {
-                                            j != idx && b.trigger.trim().to_lowercase() == trigger
-                                        }),
-                                    };
-                                    if dup {
-                                        state.acc_save_error = Some("Duplicate trigger – each shortcut needs a unique key combination.".into());
-                                        paint_settings(hwnd, state_ptr, &state.layout);
-                                        return LRESULT(0);
+                            && idx < state.bindings.len()
+                        {
+                            state.acc_is_recording = false;
+                            crate::hook::set_recording_window(None);
+                            let trigger = state.acc_trigger.trim().to_lowercase();
+                            if !trigger.is_empty() {
+                                // Compare resolved triggers, not raw strings,
+                                // so aliases of the same physical key (e.g.
+                                // "0x13" and "pause") are caught as dupes.
+                                let dup = match crate::core::trigger::parse_trigger(&trigger) {
+                                    Ok(new_pt) => {
+                                        state.bindings.iter().enumerate().any(|(j, b)| {
+                                            j != idx
+                                                && crate::core::trigger::parse_trigger(&b.trigger)
+                                                    .map(|pt| pt.trigger == new_pt.trigger)
+                                                    .unwrap_or(false)
+                                        })
                                     }
+                                    // Unparseable: fall back to string compare.
+                                    Err(_) => state.bindings.iter().enumerate().any(|(j, b)| {
+                                        j != idx && b.trigger.trim().to_lowercase() == trigger
+                                    }),
+                                };
+                                if dup {
+                                    state.acc_save_error = Some("Duplicate trigger – each shortcut needs a unique key combination.".into());
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                    return LRESULT(0);
                                 }
-                                state.bindings[idx].trigger = state.acc_trigger.clone();
-                                state.bindings[idx].kind_idx = state.acc_kind_idx;
-                                state.bindings[idx].param = state.acc_param.clone();
-                                state.bindings[idx].is_recording_trigger = false;
-                                state.bindings[idx].is_recording_param = false;
                             }
+                            state.bindings[idx].trigger = state.acc_trigger.clone();
+                            state.bindings[idx].kind_idx = state.acc_kind_idx;
+                            state.bindings[idx].param = state.acc_param.clone();
+                            state.bindings[idx].is_recording_trigger = false;
+                            state.bindings[idx].is_recording_param = false;
+                        }
                         state.expanded_idx = None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
@@ -1424,17 +1463,18 @@ unsafe extern "system" fn settings_wndproc(
                         close_combo_popup(state);
                         close_kind_popup(state);
                         if let Some(idx) = state.expanded_idx
-                            && idx < state.bindings.len() {
-                                state.bindings.remove(idx);
-                                if let Some((ri_idx, is_trig)) = state.recording_info {
-                                    if ri_idx == idx {
-                                        state.recording_info = None;
-                                        crate::hook::set_recording_window(None);
-                                    } else if ri_idx > idx {
-                                        state.recording_info = Some((ri_idx - 1, is_trig));
-                                    }
+                            && idx < state.bindings.len()
+                        {
+                            state.bindings.remove(idx);
+                            if let Some((ri_idx, is_trig)) = state.recording_info {
+                                if ri_idx == idx {
+                                    state.recording_info = None;
+                                    crate::hook::set_recording_window(None);
+                                } else if ri_idx > idx {
+                                    state.recording_info = Some((ri_idx - 1, is_trig));
                                 }
                             }
+                        }
                         state.acc_is_recording = false;
                         state.acc_is_recording_param = false;
                         crate::hook::set_recording_window(None);
@@ -1559,15 +1599,15 @@ unsafe extern "system" fn settings_wndproc(
                         let content_h = page_control_content_height(state, &lay);
                         let max_scroll = (content_h - lay.content_visible_h()).max(0);
                         let scrollbar_h = lay.content_visible_h();
-                        let thumb_h = ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
+                        let thumb_h =
+                            ((scrollbar_h as f32 / content_h as f32) * scrollbar_h as f32) as i32;
                         let thumb_h = thumb_h.max((16.0 * lay.scale()) as i32);
                         let thumb_travel = (scrollbar_h - thumb_h).max(1);
                         let dy = y - state.scroll_drag_start_y;
                         let scroll_delta =
                             (dy as f32 / thumb_travel as f32 * max_scroll as f32) as i32;
-                        state.content_scroll_y = (state.scroll_drag_start_offset
-                            + scroll_delta)
-                            .clamp(0, max_scroll);
+                        state.content_scroll_y =
+                            (state.scroll_drag_start_offset + scroll_delta).clamp(0, max_scroll);
                         paint_settings(hwnd, state_ptr, &lay);
                     } else {
                         let target = hit_test_settings(state, x, y);
@@ -1623,14 +1663,16 @@ unsafe extern "system" fn settings_wndproc(
                     let lay = state.layout;
                     let content_h = page_control_content_height(state, &lay);
                     let max_scroll = (content_h - lay.content_visible_h()).max(0);
-                    state.content_scroll_y = (state.content_scroll_y
-                        - (delta as i32 / 120) * 40)
-                        .clamp(0, max_scroll);
+                    state.content_scroll_y =
+                        (state.content_scroll_y - (delta as i32 / 120) * 40).clamp(0, max_scroll);
                     paint_settings(hwnd, state_ptr, &lay);
 
                     // Recompute hover at the cursor position from the message
                     // so the highlight follows scrolling immediately.
-                    let mut pt = POINT { x: screen_x, y: screen_y };
+                    let mut pt = POINT {
+                        x: screen_x,
+                        y: screen_y,
+                    };
                     let _ = ScreenToClient(hwnd, &mut pt);
                     let new_target = hit_test_settings(state, pt.x, pt.y);
                     if state.hovered_target != new_target {
@@ -1869,13 +1911,14 @@ unsafe extern "system" fn settings_wndproc(
                         let ch = (wparam.0 as u32) as u8 as char;
                         if ch.is_ascii_graphic() || ch == ' ' {
                             if let Some(sel) = state.edit_select_start
-                                && sel != state.edit_cursor {
-                                    let (s, e) =
-                                        (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
-                                    state.edit_text.drain(s..e);
-                                    state.edit_cursor = s;
-                                    state.edit_select_start = None;
-                                }
+                                && sel != state.edit_cursor
+                            {
+                                let (s, e) =
+                                    (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
+                                state.edit_text.drain(s..e);
+                                state.edit_cursor = s;
+                                state.edit_select_start = None;
+                            }
                             state.edit_text.insert(state.edit_cursor, ch);
                             state.edit_cursor += 1;
                             paint_settings(hwnd, state_ptr, &state.layout);
@@ -2007,7 +2050,8 @@ unsafe extern "system" fn combo_popup_wndproc(
                             None
                         };
                         if let Some(c) = highlight {
-                            let blended: crate::core::native_theme::Argb = c.blend_over(theme.background);
+                            let blended: crate::core::native_theme::Argb =
+                                c.blend_over(theme.background);
                             let sel_brush = CreateSolidBrush(blended.to_colorref());
                             let _ = FillRect(hdc, &item_rc, sel_brush);
                             let _ = DeleteObject(sel_brush);
@@ -2268,14 +2312,15 @@ unsafe extern "system" fn param_edit_popup_wndproc(
                 if !state_ptr.is_null() {
                     let state = unsafe { &mut *state_ptr };
                     if let Some(idx) = state.param_edit_idx
-                        && idx < state.bindings.len() {
-                            if state.expanded_idx == Some(idx) {
-                                state.acc_param = new_text;
-                            } else {
-                                state.bindings[idx].param = new_text;
-                            }
-                            paint_settings(state.hwnd, state_ptr, &state.layout);
+                        && idx < state.bindings.len()
+                    {
+                        if state.expanded_idx == Some(idx) {
+                            state.acc_param = new_text;
+                        } else {
+                            state.bindings[idx].param = new_text;
                         }
+                        paint_settings(state.hwnd, state_ptr, &state.layout);
+                    }
                     state.param_edit_popup = None;
                     state.param_edit_idx = None;
                 }

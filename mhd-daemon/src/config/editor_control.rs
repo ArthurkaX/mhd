@@ -237,7 +237,7 @@ impl ControlList {
     /// controls (or parts of them) clipped out of view — e.g. a binding row
     /// whose scrolled rect extends above the list band — are not hittable,
     /// matching the old per‑page hit‑test guards.
-    pub fn regions(&self) -> Vec<HitRegion> {
+    pub fn regions_with_scroll(&self, scroll_y: i32) -> Vec<HitRegion> {
         let mut r = Vec::with_capacity(self.controls.len());
         // Stack of active clip rects.  Top of stack is the current clip;
         // `None` means no clipping (full window).
@@ -246,14 +246,20 @@ impl ControlList {
         for c in &self.controls {
             match c {
                 Control::ClipStart { rect } => {
+                    let scrolled_rect = RECT {
+                        left: rect.left,
+                        top: rect.top + scroll_y,
+                        right: rect.right,
+                        bottom: rect.bottom + scroll_y,
+                    };
                     let current = clip_stack.last().copied().unwrap_or(None);
                     let new_clip = match current {
-                        None => Some(*rect),
+                        None => Some(scrolled_rect),
                         Some(curr) => {
-                            let left = curr.left.max(rect.left);
-                            let top = curr.top.max(rect.top);
-                            let right = curr.right.min(rect.right);
-                            let bottom = curr.bottom.min(rect.bottom);
+                            let left = curr.left.max(scrolled_rect.left);
+                            let top = curr.top.max(scrolled_rect.top);
+                            let right = curr.right.min(scrolled_rect.right);
+                            let bottom = curr.bottom.min(scrolled_rect.bottom);
                             if left < right && top < bottom {
                                 Some(RECT {
                                     left,

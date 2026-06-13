@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::*;
 
 use crate::config::editor_layout::WIN_WIDTH_BASE;
@@ -218,6 +218,19 @@ fn contrast_text_on(bg: Argb) -> bool {
     lum < 0.5
 }
 
+fn rect_in_viewport(dib_dc: HDC, rect: RECT) -> RECT {
+    let mut org = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetViewportOrgEx(dib_dc, &mut org);
+    }
+    RECT {
+        left: rect.left + org.x,
+        top: rect.top + org.y,
+        right: rect.right + org.x,
+        bottom: rect.bottom + org.y,
+    }
+}
+
 // ── Clear rect ────────────────────────────────────────────────────
 
 /// Fill a rectangle with fully transparent pixels (alpha=0).
@@ -314,10 +327,11 @@ pub fn draw_button(
 
     // Radius scaled based on DPI width
     let radius = (5.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
-    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, btn_color);
+    let buffer_rect = rect_in_viewport(dib_dc, rect);
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, radius, btn_color);
 
     if border_color.a > 0 {
-        draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+        draw_rounded_border_in_buffer(bits, win_w, win_h, buffer_rect, radius, 1, border_color);
     }
 
     unsafe {
@@ -353,13 +367,7 @@ pub fn to_utf16_z(s: &str) -> Vec<u16> {
 /// Draw a section header label (left aligned, single line, no vertical
 /// centering — matches "Appearance", "Shortcuts", "Advanced", "Startup",
 /// and "Quick Note" headers in the editor).
-pub fn draw_section_header(
-    dib_dc: HDC,
-    rect: RECT,
-    label: &str,
-    font: HFONT,
-    text_color: Argb,
-) {
+pub fn draw_section_header(dib_dc: HDC, rect: RECT, label: &str, font: HFONT, text_color: Argb) {
     unsafe {
         let _ = SelectObject(dib_dc, font);
         let _ = SetTextColor(dib_dc, text_color.to_colorref());
@@ -375,13 +383,7 @@ pub fn draw_section_header(
 
 /// Draw a single‑line plain label with vertical centering and left alignment
 /// (used for "Theme", "Autostart", "Save path", etc.).
-pub fn draw_plain_label(
-    dib_dc: HDC,
-    rect: RECT,
-    label: &str,
-    font: HFONT,
-    text_color: Argb,
-) {
+pub fn draw_plain_label(dib_dc: HDC, rect: RECT, label: &str, font: HFONT, text_color: Argb) {
     unsafe {
         let _ = SelectObject(dib_dc, font);
         let _ = SetTextColor(dib_dc, text_color.to_colorref());
@@ -422,10 +424,11 @@ pub fn draw_readonly_text_field(
     let scale = win_w as f32 / WIN_WIDTH_BASE as f32;
     let radius = (4.0 * scale) as i32;
 
-    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, bg_color);
+    let buffer_rect = rect_in_viewport(dib_dc, rect);
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, radius, bg_color);
 
     if border_color.a > 0 {
-        draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+        draw_rounded_border_in_buffer(bits, win_w, win_h, buffer_rect, radius, 1, border_color);
     }
 
     unsafe {
@@ -480,9 +483,10 @@ pub fn draw_collapsed_combo_box(
     let radius = (4.0 * scale) as i32;
 
     // Background + border
-    draw_rounded_rect_in_buffer(bits, win_w, win_h, rect, radius, bg_color);
+    let buffer_rect = rect_in_viewport(dib_dc, rect);
+    draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, radius, bg_color);
     if border_color.a > 0 {
-        draw_rounded_border_in_buffer(bits, win_w, win_h, rect, radius, 1, border_color);
+        draw_rounded_border_in_buffer(bits, win_w, win_h, buffer_rect, radius, 1, border_color);
     }
 
     // Selected text (left side, before arrow)

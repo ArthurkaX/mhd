@@ -263,6 +263,35 @@ const NAMED_VKS: &[(u8, &[&str])] = &[
     (0xB3, &["media_play_pause"]),
 ];
 
+pub fn known_key_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for ch in b'a'..=b'z' {
+        names.push((ch as char).to_string());
+    }
+    for ch in b'0'..=b'9' {
+        names.push((ch as char).to_string());
+    }
+    for n in 1..=24 {
+        names.push(format!("f{n}"));
+    }
+    for n in 0..=9 {
+        names.push(format!("numpad{n}"));
+    }
+    for &(_, aliases) in NAMED_VKS {
+        names.push(aliases[0].to_string());
+    }
+    names.extend([
+        "mousebutton3".to_string(),
+        "mousebutton4".to_string(),
+        "mousebutton5".to_string(),
+        "wheel_up".to_string(),
+        "wheel_down".to_string(),
+        "wheel_left".to_string(),
+        "wheel_right".to_string(),
+    ]);
+    names
+}
+
 /// Check if a virtual key code is a modifier key.
 pub fn is_modifier_vk(vk: u32) -> bool {
     matches!(

@@ -1,9 +1,11 @@
 pub mod editor;
 pub mod editor_binding_popup;
 pub mod editor_control;
+pub mod editor_key_combo;
 pub mod editor_hittest;
 pub mod editor_layout;
 pub mod editor_paint;
+pub mod editor_search_dropdown;
 pub mod editor_state;
 pub mod editor_theme;
 pub mod path;
@@ -283,7 +285,10 @@ impl AppConfig {
                     vec![Provider {
                         name: "Default".into(),
                         endpoint: raw_lp.as_ref().unwrap().endpoint.clone().unwrap(),
-                        api_key: raw_lp.as_ref().and_then(|r| r.api_key.clone()).unwrap_or_default(),
+                        api_key: raw_lp
+                            .as_ref()
+                            .and_then(|r| r.api_key.clone())
+                            .unwrap_or_default(),
                     }]
                 } else {
                     raw_lp

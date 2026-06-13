@@ -8,14 +8,14 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::*;
 
 use crate::action::ActionParamSchema;
 use crate::config::editor_control::{Control, ControlList, FontChoice, HitRegion};
 use crate::config::editor_layout::{
-    editor_action_desc, Layout, ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, SECTION_GAP_BASE,
-    SECTION_HEADER_HEIGHT_BASE, WIN_WIDTH_BASE,
+    ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
+    WIN_WIDTH_BASE, editor_action_desc,
 };
 use crate::config::editor_state::{ButtonStyle, SettingsHit, SettingsState};
 use crate::config::editor_theme::{
@@ -43,6 +43,19 @@ fn select_font(
         let _ = SelectObject(dib_dc, h);
     }
     h
+}
+
+fn rect_in_viewport(dib_dc: HDC, rect: RECT) -> RECT {
+    let mut org = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetViewportOrgEx(dib_dc, &mut org);
+    }
+    RECT {
+        left: rect.left + org.x,
+        top: rect.top + org.y,
+        right: rect.right + org.x,
+        bottom: rect.bottom + org.y,
+    }
 }
 
 // ── Single‑control paint dispatch ───────────────────────────────────
@@ -92,7 +105,8 @@ pub fn paint_control(
             );
         }
         Control::Divider { rect } => {
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, 0, theme.border);
+            let buffer_rect = rect_in_viewport(dib_dc, *rect);
+            draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, 0, theme.border);
         }
         Control::Combo {
             rect,
@@ -126,7 +140,8 @@ pub fn paint_control(
             is_hovered,
             ..
         } => {
-            draw_toggle_switch(bits, win_w, win_h, *rect, *is_on, *is_hovered, theme);
+            let buffer_rect = rect_in_viewport(dib_dc, *rect);
+            draw_toggle_switch(bits, win_w, win_h, buffer_rect, *is_on, *is_hovered, theme);
         }
         Control::TextField {
             rect,
@@ -200,7 +215,8 @@ pub fn paint_control(
             };
             if let Some(bg) = bg {
                 let radius = (4.0 * (win_w as f32 / WIN_WIDTH_BASE as f32)) as i32;
-                draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, radius, bg);
+                let buffer_rect = rect_in_viewport(dib_dc, *rect);
+                draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, radius, bg);
             }
 
             // Trigger text
@@ -276,9 +292,18 @@ pub fn paint_control(
             border_color,
             radius,
         } => {
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, *radius, *bg_color);
+            let buffer_rect = rect_in_viewport(dib_dc, *rect);
+            draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, *radius, *bg_color);
             if border_color.a > 0 {
-                draw_rounded_border_in_buffer(bits, win_w, win_h, *rect, *radius, 1, *border_color);
+                draw_rounded_border_in_buffer(
+                    bits,
+                    win_w,
+                    win_h,
+                    buffer_rect,
+                    *radius,
+                    1,
+                    *border_color,
+                );
             }
         }
         Control::AccordionField {
@@ -291,7 +316,8 @@ pub fn paint_control(
         } => {
             let scale = win_w as f32 / WIN_WIDTH_BASE as f32;
             let radius = (4.0 * scale) as i32;
-            draw_rounded_rect_in_buffer(bits, win_w, win_h, *rect, radius, *bg_color);
+            let buffer_rect = rect_in_viewport(dib_dc, *rect);
+            draw_rounded_rect_in_buffer(bits, win_w, win_h, buffer_rect, radius, *bg_color);
             unsafe {
                 let _ = SelectObject(
                     dib_dc,
@@ -343,11 +369,13 @@ pub fn paint_control(
             ..
         } => {
             let scroll_w = thumb_rect.right - thumb_rect.left;
+            let buffer_track_rect = rect_in_viewport(dib_dc, *track_rect);
+            let buffer_thumb_rect = rect_in_viewport(dib_dc, *thumb_rect);
             draw_rounded_rect_in_buffer(
                 bits,
                 win_w,
                 win_h,
-                *track_rect,
+                buffer_track_rect,
                 scroll_w / 2,
                 theme.border,
             );
@@ -355,13 +383,21 @@ pub fn paint_control(
                 bits,
                 win_w,
                 win_h,
-                *thumb_rect,
+                buffer_thumb_rect,
                 scroll_w / 2,
                 *thumb_color,
             );
         }
         Control::ClipStart { rect } => unsafe {
-            let _ = IntersectClipRect(dib_dc, rect.left, rect.top, rect.right, rect.bottom);
+            let mut org = POINT { x: 0, y: 0 };
+            let _ = GetViewportOrgEx(dib_dc, &mut org);
+            let _ = IntersectClipRect(
+                dib_dc,
+                rect.left - org.x,
+                rect.top - org.y,
+                rect.right - org.x,
+                rect.bottom - org.y,
+            );
         },
         Control::ClipEnd => unsafe {
             let rgn = CreateRectRgn(0, 0, win_w, win_h);
@@ -379,6 +415,7 @@ pub fn paint_page(
     bits: *mut c_void,
     win_w: i32,
     win_h: i32,
+    scroll_y: i32,
     theme: &NativeTheme,
     title_font: HFONT,
     body_font: HFONT,
@@ -389,7 +426,7 @@ pub fn paint_page(
             c, dib_dc, bits, win_w, win_h, theme, title_font, body_font, small_font,
         );
     }
-    controls.regions()
+    controls.regions_with_scroll(scroll_y)
 }
 
 // ── Helpers: layout accessors that only need win_w ─────────────────
@@ -797,8 +834,10 @@ pub fn build_shortcuts_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let win_w_val = lay.win_w();
     let scroll_y = state.content_scroll_y;
 
-    // Table headers
-    let table_header_y = list_y - (24.0 * scale) as i32;
+    // Table headers stay pinned above the scrolling row list.  The whole page
+    // is painted under a viewport origin of -content_scroll_y, so compensate
+    // here to keep these labels at a stable screen Y.
+    let table_header_y = lay.table_header_y() + scroll_y;
     let kind_x = pad + lay.trig_w() + (8.0 * scale) as i32;
     let param_x = kind_x + lay.kind_w() + (8.0 * scale) as i32;
     let col_h = (16.0 * scale) as i32;

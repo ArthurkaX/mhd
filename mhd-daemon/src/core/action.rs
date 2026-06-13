@@ -461,6 +461,8 @@ pub struct ActionDescriptor {
     pub name: &'static str,
     /// Human-readable label (e.g. "Replace Key").
     pub label: &'static str,
+    /// Short user-facing description for searchable pickers.
+    pub description: &'static str,
     /// Category grouping.
     pub category: ActionCategory,
     /// TOML parameter key (e.g. "keys"), or `None` for parameterless actions.
@@ -478,6 +480,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "replace_key",
         label: "Replace Key",
+        description: "Send another key or shortcut instead.",
         category: ActionCategory::Input,
         param_key: Some("keys"),
         param_schema: ActionParamSchema::KeyMapping,
@@ -485,6 +488,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "run_program",
         label: "Run Program",
+        description: "Launch an executable, script, or shortcut.",
         category: ActionCategory::Automation,
         param_key: Some("path"),
         param_schema: ActionParamSchema::FilePath,
@@ -492,6 +496,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "run_ps",
         label: "PowerShell",
+        description: "Run a PowerShell command.",
         category: ActionCategory::Automation,
         param_key: Some("command"),
         param_schema: ActionParamSchema::Text,
@@ -499,6 +504,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "brightness_up",
         label: "Brightness Up",
+        description: "Increase monitor brightness by a percentage.",
         category: ActionCategory::Display,
         param_key: Some("value"),
         param_schema: ActionParamSchema::Number {
@@ -510,6 +516,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "brightness_down",
         label: "Brightness Down",
+        description: "Decrease monitor brightness by a percentage.",
         category: ActionCategory::Display,
         param_key: Some("value"),
         param_schema: ActionParamSchema::Number {
@@ -521,6 +528,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "show_monitor_panel",
         label: "Monitor Control",
+        description: "Open the monitor brightness/control panel.",
         category: ActionCategory::Display,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -528,6 +536,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "show_volume_mixer",
         label: "Volume Mixer",
+        description: "Open the app volume mixer overlay.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -535,6 +544,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_volume_up",
         label: "Volume Up",
+        description: "Send a media volume-up key press.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -542,6 +552,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_volume_down",
         label: "Volume Down",
+        description: "Send a media volume-down key press.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -549,6 +560,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_mute",
         label: "Mute",
+        description: "Toggle system audio mute.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -556,6 +568,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_play_pause",
         label: "Play/Pause",
+        description: "Send a media play/pause key press.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -563,6 +576,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_stop",
         label: "Stop",
+        description: "Send a media stop key press.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -570,6 +584,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_last_track",
         label: "Last Track",
+        description: "Skip to the previous media track.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -577,6 +592,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "media_next_track",
         label: "Next Track",
+        description: "Skip to the next media track.",
         category: ActionCategory::AudioMedia,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -584,6 +600,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "toggle_topmost",
         label: "Toggle Always On Top",
+        description: "Toggle topmost state for the active window.",
         category: ActionCategory::System,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -591,6 +608,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "toggle_suspend_on_blur",
         label: "Suspend On Blur",
+        description: "Suspend the active app when it loses focus.",
         category: ActionCategory::System,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -598,6 +616,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "toggle_throttle_on_blur",
         label: "Throttle On Blur",
+        description: "Throttle the active app after focus changes.",
         category: ActionCategory::System,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -605,6 +624,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "power_actions",
         label: "Power Control",
+        description: "Run a selected system power action.",
         category: ActionCategory::System,
         param_key: None,
         param_schema: ActionParamSchema::PowerAction,
@@ -612,6 +632,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "quick_draw",
         label: "Quick Draw",
+        description: "Open the quick drawing/screenshot overlay.",
         category: ActionCategory::Tools,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -619,6 +640,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "quick_note",
         label: "Quick Note",
+        description: "Open the quick note overlay.",
         category: ActionCategory::Tools,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -626,6 +648,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "pomodoro",
         label: "Pomodoro Timer",
+        description: "Open or control the Pomodoro timer.",
         category: ActionCategory::Tools,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -633,6 +656,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "switch_power_plan",
         label: "Switch Power Plan",
+        description: "Switch to a configured Windows power plan.",
         category: ActionCategory::System,
         param_key: Some("target"),
         param_schema: ActionParamSchema::Text,
@@ -640,6 +664,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "show_cpu_panel",
         label: "CPU Power Panel",
+        description: "Open the CPU and power tuning overlay.",
         category: ActionCategory::System,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -647,6 +672,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "show_llm_models",
         label: "LLM Models",
+        description: "Open the LLM proxy model selector.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -654,6 +680,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "toggle_llm_proxy",
         label: "Toggle LLM Proxy",
+        description: "Enable or disable the local LLM proxy.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -661,6 +688,7 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     ActionDescriptor {
         name: "quit",
         label: "Quit mhd",
+        description: "Exit mhd.",
         category: ActionCategory::System,
         param_key: None,
         param_schema: ActionParamSchema::None,
