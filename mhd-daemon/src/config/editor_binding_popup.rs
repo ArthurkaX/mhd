@@ -799,7 +799,8 @@ unsafe extern "system" fn binding_popup_wndproc(
                     state.is_recording_trigger = !state.is_recording_trigger;
                     state.is_recording_param = false;
                     if state.is_recording_trigger {
-                        crate::hook::set_recording_window(Some(state.parent_hwnd));
+                        // Send WM_BINDING_CAPTURED to THIS popup, not the parent
+                        crate::hook::set_recording_window(Some(hwnd));
                     } else {
                         crate::hook::set_recording_window(None);
                     }
@@ -813,7 +814,8 @@ unsafe extern "system" fn binding_popup_wndproc(
                     state.is_recording_param = !state.is_recording_param;
                     state.is_recording_trigger = false;
                     if state.is_recording_param {
-                        crate::hook::set_recording_window(Some(state.parent_hwnd));
+                        // Send WM_BINDING_CAPTURED to THIS popup, not the parent
+                        crate::hook::set_recording_window(Some(hwnd));
                     } else {
                         crate::hook::set_recording_window(None);
                     }
