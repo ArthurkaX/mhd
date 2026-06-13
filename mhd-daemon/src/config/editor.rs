@@ -1049,17 +1049,23 @@ fn apply_settings(state: &mut SettingsState) {
             eprintln!("mhd: failed to save models: {e}");
         }
 
-        // Save the API key from the first provider as upstream_key
-        if let Some(api_key) = state.providers.first().and_then(|p| {
+        // Save the API key from the first provider as upstream_key.
+        // Preserve the existing anthropic_key from secrets.json if present.
+        let existing_secrets = llm_proxy::config::load_secrets().ok();
+        let api_key = state.providers.first().and_then(|p| {
             if p.api_key.is_empty() {
                 None
             } else {
                 Some(p.api_key.clone())
             }
-        }) {
+        });
+        if api_key.is_some() || existing_secrets.is_some() {
             let secrets = llm_proxy::config::Secrets {
-                anthropic_key: String::new(),
-                upstream_key: api_key,
+                anthropic_key: existing_secrets
+                    .as_ref()
+                    .map(|s| s.anthropic_key.clone())
+                    .unwrap_or_default(),
+                upstream_key: api_key.unwrap_or_default(),
             };
             if let Err(e) = llm_proxy::config::save_secrets(&secrets) {
                 eprintln!("mhd: failed to save secrets: {e}");
