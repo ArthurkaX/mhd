@@ -313,6 +313,15 @@ pub fn draw_button(
             }
             (bg, fg, Argb::new(0, 0, 0, 0))
         }
+        ButtonStyle::Success => {
+            let mut bg = Argb::new(0, 0, 0, 0);
+            let mut fg = Argb::new(255, 60, 180, 60);
+            if is_hovered {
+                bg = Argb::new(40, 60, 200, 60);
+                fg = Argb::new(255, 100, 220, 100);
+            }
+            (bg, fg, Argb::new(0, 0, 0, 0))
+        }
         ButtonStyle::TriggerPlate => {
             let mut bg = theme.surface.blend_over(theme.background);
             let mut border = theme.border;

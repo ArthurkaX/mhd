@@ -95,6 +95,8 @@ pub enum ButtonStyle {
     Primary,
     Secondary,
     DangerGhost,
+    /// Green ghost — always green regardless of theme.
+    Success,
     #[allow(dead_code)]
     TriggerPlate,
 }

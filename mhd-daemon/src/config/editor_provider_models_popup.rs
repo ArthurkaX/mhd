@@ -697,9 +697,9 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
             let is_test_hovered = state.hovered_target == ModelsPopupHit::ModelTestBtn(i);
             let test_label = if is_testing { ".." } else { "Test" };
             let test_btn_style = match test_status {
-                Some(true) => ButtonStyle::Primary,      // green/success
-                Some(false) => ButtonStyle::DangerGhost, // red
-                None => ButtonStyle::Secondary,          // neutral
+                Some(true) => ButtonStyle::Success,
+                Some(false) => ButtonStyle::DangerGhost,
+                None => ButtonStyle::Secondary, // neutral
             };
             let test_btn_h = (20.0 * scale) as i32;
             draw_button(
@@ -1105,8 +1105,6 @@ fn run_single_model_test(
     let base = endpoint.trim_end_matches('/');
     let chat_url = format!("{base}/chat/completions");
 
-    log_test_error(&format!("testing '{model_id}' via POST {chat_url}"));
-
     let mut headers = reqwest::header::HeaderMap::new();
     if !api_key.is_empty() {
         let Ok(hdr) = format!("Bearer {api_key}").parse::<reqwest::header::HeaderValue>() else {
@@ -1137,34 +1135,14 @@ fn run_single_model_test(
         .send()
     {
         Ok(r) => r,
-        Err(e) => {
-            log_test_error(&format!("model test '{model_id}' failed after send: {e}"));
-            return false;
-        }
+        Err(_) => return false,
     };
 
-    log_test_error(&format!(
-        "model test '{model_id}' got HTTP {}",
-        resp.status()
-    ));
+    if cancelled.load(Ordering::SeqCst) {
+        return false;
+    }
 
     resp.status().is_success()
-}
-
-/// Append a line to the daemon debug log at `~/.config/mhd/llm-proxy/daemon.log`.
-fn log_test_error(msg: &str) {
-    let log_dir = llm_proxy::config::config_dir();
-    let _ = std::fs::create_dir_all(&log_dir);
-    let path = log_dir.join("daemon.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        use std::io::Write;
-        let _ = writeln!(f, "mhd: {msg}");
-    }
-    eprintln!("mhd: {msg}");
 }
 
 // ── Window procedure ─────────────────────────────────────────────────
