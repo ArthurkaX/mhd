@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -100,24 +100,30 @@ pub async fn post_chat_completions(
 // ─── Model switching endpoints ───────────────────────────────────────
 
 #[derive(Deserialize)]
-pub struct SetModelQuery {
+pub struct SetModelBody {
     /// Routing target: `native` for Anthropic, or an upstream model id like
     /// `sva-opencode/glm-5.1`.
     id: String,
 }
 
-/// `GET /set_model/{slot}?id=<native|model-id>` — change a tier's routing target
-/// on the fly. `slot` is `opus`, `sonnet`, or `haiku`.
+/// `POST /set_model/{slot}` — change a tier's routing target on the fly.
+/// `slot` is `opus`, `sonnet`, `haiku`, or `fable`.
+///
+/// Body (JSON): `{"id": "<native|model-id>"}`
 ///
 /// Examples:
-///   curl "http://localhost:3456/set_model/sonnet?id=sva-opencode/qwen3.7-max"
-///   curl "http://localhost:3456/set_model/sonnet?id=native"
+///   curl -X POST "http://localhost:3456/set_model/sonnet" \
+///        -H "content-type: application/json" \
+///        -d '{"id":"sva-opencode/qwen3.7-max"}'
+///   curl -X POST "http://localhost:3456/set_model/sonnet" \
+///        -H "content-type: application/json" \
+///        -d '{"id":"native"}'
 pub async fn set_model(
     State(state): State<Arc<AppState>>,
     Path(slot): Path<String>,
-    Query(q): Query<SetModelQuery>,
+    Json(body): Json<SetModelBody>,
 ) -> Result<Json<Value>, AppError> {
-    let target = Target::parse(&q.id);
+    let target = Target::parse(&body.id);
     if !state.set_target(&slot, target.clone()) {
         return Err(AppError::bad_request(format!(
             "Unknown slot '{slot}'. Use: opus, sonnet, haiku, fable"
@@ -150,7 +156,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
-/// `GET /debug` — toggle debug dump mode.
+/// `POST /debug` — toggle debug dump mode.
 pub async fn toggle_debug(State(state): State<Arc<AppState>>) -> Json<Value> {
     let mut ll = state.log_level.write().unwrap();
     let new = match *ll {

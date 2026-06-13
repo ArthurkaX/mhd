@@ -252,10 +252,23 @@ pub fn load() -> anyhow::Result<Config> {
 }
 
 /// Persist config to disk (writes settings.json + secrets.json).
+///
+/// Uses a read-modify-write for settings.json so that fields outside
+/// [`Config`]'s ownership (port, enabled) survive the round-trip unchanged.
 pub fn save(cfg: &Config) -> anyhow::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)?;
-    persist_settings(&dir, &cfg.into_settings())?;
+
+    // Start from the current on-disk settings to preserve port/enabled.
+    let mut settings = load_settings_from(&dir).unwrap_or_else(|_| Settings::default());
+    settings.upstream_base_url = cfg.upstream_base_url.clone();
+    settings.opus_target = cfg.opus_target.clone();
+    settings.sonnet_target = cfg.sonnet_target.clone();
+    settings.haiku_target = cfg.haiku_target.clone();
+    settings.fable_target = cfg.fable_target.clone();
+    settings.log_level = cfg.log_level.clone();
+
+    persist_settings(&dir, &settings)?;
     persist_secrets(&dir, &cfg.into_secrets())?;
     Ok(())
 }

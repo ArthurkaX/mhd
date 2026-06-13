@@ -17,7 +17,6 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use tower_http::cors::CorsLayer;
 
 pub use config::{Config, Secrets, Settings};
 pub use state::{AppState, Target, Tier};
@@ -30,11 +29,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/chat/completions",
             post(handlers::post_chat_completions),
         )
-        .route("/set_model/{slot}", get(handlers::set_model))
+        .route("/set_model/{slot}", post(handlers::set_model))
         .route("/config", get(handlers::get_config))
-        .route("/debug", get(handlers::toggle_debug))
+        .route("/debug", post(handlers::toggle_debug))
         .route("/health", get(handlers::health))
-        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
