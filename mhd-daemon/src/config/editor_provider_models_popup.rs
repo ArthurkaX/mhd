@@ -606,14 +606,15 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
                 chk_border,
             );
             if is_checked {
-                // Draw a check mark (simplified as a small accent-filled rect or a line)
+                // Draw a check mark (✓) — two diagonal strokes
                 let check_pen = CreatePen(PS_SOLID, 2, theme.text.to_colorref());
                 let _ = SelectObject(dib_dc, check_pen);
                 let cx = chk_x + checkbox_w / 2;
                 let cy = chk_y + checkbox_h / 2;
-                let dot_size = (3.0 * scale) as i32;
-                let _ = MoveToEx(dib_dc, cx - dot_size, cy, None);
-                let _ = LineTo(dib_dc, cx + dot_size, cy);
+                let s = (4.0 * scale) as i32;
+                let _ = MoveToEx(dib_dc, cx - s, cy, None);
+                let _ = LineTo(dib_dc, cx, cy - s);
+                let _ = LineTo(dib_dc, cx + s, cy - s - s / 2);
                 let _ = DeleteObject(check_pen);
             }
 
