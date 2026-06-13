@@ -309,44 +309,17 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
 
-    let col_defs: [(u32, &str); 5] = [
-        (45, "Seq"),
-        (60, "Tier"),
-        (60, "Eff."),
-        (999, "Target"), // auto-fill
-        (75, "Reason"),
+    let total_cw = win_w - pad * 2;
+    let col_w = total_cw / 5;
+    // Seq gets less space, Target gets more: Seq 0.5x, Target 1.5x
+    let col_widths = [
+        (col_w as f32 * 0.5) as i32,     // Seq
+        col_w,                           // Tier
+        col_w,                           // Effective
+        (col_w as f32 * 1.5) as i32 + 4, // Target (extra space)
+        col_w,                           // Reason
     ];
-    // First pass: compute fixed columns, last column fills the rest
-    let fixed_w: i32 =
-        col_defs[..4].iter().map(|(w, _)| *w as i32).sum::<i32>() + col_defs[4].0 as i32;
-    let total_w = win_w - pad * 2;
-    // If fixed sum fits, use it; otherwise scale down
-    let (seq_w, tier_w, eff_w, target_w, reason_w) = if fixed_w < total_w {
-        let remaining = total_w
-            - (col_defs[0].0 as i32
-                + col_defs[1].0 as i32
-                + col_defs[2].0 as i32
-                + col_defs[4].0 as i32
-                + 4);
-        (
-            col_defs[0].0 as i32,
-            col_defs[1].0 as i32,
-            col_defs[2].0 as i32,
-            remaining,
-            col_defs[4].0 as i32,
-        )
-    } else {
-        let scale_f = total_w as f32 / fixed_w as f32;
-        (
-            (col_defs[0].0 as f32 * scale_f) as i32,
-            (col_defs[1].0 as f32 * scale_f) as i32,
-            (col_defs[2].0 as f32 * scale_f) as i32,
-            ((total_w as f32 * 0.4 * scale_f) as i32).max(80),
-            (col_defs[4].0 as f32 * scale_f) as i32,
-        )
-    };
-    let col_widths = [seq_w, tier_w, eff_w, target_w, reason_w];
-    let col_headers = ["Seq", "Tier", "Eff.", "Target", "Reason"];
+    let col_headers = ["Seq", "Tier", "Effective", "Target", "Reason"];
     let mut col_x = pad;
     for (i, label) in col_headers.iter().enumerate() {
         let mut lw = crate::osd::to_utf16_z(label);
