@@ -283,14 +283,8 @@ pub fn show_config_editor(handle: AppHandle) {
         }
     }
 
-    // Free state
-    unsafe {
-        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-        if !ptr.is_null() {
-            close_combo_popup(&mut *ptr);
-            let _ = Box::from_raw(ptr);
-        }
-    }
+    // State is freed inside WM_DESTROY (via Box::from_raw).
+    // Do NOT free it again here — that would be a double-free.
 }
 
 // ═══════════════════════════════════════════════════════════════════════
