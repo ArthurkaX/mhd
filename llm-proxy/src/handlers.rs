@@ -31,6 +31,7 @@ pub async fn post_messages(
         .unwrap_or("")
         .to_string();
     let tier = Tier::from_model(&model);
+    let req_id = state.next_req_id();
 
     // Smart routing: downgrade opus if thinking is not requested.
     let effective_tier = if tier == Tier::Opus && *state.opus_downgrade_enabled.read().unwrap() {
@@ -43,15 +44,22 @@ pub async fn post_messages(
             .map(|t| t == "enabled")
             .unwrap_or(false);
         if has_thinking {
+            state.log_line(&format!(
+                "{} #{req_id} OPUS KEEP (thinking enabled)",
+                crate::providers::now_ms()
+            ));
             tier
         } else {
-            // Route to the downgrade target.
+            let dt = state.opus_downgrade_target.read().unwrap().clone();
+            state.log_line(&format!(
+                "{} #{req_id} OPUS DOWNGRADE → {dt} (no thinking in request)",
+                crate::providers::now_ms()
+            ));
             if state.log_level.read().unwrap().dump_bodies() {
-                let dt = state.opus_downgrade_target.read().unwrap().clone();
                 eprintln!("[llm-proxy] opus downgraded to {dt} (no thinking)");
             }
-            // Map to haiku tier by changing the model name for routing
-            Tier::from_model(&state.opus_downgrade_target.read().unwrap())
+            // Map to target tier
+            Tier::from_model(&dt)
         }
     } else {
         tier
@@ -97,7 +105,7 @@ pub async fn post_messages(
     let downgraded = effective_tier != tier;
     let reason = if downgraded { "no thinking" } else { "" };
     state.push_trace(TraceEntry {
-        seq: state.next_req_id(),
+        seq: req_id,
         tier,
         effective_tier,
         target: target.as_str().to_string(),
