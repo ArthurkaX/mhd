@@ -269,11 +269,16 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         DeleteObject(close_brush);
     }
     unsafe {
-        let _ = SelectObject(dib_dc, hfont);
+        let _ = SelectObject(dib_dc, hfont_small);
         let _ = SetTextColor(dib_dc, theme.text.to_colorref());
     }
     let mut close_wz = crate::osd::to_utf16_z("\u{00D7}");
-    let mut close_text_rc = close_btn_rect;
+    let mut close_text_rc = RECT {
+        left: close_btn_rect.left + 2,
+        top: close_btn_rect.top,
+        right: close_btn_rect.right + 4,
+        bottom: close_btn_rect.bottom,
+    };
     unsafe {
         let _ = DrawTextW(
             dib_dc,
