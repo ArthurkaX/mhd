@@ -606,16 +606,23 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
                 chk_border,
             );
             if is_checked {
-                // Draw a check mark (✓) — two diagonal strokes
-                let check_pen = CreatePen(PS_SOLID, 2, theme.text.to_colorref());
-                let _ = SelectObject(dib_dc, check_pen);
-                let cx = chk_x + checkbox_w / 2;
-                let cy = chk_y + checkbox_h / 2;
-                let s = (4.0 * scale) as i32;
-                let _ = MoveToEx(dib_dc, cx - s, cy, None);
-                let _ = LineTo(dib_dc, cx, cy - s);
-                let _ = LineTo(dib_dc, cx + s, cy - s - s / 2);
-                let _ = DeleteObject(check_pen);
+                // Draw a check mark character (✓)
+                let mut chk_wz = to_utf16_z("\u{2713}");
+                let mut chk_rc = RECT {
+                    left: chk_x,
+                    top: chk_y,
+                    right: chk_x + checkbox_w,
+                    bottom: chk_y + checkbox_h,
+                };
+                SetTextColor(dib_dc, theme.text.to_colorref());
+                let _ = SelectObject(dib_dc, small_font);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut chk_wz,
+                    &mut chk_rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                );
+                SelectObject(dib_dc, body_font);
             }
 
             // Text field background + border (offset by checkbox)
