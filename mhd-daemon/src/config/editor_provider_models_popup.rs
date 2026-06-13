@@ -695,7 +695,7 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
             let is_testing = state.testing_idx == Some(i);
             let test_status = state.model_test_results.get(i).copied().unwrap_or(None);
             let is_test_hovered = state.hovered_target == ModelsPopupHit::ModelTestBtn(i);
-            let test_label = if is_testing { ".." } else { "T" };
+            let test_label = if is_testing { ".." } else { "Test" };
             let test_btn_style = match test_status {
                 Some(true) => ButtonStyle::Primary,      // green/success
                 Some(false) => ButtonStyle::DangerGhost, // red
@@ -1095,7 +1095,7 @@ fn run_single_model_test(
     cancelled: &AtomicBool,
 ) -> bool {
     let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
     {
         Ok(c) => c,
@@ -1124,7 +1124,7 @@ fn run_single_model_test(
     let ping_body = serde_json::json!({
         "model": model_id,
         "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 5,
+        "max_tokens": 50,
         "stream": false,
     });
 
