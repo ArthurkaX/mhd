@@ -233,6 +233,12 @@ pub fn show_config_editor(handle: AppHandle) {
         proxy_bind_address: llm_proxy::config::load_settings()
             .map(|s| format!("{}:{}", s.bind_ip, s.port))
             .unwrap_or_else(|_| "127.0.0.1:3456".to_string()),
+        opus_downgrade_enabled: llm_proxy::config::load_settings()
+            .map(|s| s.opus_downgrade_enabled)
+            .unwrap_or(false),
+        opus_downgrade_target: llm_proxy::config::load_settings()
+            .map(|s| s.opus_downgrade_target)
+            .unwrap_or_else(|_| "haiku".to_string()),
         providers: {
             // Load providers from the proxy JSON files.
             // Also load secrets for the API key (first provider gets the upstream key).
@@ -948,6 +954,7 @@ fn finish_inline_edit(state: &mut SettingsState) {
         match field {
             ProxyEditField::AnthropicKey => state.anthropic_key = val,
             ProxyEditField::BindAddress => state.proxy_bind_address = val,
+            ProxyEditField::OpusDowngradeTarget => state.opus_downgrade_target = val,
         }
         state.edit_cursor = 0;
         state.edit_select_start = None;
@@ -1107,6 +1114,8 @@ fn apply_settings(state: &mut SettingsState) {
                     settings.bind_ip = ip.to_string();
                 }
             }
+            settings.opus_downgrade_enabled = state.opus_downgrade_enabled;
+            settings.opus_downgrade_target = state.opus_downgrade_target.clone();
             if let Err(e) = llm_proxy::config::save_settings(&settings) {
                 eprintln!("mhd: failed to save proxy settings: {e}");
             }
@@ -1497,6 +1506,18 @@ unsafe extern "system" fn settings_wndproc(
                         state.edit_cursor = state.proxy_bind_address.len();
                         state.edit_old_value = state.proxy_bind_address.clone();
                         state.proxy_editing_field = Some(ProxyEditField::BindAddress);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::ProxyOpusDowngradeToggle => {
+                        state.opus_downgrade_enabled = !state.opus_downgrade_enabled;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::ProxyOpusDowngradeField => {
+                        finish_inline_edit(state);
+                        state.edit_text = state.opus_downgrade_target.clone();
+                        state.edit_cursor = state.opus_downgrade_target.len();
+                        state.edit_old_value = state.opus_downgrade_target.clone();
+                        state.proxy_editing_field = Some(ProxyEditField::OpusDowngradeTarget);
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     // ── LLM Proxy: provider list ─────────────────────

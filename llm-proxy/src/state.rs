@@ -124,6 +124,10 @@ pub struct AppState {
     pub haiku_target: RwLock<Target>,
     pub fable_target: RwLock<Target>,
     pub log_level: RwLock<DebugLevel>,
+    /// Opus downgrade when no thinking.
+    pub opus_downgrade_enabled: RwLock<bool>,
+    /// Target for downgraded opus (model id string).
+    pub opus_downgrade_target: RwLock<String>,
     /// Shared HTTP client — reused across requests so connections (and TLS
     /// sessions) are pooled. Creating a fresh `reqwest::Client` per request
     /// defeats keep-alive and serializes parallel load behind new handshakes.
@@ -149,6 +153,8 @@ impl AppState {
             haiku_target: RwLock::new(Target::parse(&cfg.haiku_target)),
             fable_target: RwLock::new(Target::parse(&cfg.fable_target)),
             log_level: RwLock::new(DebugLevel::parse(&cfg.log_level)),
+            opus_downgrade_enabled: RwLock::new(cfg.opus_downgrade_enabled),
+            opus_downgrade_target: RwLock::new(cfg.opus_downgrade_target.clone()),
             http: reqwest::Client::new(),
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
@@ -207,6 +213,8 @@ impl AppState {
             haiku_target: self.haiku_target.read().unwrap().as_str().to_string(),
             fable_target: self.fable_target.read().unwrap().as_str().to_string(),
             log_level: self.log_level.read().unwrap().as_str().to_string(),
+            opus_downgrade_enabled: *self.opus_downgrade_enabled.read().unwrap(),
+            opus_downgrade_target: self.opus_downgrade_target.read().unwrap().clone(),
         }
     }
 }

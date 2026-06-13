@@ -31,6 +31,31 @@ pub async fn post_messages(
         .unwrap_or("")
         .to_string();
     let tier = Tier::from_model(&model);
+
+    // Smart routing: downgrade opus if thinking is not requested.
+    let effective_tier = if tier == Tier::Opus && *state.opus_downgrade_enabled.read().unwrap() {
+        let has_thinking = payload
+            .get("betas")
+            .and_then(|b| b.as_array())
+            .map(|arr| arr.iter().any(|v| v.as_str() == Some("thinking")))
+            .unwrap_or(false);
+        if has_thinking {
+            tier
+        } else {
+            // Route to the downgrade target instead. We make a model-less
+            // tier so that the routing below picks the right target.
+            // We override the target directly.
+            if state.log_level.read().unwrap().dump_bodies() {
+                let dt = state.opus_downgrade_target.read().unwrap().clone();
+                eprintln!("[llm-proxy] opus downgraded to {dt} (no thinking)");
+            }
+            // Map to haiku tier by changing the model name for routing
+            Tier::from_model(&state.opus_downgrade_target.read().unwrap())
+        }
+    } else {
+        tier
+    };
+
     let stream = payload
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -52,15 +77,20 @@ pub async fn post_messages(
                     .map(|s| format!("x-api-key:{}…", s.chars().take(12).collect::<String>()))
             })
             .unwrap_or_else(|| "(none)".to_string());
-        let tgt = state.target_for(tier);
+        let tgt = state.target_for(effective_tier);
         eprintln!(
-            "[llm-proxy] → {tier:?} ⇒ {} (model={model}, stream={stream}) | incoming auth: {auth}",
+            "[llm-proxy] → {tier:?}{} ⇒ {} (model={model}, stream={stream}) | incoming auth: {auth}",
+            if effective_tier != tier {
+                format!("⇢{:?}", effective_tier)
+            } else {
+                String::new()
+            },
             tgt.as_str()
         );
     }
 
     // Resolve where this tier routes: Anthropic native, or an upstream model.
-    let target = state.target_for(tier);
+    let target = state.target_for(effective_tier);
 
     if stream {
         let body = match &target {

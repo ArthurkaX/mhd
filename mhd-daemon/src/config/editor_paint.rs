@@ -889,8 +889,95 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         hit: SettingsHit::ProxyBindAddressField,
     });
 
+    // ── Opus Downgrade section header ───────────────────────────────
+    let downgrade_header_y = bind_y + row_h + gap;
+    ctls.push(Control::Header {
+        rect: RECT {
+            left: pad,
+            top: downgrade_header_y,
+            right: win_w_val - pad,
+            bottom: downgrade_header_y + section_h,
+        },
+        label: "Opus Downgrade".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // ── Enable toggle ───────────────────────────────────────────────
+    let toggle_y = downgrade_header_y + section_h;
+    let toggle_w = (36.0 * scale) as i32;
+    let toggle_h = (18.0 * scale) as i32;
+    let is_downgrade_toggle_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeToggle;
+    ctls.push(Control::Toggle {
+        rect: RECT {
+            left: pad,
+            top: toggle_y + (row_h - toggle_h) / 2,
+            right: pad + toggle_w,
+            bottom: toggle_y + (row_h + toggle_h) / 2,
+        },
+        is_on: state.opus_downgrade_enabled,
+        is_hovered: is_downgrade_toggle_hovered,
+        hit: SettingsHit::ProxyOpusDowngradeToggle,
+    });
+
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad + toggle_w + (4.0 * scale) as i32,
+            top: toggle_y,
+            right: win_w_val - pad,
+            bottom: toggle_y + row_h,
+        },
+        label: "Downgrade Opus when no thinking".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    // ── Target model field ───────────────────────────────────────────
+    let target_y = toggle_y + row_h + gap;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: target_y,
+            right: pad + label_w,
+            bottom: target_y + row_h,
+        },
+        label: "Target Model".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    let is_editing_target = state.proxy_editing_field == Some(ProxyEditField::OpusDowngradeTarget);
+    let target_display = if is_editing_target {
+        &state.edit_text
+    } else {
+        &state.opus_downgrade_target
+    };
+    let target_is_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeField;
+    let target_border = if is_editing_target {
+        state.theme.accent
+    } else if target_is_hovered {
+        state.theme.text
+    } else {
+        state.theme.border
+    };
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: field_x,
+            top: target_y,
+            right: win_w_val - pad,
+            bottom: target_y + field_h,
+        },
+        text: target_display.to_string(),
+        placeholder: None,
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: target_border,
+        text_color: theme_text(state),
+        hit: SettingsHit::ProxyOpusDowngradeField,
+    });
+
     // ── Divider ────────────────────────────────────────────────────
-    let divider_y = bind_y + row_h + gap;
+    let divider_y = target_y + row_h + gap;
     ctls.push(Control::Divider {
         rect: RECT {
             left: pad,

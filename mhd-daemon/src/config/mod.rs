@@ -79,6 +79,10 @@ pub struct LlmProxyConfig {
     pub fable: String,
     /// Shared pool of alternative models offered for every tier.
     pub models: Vec<LlmModel>,
+    /// Opus downgrade when no thinking.
+    pub opus_downgrade_enabled: bool,
+    /// Target for downgraded opus.
+    pub opus_downgrade_target: String,
 }
 
 impl Default for LlmProxyConfig {
@@ -96,6 +100,8 @@ impl Default for LlmProxyConfig {
             haiku: "native".to_string(),
             fable: "native".to_string(),
             models: Vec::new(),
+            opus_downgrade_enabled: false,
+            opus_downgrade_target: "haiku".to_string(),
         }
     }
 }
@@ -358,6 +364,14 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.bind_ip.clone())
                 .unwrap_or_else(|| "127.0.0.1".to_string()),
+            opus_downgrade_enabled: settings
+                .as_ref()
+                .map(|s| s.opus_downgrade_enabled)
+                .unwrap_or(false),
+            opus_downgrade_target: settings
+                .as_ref()
+                .map(|s| s.opus_downgrade_target.clone())
+                .unwrap_or_else(|| "haiku".to_string()),
         }
     }
 

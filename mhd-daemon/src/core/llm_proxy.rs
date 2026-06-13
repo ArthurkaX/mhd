@@ -40,6 +40,8 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         haiku_target: cfg.haiku.clone(),
         fable_target: cfg.fable.clone(),
         log_level: cfg.log_level.clone(),
+        opus_downgrade_enabled: cfg.opus_downgrade_enabled,
+        opus_downgrade_target: cfg.opus_downgrade_target.clone(),
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
