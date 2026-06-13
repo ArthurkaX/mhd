@@ -47,12 +47,16 @@ enum ModelsPopupHit {
     None,
     /// Click on a model row field to start inline editing.
     ModelField(usize),
+    /// Checkbox to toggle model selection.
+    ModelCheckbox(usize),
     /// Test button on a model row.
     ModelTestBtn(usize),
     /// Delete button on a model row.
     ModelDelete(usize),
     /// "+ Add Model" button.
     AddBtn,
+    SelectAllBtn,
+    DeselectAllBtn,
     /// Scrollbar (the hit area is the list's right edge).
     Scrollbar,
     FetchModelsBtn,
@@ -80,6 +84,8 @@ struct ModelsPopupState {
     edit_cursor: usize,
     edit_old_value: String,
 
+    /// Per-model selection state (checked = will be saved).
+    model_selected: Vec<bool>,
     /// Per-model test status: None=untested, Some(true)=success, Some(false)=failure.
     model_test_results: Vec<Option<bool>>,
     /// Index of model currently being tested.
@@ -167,11 +173,13 @@ pub fn open_models_popup(
     let list_area_h = win_h - header_h - footer_h - pad;
 
     let model_test_results = (0..models.len()).map(|_| None).collect();
+    let model_selected = (0..models.len()).map(|_| true).collect();
 
     let popup_state = Box::new(ModelsPopupState {
         hwnd: HWND::default(),
         _parent_hwnd: parent_hwnd,
         models,
+        model_selected,
         endpoint: endpoint.to_string(),
         api_key: api_key.to_string(),
         editing_idx: None,
@@ -445,15 +453,17 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
         let _ = SelectClipRgn(dib_dc, clip_rgn);
         let _ = DeleteObject(clip_rgn); // DC uses a copy
 
-        // ── Draw "Models" label above the list ─────────────────────
+        // ── Draw label row above the list ───────────────────────────
         let _ = SelectObject(dib_dc, small_font);
         SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        let label_y = list_y;
+        let label_h = (16.0 * scale) as i32;
         let mut header_wz = to_utf16_z("Model ID");
         let mut header_rc = RECT {
-            left: pad,
-            top: list_y,
+            left: pad + (18.0 * scale) as i32,
+            top: label_y,
             right: w - pad,
-            bottom: list_y + (16.0 * scale) as i32,
+            bottom: label_y + label_h,
         };
         let _ = DrawTextW(
             dib_dc,
@@ -462,13 +472,56 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
             DT_LEFT | DT_SINGLELINE,
         );
 
-        let list_content_top = list_y + (16.0 * scale) as i32;
+        // Select All / Deselect All buttons
+        let sel_btn_w = (50.0 * scale) as i32;
+        let sel_btn_h = label_h;
+        let sel_btn_y = label_y;
+        let deselect_x = w - pad - sel_btn_w;
+        let select_x = deselect_x - (4.0 * scale) as i32 - sel_btn_w;
+
+        let is_select_hovered = state.hovered_target == ModelsPopupHit::SelectAllBtn;
+        let is_deselect_hovered = state.hovered_target == ModelsPopupHit::DeselectAllBtn;
+        draw_button(
+            dib_dc,
+            bits,
+            w,
+            h,
+            select_x,
+            sel_btn_y,
+            sel_btn_w,
+            sel_btn_h,
+            "All",
+            theme,
+            small_font,
+            is_select_hovered,
+            ButtonStyle::Secondary,
+        );
+        draw_button(
+            dib_dc,
+            bits,
+            w,
+            h,
+            deselect_x,
+            sel_btn_y,
+            sel_btn_w,
+            sel_btn_h,
+            "None",
+            theme,
+            small_font,
+            is_deselect_hovered,
+            ButtonStyle::Secondary,
+        );
+
+        let list_content_top = label_y + label_h;
         let scrollbar_w = (8.0 * scale) as i32;
         let scrollbar_x = w - pad - scrollbar_w;
 
         // ── Model rows ───────────────────────────────────────────
         let test_btn_w = (50.0 * scale) as i32;
         let btn_gap = (4.0 * scale) as i32;
+
+        let checkbox_w = (16.0 * scale) as i32;
+        let checkbox_h = (16.0 * scale) as i32;
 
         for (i, model_id) in state.models.iter().enumerate() {
             let ry = list_content_top + i as i32 * row_h - scroll_y;
@@ -504,8 +557,68 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
             let test_btn_x = del_x - btn_gap - test_btn_w;
             let field_right = test_btn_x - btn_gap;
 
-            // Text field background + border
-            let field_left = pad;
+            // Checkbox on the left
+            let chk_x = pad;
+            let chk_y = ry + (row_h - checkbox_h) / 2;
+            let is_chk_hovered = state.hovered_target == ModelsPopupHit::ModelCheckbox(i);
+            let is_checked = state.model_selected.get(i).copied().unwrap_or(true);
+            let chk_bg = if is_checked {
+                theme.accent
+            } else if is_chk_hovered {
+                theme
+                    .hover
+                    .blend_over(theme.surface.blend_over(theme.background))
+            } else {
+                theme.surface.blend_over(theme.background)
+            };
+            let chk_border = if is_chk_hovered {
+                theme.text
+            } else if is_checked {
+                theme.accent
+            } else {
+                theme.border
+            };
+            draw_rounded_rect_in_buffer(
+                bits,
+                w,
+                h,
+                RECT {
+                    left: chk_x,
+                    top: chk_y,
+                    right: chk_x + checkbox_w,
+                    bottom: chk_y + checkbox_h,
+                },
+                (3.0 * scale) as i32,
+                chk_bg,
+            );
+            draw_rounded_border_in_buffer(
+                bits,
+                w,
+                h,
+                RECT {
+                    left: chk_x,
+                    top: chk_y,
+                    right: chk_x + checkbox_w,
+                    bottom: chk_y + checkbox_h,
+                },
+                (3.0 * scale) as i32,
+                1,
+                chk_border,
+            );
+            if is_checked {
+                // Draw a check mark (simplified as a small accent-filled rect or a line)
+                let check_pen = CreatePen(PS_SOLID, 2, theme.text.to_colorref());
+                let _ = SelectObject(dib_dc, check_pen);
+                let cx = chk_x + checkbox_w / 2;
+                let cy = chk_y + checkbox_h / 2;
+                let dot_size = (3.0 * scale) as i32;
+                let _ = MoveToEx(dib_dc, cx - dot_size, cy, None);
+                let _ = LineTo(dib_dc, cx + dot_size, cy);
+                let _ = DeleteObject(check_pen);
+            }
+
+            // Text field background + border (offset by checkbox)
+            let field_left = chk_x + checkbox_w + (6.0 * scale) as i32;
             let bg = if is_editing {
                 theme.surface.blend_over(theme.background)
             } else if is_hovered {
@@ -769,9 +882,24 @@ fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopu
 
     let list_y = header_h + pad;
     let list_h = state.list_area_h;
-    let list_content_top = list_y + (16.0 * scale) as i32;
+    let label_y = list_y;
+    let label_h = (16.0 * scale) as i32;
+    let list_content_top = label_y + label_h;
 
-    // Fetch Models button (header area)
+    // Select All / Deselect All buttons (label row)
+    let sel_btn_w = (50.0 * scale) as i32;
+    let sel_btn_h = label_h;
+    let sel_btn_y = label_y;
+    let deselect_x = w - pad - sel_btn_w;
+    let select_x = deselect_x - (4.0 * scale) as i32 - sel_btn_w;
+    if y >= sel_btn_y && y < sel_btn_y + sel_btn_h {
+        if x >= select_x && x < select_x + sel_btn_w {
+            return ModelsPopupHit::SelectAllBtn;
+        }
+        if x >= deselect_x && x < deselect_x + sel_btn_w {
+            return ModelsPopupHit::DeselectAllBtn;
+        }
+    }
     let fetch_btn_w = (100.0 * scale) as i32;
     let fetch_btn_h = (28.0 * scale) as i32;
     let fetch_btn_x = w - pad - fetch_btn_w;
@@ -834,8 +962,16 @@ fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopu
                 if x >= test_btn_x && x < test_btn_x + test_btn_w {
                     return ModelsPopupHit::ModelTestBtn(i as usize);
                 }
+                // Check checkbox (left side)
+                let checkbox_w = (16.0 * scale) as i32;
+                let checkbox_h = (16.0 * scale) as i32;
+                let chk_x = pad;
+                let chk_y = ry + (row_h - checkbox_h) / 2;
+                if x >= chk_x && x < chk_x + checkbox_w && y >= chk_y && y < chk_y + checkbox_h {
+                    return ModelsPopupHit::ModelCheckbox(i as usize);
+                }
                 // Check text field
-                let field_left = pad;
+                let field_left = pad + checkbox_w + (6.0 * scale) as i32;
                 let field_right = test_btn_x - btn_gap;
                 let field_top = ry + (row_h - field_h) / 2;
                 let field_bottom = ry + (row_h + field_h) / 2;
@@ -1121,6 +1257,9 @@ unsafe extern "system" fn models_popup_wndproc(
                         cancel_model_edit(state); // commit any in-progress edit first
                         if i < state.models.len() {
                             state.models.remove(i);
+                            if i < state.model_selected.len() {
+                                state.model_selected.remove(i);
+                            }
                             if i < state.model_test_results.len() {
                                 state.model_test_results.remove(i);
                             }
@@ -1138,6 +1277,7 @@ unsafe extern "system" fn models_popup_wndproc(
                     ModelsPopupHit::AddBtn => {
                         cancel_model_edit(state);
                         state.models.push(String::new());
+                        state.model_selected.push(true);
                         state.model_test_results.push(None);
                         let new_idx = state.models.len() - 1;
                         begin_model_edit(state, new_idx);
@@ -1147,6 +1287,24 @@ unsafe extern "system" fn models_popup_wndproc(
                         let content_h = total_rows * row_h + row_h;
                         let max_scroll = (content_h - state.list_area_h).max(0);
                         state.content_scroll_y = max_scroll;
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+                    ModelsPopupHit::ModelCheckbox(i) => {
+                        if i < state.model_selected.len() {
+                            state.model_selected[i] = !state.model_selected[i];
+                            paint_models_popup(hwnd, state_ptr);
+                        }
+                    }
+                    ModelsPopupHit::SelectAllBtn => {
+                        for s in &mut state.model_selected {
+                            *s = true;
+                        }
+                        paint_models_popup(hwnd, state_ptr);
+                    }
+                    ModelsPopupHit::DeselectAllBtn => {
+                        for s in &mut state.model_selected {
+                            *s = false;
+                        }
                         paint_models_popup(hwnd, state_ptr);
                     }
                     ModelsPopupHit::FetchModelsBtn => {
@@ -1177,11 +1335,14 @@ unsafe extern "system" fn models_popup_wndproc(
                     }
                     ModelsPopupHit::SaveBtn => {
                         commit_model_edit(state);
-                        // Filter out empty models before saving
+                        // Filter: keep only selected, non-empty models
                         let mut i = 0;
                         while i < state.models.len() {
-                            if state.models[i].is_empty() {
+                            if state.models[i].is_empty() || !state.model_selected[i] {
                                 state.models.remove(i);
+                                if i < state.model_selected.len() {
+                                    state.model_selected.remove(i);
+                                }
                                 if i < state.model_test_results.len() {
                                     state.model_test_results.remove(i);
                                 }
@@ -1227,6 +1388,7 @@ unsafe extern "system" fn models_popup_wndproc(
                     if !result_ptr.is_null() {
                         let fetched = Box::from_raw(result_ptr);
                         state.models = *fetched.clone();
+                        state.model_selected = (0..state.models.len()).map(|_| true).collect();
                         state.model_test_results = (0..state.models.len()).map(|_| None).collect();
                         // Reset scroll position
                         state.content_scroll_y = 0;
