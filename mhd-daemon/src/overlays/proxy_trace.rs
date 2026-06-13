@@ -265,8 +265,8 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     let close_brush =
         unsafe { CreateSolidBrush(theme.hover.blend_over(theme.background).to_colorref()) };
     unsafe {
-        FillRect(dib_dc, &close_btn_rect, close_brush);
-        DeleteObject(close_brush);
+        let _ = FillRect(dib_dc, &close_btn_rect, close_brush);
+        let _ = DeleteObject(close_brush);
     }
     unsafe {
         let _ = SelectObject(dib_dc, hfont_small);
@@ -449,93 +449,105 @@ unsafe extern "system" fn panel_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match msg {
-        WM_NCHITTEST => {
-            let x = (lparam.0 as i16) as i32;
-            let y = ((lparam.0 >> 16) as i16) as i32;
-            let mut pt = POINT { x, y };
-            let _ = ScreenToClient(hwnd, &mut pt);
-            // Header area (first ~60px) is draggable, except for the close button
-            let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
-            let pad = (PAD_BASE as f32 * scale) as i32;
-            let btn_size = (20.0 * scale) as i32;
-            let mut wr = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut wr);
-            let win_w = wr.right - wr.left;
-            // Check close button first
-            let btn_left = win_w - pad - btn_size;
-            if pt.x >= btn_left - 4 && pt.x < win_w - pad + 4
-                && pt.y >= pad - 4 && pt.y < pad + btn_size + 4
-            {
-                return LRESULT(HTCLIENT as isize);
+    unsafe {
+        match msg {
+            WM_NCHITTEST => {
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let mut pt = POINT { x, y };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let scale = {
+                    let dpi = GetDpiForWindow(hwnd) as f32;
+                    dpi / 96.0
+                };
+                let pad = (PAD_BASE as f32 * scale) as i32;
+                let btn_size = (20.0 * scale) as i32;
+                let mut wr = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut wr);
+                let win_w = wr.right - wr.left;
+                let btn_left = win_w - pad - btn_size;
+                if pt.x >= btn_left - 4
+                    && pt.x < win_w - pad + 4
+                    && pt.y >= pad - 4
+                    && pt.y < pad + btn_size + 4
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
+                let font_h = -(14.0 * scale) as i32;
+                let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
+                if pt.y < header_bottom {
+                    return LRESULT(HTCAPTION as isize);
+                }
+                LRESULT(HTCLIENT as isize)
             }
-            let font_h = -(14.0 * scale) as i32;
-            let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
-            if pt.y < header_bottom {
-                return LRESULT(HTCAPTION as isize);
+            WM_SETCURSOR => {
+                if (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
+                    let _ = SetCursor(LoadCursorW(None, IDC_ARROW).unwrap_or_default());
+                    return LRESULT(1);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            LRESULT(HTCLIENT as isize)
-        }
-        WM_SETCURSOR => {
-            if (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
-                let _ = SetCursor(LoadCursorW(None, IDC_ARROW).unwrap_or_default());
-                return LRESULT(1);
+            WM_LBUTTONDOWN => {
+                let scale = {
+                    let dpi = GetDpiForWindow(hwnd) as f32;
+                    dpi / 96.0
+                };
+                let pad = (PAD_BASE as f32 * scale) as i32;
+                let btn_size = (20.0 * scale) as i32;
+                let mut wr = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut wr);
+                let win_w = wr.right - wr.left;
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+                let btn_left = win_w - pad - btn_size;
+                if x >= btn_left - 4
+                    && x < win_w - pad + 4
+                    && y >= pad - 4
+                    && y < pad + btn_size + 4
+                {
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-        WM_LBUTTONDOWN => {
-            // Close button is at top-right: win_w - pad - btn_size
-            let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
-            let pad = (PAD_BASE as f32 * scale) as i32;
-            let btn_size = (20.0 * scale) as i32;
-            let mut wr = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut wr);
-            let win_w = wr.right - wr.left;
-            let x = (lparam.0 as i16) as i32;
-            let y = ((lparam.0 >> 16) as i16) as i32;
-            let btn_left = win_w - pad - btn_size;
-            if x >= btn_left - 4 && x < win_w - pad + 4 && y >= pad - 4 && y < pad + btn_size + 4 {
+            WM_PAINT => {
+                let scale = {
+                    let dpi = GetDpiForWindow(hwnd) as f32;
+                    dpi / 96.0
+                };
+                let mut wr = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut wr);
+                paint_panel(hwnd, scale, wr.right - wr.left, wr.bottom - wr.top);
+                LRESULT(0)
+            }
+            WM_ACTIVATE => {
+                if (wparam.0 & 0xFFFF) == 0 {
+                    let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
+                } else {
+                    let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == REFRESH_TIMER_ID => {
+                paint_panel(hwnd, 0.0, 0, 0);
+                LRESULT(0)
+            }
+            WM_KEYDOWN if wparam.0 as u32 == 0x1B => {
                 let _ = DestroyWindow(hwnd);
+                LRESULT(0)
             }
-            LRESULT(0)
-        }
-        WM_PAINT => {
-            let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
-            let mut wr = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut wr);
-            paint_panel(hwnd, scale, wr.right - wr.left, wr.bottom - wr.top);
-            LRESULT(0)
-        }
-        WM_ACTIVATE => {
-            if (wparam.0 & 0xFFFF) == 0 {
-                // Lost focus — hide after timeout
-                let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
-            } else {
-                let _ = KillTimer(hwnd, HIDE_TIMER_ID);
+            WM_DESTROY => {
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme;
+                if !ptr.is_null() {
+                    let _ = Box::from_raw(ptr);
+                }
+                PostQuitMessage(0);
+                LRESULT(0)
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
-        WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-            LRESULT(0)
-        }
-        WM_TIMER if wparam.0 == REFRESH_TIMER_ID => {
-            // Auto-refresh trace every second
-            paint_panel(hwnd, 0.0, 0, 0);
-            LRESULT(0)
-        }
-        WM_KEYDOWN if wparam.0 as u32 == 0x1B /* VK_ESCAPE */ => {
-            let _ = DestroyWindow(hwnd);
-            LRESULT(0)
-        }
-        WM_DESTROY => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme;
-            if !ptr.is_null() {
-                let _ = Box::from_raw(ptr);
-            }
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
