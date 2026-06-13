@@ -207,6 +207,10 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     // ── Header ──────────────────────────────────────────────────
+    let close_btn_w = (20.0 * scale) as i32;
+    let close_btn_x = win_w - pad - close_btn_w;
+    let close_btn_y = pad;
+
     unsafe {
         let _ = SetTextColor(dib_dc, theme.text.to_colorref());
     }
@@ -214,7 +218,7 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     let mut title_rc = RECT {
         left: pad,
         top: pad,
-        right: win_w - pad,
+        right: win_w - pad - close_btn_w - (4.0 * scale) as i32,
         bottom: pad + font_h.abs() + 4,
     };
     unsafe {
@@ -226,10 +230,34 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         );
     }
 
-    // Status (right-aligned)
-    let close_btn_w = (20.0 * scale) as i32;
-    let close_btn_x = win_w - pad - close_btn_w;
-    let close_btn_y = pad;
+    // Status (right-aligned, before close button)
+    // Status text — occupies space left of the close button
+    let mut status_rc = RECT {
+        left: title_rc.right + (4.0 * scale) as i32,
+        top: pad,
+        right: close_btn_x - (4.0 * scale) as i32,
+        bottom: pad + font_h.abs() + 4,
+    };
+    let running = crate::llm_proxy::is_running();
+    let status = if running { "proxy: on" } else { "proxy: off" };
+    let status_color = if running {
+        theme.accent
+    } else {
+        theme.text_muted
+    };
+    unsafe {
+        let _ = SetTextColor(dib_dc, status_color.to_colorref());
+    }
+    let mut status_wz = crate::osd::to_utf16_z(status);
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut status_wz,
+            &mut status_rc,
+            DT_RIGHT | DT_SINGLELINE,
+        );
+    }
+
     // Draw close × button
     let close_btn_rect = RECT {
         left: close_btn_x,
@@ -255,26 +283,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             &mut close_wz,
             &mut close_text_rc,
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
-    }
-
-    let running = crate::llm_proxy::is_running();
-    let status = if running { "proxy: on" } else { "proxy: off" };
-    let status_color = if running {
-        theme.accent
-    } else {
-        theme.text_muted
-    };
-    unsafe {
-        let _ = SetTextColor(dib_dc, status_color.to_colorref());
-    }
-    let mut status_wz = crate::osd::to_utf16_z(status);
-    unsafe {
-        let _ = DrawTextW(
-            dib_dc,
-            &mut status_wz,
-            &mut title_rc,
-            DT_RIGHT | DT_SINGLELINE,
         );
     }
 
@@ -430,9 +438,20 @@ unsafe extern "system" fn panel_wndproc(
             let y = ((lparam.0 >> 16) as i16) as i32;
             let mut pt = POINT { x, y };
             let _ = ScreenToClient(hwnd, &mut pt);
-            // Header area (first ~40px) is draggable
+            // Header area (first ~60px) is draggable, except for the close button
             let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
             let pad = (PAD_BASE as f32 * scale) as i32;
+            let btn_size = (20.0 * scale) as i32;
+            let mut wr = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut wr);
+            let win_w = wr.right - wr.left;
+            // Check close button first
+            let btn_left = win_w - pad - btn_size;
+            if pt.x >= btn_left - 4 && pt.x < win_w - pad + 4
+                && pt.y >= pad - 4 && pt.y < pad + btn_size + 4
+            {
+                return LRESULT(HTCLIENT as isize);
+            }
             let font_h = -(14.0 * scale) as i32;
             let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
             if pt.y < header_bottom {
@@ -448,17 +467,17 @@ unsafe extern "system" fn panel_wndproc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_LBUTTONDOWN => {
-            let x = (lparam.0 as i16) as i32;
-            let y = ((lparam.0 >> 16) as i16) as i32;
-            // Close button is at top-right corner
+            // Close button is at top-right: win_w - pad - btn_size
             let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
             let pad = (PAD_BASE as f32 * scale) as i32;
             let btn_size = (20.0 * scale) as i32;
             let mut wr = RECT::default();
             let _ = GetWindowRect(hwnd, &mut wr);
-            let btn_left = (wr.right - wr.left) - pad - btn_size;
-            let btn_right = (wr.right - wr.left) - pad;
-            if x >= btn_left && x < btn_right && y >= pad && y < pad + btn_size {
+            let win_w = wr.right - wr.left;
+            let x = (lparam.0 as i16) as i32;
+            let y = ((lparam.0 >> 16) as i16) as i32;
+            let btn_left = win_w - pad - btn_size;
+            if x >= btn_left - 4 && x < win_w - pad + 4 && y >= pad - 4 && y < pad + btn_size + 4 {
                 let _ = DestroyWindow(hwnd);
             }
             LRESULT(0)
