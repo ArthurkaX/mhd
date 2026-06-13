@@ -196,15 +196,15 @@ pub fn open_binding_popup(
 
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             class_ptr,
             PCWSTR::from_raw(to_utf16_z("Edit Shortcut").as_ptr()),
             WS_POPUP,
-            cx,
-            cy,
+            0,
+            0,
             win_w,
             win_h,
-            parent_hwnd,
+            None,
             None,
             hinst,
             Some(popup_ptr as *mut c_void),
@@ -230,16 +230,21 @@ pub fn open_binding_popup(
         let _ = EnableWindow(parent_hwnd, false);
     }
 
-    // Initial paint BEFORE ShowWindow — for WS_EX_LAYERED, the first
-    // UpdateLayeredWindow establishes the window visual; ShowWindow
-    // then makes it visible with that content.
+    // Position and show the window FIRST, THEN paint content.
+    // For WS_EX_LAYERED, UpdateLayeredWindow's pt_dst determines
+    // where the content appears — it must match the window position.
     unsafe {
-        paint_binding_popup(hwnd, popup_ptr);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            cx, cy, win_w, win_h,
+            SWP_SHOWWINDOW,
+        );
     }
 
-    // Now show the window (already has content from the initial paint)
+    // Initial paint — content appears at the window's current position.
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        paint_binding_popup(hwnd, popup_ptr);
     }
 
     // Modal message loop - check should_close flag from Save/Cancel
