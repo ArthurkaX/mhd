@@ -17,6 +17,33 @@ use crate::transform;
 
 use super::{InflightGuard, now_ms};
 
+/// Build an authenticated POST to the upstream `/chat/completions` endpoint,
+/// send it, check for a non-2xx status, and return the response plus the URL
+/// (for logging). Every upstream request path needs this exact ritual.
+async fn post_chat_completions(
+    state: &Arc<AppState>,
+    payload: &Value,
+) -> Result<(reqwest::Response, String)> {
+    let base_url = state.upstream_base_url.read().unwrap().clone();
+    let api_key = state.upstream_key.read().unwrap().clone();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let resp = state
+        .http
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("content-type", "application/json")
+        .json(payload)
+        .send()
+        .await?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Upstream error (HTTP {}): {}", status, body);
+    }
+    Ok((resp, url))
+}
+
 /// Send an Anthropic-format request to the upstream gateway, forcing the given
 /// upstream model id.
 pub async fn send_request(
@@ -24,8 +51,6 @@ pub async fn send_request(
     payload: Value,
     target_model: &str,
 ) -> Result<Value> {
-    let base_url = state.upstream_base_url.read().unwrap().clone();
-    let api_key = state.upstream_key.read().unwrap().clone();
     let debug = state.log_level.read().unwrap().dump_bodies();
 
     // Anthropic → OpenAI, then force the real upstream model id.
@@ -35,14 +60,13 @@ pub async fn send_request(
     }
 
     if debug {
+        let base_url = state.upstream_base_url.read().unwrap().clone();
         eprintln!(
             "[llm-proxy] upstream request → {} (model={target_model}):\n{}",
             base_url,
             serde_json::to_string_pretty(&openai_payload)?
         );
     }
-
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     // Observability: log timing + concurrency under `maximal`. This is how you
     // confirm whether parallel requests are queueing behind one another.
@@ -58,29 +82,7 @@ pub async fn send_request(
         ));
     }
 
-    let resp = state
-        .http
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("content-type", "application/json")
-        .json(&openai_payload)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        if log {
-            state.log_line(&format!(
-                "{} #{req_id} upstream ERROR {} after {} ms",
-                now_ms(),
-                status,
-                started.elapsed().as_millis()
-            ));
-        }
-        anyhow::bail!("Upstream error (HTTP {}): {}", status, body);
-    }
-
+    let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
     let openai_resp: Value = resp.json().await?;
     if log {
         state.log_line(&format!(
@@ -111,9 +113,6 @@ pub async fn stream_request(
     target_model: &str,
     requested_model: &str,
 ) -> Result<Body> {
-    let base_url = state.upstream_base_url.read().unwrap().clone();
-    let api_key = state.upstream_key.read().unwrap().clone();
-
     let mut openai_payload = transform::anthropic_to_openai(payload);
     if let Value::Object(ref mut map) = openai_payload {
         map.insert("model".to_string(), Value::String(target_model.to_string()));
@@ -124,8 +123,6 @@ pub async fn stream_request(
             json!({ "include_usage": true }),
         );
     }
-
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     // Observability: streaming is the path Claude Code actually uses. Log the
     // concurrency at send time so overlapping parallel requests are visible.
@@ -144,14 +141,7 @@ pub async fn stream_request(
         ));
     }
 
-    let resp = state
-        .http
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("content-type", "application/json")
-        .json(&openai_payload)
-        .send()
-        .await?;
+    let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
 
     if log {
         state.log_line(&format!(
@@ -159,12 +149,6 @@ pub async fn stream_request(
             now_ms(),
             started.elapsed().as_millis()
         ));
-    }
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Upstream error (HTTP {}): {}", status, body);
     }
 
     let requested_model = requested_model.to_string();
@@ -454,24 +438,676 @@ fn sse(event: &str, data: &Value) -> Bytes {
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
 pub async fn send_raw_openai(state: &Arc<AppState>, payload: Value) -> Result<Value> {
-    let base_url = state.upstream_base_url.read().unwrap().clone();
-    let api_key = state.upstream_key.read().unwrap().clone();
+    let (resp, _url) = post_chat_completions(state, &payload).await?;
+    Ok(resp.json().await?)
+}
 
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let resp = state
-        .http
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("content-type", "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+// ── Tests ─────────────────────────────────────────────────────────────
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Upstream error (HTTP {}): {}", status, body);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transform::SYNTHETIC_THINKING_SIGNATURE;
+
+    #[test]
+    fn test_sse_formatting() {
+        let data = json!({"type": "ping"});
+        let result = sse("ping", &data);
+        assert_eq!(
+            String::from_utf8_lossy(&result),
+            "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+        );
     }
 
-    Ok(resp.json().await?)
+    #[test]
+    fn test_sse_with_complex_data() {
+        let data = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        });
+        let result = sse("content_block_start", &data);
+        let s = String::from_utf8_lossy(&result);
+        assert!(s.starts_with("event: content_block_start\n"));
+        assert!(s.contains("\"type\":\"content_block_start\""));
+        assert!(s.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn test_finish_reason_mapping() {
+        // The finish_reason mapping used in stream_request
+        fn map_finish_reason(fr: &str) -> &str {
+            match fr {
+                "length" => "max_tokens",
+                "tool_calls" => "tool_use",
+                "stop" => "end_turn",
+                other => other,
+            }
+        }
+
+        assert_eq!(map_finish_reason("stop"), "end_turn");
+        assert_eq!(map_finish_reason("length"), "max_tokens");
+        assert_eq!(map_finish_reason("tool_calls"), "tool_use");
+        assert_eq!(map_finish_reason("content_filter"), "content_filter");
+    }
+
+    /// A minimal replica of the OpenAI → Anthropic SSE chunk-processing logic
+    /// from `stream_request`, extracted for focused unit testing.  We keep it
+    /// in the test module so the production stream stays untouched while we
+    /// cover the tricky state-machine paths (reasoning → thinking, tool calls,
+    /// block open/close ordering).
+    struct TestTranslator {
+        next_index: i64,
+        open_index: Option<i64>,
+        text_index: Option<i64>,
+        thinking_index: Option<i64>,
+        tool_map: std::collections::HashMap<i64, i64>,
+        stop_reason: String,
+        output_tokens: u64,
+    }
+
+    impl TestTranslator {
+        fn new() -> Self {
+            Self {
+                next_index: 0,
+                open_index: None,
+                text_index: None,
+                thinking_index: None,
+                tool_map: std::collections::HashMap::new(),
+                stop_reason: "end_turn".to_string(),
+                output_tokens: 0,
+            }
+        }
+
+        /// Process one parsed OpenAI chunk and return Anthropic SSE `(event, data)` pairs.
+        fn process(&mut self, choice: &Value) -> Vec<(&'static str, Value)> {
+            let mut events = Vec::new();
+
+            // ── reasoning delta (thinking) ──────────────────────────
+            if let Some(rc) = choice
+                .get("delta")
+                .and_then(|d| d.get("reasoning_content"))
+                .and_then(|t| t.as_str())
+            {
+                if !rc.is_empty() {
+                    if self.thinking_index.is_none() {
+                        if let Some(oi) = self.open_index {
+                            events.push((
+                                "content_block_stop",
+                                json!({
+                                    "type": "content_block_stop", "index": oi
+                                }),
+                            ));
+                        }
+                        let idx = self.next_index;
+                        self.next_index += 1;
+                        self.thinking_index = Some(idx);
+                        self.open_index = Some(idx);
+                        events.push((
+                            "content_block_start",
+                            json!({
+                                "type": "content_block_start", "index": idx,
+                                "content_block": { "type": "thinking", "thinking": "" }
+                            }),
+                        ));
+                    }
+                    let idx = self.thinking_index.unwrap();
+                    events.push((
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta", "index": idx,
+                            "delta": { "type": "thinking_delta", "thinking": rc }
+                        }),
+                    ));
+                }
+            }
+
+            // ── text delta ──────────────────────────────────────────
+            if let Some(text) = choice
+                .get("delta")
+                .and_then(|d| d.get("content"))
+                .and_then(|t| t.as_str())
+            {
+                if !text.is_empty() {
+                    if self.text_index.is_none() {
+                        if let Some(oi) = self.open_index {
+                            if Some(oi) == self.thinking_index {
+                                events.push((
+                                    "content_block_delta",
+                                    json!({
+                                        "type": "content_block_delta", "index": oi,
+                                        "delta": {
+                                            "type": "signature_delta",
+                                            "signature": SYNTHETIC_THINKING_SIGNATURE
+                                        }
+                                    }),
+                                ));
+                            }
+                            events.push((
+                                "content_block_stop",
+                                json!({
+                                    "type": "content_block_stop", "index": oi
+                                }),
+                            ));
+                        }
+                        let idx = self.next_index;
+                        self.next_index += 1;
+                        self.text_index = Some(idx);
+                        self.open_index = Some(idx);
+                        events.push((
+                            "content_block_start",
+                            json!({
+                                "type": "content_block_start", "index": idx,
+                                "content_block": { "type": "text", "text": "" }
+                            }),
+                        ));
+                    }
+                    let idx = self.text_index.unwrap();
+                    events.push((
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta", "index": idx,
+                            "delta": { "type": "text_delta", "text": text }
+                        }),
+                    ));
+                }
+            }
+
+            // ── tool_call deltas ────────────────────────────────────
+            if let Some(tcs) = choice
+                .get("delta")
+                .and_then(|d| d.get("tool_calls"))
+                .and_then(|t| t.as_array())
+            {
+                for tc in tcs {
+                    let ti = tc.get("index").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let func = tc.get("function");
+
+                    let anth_idx = match self.tool_map.get(&ti) {
+                        Some(&x) => x,
+                        None => {
+                            if let Some(oi) = self.open_index {
+                                if Some(oi) == self.thinking_index {
+                                    events.push((
+                                        "content_block_delta",
+                                        json!({
+                                            "type": "content_block_delta", "index": oi,
+                                            "delta": {
+                                                "type": "signature_delta",
+                                                "signature": SYNTHETIC_THINKING_SIGNATURE
+                                            }
+                                        }),
+                                    ));
+                                }
+                                events.push((
+                                    "content_block_stop",
+                                    json!({
+                                        "type": "content_block_stop", "index": oi
+                                    }),
+                                ));
+                            }
+                            let idx = self.next_index;
+                            self.next_index += 1;
+                            self.tool_map.insert(ti, idx);
+                            self.open_index = Some(idx);
+                            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            let name = func
+                                .and_then(|f| f.get("name"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            events.push((
+                                "content_block_start",
+                                json!({
+                                    "type": "content_block_start", "index": idx,
+                                    "content_block": {
+                                        "type": "tool_use", "id": id, "name": name, "input": {}
+                                    }
+                                }),
+                            ));
+                            idx
+                        }
+                    };
+
+                    if let Some(args) = func
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if !args.is_empty() {
+                            events.push((
+                                "content_block_delta",
+                                json!({
+                                    "type": "content_block_delta", "index": anth_idx,
+                                    "delta": { "type": "input_json_delta", "partial_json": args }
+                                }),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // ── finish_reason ───────────────────────────────────────
+            if let Some(fr) = choice.get("finish_reason").and_then(|f| f.as_str()) {
+                self.stop_reason = match fr {
+                    "length" => "max_tokens",
+                    "tool_calls" => "tool_use",
+                    "stop" => "end_turn",
+                    other => other,
+                }
+                .to_string();
+            }
+
+            events
+        }
+
+        /// Return the closing events that should follow the final chunk.
+        fn finalize(&self) -> Vec<(&'static str, Value)> {
+            let mut events = Vec::new();
+
+            match self.open_index {
+                Some(oi) => {
+                    if Some(oi) == self.thinking_index {
+                        events.push((
+                            "content_block_delta",
+                            json!({
+                                "type": "content_block_delta", "index": oi,
+                                "delta": {
+                                    "type": "signature_delta",
+                                    "signature": SYNTHETIC_THINKING_SIGNATURE
+                                }
+                            }),
+                        ));
+                    }
+                    events.push((
+                        "content_block_stop",
+                        json!({
+                            "type": "content_block_stop", "index": oi
+                        }),
+                    ));
+                }
+                None => {
+                    events.push((
+                        "content_block_start",
+                        json!({
+                            "type": "content_block_start", "index": 0,
+                            "content_block": { "type": "text", "text": "" }
+                        }),
+                    ));
+                    events.push((
+                        "content_block_stop",
+                        json!({
+                            "type": "content_block_stop", "index": 0
+                        }),
+                    ));
+                }
+            }
+
+            let stop_reason = if self.tool_map.is_empty() {
+                self.stop_reason.clone()
+            } else {
+                "tool_use".to_string()
+            };
+
+            events.push((
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": stop_reason, "stop_sequence": null },
+                    "usage": { "output_tokens": self.output_tokens }
+                }),
+            ));
+            events.push(("message_stop", json!({"type": "message_stop"})));
+
+            events
+        }
+    }
+
+    // ── reasoning_content → thinking block tests ───────────────────
+
+    #[test]
+    fn test_reasoning_content_opens_thinking_block() {
+        let mut t = TestTranslator::new();
+        let chunk = json!({
+            "choices": [{
+                "delta": {
+                    "reasoning_content": "Let me think step by step."
+                }
+            }]
+        });
+
+        let events = t.process(&chunk["choices"][0]);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, "content_block_start");
+        assert_eq!(events[0].1["index"], 0);
+        assert_eq!(events[0].1["content_block"]["type"], "thinking");
+        assert_eq!(events[1].0, "content_block_delta");
+        assert_eq!(events[1].1["index"], 0);
+        assert_eq!(events[1].1["delta"]["type"], "thinking_delta");
+        assert_eq!(
+            events[1].1["delta"]["thinking"],
+            "Let me think step by step."
+        );
+    }
+
+    #[test]
+    fn test_reasoning_content_multiple_deltas() {
+        let mut t = TestTranslator::new();
+
+        // First delta: open the thinking block
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"reasoning_content": "Step 1. "}}]
+            })["choices"][0],
+        );
+        assert_eq!(events.len(), 2); // start + delta
+        assert_eq!(events[0].0, "content_block_start");
+
+        // Second delta: same block, no new start
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"reasoning_content": "Step 2. "}}]
+            })["choices"][0],
+        );
+        assert_eq!(events.len(), 1); // just delta
+        assert_eq!(events[0].0, "content_block_delta");
+        assert_eq!(events[0].1["delta"]["thinking"], "Step 2. ");
+        assert_eq!(t.thinking_index, Some(0)); // still index 0
+    }
+
+    #[test]
+    fn test_empty_reasoning_content_skipped() {
+        let mut t = TestTranslator::new();
+
+        // Empty reasoning content should not open a block
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"reasoning_content": ""}}]
+            })["choices"][0],
+        );
+        assert!(events.is_empty());
+
+        // Non-empty after empty should still work
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"reasoning_content": "Now thinking."}}]
+            })["choices"][0],
+        );
+        assert_eq!(events.len(), 2); // start + delta
+        assert_eq!(events[0].1["content_block"]["type"], "thinking");
+    }
+
+    #[test]
+    fn test_reasoning_then_text_transition() {
+        let mut t = TestTranslator::new();
+        let mut all_events = Vec::new();
+
+        // Reasoning chunk
+        all_events.extend(t.process(
+            &json!({
+                "choices": [{"delta": {"reasoning_content": "Thinking..."}}]
+            })["choices"][0],
+        ));
+        assert_eq!(t.thinking_index, Some(0));
+        assert_eq!(t.open_index, Some(0));
+
+        // Text chunk — should close thinking block, emit signature delta, open text block
+        all_events.extend(t.process(
+            &json!({
+                "choices": [{"delta": {"content": "Answer."}}]
+            })["choices"][0],
+        ));
+
+        // Events: signature_delta for thinking, content_block_stop for thinking,
+        //         content_block_start for text, content_block_delta for text
+        assert_eq!(all_events.len(), 6);
+        // Check the transition events
+        assert_eq!(all_events[2].0, "content_block_delta");
+        assert_eq!(all_events[2].1["delta"]["type"], "signature_delta");
+        assert_eq!(all_events[3].0, "content_block_stop");
+        assert_eq!(all_events[3].1["index"], 0);
+        assert_eq!(all_events[4].0, "content_block_start");
+        assert_eq!(all_events[4].1["index"], 1);
+        assert_eq!(all_events[4].1["content_block"]["type"], "text");
+        assert_eq!(all_events[5].1["index"], 1);
+
+        assert_eq!(t.text_index, Some(1));
+        assert_eq!(t.open_index, Some(1));
+        assert!(t.thinking_index.is_some()); // still tracked for close logic
+    }
+
+    #[test]
+    fn test_text_delta_opens_text_block() {
+        let mut t = TestTranslator::new();
+
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"content": "Hello!"}}]
+            })["choices"][0],
+        );
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, "content_block_start");
+        assert_eq!(events[0].1["content_block"]["type"], "text");
+        assert_eq!(events[1].0, "content_block_delta");
+        assert_eq!(events[1].1["delta"]["text"], "Hello!");
+    }
+
+    #[test]
+    fn test_multiple_text_deltas() {
+        let mut t = TestTranslator::new();
+
+        let _ = t.process(
+            &json!({
+                "choices": [{"delta": {"content": "Hello "}}]
+            })["choices"][0],
+        );
+
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"content": "world!"}}]
+            })["choices"][0],
+        );
+        // Only a delta, no new start
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "content_block_delta");
+        assert_eq!(events[0].1["delta"]["text"], "world!");
+        assert_eq!(events[0].1["index"], 0);
+    }
+
+    #[test]
+    fn test_empty_text_delta_skipped() {
+        let mut t = TestTranslator::new();
+
+        let events = t.process(
+            &json!({
+                "choices": [{"delta": {"content": ""}}]
+            })["choices"][0],
+        );
+        assert!(events.is_empty());
+    }
+
+    // ── Tool call tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_tool_call_start() {
+        let mut t = TestTranslator::new();
+
+        let events = t.process(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_abc123",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": ""
+                            }
+                        }]
+                    }
+                }]
+            })["choices"][0],
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "content_block_start");
+        assert_eq!(events[0].1["content_block"]["type"], "tool_use");
+        assert_eq!(events[0].1["content_block"]["id"], "call_abc123");
+        assert_eq!(events[0].1["content_block"]["name"], "get_weather");
+        assert!(t.tool_map.contains_key(&0));
+    }
+
+    #[test]
+    fn test_tool_call_with_arguments() {
+        let mut t = TestTranslator::new();
+
+        // Start the tool call
+        let _ = t.process(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_abc",
+                            "function": {"name": "search", "arguments": ""}
+                        }]
+                    }
+                }]
+            })["choices"][0],
+        );
+
+        // Stream arguments
+        let events = t.process(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "function": {"arguments": "{\"q\":\"test\"}"}
+                        }]
+                    }
+                }]
+            })["choices"][0],
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "content_block_delta");
+        assert_eq!(events[0].1["delta"]["type"], "input_json_delta");
+        assert_eq!(events[0].1["delta"]["partial_json"], "{\"q\":\"test\"}");
+    }
+
+    #[test]
+    fn test_multiple_tool_calls() {
+        let mut t = TestTranslator::new();
+
+        let events = t.process(&json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        {"index": 0, "id": "call_0", "function": {"name": "fn_a", "arguments": ""}},
+                        {"index": 1, "id": "call_1", "function": {"name": "fn_b", "arguments": ""}}
+                    ]
+                }
+            }]
+        })["choices"][0]);
+
+        // First call opens block 0; second call closes block 0 then opens block 1.
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].1["index"], 0); // first tool_use start
+        assert_eq!(events[0].0, "content_block_start");
+        assert_eq!(events[1].0, "content_block_stop"); // close first block
+        assert_eq!(events[1].1["index"], 0);
+        assert_eq!(events[2].1["index"], 1); // second tool_use start
+        assert_eq!(events[2].0, "content_block_start");
+        assert_eq!(t.tool_map.len(), 2);
+    }
+
+    // ── Finalize / closing events ──────────────────────────────────
+
+    #[test]
+    fn test_finalize_with_open_text_block() {
+        let mut t = TestTranslator::new();
+        let _ = t.process(
+            &json!({
+                "choices": [{"delta": {"content": "Hello"}}]
+            })["choices"][0],
+        );
+
+        let events = t.finalize();
+        // content_block_stop + message_delta + message_stop
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].0, "content_block_stop");
+        assert_eq!(events[0].1["index"], 0);
+        assert_eq!(events[1].0, "message_delta");
+        assert_eq!(events[1].1["delta"]["stop_reason"], "end_turn");
+        assert_eq!(events[2].0, "message_stop");
+    }
+
+    #[test]
+    fn test_finalize_no_content_emits_empty_text_block() {
+        let t = TestTranslator::new();
+        let events = t.finalize();
+        // content_block_start + content_block_stop + message_delta + message_stop
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].0, "content_block_start");
+        assert_eq!(events[0].1["index"], 0);
+        assert_eq!(events[0].1["content_block"]["type"], "text");
+        assert_eq!(events[1].0, "content_block_stop");
+    }
+
+    #[test]
+    fn test_finalize_with_tool_call_sets_stop_reason_tool_use() {
+        let mut t = TestTranslator::new();
+        let _ = t.process(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_x",
+                            "function": {"name": "fn", "arguments": ""}
+                        }]
+                    }
+                }]
+            })["choices"][0],
+        );
+
+        let events = t.finalize();
+        let msg_delta = &events[1];
+        assert_eq!(msg_delta.1["delta"]["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn test_finalize_output_tokens() {
+        let t = TestTranslator::new();
+        // Finalize with no chunks, output_tokens stays 0
+        let events = t.finalize();
+        assert_eq!(events[2].1["usage"]["output_tokens"], 0);
+    }
+
+    // ── Full reasoning + text + finalize integration ───────────────
+
+    #[test]
+    fn test_reasoning_to_text_integration() {
+        let mut t = TestTranslator::new();
+
+        // 1. Reasoning
+        let _ = t.process(
+            &json!({
+                "choices": [{"delta": {"reasoning_content": "Think..."}}]
+            })["choices"][0],
+        );
+
+        // 2. Text
+        let _ = t.process(
+            &json!({
+                "choices": [{"delta": {"content": "Answer"}}]
+            })["choices"][0],
+        );
+
+        // 3. Finalize
+        let events = t.finalize();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].0, "content_block_stop");
+        assert_eq!(events[0].1["index"], 1); // text block index
+        assert_eq!(events[1].1["delta"]["stop_reason"], "end_turn");
+    }
 }

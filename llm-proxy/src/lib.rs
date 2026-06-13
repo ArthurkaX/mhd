@@ -38,10 +38,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Load config from `~/.config/mhd/llm-proxy/settings.json` +
-/// `secrets.json`, applying env-var fallbacks for the API keys.
-pub fn load_config() -> anyhow::Result<Config> {
-    let mut cfg = config::load()?;
+/// Apply environment-variable fallbacks for API keys not set in the config.
+/// Checks `ANTHROPIC_API_KEY`, `SVA_API_KEY`, and `OPENCODE_API_KEY`.
+fn apply_env_fallbacks(cfg: &mut Config) {
     if cfg.anthropic_key.is_empty() {
         if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
             cfg.anthropic_key = k;
@@ -52,6 +51,13 @@ pub fn load_config() -> anyhow::Result<Config> {
             cfg.upstream_key = k;
         }
     }
+}
+
+/// Load config from `~/.config/mhd/llm-proxy/settings.json` +
+/// `secrets.json`, applying env-var fallbacks for the API keys.
+pub fn load_config() -> anyhow::Result<Config> {
+    let mut cfg = config::load()?;
+    apply_env_fallbacks(&mut cfg);
     Ok(cfg)
 }
 
@@ -138,16 +144,7 @@ pub fn start_embedded_with(
     persist: bool,
 ) -> std::io::Result<ProxyControl> {
     // Env-var fallbacks for keys (handy in dev / CI).
-    if cfg.anthropic_key.is_empty() {
-        if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
-            cfg.anthropic_key = k;
-        }
-    }
-    if cfg.upstream_key.is_empty() {
-        if let Ok(k) = std::env::var("SVA_API_KEY").or_else(|_| std::env::var("OPENCODE_API_KEY")) {
-            cfg.upstream_key = k;
-        }
-    }
+    apply_env_fallbacks(&mut cfg);
 
     let state = AppState::from_config(&cfg);
 
