@@ -394,6 +394,28 @@ unsafe extern "system" fn panel_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_NCHITTEST => {
+            let x = (lparam.0 as i16) as i32;
+            let y = ((lparam.0 >> 16) as i16) as i32;
+            let mut pt = POINT { x, y };
+            let _ = ScreenToClient(hwnd, &mut pt);
+            // Header area (first ~40px) is draggable
+            let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
+            let pad = (PAD_BASE as f32 * scale) as i32;
+            let font_h = -(14.0 * scale) as i32;
+            let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
+            if pt.y < header_bottom {
+                return LRESULT(HTCAPTION as isize);
+            }
+            LRESULT(HTCLIENT as isize)
+        }
+        WM_SETCURSOR => {
+            if (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
+                let _ = SetCursor(LoadCursorW(None, IDC_ARROW).unwrap_or_default());
+                return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_PAINT => {
             let scale = { let dpi = GetDpiForWindow(hwnd) as f32; dpi / 96.0 };
             let mut wr = RECT::default();
