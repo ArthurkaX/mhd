@@ -39,7 +39,7 @@ fn main() {
         let filename = entry.file_name().to_string_lossy().to_string();
         // Generate a path relative to CARGO_MANIFEST_DIR, so include_str! resolves
         // from the mhd-daemon package root (not from OUT_DIR).
-        let manifest_dir = manifest_dir.replace('\\', "/");
+        let _manifest_dir = manifest_dir.replace('\\', "/");
         code.push_str(&format!(
             "    BundledTheme {{\n        filename: \"{filename}\",\n        content: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../themes/{filename}\")),\n    }},\n"
         ));
