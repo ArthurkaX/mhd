@@ -999,6 +999,57 @@ fn apply_settings(state: &mut SettingsState) {
         return;
     }
 
+    // Persist providers and models to the proxy config
+    {
+        let providers: Vec<llm_proxy::config::Provider> = state
+            .providers
+            .iter()
+            .map(|p| llm_proxy::config::Provider {
+                name: p.name.clone(),
+                endpoint: p.endpoint.clone(),
+            })
+            .collect();
+
+        if let Err(e) = llm_proxy::config::save_providers(&providers) {
+            eprintln!("mhd: failed to save providers: {e}");
+        }
+
+        // Models: each UiProvider model becomes a Model tied to that provider.
+        let models: Vec<llm_proxy::config::Model> = state
+            .providers
+            .iter()
+            .flat_map(|p| {
+                p.models.iter().map(|m| llm_proxy::config::Model {
+                    provider: p.name.clone(),
+                    id: m.clone(),
+                    display_name: String::new(),
+                    tags: vec![],
+                })
+            })
+            .collect();
+
+        if let Err(e) = llm_proxy::config::save_models(&models) {
+            eprintln!("mhd: failed to save models: {e}");
+        }
+
+        // Save the API key from the first provider as upstream_key
+        if let Some(api_key) = state.providers.first().and_then(|p| {
+            if p.api_key.is_empty() {
+                None
+            } else {
+                Some(p.api_key.clone())
+            }
+        }) {
+            let secrets = llm_proxy::config::Secrets {
+                anthropic_key: String::new(),
+                upstream_key: api_key,
+            };
+            if let Err(e) = llm_proxy::config::save_secrets(&secrets) {
+                eprintln!("mhd: failed to save secrets: {e}");
+            }
+        }
+    }
+
     if let Err(e) = state.handle.reload_config() {
         eprintln!("mhd: settings reload error: {e}");
         return;
