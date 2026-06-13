@@ -62,14 +62,16 @@ use crate::config::editor_layout::{
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
     COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, COMBO_POPUP_WIDTH,
-    FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, SECTION_HEADER_HEIGHT_BASE,
-    WIN_HEIGHT_BASE, WIN_WIDTH_BASE, WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
+    FONT_BODY_SIZE, FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, WIN_HEIGHT_BASE, WIN_WIDTH_BASE,
+    WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_paint::{
-    build_advanced_controls, build_general_controls, build_shortcuts_controls, paint_page,
+    build_advanced_controls, build_general_controls, build_llm_proxy_controls,
+    build_shortcuts_controls, paint_page,
 };
 pub use crate::config::editor_state::{
     ButtonStyle, ParamEditCreateInfo, SettingsHit, SettingsPage, SettingsState, UIBinding,
+    UiProvider,
 };
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
 
@@ -220,6 +222,33 @@ pub fn show_config_editor(handle: AppHandle) {
         notes_dir,
         draw_dir,
         bindings,
+        providers: {
+            // Load providers from the proxy JSON files.
+            // Also load secrets for the API key (first provider gets the upstream key).
+            let upstream_key = llm_proxy::config::load_secrets()
+                .map(|s| s.upstream_key)
+                .unwrap_or_default();
+            match llm_proxy::config::load_providers() {
+                Ok(list) => list
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| UiProvider {
+                        name: p.name,
+                        endpoint: p.endpoint,
+                        api_key: if i == 0 {
+                            upstream_key.clone()
+                        } else {
+                            String::new()
+                        },
+                    })
+                    .collect(),
+                Err(_) => vec![UiProvider {
+                    name: "Default".into(),
+                    endpoint: "http://89.22.226.188:8080/v1".into(),
+                    api_key: upstream_key,
+                }],
+            }
+        },
         content_scroll_y: 0,
         recording_info: None,
         expanded_idx: None,
@@ -516,7 +545,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     }
 
     // ── Scrollable content area with clip region ──────────────────
-    let mut page_regions: Vec<crate::config::editor_control::HitRegion> = Vec::new();
+    let page_regions: Vec<crate::config::editor_control::HitRegion>;
     unsafe {
         let content_clip = CreateRectRgn(
             lay.pad(),
@@ -577,7 +606,19 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
                 );
             }
             SettingsPage::LlmProxy => {
-                paint_llm_proxy_page(dib_dc, lay, theme, title_font, body_font, small_font);
+                let ctls = build_llm_proxy_controls(lay, state);
+                page_regions = paint_page(
+                    &ctls,
+                    dib_dc,
+                    bits,
+                    lay.win_w(),
+                    lay.win_h(),
+                    state.content_scroll_y,
+                    theme,
+                    title_font,
+                    body_font,
+                    small_font,
+                );
             }
         }
 
@@ -764,63 +805,11 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
                 lay.advanced.top_y + btn_count * (lay.advanced.btn_h + lay.advanced.btn_gap);
             last_y + (16.0 * lay.scale()) as i32 - lay.content_y()
         }
-        SettingsPage::LlmProxy => lay.content_y() + (120.0 * lay.scale()) as i32 - lay.content_y(),
-    }
-}
-
-fn paint_llm_proxy_page(
-    dib_dc: HDC,
-    lay: &Layout,
-    theme: &NativeTheme,
-    title_font: HFONT,
-    body_font: HFONT,
-    _small_font: HFONT,
-) {
-    // Title header, matching the Advanced page style.
-    unsafe {
-        let _ = SelectObject(dib_dc, title_font);
-        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
-    }
-    let mut title_wz = to_utf16_z("LLM Proxy");
-    let mut title_rc = RECT {
-        left: lay.pad(),
-        top: lay.content_y(),
-        right: lay.win_w() - lay.pad(),
-        bottom: lay.content_y() + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32,
-    };
-    unsafe {
-        let _ = DrawTextW(
-            dib_dc,
-            &mut title_wz,
-            &mut title_rc,
-            DT_LEFT | DT_SINGLELINE,
-        );
-    }
-
-    // "Coming soon" message below the header.
-    unsafe {
-        let _ = SelectObject(dib_dc, body_font);
-        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
-    }
-    let mut msg_wz = to_utf16_z("coming soon — LLM proxy configuration will appear here");
-    let mut msg_rc = RECT {
-        left: lay.pad(),
-        top: lay.content_y()
-            + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32
-            + (12.0 * lay.scale()) as i32,
-        right: lay.win_w() - lay.pad(),
-        bottom: lay.content_y()
-            + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32
-            + (12.0 * lay.scale()) as i32
-            + (28.0 * lay.scale()) as i32,
-    };
-    unsafe {
-        let _ = DrawTextW(
-            dib_dc,
-            &mut msg_wz,
-            &mut msg_rc,
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
+        SettingsPage::LlmProxy => {
+            let n = state.providers.len() as i32;
+            let last_y = lay.provider_list_y() + n * lay.provider_row_h() + lay.provider_row_h();
+            last_y + (16.0 * lay.scale()) as i32 - lay.content_y()
+        }
     }
 }
 
@@ -1299,6 +1288,44 @@ unsafe extern "system" fn settings_wndproc(
                         close_kind_popup(state);
                         if let Some(path) = browse_for_folder(hwnd) {
                             state.draw_dir = path;
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                    }
+                    // ── LLM Proxy: provider list ─────────────────────
+                    SettingsHit::ProviderRow(i) => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if i < state.providers.len() {
+                            let p = state.providers[i].clone();
+                            if let Some(updated) =
+                                crate::config::editor_provider_popup::open_provider_popup(
+                                    hwnd,
+                                    state_ptr,
+                                    Some(p),
+                                )
+                            {
+                                state.providers[i] = updated;
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                        }
+                    }
+                    SettingsHit::ProviderDelete(i) => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if i < state.providers.len() {
+                            state.providers.remove(i);
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                    }
+                    SettingsHit::ProviderAddBtn => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if let Some(new_p) =
+                            crate::config::editor_provider_popup::open_provider_popup(
+                                hwnd, state_ptr, None,
+                            )
+                        {
+                            state.providers.push(new_p);
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                     }

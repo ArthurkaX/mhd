@@ -19,7 +19,7 @@ use axum::{
 };
 use tower_http::cors::CorsLayer;
 
-pub use config::Config;
+pub use config::{Config, Secrets, Settings};
 pub use state::{AppState, Target, Tier};
 
 /// Build the Axum router for a given shared state.
@@ -38,8 +38,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Load config from `~/.config/mhd/llm-proxy/config.toml`, applying env-var
-/// fallbacks for the API keys.
+/// Load config from `~/.config/mhd/llm-proxy/settings.json` +
+/// `secrets.json`, applying env-var fallbacks for the API keys.
 pub fn load_config() -> anyhow::Result<Config> {
     let mut cfg = config::load()?;
     if cfg.anthropic_key.is_empty() {
@@ -118,7 +118,8 @@ impl Drop for ProxyControl {
 }
 
 /// Start the proxy embedded in the current process, loading config from disk
-/// (`~/.config/mhd/llm-proxy/config.toml`) and persisting target changes there.
+/// (`~/.config/mhd/llm-proxy/settings.json` + `secrets.json`) and persisting
+/// target changes there.
 pub fn start_embedded(port: u16) -> std::io::Result<ProxyControl> {
     let cfg = load_config().map_err(|e| std::io::Error::other(e.to_string()))?;
     start_embedded_with(cfg, port, true)

@@ -764,6 +764,143 @@ pub fn build_general_controls(lay: &Layout, state: &SettingsState) -> ControlLis
     ctls
 }
 
+// ── LLM Proxy page controls ───────────────────────────────────────────
+
+/// Build the LLM Proxy page control list — currently the providers list.
+pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlList {
+    let mut ctls = ControlList::new();
+    let scale = (lay.win_w() as f32) / WIN_WIDTH_BASE as f32;
+    let row_h = lay.provider_row_h();
+    let pad = lay.pad();
+    let list_y = lay.provider_list_y();
+    let list_h = lay.provider_list_h();
+    let win_w_val = lay.win_w();
+    let scroll_y = state.content_scroll_y;
+
+    // Title header
+    ctls.push(Control::Header {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_proxy.top_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_proxy.top_y + (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32,
+        },
+        label: "Providers".into(),
+        font: FontChoice::Title,
+        text_color: theme_text(state),
+    });
+
+    // Table headers (pinned above scrolling, compensated for scroll)
+    let table_header_y = list_y + scroll_y - (20.0 * scale) as i32;
+    let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
+    let col_h = (16.0 * scale) as i32;
+
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad + 6,
+            top: table_header_y,
+            right: pad + lay.provider_name_w(),
+            bottom: table_header_y + col_h,
+        },
+        label: "NAME".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: name_end_x + 6,
+            top: table_header_y,
+            right: win_w_val - pad - lay.provider_del_w(),
+            bottom: table_header_y + col_h,
+        },
+        label: "ENDPOINT".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // Content height
+    let _content_h = state.providers.len() as i32 * row_h + row_h;
+
+    // Clipped list area
+    ctls.push(Control::ClipStart {
+        rect: RECT {
+            left: pad,
+            top: list_y,
+            right: win_w_val - pad,
+            bottom: list_y + list_h,
+        },
+    });
+
+    // Provider rows
+    let mut row_y = list_y;
+    for (i, p) in state.providers.iter().enumerate() {
+        let row_visible = row_y + row_h > list_y + scroll_y && row_y < list_y + list_h + scroll_y;
+
+        if row_visible {
+            let is_row_hovered = state.hovered_target == SettingsHit::ProviderRow(i);
+            let zebra_on = i % 2 == 1;
+
+            ctls.push(Control::BindingRow {
+                rect: RECT {
+                    left: pad,
+                    top: row_y,
+                    right: win_w_val - pad,
+                    bottom: row_y + row_h,
+                },
+                trigger: p.name.clone(),
+                kind_label: "Provider".into(),
+                param: p.endpoint.clone(),
+                is_selected: false,
+                is_hovered: is_row_hovered,
+                zebra: zebra_on,
+                hit: SettingsHit::ProviderRow(i),
+            });
+
+            // Delete X button
+            let del_x = win_w_val - pad - lay.provider_del_w();
+            let is_del_hovered = state.hovered_target == SettingsHit::ProviderDelete(i);
+            ctls.push(Control::Button {
+                rect: RECT {
+                    left: del_x,
+                    top: row_y + (row_h - lay.provider_del_w()) / 2,
+                    right: del_x + lay.provider_del_w(),
+                    bottom: row_y + (row_h + lay.provider_del_w()) / 2,
+                },
+                label: "X".into(),
+                font: FontChoice::Small,
+                is_hovered: is_del_hovered,
+                style: ButtonStyle::DangerGhost,
+                hit: SettingsHit::ProviderDelete(i),
+            });
+        }
+
+        row_y += row_h;
+    }
+
+    // End clip
+    ctls.push(Control::ClipEnd);
+
+    // Add provider button
+    let add_y = list_y + state.providers.len() as i32 * row_h;
+    let is_add_hovered = state.hovered_target == SettingsHit::ProviderAddBtn;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: pad,
+            top: add_y,
+            right: pad + (150.0 * scale) as i32,
+            bottom: add_y + row_h,
+        },
+        label: "+ Add Provider".into(),
+        font: FontChoice::Body,
+        is_hovered: is_add_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::ProviderAddBtn,
+    });
+
+    ctls
+}
+
 // ── Advanced page controls ───────────────────────────────────────────
 
 /// Build the Advanced page control list (no drawing).

@@ -1,10 +1,11 @@
 pub mod editor;
 pub mod editor_binding_popup;
 pub mod editor_control;
-pub mod editor_key_combo;
 pub mod editor_hittest;
+pub mod editor_key_combo;
 pub mod editor_layout;
 pub mod editor_paint;
+pub mod editor_provider_popup;
 pub mod editor_search_dropdown;
 pub mod editor_state;
 pub mod editor_theme;
@@ -21,6 +22,7 @@ use crate::blackbox::BlackboxConfig;
 use crate::config::path::home_dir;
 use crate::overlays::note::QuickNoteConfig;
 use crate::trigger::parse_trigger;
+use llm_proxy;
 
 fn default_notes_dir() -> PathBuf {
     home_dir()
@@ -39,11 +41,11 @@ fn default_draw_dir() -> PathBuf {
 }
 
 /// One upstream provider (OpenAI-compatible).
+/// API keys are stored separately in secrets.json.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Provider {
     pub name: String,
     pub endpoint: String,
-    pub api_key: String,
 }
 
 /// One selectable alternative model in the LLM proxy selector.
@@ -55,7 +57,7 @@ pub struct LlmModel {
     pub tags: Vec<String>,
 }
 
-/// Validated `[llm_proxy]` config.
+/// Validated LLM proxy config (loaded from JSON files).
 #[derive(Debug, Clone)]
 pub struct LlmProxyConfig {
     pub enabled: bool,
@@ -65,6 +67,8 @@ pub struct LlmProxyConfig {
     /// Optional Anthropic API key for native passthrough (usually empty — OAuth
     /// from Claude Code is forwarded instead).
     pub anthropic_key: String,
+    /// Bearer key for the upstream gateway (from secrets.json).
+    pub upstream_key: String,
     /// Default routing target per tier: "native" or an upstream model id.
     pub opus: String,
     pub sonnet: String,
@@ -82,6 +86,7 @@ impl Default for LlmProxyConfig {
             log_level: "none".to_string(),
             providers: Vec::new(),
             anthropic_key: String::new(),
+            upstream_key: String::new(),
             opus: "native".to_string(),
             sonnet: "native".to_string(),
             haiku: "native".to_string(),
@@ -275,96 +280,246 @@ impl AppConfig {
                 .unwrap_or_else(default_draw_dir),
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,
-            llm_proxy: {
-                let raw_lp = raw.llm_proxy;
-                // Backward compat: if no provider entries but old endpoint is set,
-                // migrate to a single "Default" provider.
-                let providers = if raw_lp.as_ref().is_none_or(|r| r.provider.is_empty())
-                    && raw_lp.as_ref().and_then(|r| r.endpoint.clone()).is_some()
-                {
-                    vec![Provider {
-                        name: "Default".into(),
-                        endpoint: raw_lp.as_ref().unwrap().endpoint.clone().unwrap(),
-                        api_key: raw_lp
-                            .as_ref()
-                            .and_then(|r| r.api_key.clone())
-                            .unwrap_or_default(),
-                    }]
-                } else {
-                    raw_lp
-                        .as_ref()
-                        .map(|r| {
-                            r.provider
-                                .iter()
-                                .map(|rp| Provider {
-                                    name: rp.name.clone(),
-                                    endpoint: rp.endpoint.clone(),
-                                    api_key: rp.api_key.clone(),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                let default_provider = providers
-                    .first()
-                    .map(|p| p.name.clone())
-                    .unwrap_or_default();
-                LlmProxyConfig {
-                    enabled: raw_lp.as_ref().and_then(|r| r.enabled).unwrap_or(false),
-                    port: raw_lp.as_ref().and_then(|r| r.port).unwrap_or(3456),
-                    log_level: raw_lp
-                        .as_ref()
-                        .and_then(|r| r.log_level.clone())
-                        .unwrap_or_else(|| "none".to_string()),
-                    providers,
-                    anthropic_key: raw_lp
-                        .as_ref()
-                        .and_then(|r| r.anthropic_key.clone())
-                        .unwrap_or_default(),
-                    opus: raw_lp
-                        .as_ref()
-                        .and_then(|r| r.opus.clone())
-                        .unwrap_or_else(|| "native".to_string()),
-                    sonnet: raw_lp
-                        .as_ref()
-                        .and_then(|r| r.sonnet.clone())
-                        .unwrap_or_else(|| "native".to_string()),
-                    haiku: raw_lp
-                        .as_ref()
-                        .and_then(|r| r.haiku.clone())
-                        .unwrap_or_else(|| "native".to_string()),
-                    fable: raw_lp
-                        .as_ref()
-                        .and_then(|r| r.fable.clone())
-                        .unwrap_or_else(|| "native".to_string()),
-                    models: raw_lp
-                        .as_ref()
-                        .map(|r| {
-                            r.model
-                                .iter()
-                                .map(|m| {
-                                    let display_name = m
-                                        .display_name
-                                        .clone()
-                                        .or_else(|| m.name.clone())
-                                        .unwrap_or_else(|| m.id.clone());
-                                    LlmModel {
-                                        provider: if m.provider.is_empty() {
-                                            default_provider.clone()
-                                        } else {
-                                            m.provider.clone()
-                                        },
-                                        id: m.id.clone(),
-                                        display_name,
-                                        tags: m.tags.clone(),
-                                    }
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                }
-            },
+            // LLM proxy config is now stored in JSON files under the proxy's
+            // config directory. The old `[llm_proxy]` TOML section is migrated
+            // automatically on first access.
+            llm_proxy: Self::load_llm_proxy_from_json(content),
         })
+    }
+
+    // ── LLM proxy JSON loading ──────────────────────────────────────────────
+
+    /// Load LLM proxy config from JSON files. Falls back to defaults if files
+    /// don't exist. Migrates old `[llm_proxy]` TOML section on first run.
+    fn load_llm_proxy_from_json(toml_content: &str) -> LlmProxyConfig {
+        // Migration: old TOML `[llm_proxy]` → JSON files
+        Self::maybe_migrate_llm_proxy_toml(toml_content);
+
+        // Load from JSON files
+        let settings = llm_proxy::config::load_settings().ok();
+        let secrets = llm_proxy::config::load_secrets().ok();
+        let providers = llm_proxy::config::load_providers().ok();
+        let models = llm_proxy::config::load_models().ok();
+
+        LlmProxyConfig {
+            enabled: settings.as_ref().map(|s| s.enabled).unwrap_or(false),
+            port: settings.as_ref().map(|s| s.port).unwrap_or(3456),
+            log_level: settings
+                .as_ref()
+                .map(|s| s.log_level.clone())
+                .unwrap_or_else(|| "none".to_string()),
+            providers: providers
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| Provider {
+                    name: p.name,
+                    endpoint: p.endpoint,
+                })
+                .collect(),
+            anthropic_key: secrets
+                .as_ref()
+                .map(|s| s.anthropic_key.clone())
+                .unwrap_or_default(),
+            upstream_key: secrets
+                .as_ref()
+                .map(|s| s.upstream_key.clone())
+                .unwrap_or_default(),
+            opus: settings
+                .as_ref()
+                .map(|s| s.opus_target.clone())
+                .unwrap_or_else(|| "native".to_string()),
+            sonnet: settings
+                .as_ref()
+                .map(|s| s.sonnet_target.clone())
+                .unwrap_or_else(|| "native".to_string()),
+            haiku: settings
+                .as_ref()
+                .map(|s| s.haiku_target.clone())
+                .unwrap_or_else(|| "native".to_string()),
+            fable: settings
+                .as_ref()
+                .map(|s| s.fable_target.clone())
+                .unwrap_or_else(|| "native".to_string()),
+            models: models
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| LlmModel {
+                    provider: m.provider,
+                    id: m.id,
+                    display_name: m.display_name,
+                    tags: m.tags,
+                })
+                .collect(),
+        }
+    }
+
+    /// Migrate old `[llm_proxy]` TOML section to JSON files.
+    /// Only runs once; after migration the TOML section is harmless (serde ignores
+    /// unknown fields) and the JSON files take over.
+    fn maybe_migrate_llm_proxy_toml(content: &str) {
+        // Parse the TOML content looking for `[llm_proxy]`. We use the old raw
+        // struct directly to avoid duplicating field definitions.
+        #[derive(serde::Deserialize)]
+        struct OldLlmProxy {
+            #[serde(default)]
+            enabled: Option<bool>,
+            #[serde(default)]
+            port: Option<u16>,
+            #[serde(default)]
+            log_level: Option<String>,
+            #[serde(default)]
+            provider: Vec<OldProvider>,
+            #[serde(default)]
+            anthropic_key: Option<String>,
+            #[serde(default)]
+            api_key: Option<String>,
+            #[serde(default)]
+            endpoint: Option<String>,
+            #[serde(default)]
+            opus: Option<String>,
+            #[serde(default)]
+            sonnet: Option<String>,
+            #[serde(default)]
+            haiku: Option<String>,
+            #[serde(default)]
+            fable: Option<String>,
+            #[serde(default)]
+            model: Vec<OldModel>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct OldProvider {
+            name: String,
+            endpoint: String,
+            #[serde(default)]
+            api_key: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct OldModel {
+            #[serde(default)]
+            provider: String,
+            id: String,
+            #[serde(default)]
+            display_name: Option<String>,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            tags: Vec<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct OldConfig {
+            llm_proxy: Option<OldLlmProxy>,
+        }
+
+        // Only migrate if the JSON files don't already exist.
+        let dir = llm_proxy::config::config_dir();
+        if llm_proxy::config::load_settings().is_ok() {
+            return; // already migrated
+        }
+
+        let old: OldConfig = match toml::from_str(content) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let Some(lp) = old.llm_proxy else {
+            return;
+        };
+
+        // Build settings
+        let mut settings = llm_proxy::config::Settings::default();
+        settings.enabled = lp.enabled.unwrap_or(false);
+        settings.port = lp.port.unwrap_or(3456);
+        settings.log_level = lp.log_level.unwrap_or_else(|| "none".to_string());
+        let upstream_base_url = lp
+            .endpoint
+            .clone()
+            .or_else(|| lp.provider.first().map(|p| p.endpoint.clone()));
+        if let Some(url) = upstream_base_url {
+            settings.upstream_base_url = url;
+        }
+        settings.opus_target = lp.opus.unwrap_or_else(|| "native".to_string());
+        settings.sonnet_target = lp.sonnet.unwrap_or_else(|| "native".to_string());
+        settings.haiku_target = lp.haiku.unwrap_or_else(|| "native".to_string());
+        settings.fable_target = lp.fable.unwrap_or_else(|| "native".to_string());
+
+        // Build secrets
+        let mut secrets = llm_proxy::config::Secrets::default();
+        if let Some(k) = lp.anthropic_key.filter(|k| !k.is_empty()) {
+            secrets.anthropic_key = k;
+        }
+        // Use first provider's api_key or the deprecated top-level api_key
+        let upstream_key = lp
+            .provider
+            .first()
+            .map(|p| p.api_key.clone())
+            .or(lp.api_key)
+            .unwrap_or_default();
+        if !upstream_key.is_empty() {
+            secrets.upstream_key = upstream_key;
+        }
+
+        // Build providers (name + endpoint only, keys go to secrets)
+        let providers: Vec<llm_proxy::config::Provider> =
+            if lp.provider.is_empty() && lp.endpoint.is_some() {
+                vec![llm_proxy::config::Provider {
+                    name: "Default".into(),
+                    endpoint: lp.endpoint.unwrap(),
+                }]
+            } else {
+                lp.provider
+                    .into_iter()
+                    .map(|p| llm_proxy::config::Provider {
+                        name: p.name,
+                        endpoint: p.endpoint,
+                    })
+                    .collect()
+            };
+
+        // Build models
+        let default_provider = providers
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let models: Vec<llm_proxy::config::Model> = lp
+            .model
+            .into_iter()
+            .map(|m| {
+                let display_name = m.display_name.or(m.name).unwrap_or_else(|| m.id.clone());
+                llm_proxy::config::Model {
+                    provider: if m.provider.is_empty() {
+                        default_provider.clone()
+                    } else {
+                        m.provider
+                    },
+                    id: m.id,
+                    display_name,
+                    tags: m.tags,
+                }
+            })
+            .collect();
+
+        // Persist all files
+        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = llm_proxy::config::save_settings(&settings) {
+            eprintln!("mhd: failed to migrate proxy settings: {e}");
+            return;
+        }
+        if let Err(e) = llm_proxy::config::save_secrets(&secrets) {
+            eprintln!("mhd: failed to migrate proxy secrets: {e}");
+            return;
+        }
+        if let Err(e) = llm_proxy::config::save_providers(&providers) {
+            eprintln!("mhd: failed to migrate proxy providers: {e}");
+            return;
+        }
+        if let Err(e) = llm_proxy::config::save_models(&models) {
+            eprintln!("mhd: failed to migrate proxy models: {e}");
+            return;
+        }
+
+        eprintln!("mhd: migrated [llm_proxy] config to JSON files");
     }
 
     fn build_trigger_map(

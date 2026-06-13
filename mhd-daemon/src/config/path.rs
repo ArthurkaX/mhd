@@ -191,24 +191,16 @@ action = "quit"
 #
 # Routes Anthropic API requests through a local proxy that can
 # remap models (e.g. use DeepSeek V4 Flash as the "sonnet" tier).
-# The proxy listens on the configured port; Claude Code talks to it
-# via ANTHROPIC_BASE_URL.
+# The proxy config now lives in separate JSON files under
+# %USERPROFILE%\.config\mhd\llm-proxy\:
 #
-# [llm_proxy]
-# enabled = true
-# port = 3456
-# endpoint = "http://your-gateway:8080/v1"
-# api_key = "your-gateway-api-key"
+#   settings.json    — port, routing, log_level
+#   secrets.json     — API keys (DPAPI-encrypted on Windows)
+#   providers.json   — gateway endpoints
+#   models.json      — model pool for the quick-switch UI
 #
-# Per-tier model override: "native" passes through to real Anthropic.
-# opus = "native"
-# sonnet = "native"
-# haiku = "native"
-#
-# Additional models shown in the model-switcher UI (Ctrl+Alt+L).
-# [[llm_proxy.model]]
-# id = "your-provider/model-name"
-# name = "Your Model Name"
+# Once the JSON files exist, the proxy activates automatically.
+# See the llm-proxy README for file format details.
 "#;
 
 #[cfg(feature = "blackbox")]
@@ -218,6 +210,11 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Uncomment bindings to enable them.
 # The main idea: if Windows or another app uses an uncomfortable shortcut
 # and does not make it easy to change, map a convenient key/button to it here.
+#
+# ── LLM Proxy ─────────────────────────────────────────────────
+# Proxy config now lives in separate JSON files under
+# %USERPROFILE%\.config\mhd\llm-proxy\ — see the non-blackbox
+# example config above for file details.
 #
 # Optional startup scheme. If omitted, "default" is used.
 # active_scheme = "default"

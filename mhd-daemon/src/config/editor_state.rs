@@ -35,6 +35,14 @@ pub enum SettingsPage {
 
 // ── Hit‑test results ──────────────────────────────────────────────
 
+/// One provider row in the LLM Proxy providers list.
+#[derive(Debug, Clone)]
+pub struct UiProvider {
+    pub name: String,
+    pub endpoint: String,
+    pub api_key: String,
+}
+
 /// Result from the centralized hit‑test function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsHit {
@@ -46,6 +54,12 @@ pub enum SettingsHit {
     ApplyBtn,
     CloseBtn,
     AddBtn,
+    /// Click on a provider row to edit it.
+    ProviderRow(usize),
+    /// Delete button on a provider row.
+    ProviderDelete(usize),
+    /// Add a new provider.
+    ProviderAddBtn,
     /// Click on a shortcut overview row to edit it.
     RowClick(usize),
     /// Delete button on a shortcut row (with confirmation).
@@ -125,6 +139,8 @@ pub struct SettingsState {
 
     /// List of bindings being edited
     pub bindings: Vec<UIBinding>,
+    /// List of providers being edited (LLM Proxy page).
+    pub providers: Vec<UiProvider>,
     /// Vertical scroll offset for the content area (all pages).
     pub content_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)

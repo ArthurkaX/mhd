@@ -34,7 +34,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
     let pcfg = llm_proxy::Config {
         anthropic_key: cfg.anthropic_key.clone(),
         upstream_base_url: main.map(|p| p.endpoint.clone()).unwrap_or_default(),
-        upstream_key: main.map(|p| p.api_key.clone()).unwrap_or_default(),
+        upstream_key: cfg.upstream_key.clone(),
         opus_target: cfg.opus.clone(),
         sonnet_target: cfg.sonnet.clone(),
         haiku_target: cfg.haiku.clone(),

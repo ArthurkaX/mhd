@@ -235,10 +235,20 @@ pub struct AdvancedLayout {
     pub btn_w: i32,
 }
 
-/// Geometry specific to the LLM Proxy page (currently just a centered text).
+/// Geometry specific to the LLM Proxy page (providers list + future sections).
 #[derive(Copy, Clone)]
 pub struct LlmProxyLayout {
     pub top_y: i32,
+    /// Y offset of the provider list (below the section header).
+    pub list_y: i32,
+    /// Available height of the provider list area.
+    pub list_h: i32,
+    /// Single row height.
+    pub row_h: i32,
+    /// Width of the name column.
+    pub name_w: i32,
+    /// Width of the delete button.
+    pub del_w: i32,
 }
 
 /// Top-level layout composition.
@@ -404,6 +414,23 @@ impl Layout {
     pub fn table_header_y(&self) -> i32 {
         self.shortcuts.table_header_y
     }
+
+    // LLM Proxy page
+    pub fn provider_list_y(&self) -> i32 {
+        self.llm_proxy.list_y
+    }
+    pub fn provider_list_h(&self) -> i32 {
+        self.llm_proxy.list_h
+    }
+    pub fn provider_row_h(&self) -> i32 {
+        self.llm_proxy.row_h
+    }
+    pub fn provider_name_w(&self) -> i32 {
+        self.llm_proxy.name_w
+    }
+    pub fn provider_del_w(&self) -> i32 {
+        self.llm_proxy.del_w
+    }
 }
 
 /// Compute the scaled layout for a given DPI scaling factor.
@@ -550,5 +577,17 @@ fn compute_advanced_layout(c: &CommonLayout) -> AdvancedLayout {
 }
 
 fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
-    LlmProxyLayout { top_y: c.content_y }
+    let list_y =
+        c.content_y + (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32 + (8.0 * c.scale) as i32;
+    let list_h = c.content_visible_h
+        - (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32
+        - (8.0 * c.scale) as i32;
+    LlmProxyLayout {
+        top_y: c.content_y,
+        list_y,
+        list_h,
+        row_h: (ROW_HEIGHT_BASE as f32 * c.scale) as i32,
+        name_w: (260.0 * c.scale) as i32,
+        del_w: (28.0 * c.scale) as i32,
+    }
 }
