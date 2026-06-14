@@ -345,16 +345,15 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     let total_cw = win_w - pad * 2;
-    let col_w = total_cw / 7;
-    // Column widths: Seq 0.35x, Tier 0.45x, Eff 0.45x, Target 0.80x, In 0.40x, Out 0.40x, Reason fills remainder
+    // Column widths: fixed reasonable sizes so Tier/Eff fit "Sonnet" comfortably
     let col_widths = [
-        (col_w as f32 * 0.35) as i32, // Seq
-        (col_w as f32 * 0.45) as i32, // Tier
-        (col_w as f32 * 0.45) as i32, // Eff
-        (col_w as f32 * 0.80) as i32, // Target
-        (col_w as f32 * 0.40) as i32, // In
-        (col_w as f32 * 0.40) as i32, // Out
-        total_cw - (col_w as f32 * (0.35 + 0.45 + 0.45 + 0.80 + 0.40 + 0.40)) as i32, // Reason
+        (32.0 * scale) as i32, // # (~32px)
+        (60.0 * scale) as i32, // Tier (~60px)
+        (60.0 * scale) as i32, // Eff (~60px)
+        total_cw - ((32.0 + 60.0 + 60.0 + 48.0 + 48.0 + 90.0) * scale) as i32, // Target = remainder
+        (48.0 * scale) as i32, // In (~48px)
+        (48.0 * scale) as i32, // Out (~48px)
+        (90.0 * scale) as i32, // Reason (~90px)
     ];
     let col_headers = ["#", "Tier", "Eff", "Target", "In", "Out", "Reason"];
     let mut col_x = pad;

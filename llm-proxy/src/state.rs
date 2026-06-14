@@ -281,6 +281,20 @@ impl AppState {
         trace.push_back(entry);
     }
 
+    /// Update token counts on the trace entry matching this req_id.
+    /// Best-effort: silently no-ops if the entry was already evicted.
+    pub fn update_trace_tokens(&self, req_id: u64, input_tokens: u64, output_tokens: u64) {
+        let mut trace = self.trace.write().unwrap();
+        // Search from the back — the matching entry is almost certainly recent.
+        for entry in trace.iter_mut().rev() {
+            if entry.seq == req_id {
+                entry.input_tokens = input_tokens;
+                entry.output_tokens = output_tokens;
+                break;
+            }
+        }
+    }
+
     /// Snapshot of recent routing decisions (newest at the end).
     pub fn trace_snapshot(&self) -> Vec<TraceEntry> {
         self.trace.read().unwrap().iter().cloned().collect()

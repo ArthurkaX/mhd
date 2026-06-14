@@ -130,6 +130,22 @@ pub async fn send_request(
         ));
     }
     let anthropic_resp = transform::openai_to_anthropic(openai_resp);
+
+    // Push token usage into the trace entry.
+    if let Some(usage) = anthropic_resp.get("usage") {
+        let inp = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let out = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if inp > 0 || out > 0 {
+            state.update_trace_tokens(req_id, inp, out);
+        }
+    }
+
     if detailed {
         let stop_reason = anthropic_resp
             .get("stop_reason")
@@ -593,6 +609,9 @@ pub async fn stream_request(
         }
 
         // ── end-of-stream log ──────────────────────────────────────
+        // Push final token counts into the trace entry.
+        state_for_log.update_trace_tokens(req_id, translator.input_tokens, translator.output_tokens);
+
         if log {
             if had_error {
                 state_for_log.log_line(&format!(

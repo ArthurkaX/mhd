@@ -122,6 +122,22 @@ pub async fn send_request(
     }
 
     let json: Value = resp.json().await?;
+
+    // Push token usage into the trace entry.
+    if let Some(usage) = json.get("usage") {
+        let inp = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let out = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if inp > 0 || out > 0 {
+            state.update_trace_tokens(req_id, inp, out);
+        }
+    }
+
     if log {
         state.log_line(&format!(
             "{} #{req_id} native DONE after {} ms",
