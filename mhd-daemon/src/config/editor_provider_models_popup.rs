@@ -1542,31 +1542,40 @@ unsafe extern "system" fn models_popup_wndproc(
                         }
                         0x08 /* VK_BACK */ => {
                             if state.edit_cursor > 0 {
-                                let idx = state.edit_cursor - 1;
-                                state.edit_text.remove(idx);
-                                state.edit_cursor -= 1;
-                                paint_models_popup(hwnd, state_ptr);
+                                let text = &state.edit_text[..state.edit_cursor];
+                                if let Some((i, _)) = text.char_indices().next_back() {
+                                    state.edit_text.drain(i..state.edit_cursor);
+                                    state.edit_cursor = i;
+                                    paint_models_popup(hwnd, state_ptr);
+                                }
                             }
                             return LRESULT(0);
                         }
                         0x2E /* VK_DELETE */ => {
                             if state.edit_cursor < state.edit_text.len() {
-                                state.edit_text.remove(state.edit_cursor);
-                                paint_models_popup(hwnd, state_ptr);
+                                let text = &state.edit_text[state.edit_cursor..];
+                                if let Some((i, c)) = text.char_indices().next() {
+                                    state.edit_text.drain(state.edit_cursor + i..state.edit_cursor + i + c.len_utf8());
+                                    paint_models_popup(hwnd, state_ptr);
+                                }
                             }
                             return LRESULT(0);
                         }
                         0x25 /* VK_LEFT */ => {
                             if state.edit_cursor > 0 {
-                                state.edit_cursor -= 1;
+                                let text = &state.edit_text[..state.edit_cursor];
+                                state.edit_cursor = text.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
                                 paint_models_popup(hwnd, state_ptr);
                             }
                             return LRESULT(0);
                         }
                         0x27 /* VK_RIGHT */ => {
                             if state.edit_cursor < state.edit_text.len() {
-                                state.edit_cursor += 1;
-                                paint_models_popup(hwnd, state_ptr);
+                                let text = &state.edit_text[state.edit_cursor..];
+                                if let Some((i, c)) = text.char_indices().next() {
+                                    state.edit_cursor += i + c.len_utf8();
+                                    paint_models_popup(hwnd, state_ptr);
+                                }
                             }
                             return LRESULT(0);
                         }
@@ -1597,7 +1606,7 @@ unsafe extern "system" fn models_popup_wndproc(
                     if ch >= 0x20 && ch != 0x7F {
                         if let Some(c) = char::from_u32(ch as u32) {
                             state.edit_text.insert(state.edit_cursor, c);
-                            state.edit_cursor += 1;
+                            state.edit_cursor += c.len_utf8();
                             paint_models_popup(hwnd, state_ptr);
                             return LRESULT(0);
                         }

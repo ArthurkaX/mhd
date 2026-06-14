@@ -92,8 +92,8 @@ pub enum SettingsHit {
     ProxyBindAddressField,
     /// Opus downgrade toggle.
     ProxyOpusDowngradeToggle,
-    /// Opus downgrade target combo (opens search dropdown).
-    ProxyOpusDowngradeCombo,
+    /// Sonnet downgrade toggle.
+    ProxySonnetDowngradeToggle,
 }
 
 /// Which global proxy field is being inline-edited.
@@ -175,12 +175,8 @@ pub struct SettingsState {
     pub proxy_bind_address: String,
     /// Opus downgrade toggle.
     pub opus_downgrade_enabled: bool,
-    /// Opus downgrade target model.
-    pub opus_downgrade_target: String,
-    /// Search items for opus downgrade target dropdown.
-    pub opus_downgrade_search_items: Vec<SearchDropdownItem>,
-    /// Search dropdown state for opus downgrade target.
-    pub opus_downgrade_dropdown: SearchDropdownState,
+    /// Sonnet downgrade toggle.
+    pub sonnet_downgrade_enabled: bool,
     /// Vertical scroll offset for the content area (all pages).
     pub content_scroll_y: i32,
     /// Currently recording (binding_idx, is_trigger)

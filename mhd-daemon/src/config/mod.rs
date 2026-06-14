@@ -81,8 +81,8 @@ pub struct LlmProxyConfig {
     pub models: Vec<LlmModel>,
     /// Opus downgrade when no thinking.
     pub opus_downgrade_enabled: bool,
-    /// Target for downgraded opus.
-    pub opus_downgrade_target: String,
+    /// Sonnet downgrade when no thinking.
+    pub sonnet_downgrade_enabled: bool,
 }
 
 impl Default for LlmProxyConfig {
@@ -101,7 +101,7 @@ impl Default for LlmProxyConfig {
             fable: "native".to_string(),
             models: Vec::new(),
             opus_downgrade_enabled: false,
-            opus_downgrade_target: "haiku".to_string(),
+            sonnet_downgrade_enabled: false,
         }
     }
 }
@@ -368,10 +368,10 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.opus_downgrade_enabled)
                 .unwrap_or(false),
-            opus_downgrade_target: settings
+            sonnet_downgrade_enabled: settings
                 .as_ref()
-                .map(|s| s.opus_downgrade_target.clone())
-                .unwrap_or_else(|| "haiku".to_string()),
+                .map(|s| s.sonnet_downgrade_enabled)
+                .unwrap_or(false),
         }
     }
 

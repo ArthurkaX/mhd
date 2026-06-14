@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
@@ -148,8 +148,10 @@ pub struct AppState {
     pub log_level: RwLock<DebugLevel>,
     /// Opus downgrade when no thinking.
     pub opus_downgrade_enabled: RwLock<bool>,
-    /// Target for downgraded opus (model id string).
-    pub opus_downgrade_target: RwLock<String>,
+    /// Sonnet downgrade when no thinking.
+    pub sonnet_downgrade_enabled: RwLock<bool>,
+    /// Whether to write to the database log.
+    pub db_log_enabled: AtomicBool,
     /// Shared HTTP client — reused across requests so connections (and TLS
     /// sessions) are pooled. Creating a fresh `reqwest::Client` per request
     /// defeats keep-alive and serializes parallel load behind new handshakes.
@@ -181,8 +183,9 @@ impl AppState {
             fable_target: RwLock::new(Target::parse(&cfg.fable_target)),
             log_level: RwLock::new(DebugLevel::parse(&cfg.log_level)),
             opus_downgrade_enabled: RwLock::new(cfg.opus_downgrade_enabled),
-            opus_downgrade_target: RwLock::new(cfg.opus_downgrade_target.clone()),
+            sonnet_downgrade_enabled: RwLock::new(cfg.sonnet_downgrade_enabled),
             http: reqwest::Client::new(),
+            db_log_enabled: AtomicBool::new(false),
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
             db_log: crate::db_log::DbLog::open(&db_path).expect("Failed to open proxy.db"),
@@ -194,22 +197,26 @@ impl AppState {
     /// Append a text line to both SQLite and the mirror log file.
     /// Best-effort: errors are swallowed.
     pub fn log_line(&self, msg: &str) {
-        self.db_log.insert(
-            &crate::providers::now_ms(),
-            &crate::db_log::LogEvent {
-                seq: 0,
-                event_type: "RAW".to_string(),
-                detail: Some(msg.to_string()),
-                ..Default::default()
-            },
-        );
+        if self.db_log_enabled.load(Ordering::Relaxed) {
+            self.db_log.insert(
+                &crate::providers::now_ms(),
+                &crate::db_log::LogEvent {
+                    seq: 0,
+                    event_type: "RAW".to_string(),
+                    detail: Some(msg.to_string()),
+                    ..Default::default()
+                },
+            );
+        }
     }
 
     /// Log a structured event with typed fields.
     /// Timestamp is automatic. Writes to SQLite + mirror log.
     pub fn log_event(&self, event: crate::db_log::LogEvent) {
-        let ts = crate::providers::now_ms();
-        self.db_log.insert(&ts, &event);
+        if self.db_log_enabled.load(Ordering::Relaxed) {
+            let ts = crate::providers::now_ms();
+            self.db_log.insert(&ts, &event);
+        }
     }
 
     /// Record that a request arrived and return the gap since the previous
@@ -285,7 +292,17 @@ impl AppState {
             fable_target: self.fable_target.read().unwrap().as_str().to_string(),
             log_level: self.log_level.read().unwrap().as_str().to_string(),
             opus_downgrade_enabled: *self.opus_downgrade_enabled.read().unwrap(),
-            opus_downgrade_target: self.opus_downgrade_target.read().unwrap().clone(),
+            sonnet_downgrade_enabled: *self.sonnet_downgrade_enabled.read().unwrap(),
         }
+    }
+
+    /// Enable or disable the database log at runtime.
+    pub fn set_db_log_enabled(&self, enabled: bool) {
+        self.db_log_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Check whether the database log is currently enabled.
+    pub fn is_db_log_enabled(&self) -> bool {
+        self.db_log_enabled.load(Ordering::Relaxed)
     }
 }

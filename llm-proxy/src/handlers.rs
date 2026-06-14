@@ -96,43 +96,45 @@ pub async fn post_messages(
     // while keeping real tasks on the expensive tier.
     // Downgrade cascades to the next tier: Opus→Sonnet, Sonnet→Haiku
     // (using whatever target that tier is configured to route to).
-    let (effective_tier, reason) = if *state.opus_downgrade_enabled.read().unwrap()
-        && (tier == Tier::Opus || tier == Tier::Sonnet)
-    {
-        let (keep, r) = should_keep_on_expensive_tier(&payload, gap_s);
-        if keep {
-            let target_keep = state.target_for(tier);
-            state.log_event(crate::db_log::LogEvent {
-                seq: req_id,
-                event_type: "KEEP".to_string(),
-                tier: Some(format!("{tier:?}")),
-                effective_tier: Some(format!("{tier:?}")),
-                target: Some(target_keep.as_str().to_string()),
-                model: Some(model.clone()),
-                reason: Some(r.to_string()),
-                ..Default::default()
-            });
-            (tier, r)
+    let (effective_tier, reason) = {
+        let opus_enabled = *state.opus_downgrade_enabled.read().unwrap();
+        let sonnet_enabled = *state.sonnet_downgrade_enabled.read().unwrap();
+        if (tier == Tier::Opus && opus_enabled) || (tier == Tier::Sonnet && sonnet_enabled) {
+            let (keep, r) = should_keep_on_expensive_tier(&payload, gap_s);
+            if keep {
+                let target_keep = state.target_for(tier);
+                state.log_event(crate::db_log::LogEvent {
+                    seq: req_id,
+                    event_type: "KEEP".to_string(),
+                    tier: Some(format!("{tier:?}")),
+                    effective_tier: Some(format!("{tier:?}")),
+                    target: Some(target_keep.as_str().to_string()),
+                    model: Some(model.clone()),
+                    reason: Some(r.to_string()),
+                    ..Default::default()
+                });
+                (tier, r)
+            } else {
+                let next_tier = match tier {
+                    Tier::Opus => Tier::Sonnet,
+                    _ => Tier::Haiku,
+                };
+                let next_target = state.target_for(next_tier);
+                state.log_event(crate::db_log::LogEvent {
+                    seq: req_id,
+                    event_type: "DOWNGRADE".to_string(),
+                    tier: Some(format!("{tier:?}")),
+                    effective_tier: Some(format!("{next_tier:?}")),
+                    target: Some(next_target.as_str().to_string()),
+                    model: Some(model.clone()),
+                    reason: Some(r.to_string()),
+                    ..Default::default()
+                });
+                (next_tier, r)
+            }
         } else {
-            let next_tier = match tier {
-                Tier::Opus => Tier::Sonnet,
-                _ => Tier::Haiku,
-            };
-            let next_target = state.target_for(next_tier);
-            state.log_event(crate::db_log::LogEvent {
-                seq: req_id,
-                event_type: "DOWNGRADE".to_string(),
-                tier: Some(format!("{tier:?}")),
-                effective_tier: Some(format!("{next_tier:?}")),
-                target: Some(next_target.as_str().to_string()),
-                model: Some(model.clone()),
-                reason: Some(r.to_string()),
-                ..Default::default()
-            });
-            (next_tier, r)
+            (tier, "")
         }
-    } else {
-        (tier, "")
     };
 
     let stream = payload

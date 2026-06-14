@@ -62,8 +62,8 @@ use crate::config::editor_layout::{
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
     COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, FONT_BODY_SIZE,
-    FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, ROW_HEIGHT_BASE, SECTION_HEADER_HEIGHT_BASE,
-    WIN_HEIGHT_BASE, WIN_WIDTH_BASE, WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
+    FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, SECTION_HEADER_HEIGHT_BASE, WIN_HEIGHT_BASE,
+    WIN_WIDTH_BASE, WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_paint::{
     build_advanced_controls, build_general_controls, build_llm_proxy_controls,
@@ -236,9 +236,9 @@ pub fn show_config_editor(handle: AppHandle) {
         opus_downgrade_enabled: llm_proxy::config::load_settings()
             .map(|s| s.opus_downgrade_enabled)
             .unwrap_or(false),
-        opus_downgrade_target: llm_proxy::config::load_settings()
-            .map(|s| s.opus_downgrade_target)
-            .unwrap_or_else(|_| "haiku".to_string()),
+        sonnet_downgrade_enabled: llm_proxy::config::load_settings()
+            .map(|s| s.sonnet_downgrade_enabled)
+            .unwrap_or(false),
         providers: {
             // Load providers from the proxy JSON files.
             // Also load secrets for the API key (first provider gets the upstream key).
@@ -300,36 +300,7 @@ pub fn show_config_editor(handle: AppHandle) {
         edit_select_start: None,
         edit_old_value: String::new(),
         proxy_editing_field: None,
-        // Build search items for opus downgrade target: "native" + all model IDs
-        opus_downgrade_search_items: {
-            let mut items: Vec<SearchDropdownItem> = vec![SearchDropdownItem::new(
-                0,
-                "native (Anthropic)".to_string(),
-                vec![
-                    "native".to_string(),
-                    "anthropic".to_string(),
-                    "default".to_string(),
-                ],
-            )];
-            let mut seen_ids = std::collections::HashSet::new();
-            seen_ids.insert("native".to_string());
-            let mut id_counter = 1;
-            // Collect model IDs from models.json directly
-            if let Ok(all_models) = llm_proxy::config::load_models() {
-                for m in &all_models {
-                    if seen_ids.insert(m.id.clone()) {
-                        items.push(SearchDropdownItem::new(
-                            id_counter,
-                            m.id.clone(),
-                            vec![m.id.to_lowercase()],
-                        ));
-                        id_counter += 1;
-                    }
-                }
-            }
-            items
-        },
-        opus_downgrade_dropdown: SearchDropdownState::default(),
+
         hovered_target: SettingsHit::None,
         is_dragging_scroll: false,
         scroll_drag_start_y: 0,
@@ -763,11 +734,6 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         draw_theme_dropdown(dib_dc, bits, lay, state, body_font, small_font);
     }
 
-    // ── Opus downgrade target dropdown overlay ───────────────────────
-    if state.active_section == SettingsPage::LlmProxy && state.opus_downgrade_dropdown.is_open {
-        draw_model_dropdown(dib_dc, bits, lay, state, body_font, small_font);
-    }
-
     // Separator above footer
     let footer_y = lay.win_h() - lay.footer_h();
     unsafe {
@@ -905,10 +871,15 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
         }
         SettingsPage::LlmProxy => {
             let n = state.providers.len() as i32;
-            // Include proxy settings section + provider list
+            // Include proxy settings + provider list + auto downgrade section
             let proxy_section_h = lay.llm_proxy.proxy_h;
-            let list_end = lay.provider_list_y() + n * lay.provider_row_h() + lay.provider_row_h();
-            (list_end + (16.0 * lay.scale()) as i32 - lay.content_y()).max(proxy_section_h)
+            let row_h = lay.provider_row_h();
+            let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32;
+            let gap = (8.0 * lay.scale()) as i32;
+            let downgrade_h = section_h + row_h + gap + row_h + gap;
+            let list_end = lay.provider_list_y() + n * row_h + row_h;
+            (list_end + downgrade_h + (16.0 * lay.scale()) as i32 - lay.content_y())
+                .max(proxy_section_h + downgrade_h)
         }
     }
 }
@@ -1162,7 +1133,7 @@ fn apply_settings(state: &mut SettingsState) {
                 }
             }
             settings.opus_downgrade_enabled = state.opus_downgrade_enabled;
-            settings.opus_downgrade_target = state.opus_downgrade_target.clone();
+            settings.sonnet_downgrade_enabled = state.sonnet_downgrade_enabled;
             if let Err(e) = llm_proxy::config::save_settings(&settings) {
                 eprintln!("mhd: failed to save proxy settings: {e}");
             }
@@ -1399,77 +1370,6 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
 
-                // ── Opus downgrade dropdown hit test ──────────────────
-                if state.opus_downgrade_dropdown.is_open
-                    && state.active_section == SettingsPage::LlmProxy
-                {
-                    let scale = state.layout.scale();
-                    let pad = state.layout.pad();
-                    let label_w = 80;
-                    let field_x = pad + (label_w as f32 * scale) as i32 + (8.0 * scale) as i32;
-                    let combo_w = state.layout.win_w() - pad - field_x;
-                    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
-                    let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
-                    let gap = (8.0 * scale) as i32;
-                    let proxy_settings_bottom = state.layout.content_y()
-                        + section_h
-                        + row_h
-                        + gap
-                        + row_h
-                        + gap
-                        + section_h
-                        + row_h
-                        + gap
-                        + row_h;
-                    let combo_y = proxy_settings_bottom - state.content_scroll_y;
-                    let combo_h = (30.0 * scale) as i32;
-                    let dropdown_top = combo_y + combo_h;
-                    let item_h = (24.0 * scale) as i32;
-                    let search_h = (30.0 * scale) as i32;
-                    let visible_rows = 8;
-                    let filtered_count = state
-                        .opus_downgrade_dropdown
-                        .filtered_count(&state.opus_downgrade_search_items);
-                    let max_visible = filtered_count.min(visible_rows);
-                    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
-
-                    let on_combo_button = y >= combo_y
-                        && y < combo_y + combo_h
-                        && x >= field_x
-                        && x < field_x + combo_w;
-                    let on_dropdown = y >= dropdown_top
-                        && y < dropdown_top + dropdown_h
-                        && x >= field_x
-                        && x < field_x + combo_w;
-
-                    if on_combo_button {
-                        // Fall through to main hit test
-                    } else if on_dropdown {
-                        if y >= dropdown_top + search_h {
-                            let item_idx = (y - (dropdown_top + search_h)) / item_h;
-                            let visible_items = state
-                                .opus_downgrade_dropdown
-                                .visible_items(&state.opus_downgrade_search_items, visible_rows);
-                            if (item_idx as usize) < visible_items.len() {
-                                let selected = &visible_items[item_idx as usize];
-                                let target = if selected.id == 0 {
-                                    "native".to_string()
-                                } else {
-                                    selected.label.clone()
-                                };
-                                state.opus_downgrade_target = target;
-                                state.opus_downgrade_dropdown.close();
-                                paint_settings(hwnd, state_ptr, &state.layout);
-                            }
-                        }
-                        return LRESULT(0);
-                    } else {
-                        state.opus_downgrade_dropdown.close();
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                        return LRESULT(0);
-                    }
-                }
-
                 let hit = hit_test_settings(state, x, y);
                 match hit {
                     SettingsHit::Tab(ti) => {
@@ -1630,32 +1530,11 @@ unsafe extern "system" fn settings_wndproc(
                         state.opus_downgrade_enabled = !state.opus_downgrade_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::ProxyOpusDowngradeCombo => {
-                        // Open the search dropdown
-                        if state.opus_downgrade_dropdown.is_open {
-                            state.opus_downgrade_dropdown.close();
-                        } else {
-                            // Find current selection index
-                            let sel_id = state
-                                .opus_downgrade_search_items
-                                .iter()
-                                .find(|item| {
-                                    if item.id == 0 {
-                                        state.opus_downgrade_target == "native"
-                                    } else {
-                                        item.label == state.opus_downgrade_target
-                                    }
-                                })
-                                .map(|item| item.id)
-                                .unwrap_or(0);
-                            state.opus_downgrade_dropdown.open(
-                                &state.opus_downgrade_search_items,
-                                sel_id,
-                                8,
-                            );
-                        }
+                    SettingsHit::ProxySonnetDowngradeToggle => {
+                        state.sonnet_downgrade_enabled = !state.sonnet_downgrade_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
+
                     // ── LLM Proxy: provider list ─────────────────────
                     SettingsHit::ProviderRow(i) | SettingsHit::ProviderEditBtn(i) => {
                         close_combo_popup(state);
@@ -2369,42 +2248,6 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
-
-                    // Opus downgrade search dropdown keyboard
-                    if state.opus_downgrade_dropdown.is_open {
-                        let vk = wparam.0 as u32;
-                        match vk {
-                            0x0D /* VK_RETURN */ | 0x1B /* VK_ESCAPE */ => {
-                                state.opus_downgrade_dropdown.close();
-                                paint_settings(hwnd, state_ptr, &state.layout);
-                            }
-                            0x08 /* VK_BACK */ => {
-                                state.opus_downgrade_dropdown.backspace(
-                                    &state.opus_downgrade_search_items,
-                                    8,
-                                );
-                                paint_settings(hwnd, state_ptr, &state.layout);
-                            }
-                            0x26 /* VK_UP */ => {
-                                state.opus_downgrade_dropdown.scroll_by(
-                                    -1,
-                                    &state.opus_downgrade_search_items,
-                                    8,
-                                );
-                                paint_settings(hwnd, state_ptr, &state.layout);
-                            }
-                            0x28 /* VK_DOWN */ => {
-                                state.opus_downgrade_dropdown.scroll_by(
-                                    1,
-                                    &state.opus_downgrade_search_items,
-                                    8,
-                                );
-                                paint_settings(hwnd, state_ptr, &state.layout);
-                            }
-                            _ => {}
-                        }
-                        return LRESULT(0);
-                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -2439,20 +2282,6 @@ unsafe extern "system" fn settings_wndproc(
                             state
                                 .theme_dropdown
                                 .input_char(ch, &state.theme_search_items, 8);
-                            paint_settings(hwnd, state_ptr, &state.layout);
-                        }
-                        return LRESULT(0);
-                    }
-
-                    // Opus downgrade search dropdown character input
-                    if state.opus_downgrade_dropdown.is_open {
-                        let ch = (wparam.0 as u32) as u8 as char;
-                        if ch.is_ascii_graphic() || ch == ' ' {
-                            state.opus_downgrade_dropdown.input_char(
-                                ch,
-                                &state.opus_downgrade_search_items,
-                                8,
-                            );
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                         return LRESULT(0);
@@ -3250,193 +3079,6 @@ fn draw_theme_dropdown(
                 left: combo_x + 4,
                 top: list_top,
                 right: combo_x + dropdown_w - 4,
-                bottom: list_top + item_h,
-            };
-            let _ = DrawTextW(
-                dib_dc,
-                &mut empty_wz,
-                &mut empty_rc,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-            );
-        }
-    }
-}
-
-/// Draw the opus downgrade target search dropdown overlay.
-fn draw_model_dropdown(
-    dib_dc: HDC,
-    bits: *mut c_void,
-    lay: &Layout,
-    state: &SettingsState,
-    body_font: HFONT,
-    small_font: HFONT,
-) {
-    let theme = &state.theme;
-    let scale = lay.scale();
-    let pad = lay.pad();
-    let field_x = pad + (80.0 * scale) as i32 + (8.0 * scale) as i32;
-    let combo_w = lay.win_w() - pad - field_x;
-    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
-    let row_h = (ROW_HEIGHT_BASE as f32 * scale) as i32;
-    let gap = (8.0 * scale) as i32;
-    // Compute combo Y position (scrolled)
-    let proxy_settings_bottom =
-        lay.content_y() + section_h + row_h + gap + row_h + gap + section_h + row_h + gap + row_h;
-    let combo_y = proxy_settings_bottom - state.content_scroll_y;
-    let combo_h = (30.0 * scale) as i32;
-    let dropdown_top = combo_y + combo_h;
-    let item_h = (24.0 * scale) as i32;
-    let search_h = (30.0 * scale) as i32;
-    let visible_rows = 8;
-    let filtered_count = state
-        .opus_downgrade_dropdown
-        .filtered_count(&state.opus_downgrade_search_items);
-    let max_visible = filtered_count.min(visible_rows);
-    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
-
-    let dropdown_rect = RECT {
-        left: field_x,
-        top: dropdown_top,
-        right: field_x + combo_w,
-        bottom: dropdown_top + dropdown_h,
-    };
-
-    // Background
-    let bg = theme.surface.blend_over(theme.background);
-    draw_rounded_rect_in_buffer(
-        bits,
-        lay.win_w(),
-        lay.win_h(),
-        dropdown_rect,
-        (4.0 * scale) as i32,
-        bg,
-    );
-    draw_rounded_border_in_buffer(
-        bits,
-        lay.win_w(),
-        lay.win_h(),
-        dropdown_rect,
-        (4.0 * scale) as i32,
-        1,
-        theme.border,
-    );
-
-    // Search field
-    let search_rect = RECT {
-        left: field_x + 4,
-        top: dropdown_top + 2,
-        right: field_x + combo_w - 4,
-        bottom: dropdown_top + 2 + search_h,
-    };
-    draw_rounded_rect_in_buffer(
-        bits,
-        lay.win_w(),
-        lay.win_h(),
-        search_rect,
-        (4.0 * scale) as i32,
-        theme.background,
-    );
-    draw_rounded_border_in_buffer(
-        bits,
-        lay.win_w(),
-        lay.win_h(),
-        search_rect,
-        (4.0 * scale) as i32,
-        1,
-        theme.border,
-    );
-
-    unsafe {
-        let _ = SelectObject(dib_dc, body_font);
-        let search_text = if state.opus_downgrade_dropdown.filter.is_empty() {
-            "Search models…"
-        } else {
-            state.opus_downgrade_dropdown.filter.as_str()
-        };
-        let _ = SetTextColor(
-            dib_dc,
-            if state.opus_downgrade_dropdown.filter.is_empty() {
-                theme.text_muted
-            } else {
-                theme.text
-            }
-            .to_colorref(),
-        );
-        let mut search_wz = to_utf16_z(search_text);
-        let mut search_text_rc = RECT {
-            left: search_rect.left + 4,
-            top: search_rect.top,
-            right: search_rect.right - 4,
-            bottom: search_rect.bottom,
-        };
-        let _ = DrawTextW(
-            dib_dc,
-            &mut search_wz,
-            &mut search_text_rc,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-        );
-    }
-
-    // Items list
-    let visible_items = state
-        .opus_downgrade_dropdown
-        .visible_items(&state.opus_downgrade_search_items, visible_rows);
-    let list_top = dropdown_top + 2 + search_h;
-
-    for (i, item) in visible_items.iter().enumerate() {
-        let item_rect = RECT {
-            left: field_x + 4,
-            top: list_top + i as i32 * item_h,
-            right: field_x + combo_w - 4,
-            bottom: list_top + (i as i32 + 1) * item_h,
-        };
-
-        let is_selected = state.opus_downgrade_target == item.label
-            || (item.id == 0 && state.opus_downgrade_target == "native");
-        let highlight = if is_selected {
-            Some(theme.selected)
-        } else {
-            None
-        };
-        if let Some(c) = highlight {
-            draw_rounded_rect_in_buffer(
-                bits,
-                lay.win_w(),
-                lay.win_h(),
-                item_rect,
-                (2.0 * scale) as i32,
-                c,
-            );
-        }
-
-        unsafe {
-            let _ = SelectObject(dib_dc, small_font);
-            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
-            let mut label_wz = to_utf16_z(&item.label);
-            let mut label_rc = RECT {
-                left: item_rect.left + 4,
-                top: item_rect.top,
-                right: item_rect.right - 4,
-                bottom: item_rect.bottom,
-            };
-            let _ = DrawTextW(
-                dib_dc,
-                &mut label_wz,
-                &mut label_rc,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-            );
-        }
-    }
-
-    if visible_items.is_empty() {
-        unsafe {
-            let _ = SelectObject(dib_dc, small_font);
-            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
-            let mut empty_wz = to_utf16_z("No matching models");
-            let mut empty_rc = RECT {
-                left: field_x + 4,
-                top: list_top,
-                right: field_x + combo_w - 4,
                 bottom: list_top + item_h,
             };
             let _ = DrawTextW(

@@ -1872,10 +1872,12 @@ fn cancel_param_edit(state: &mut BindingPopupState) {
 /// Compute the X coordinate of the cursor (insertion point) within the param
 /// edit field, using the current font to measure text before the cursor.
 fn cursor_position_x(dib_dc: HDC, text: &str, cursor: usize, field_left: i32) -> i32 {
-    if cursor == 0 || text.is_empty() {
+    if cursor == 0 || text.is_empty() || cursor > text.len() {
         return field_left;
     }
-    let prefix = &text[..cursor.min(text.len())];
+    // cursor is a byte index; find the nearest char boundary just in case
+    let bound = text.floor_char_boundary(cursor);
+    let prefix = &text[..bound];
     let wz: Vec<u16> = prefix.encode_utf16().collect();
     unsafe {
         let mut sz = windows::Win32::Foundation::SIZE::default();

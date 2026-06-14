@@ -65,9 +65,9 @@ pub struct Settings {
     #[serde(default)]
     pub opus_downgrade_enabled: bool,
 
-    /// Target model for downgraded opus requests.
-    #[serde(default = "default_opus_downgrade_target")]
-    pub opus_downgrade_target: String,
+    /// When true, sonnet requests without `thinking` in betas are downgraded.
+    #[serde(default)]
+    pub sonnet_downgrade_enabled: bool,
 }
 
 impl Default for Settings {
@@ -83,7 +83,7 @@ impl Default for Settings {
             log_level: default_log_level(),
             bind_ip: default_bind_ip(),
             opus_downgrade_enabled: false,
-            opus_downgrade_target: default_opus_downgrade_target(),
+            sonnet_downgrade_enabled: false,
         }
     }
 }
@@ -141,8 +141,8 @@ pub struct Config {
     pub log_level: String,
     /// Opus downgrade when no thinking.
     pub opus_downgrade_enabled: bool,
-    /// Target model for downgraded opus.
-    pub opus_downgrade_target: String,
+    /// Sonnet downgrade when no thinking.
+    pub sonnet_downgrade_enabled: bool,
 }
 
 impl Config {
@@ -158,7 +158,7 @@ impl Config {
             fable_target: settings.fable_target.clone(),
             log_level: settings.log_level.clone(),
             opus_downgrade_enabled: settings.opus_downgrade_enabled,
-            opus_downgrade_target: settings.opus_downgrade_target.clone(),
+            sonnet_downgrade_enabled: settings.sonnet_downgrade_enabled,
         }
     }
 
@@ -175,7 +175,7 @@ impl Config {
             log_level: self.log_level.clone(),
             bind_ip: String::new(),
             opus_downgrade_enabled: self.opus_downgrade_enabled,
-            opus_downgrade_target: self.opus_downgrade_target.clone(),
+            sonnet_downgrade_enabled: self.sonnet_downgrade_enabled,
         }
     }
 
@@ -242,10 +242,6 @@ fn default_log_level() -> String {
 
 fn default_bind_ip() -> String {
     "127.0.0.1".to_string()
-}
-
-fn default_opus_downgrade_target() -> String {
-    "haiku".to_string()
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────

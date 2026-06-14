@@ -889,117 +889,13 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         hit: SettingsHit::ProxyBindAddressField,
     });
 
-    // ── Opus Downgrade section header ───────────────────────────────
-    let downgrade_header_y = bind_y + row_h + gap;
-    ctls.push(Control::Header {
-        rect: RECT {
-            left: pad,
-            top: downgrade_header_y,
-            right: win_w_val - pad,
-            bottom: downgrade_header_y + section_h,
-        },
-        label: "Opus Downgrade".into(),
-        font: FontChoice::Small,
-        text_color: theme_text_muted(state),
-    });
-
-    // ── Enable toggle ───────────────────────────────────────────────
-    let toggle_y = downgrade_header_y + section_h;
-    let toggle_w = (36.0 * scale) as i32;
-    let toggle_h = (18.0 * scale) as i32;
-    let is_downgrade_toggle_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeToggle;
-    ctls.push(Control::Toggle {
-        rect: RECT {
-            left: pad,
-            top: toggle_y + (row_h - toggle_h) / 2,
-            right: pad + toggle_w,
-            bottom: toggle_y + (row_h + toggle_h) / 2,
-        },
-        is_on: state.opus_downgrade_enabled,
-        is_hovered: is_downgrade_toggle_hovered,
-        hit: SettingsHit::ProxyOpusDowngradeToggle,
-    });
-
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad + toggle_w + (4.0 * scale) as i32,
-            top: toggle_y,
-            right: win_w_val - pad,
-            bottom: toggle_y + row_h,
-        },
-        label: "Downgrade Opus when no thinking".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-
-    // ── Target model combo ───────────────────────────────────────────
-    let target_y = toggle_y + row_h + gap;
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad,
-            top: target_y,
-            right: pad + label_w,
-            bottom: target_y + row_h,
-        },
-        label: "Target Model".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-
-    let combo_h = field_h;
-    let combo_rect = RECT {
-        left: field_x,
-        top: target_y,
-        right: win_w_val - pad,
-        bottom: target_y + combo_h,
-    };
-    let is_combo_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeCombo;
-    let combo_bg = if is_combo_hovered {
-        theme_hover(state).blend_over(theme_surface(state))
-    } else {
-        theme_surface(state)
-    };
-    let combo_border = if is_combo_hovered {
-        theme_text(state)
-    } else {
-        theme_border(state)
-    };
-    let arrow_color = if is_combo_hovered {
-        theme_text(state)
-    } else {
-        theme_text_muted(state)
-    };
-    ctls.push(Control::Combo {
-        rect: combo_rect,
-        arrow_width: (20.0 * scale) as i32,
-        selected: state.opus_downgrade_target.clone(),
-        font: FontChoice::Small,
-        bg_color: combo_bg,
-        border_color: combo_border,
-        text_color: theme_text(state),
-        arrow_color,
-        hit: SettingsHit::ProxyOpusDowngradeCombo,
-    });
-
-    // ── Divider ────────────────────────────────────────────────────
-    let divider_y = target_y + row_h + gap;
-    ctls.push(Control::Divider {
-        rect: RECT {
-            left: pad,
-            top: divider_y,
-            right: win_w_val - pad,
-            bottom: divider_y + 1,
-        },
-    });
-
     // ── Provider list section ──────────────────────────────────────
     let list_y = lay.llm_proxy.list_y;
     let list_h = lay.llm_proxy.list_h;
     let scroll_y = state.content_scroll_y;
 
-    // Table headers, positioned just below divider, scroll with content.
-    // (Placed outside ClipStart so they disappear when scrolled past.)
-    let table_header_y = divider_y + (4.0 * scale) as i32 + scroll_y;
+    // Table headers
+    let table_header_y = list_y + scroll_y;
     let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
     let col_h = (16.0 * scale) as i32;
 
@@ -1027,6 +923,17 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         label: "ENDPOINT".into(),
         font: FontChoice::Small,
         text_color: theme_text_muted(state),
+    });
+
+    // ── Divider below table headers ────────────────────────────────
+    let divider_y = table_header_y + col_h + (gap / 2);
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: divider_y,
+            right: win_w_val - pad,
+            bottom: divider_y + 1,
+        },
     });
 
     // Content height for scroll calculation
@@ -1187,6 +1094,76 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         is_hovered: is_add_hovered,
         style: ButtonStyle::Secondary,
         hit: SettingsHit::ProviderAddBtn,
+    });
+
+    // ── Auto Downgrade (Experimental) section ──────────────────────────
+    let downgrade_y = lay.llm_proxy.downgrade_y;
+    let toggle_w = (36.0 * scale) as i32;
+    let toggle_h = (18.0 * scale) as i32;
+
+    // Section header
+    ctls.push(Control::Header {
+        rect: RECT {
+            left: pad,
+            top: downgrade_y,
+            right: win_w_val - pad,
+            bottom: downgrade_y + section_h,
+        },
+        label: "Auto Downgrade (Experimental)".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // Opus toggle row
+    let opus_y = downgrade_y + section_h + gap;
+    let is_opus_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeToggle;
+    ctls.push(Control::Toggle {
+        rect: RECT {
+            left: pad,
+            top: opus_y + (row_h - toggle_h) / 2,
+            right: pad + toggle_w,
+            bottom: opus_y + (row_h + toggle_h) / 2,
+        },
+        is_on: state.opus_downgrade_enabled,
+        is_hovered: is_opus_hovered,
+        hit: SettingsHit::ProxyOpusDowngradeToggle,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad + toggle_w + (4.0 * scale) as i32,
+            top: opus_y,
+            right: win_w_val - pad,
+            bottom: opus_y + row_h,
+        },
+        label: "Downgrade Opus to Sonnet (fast tool loops)".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    // Sonnet toggle row
+    let sonnet_y = opus_y + row_h;
+    let is_sonnet_hovered = state.hovered_target == SettingsHit::ProxySonnetDowngradeToggle;
+    ctls.push(Control::Toggle {
+        rect: RECT {
+            left: pad,
+            top: sonnet_y + (row_h - toggle_h) / 2,
+            right: pad + toggle_w,
+            bottom: sonnet_y + (row_h + toggle_h) / 2,
+        },
+        is_on: state.sonnet_downgrade_enabled,
+        is_hovered: is_sonnet_hovered,
+        hit: SettingsHit::ProxySonnetDowngradeToggle,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad + toggle_w + (4.0 * scale) as i32,
+            top: sonnet_y,
+            right: win_w_val - pad,
+            bottom: sonnet_y + row_h,
+        },
+        label: "Downgrade Sonnet to Haiku (fast tool loops)".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
     });
 
     ctls

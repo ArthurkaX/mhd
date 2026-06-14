@@ -248,6 +248,8 @@ pub struct LlmProxyLayout {
     pub list_y: i32,
     /// Available height of the provider list area.
     pub list_h: i32,
+    /// Y offset of the "Auto Downgrade" section.
+    pub downgrade_y: i32,
     /// Single row height.
     pub row_h: i32,
     /// Width of the name column.
@@ -585,19 +587,21 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
     let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
     let gap = (8.0 * c.scale) as i32;
-    let col_h = (16.0 * c.scale) as i32; // column header height
-    // Proxy settings: header + Anthropic Key + Bind Address + Opus Downgrade section
-    let proxy_h = section_h + row_h + gap + row_h + gap // Proxy Settings section
-        + section_h + row_h + gap + row_h + gap // Opus Downgrade section
-        + (gap / 2) + col_h + gap + (gap / 2) + 1; // provider list header area + divider
+    // Proxy settings: header + Anthropic Key + Bind Address
+    let proxy_h = section_h + row_h + gap + row_h + gap;
+    // Auto downgrade section (at bottom): header + Opus toggle + gap + Sonnet toggle
+    let downgrade_h = section_h + row_h + gap + row_h + gap;
+    // Provider list fills remaining space between proxy settings and auto downgrade
     let list_y = c.content_y + proxy_h;
-    let list_h = c.content_visible_h - proxy_h;
+    let list_h = c.content_visible_h - proxy_h - downgrade_h;
+    let downgrade_y = list_y + list_h;
     LlmProxyLayout {
         top_y: c.content_y,
         proxy_y: c.content_y,
         proxy_h,
         list_y,
         list_h,
+        downgrade_y,
         row_h,
         name_w: (260.0 * c.scale) as i32,
         del_w: (28.0 * c.scale) as i32,

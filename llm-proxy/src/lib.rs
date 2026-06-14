@@ -115,6 +115,16 @@ impl ProxyControl {
         self.state.trace_snapshot()
     }
 
+    /// Enable or disable the database log at runtime.
+    pub fn set_db_log_enabled(&self, enabled: bool) {
+        self.state.set_db_log_enabled(enabled);
+    }
+
+    /// Check whether the database log is currently enabled.
+    pub fn is_db_log_enabled(&self) -> bool {
+        self.state.is_db_log_enabled()
+    }
+
     /// Shut the server down gracefully and join its thread.
     pub fn stop(&mut self) {
         if let Some(tx) = self.shutdown.take() {

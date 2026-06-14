@@ -42,7 +42,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         fable_target: cfg.fable.clone(),
         log_level: cfg.log_level.clone(),
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
-        opus_downgrade_target: cfg.opus_downgrade_target.clone(),
+        sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -130,6 +130,7 @@ pub fn is_debug_logging() -> bool {
 }
 
 /// Toggle debug logging on the proxy (none ↔ detailed).
+/// Also enables/disables the SQLite database log.
 pub fn toggle_debug_logging() -> bool {
     let guard = CONTROL.lock().unwrap();
     if let Some(ref c) = *guard {
@@ -140,7 +141,9 @@ pub fn toggle_debug_logging() -> bool {
             "none"
         };
         c.set_log_level(new);
-        new != "none"
+        let enabled = new != "none";
+        c.set_db_log_enabled(enabled);
+        enabled
     } else {
         false
     }
