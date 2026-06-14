@@ -63,6 +63,7 @@ async fn post_chat_completions(
 /// upstream model id.
 pub async fn send_request(
     state: &Arc<AppState>,
+    req_id: u64,
     payload: Value,
     target_model: &str,
 ) -> Result<Value> {
@@ -86,7 +87,6 @@ pub async fn send_request(
     // Observability: log timing + concurrency under `maximal`. This is how you
     // confirm whether parallel requests are queueing behind one another.
     let log = state.log_level.read().unwrap().log_errors();
-    let req_id = state.next_req_id();
     let _guard = InflightGuard::new(state.clone());
     let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
     let started = std::time::Instant::now();
@@ -460,6 +460,7 @@ impl SseTranslator {
 /// consume it. Text deltas only for now (tool-call deltas are a follow-up).
 pub async fn stream_request(
     state: &Arc<AppState>,
+    req_id: u64,
     payload: Value,
     target_model: &str,
     requested_model: &str,
@@ -478,7 +479,6 @@ pub async fn stream_request(
     // Observability: streaming is the path Claude Code actually uses. Log the
     // concurrency at send time so overlapping parallel requests are visible.
     let log = state.log_level.read().unwrap().log_errors();
-    let req_id = state.next_req_id();
     let started = std::time::Instant::now();
     // Guard is moved into the stream below, so the in-flight count stays
     // elevated for the full duration of the stream (and decrements on drop even

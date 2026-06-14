@@ -1,5 +1,6 @@
 //! Axum route handlers for the LLM proxy.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use axum::{
@@ -13,6 +14,30 @@ use serde_json::Value;
 
 use crate::providers;
 use crate::state::{AppState, Target, Tier, TraceEntry};
+
+/// Derive a stable session hash from a messages payload.
+/// The session is identified by the system prompt + the first user message,
+/// which stay constant across tool loops in one conversation.
+fn session_hash(payload: &Value) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    // Hash the system prompt
+    if let Some(system) = payload.get("system") {
+        system.to_string().hash(&mut hasher);
+    }
+
+    // Hash the first user message (stable across turns)
+    if let Some(messages) = payload.get("messages").and_then(|m| m.as_array()) {
+        if let Some(first_user) = messages
+            .iter()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        {
+            first_user.to_string().hash(&mut hasher);
+        }
+    }
+
+    hasher.finish()
+}
 
 /// Decide whether a request on an expensive tier (Opus/Sonnet) should keep
 /// its tier or can be safely downgraded to the cheaper fallback.
@@ -35,13 +60,14 @@ use crate::state::{AppState, Target, Tier, TraceEntry};
 /// almost always < 17s, human pauses are almost always > 34s.
 fn should_keep_on_expensive_tier(payload: &Value, gap_s: u64) -> (bool, &'static str) {
     // 1. Extended Thinking → keep (strongest signal)
-    if payload
+    if let Some(t) = payload
         .get("thinking")
         .and_then(|t| t.get("type"))
         .and_then(|t| t.as_str())
-        == Some("enabled")
     {
-        return (true, "thinking enabled");
+        if t == "enabled" || t == "adaptive" {
+            return (true, "thinking enabled");
+        }
     }
 
     // 2. Check if the previous assistant turn contained tool_use.
@@ -88,9 +114,24 @@ pub async fn post_messages(
     let tier = Tier::from_model(&model);
     let req_id = state.next_req_id();
 
-    // Measure gap since previous request. Fast gaps (<25s) with tool_use
-    // mean a tool loop — safe to downgrade. Large gaps mean a human was involved.
-    let gap_s = state.mark_request_arrival();
+    // Calculate per-session gap for expensive tiers that can be downgraded.
+    // Only for Opus/Sonnet — cheap tiers and background calls don't stamp the clock.
+    let opus_enabled = *state.opus_downgrade_enabled.read().unwrap();
+    let sonnet_enabled = *state.sonnet_downgrade_enabled.read().unwrap();
+    let may_downgrade =
+        (tier == Tier::Opus && opus_enabled) || (tier == Tier::Sonnet && sonnet_enabled);
+
+    let gap_s = if may_downgrade {
+        let s_hash = session_hash(&payload);
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        state.mark_session_request(s_hash, now)
+    } else {
+        9999 // sentinel — never downgrade
+    };
 
     // Smart routing: downgrade cheap requests (tool loops)
     // while keeping real tasks on the expensive tier.
@@ -194,10 +235,10 @@ pub async fn post_messages(
     if stream {
         let body = match &target {
             Target::Native => {
-                providers::anthropic::stream_request(&state, payload, &headers).await?
+                providers::anthropic::stream_request(&state, req_id, payload, &headers).await?
             }
             Target::Model(id) => {
-                providers::upstream::stream_request(&state, payload, id, &model).await?
+                providers::upstream::stream_request(&state, req_id, payload, id, &model).await?
             }
         };
         return Ok(Response::builder()
@@ -209,8 +250,10 @@ pub async fn post_messages(
     }
 
     let response = match &target {
-        Target::Native => providers::anthropic::send_request(&state, payload, &headers).await?,
-        Target::Model(id) => providers::upstream::send_request(&state, payload, id).await?,
+        Target::Native => {
+            providers::anthropic::send_request(&state, req_id, payload, &headers).await?
+        }
+        Target::Model(id) => providers::upstream::send_request(&state, req_id, payload, id).await?,
     };
 
     Ok(Json(response).into_response())

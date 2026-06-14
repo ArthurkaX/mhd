@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -166,10 +166,9 @@ pub struct AppState {
     pub db_log: Mutex<Option<crate::db_log::DbLog>>,
     /// Ring buffer of recent routing decisions, newest at the back.
     pub trace: RwLock<VecDeque<TraceEntry>>,
-    /// Unix epoch ms of the most recently arrived request.
-    /// Used to measure inter-request gap: fast gaps (<25s) are tool loops;
-    /// slow gaps (>25s) mean a human was involved.
-    pub last_req_epoch_ms: AtomicU64,
+    /// Per-session last-request timestamp (epoch ms). Key = session hash.
+    /// Only updated for Opus/Sonnet requests when a downgrade tier is enabled.
+    pub session_last_ts: RwLock<HashMap<u64, u64>>,
 }
 
 impl AppState {
@@ -185,12 +184,16 @@ impl AppState {
             log_level: RwLock::new(DebugLevel::parse(&cfg.log_level)),
             opus_downgrade_enabled: RwLock::new(cfg.opus_downgrade_enabled),
             sonnet_downgrade_enabled: RwLock::new(cfg.sonnet_downgrade_enabled),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("Failed to build HTTP client"),
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
             db_log: Mutex::new(None),
             trace: RwLock::new(VecDeque::with_capacity(MAX_TRACE_ENTRIES)),
-            last_req_epoch_ms: AtomicU64::new(0),
+            session_last_ts: RwLock::new(HashMap::new()),
         })
     }
 
@@ -250,21 +253,21 @@ impl AppState {
         self.db_log.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
-    /// Record that a request arrived and return the gap since the previous
-    /// request (in seconds). First request returns a large sentinel value so
-    /// it is never downgraded.
-    pub fn mark_request_arrival(&self) -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let prev = self.last_req_epoch_ms.swap(now, Ordering::Relaxed);
-        if prev == 0 {
-            // First request ever — sentinel that never triggers downgrade.
-            9999
-        } else {
-            (now - prev) / 1000
+    /// Record a request arrival for a given session and return the gap in seconds.
+    /// Returns a sentinel (9999) on first request for this session so it's never downgraded.
+    pub fn mark_session_request(&self, session_hash: u64, now_ms: u64) -> u64 {
+        let mut map = self.session_last_ts.write().unwrap();
+
+        // Lazy TTL cleanup: if map is too large, remove entries older than 10 minutes
+        if map.len() > 100 {
+            let cutoff = now_ms.saturating_sub(600_000);
+            map.retain(|_, &mut v| v > cutoff);
+        }
+
+        let prev = map.insert(session_hash, now_ms);
+        match prev {
+            Some(last) => ((now_ms.saturating_sub(last)) / 1000).min(9999),
+            None => 9999, // first request in this session
         }
     }
 

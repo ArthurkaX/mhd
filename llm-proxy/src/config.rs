@@ -295,6 +295,8 @@ pub fn save(cfg: &Config) -> anyhow::Result<()> {
     settings.haiku_target = cfg.haiku_target.clone();
     settings.fable_target = cfg.fable_target.clone();
     settings.log_level = cfg.log_level.clone();
+    settings.opus_downgrade_enabled = cfg.opus_downgrade_enabled;
+    settings.sonnet_downgrade_enabled = cfg.sonnet_downgrade_enabled;
 
     persist_settings(&dir, &settings)?;
     persist_secrets(&dir, &cfg.into_secrets())?;

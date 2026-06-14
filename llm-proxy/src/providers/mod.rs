@@ -46,7 +46,12 @@ pub fn summarize_payload(payload: &Value) -> String {
     if let Some(system) = payload.get("system") {
         let text = system.to_string();
         if text.len() > 200 {
-            parts.push(format!("system={}..({}b)", &text[..200], text.len()));
+            let n = text
+                .char_indices()
+                .nth(200)
+                .map(|(i, _)| i)
+                .unwrap_or(text.len());
+            parts.push(format!("system={}..({}b)", &text[..n], text.len()));
         } else {
             parts.push(format!("system={}", text));
         }
@@ -61,7 +66,12 @@ pub fn summarize_payload(payload: &Value) -> String {
                 let tool_use = m.get("tool_use_id").or_else(|| m.get("id"));
                 if !content.is_empty() {
                     let c = if content.len() > 200 {
-                        format!("{}..({}b)", &content[..200], content.len())
+                        let n = content
+                            .char_indices()
+                            .nth(200)
+                            .map(|(i, _)| i)
+                            .unwrap_or(content.len());
+                        format!("{}..({}b)", &content[..n], content.len())
                     } else {
                         content.to_string()
                     };
@@ -84,7 +94,12 @@ pub fn summarize_payload(payload: &Value) -> String {
                 let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("");
                 if desc.len() > 100 {
-                    format!("{name}({}.{}b)", &desc[..100], desc.len())
+                    let n = desc
+                        .char_indices()
+                        .nth(100)
+                        .map(|(i, _)| i)
+                        .unwrap_or(desc.len());
+                    format!("{name}({}.{}b)", &desc[..n], desc.len())
                 } else {
                     format!("{name}({desc})")
                 }
@@ -116,7 +131,7 @@ pub fn summarize_payload(payload: &Value) -> String {
     parts.join(" | ")
 }
 
-/// Wall-clock timestamp (`HH:MM:SS.mmm` UTC) for log line correlation.
+/// Wall-clock timestamp (`YYYY-MM-DD HH:MM:SS.mmm` UTC) for log line correlation.
 pub fn now_ms() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -124,5 +139,41 @@ pub fn now_ms() -> String {
     let secs = d.as_secs();
     let ms = d.subsec_millis();
     let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
-    format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+    // Days since epoch, then compute Y/M/D via a simple leap-year-aware algorithm.
+    let days = secs / 86400;
+    let y = 1970_i64;
+    let mut remaining = days;
+    let mut year = y;
+    loop {
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+    let month_days = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md {
+            month = i;
+            break;
+        }
+        remaining -= md;
+    }
+    let day = remaining + 1;
+    format!(
+        "{Y:04}-{M:02}-{D:02} {h:02}:{m:02}:{s:02}.{ms:03}",
+        Y = year,
+        M = month + 1,
+        D = day
+    )
 }

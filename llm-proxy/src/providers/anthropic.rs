@@ -58,11 +58,11 @@ async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap) -> reqwest::
 /// Non-streaming request — returns the parsed JSON body.
 pub async fn send_request(
     state: &Arc<AppState>,
+    req_id: u64,
     payload: Value,
     incoming: &HeaderMap,
 ) -> Result<Value> {
     let log = state.log_level.read().unwrap().log_errors();
-    let req_id = state.next_req_id();
     let _guard = InflightGuard::new(state.clone());
     let started = std::time::Instant::now();
     if log {
@@ -151,11 +151,11 @@ pub async fn send_request(
 /// duration of the stream (even on mid-stream client disconnect).
 pub async fn stream_request(
     state: &Arc<AppState>,
+    req_id: u64,
     payload: Value,
     incoming: &HeaderMap,
 ) -> Result<Body> {
     let log = state.log_level.read().unwrap().log_errors();
-    let req_id = state.next_req_id();
     let guard = InflightGuard::new(state.clone());
     let started = std::time::Instant::now();
     if log {
