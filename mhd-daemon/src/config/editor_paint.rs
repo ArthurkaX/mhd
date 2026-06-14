@@ -894,10 +894,11 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let list_h = lay.llm_proxy.list_h;
     let scroll_y = state.content_scroll_y;
 
-    // Table headers
-    let table_header_y = list_y + scroll_y;
-    let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
+    // Table headers sit above the list clip area so they stay visible
+    // when scrolled. They scroll with content via + scroll_y.
     let col_h = (16.0 * scale) as i32;
+    let table_header_y = list_y - col_h - (gap / 2) + scroll_y;
+    let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
 
     // ── Column header: Name ────────────────────────────────────────
     ctls.push(Control::Label {

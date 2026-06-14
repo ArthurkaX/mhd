@@ -236,11 +236,43 @@ pub async fn stream_request(
         // Hold the in-flight guard for the lifetime of the stream.
         let _guard = guard;
         let mut had_error = false;
+        let mut line_buf: Vec<u8> = Vec::new();
+        let mut input_tokens: u64 = 0;
+        let mut output_tokens: u64 = 0;
         while let Some(item) = byte_stream.next().await {
-            match item {
-                Ok(chunk) => yield Ok::<_, std::io::Error>(chunk),
+            let chunk = match item {
+                Ok(c) => c,
                 Err(_) => { had_error = true; break },
+            };
+
+            // Accumulate lines and scan for message_delta with usage.
+            line_buf.extend_from_slice(&chunk);
+            while let Some(pos) = line_buf.iter().position(|&b| b == b'\n') {
+                let line_bytes: Vec<u8> = line_buf.drain(..=pos).collect();
+                if let Ok(line) = std::str::from_utf8(&line_bytes) {
+                    let data = line.trim();
+                    if let Some(json_str) = data.strip_prefix("data:") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
+                            if v.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
+                                if let Some(usage) = v.get("usage") {
+                                    if let Some(n) = usage.get("input_tokens").and_then(|n| n.as_u64()) {
+                                        input_tokens = n;
+                                    }
+                                    if let Some(n) = usage.get("output_tokens").and_then(|n| n.as_u64()) {
+                                        output_tokens = n;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
+
+            yield Ok::<_, std::io::Error>(chunk);
+        }
+        // Push token usage into the trace entry.
+        if input_tokens > 0 || output_tokens > 0 {
+            state_for_log.update_trace_tokens(req_id, input_tokens, output_tokens);
         }
         if log {
             if had_error {
