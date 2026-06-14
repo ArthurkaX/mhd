@@ -21,3 +21,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"]
 anyhow = "1.0"
 dirs = "5"
 tracing = "0.1"
+rusqlite = { version = "0.32", features = ["bundled"] }

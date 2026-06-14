@@ -14,12 +14,67 @@ use serde_json::Value;
 use crate::providers;
 use crate::state::{AppState, Target, Tier, TraceEntry};
 
-/// Handler for `POST /v1/messages` — main Anthropic Messages API endpoint.
+/// Decide whether a request on an expensive tier (Opus/Sonnet) should keep
+/// its tier or can be safely downgraded to the cheaper fallback.
 ///
-/// Routing by model tier:
-///   - opus            → official Anthropic (passthrough)
-///   - sonnet, unknown → upstream gateway with `sonnet_model`
-///   - haiku           → upstream gateway with `haiku_model`
+/// # How it works
+///
+/// The proxy looks at **two signals together**:
+///
+/// 1. **Last assistant message** — did it contain `tool_use`?
+/// 2. **Inter-request gap** — how long since the previous request arrived?
+///
+/// | Last assistant | Gap | Meaning | Action |
+/// |----------------|-----|---------|--------|
+/// | `tool_use` | < 25s | Fast tool loop — model talking to itself | **Downgrade** |
+/// | `tool_use` | ≥ 25s | Pause — human returned or heavy tool finished | **Keep** |
+/// | text / none | any | Real task or new conversation | **Keep** |
+/// | `thinking.enabled` | any | Extended Thinking | **Keep** |
+///
+/// The time threshold (~25s) comes from empirical data: tool loop gaps are
+/// almost always < 17s, human pauses are almost always > 34s.
+fn should_keep_on_expensive_tier(payload: &Value, gap_s: u64) -> (bool, &'static str) {
+    // 1. Extended Thinking → keep (strongest signal)
+    if payload
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(|t| t.as_str())
+        == Some("enabled")
+    {
+        return (true, "thinking enabled");
+    }
+
+    // 2. Check if the previous assistant turn contained tool_use.
+    let has_tool_use = payload
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|messages| {
+            // Find the last assistant response before the final user message.
+            messages
+                .iter()
+                .rev()
+                .skip_while(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+                .and_then(|asst| {
+                    asst.get("content").and_then(|c| c.as_array()).map(|arr| {
+                        arr.iter()
+                            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    if has_tool_use && gap_s < 25 {
+        // Fast tool loop — model is talking to itself, no human waiting.
+        return (false, "tool_use loop");
+    }
+
+    // 3. Everything else → keep.
+    (true, "real task")
+}
+
+/// Handler for `POST /v1/messages` — main Anthropic Messages API endpoint.
 pub async fn post_messages(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -33,33 +88,51 @@ pub async fn post_messages(
     let tier = Tier::from_model(&model);
     let req_id = state.next_req_id();
 
-    // Smart routing: downgrade if thinking is not requested.
-    // Applied to Opus and Sonnet (expensive tiers) when enabled.
-    let effective_tier = if *state.opus_downgrade_enabled.read().unwrap()
+    // Measure gap since previous request. Fast gaps (<25s) with tool_use
+    // mean a tool loop — safe to downgrade. Large gaps mean a human was involved.
+    let gap_s = state.mark_request_arrival();
+
+    // Smart routing: downgrade cheap requests (tool loops)
+    // while keeping real tasks on the expensive tier.
+    // Downgrade cascades to the next tier: Opus→Sonnet, Sonnet→Haiku
+    // (using whatever target that tier is configured to route to).
+    let (effective_tier, reason) = if *state.opus_downgrade_enabled.read().unwrap()
         && (tier == Tier::Opus || tier == Tier::Sonnet)
     {
-        let has_thinking = payload
-            .get("thinking")
-            .and_then(|t| t.get("type"))
-            .and_then(|t| t.as_str())
-            .map(|t| t == "enabled")
-            .unwrap_or(false);
-        if has_thinking {
-            state.log_line(&format!(
-                "{} #{req_id} {tier:?} KEEP (thinking enabled)",
-                crate::providers::now_ms()
-            ));
-            tier
+        let (keep, r) = should_keep_on_expensive_tier(&payload, gap_s);
+        if keep {
+            let target_keep = state.target_for(tier);
+            state.log_event(crate::db_log::LogEvent {
+                seq: req_id,
+                event_type: "KEEP".to_string(),
+                tier: Some(format!("{tier:?}")),
+                effective_tier: Some(format!("{tier:?}")),
+                target: Some(target_keep.as_str().to_string()),
+                model: Some(model.clone()),
+                reason: Some(r.to_string()),
+                ..Default::default()
+            });
+            (tier, r)
         } else {
-            let dt = state.opus_downgrade_target.read().unwrap().clone();
-            state.log_line(&format!(
-                "{} #{req_id} {tier:?} DOWNGRADE → {dt} (no thinking)",
-                crate::providers::now_ms()
-            ));
-            Tier::from_model(&dt)
+            let next_tier = match tier {
+                Tier::Opus => Tier::Sonnet,
+                _ => Tier::Haiku,
+            };
+            let next_target = state.target_for(next_tier);
+            state.log_event(crate::db_log::LogEvent {
+                seq: req_id,
+                event_type: "DOWNGRADE".to_string(),
+                tier: Some(format!("{tier:?}")),
+                effective_tier: Some(format!("{next_tier:?}")),
+                target: Some(next_target.as_str().to_string()),
+                model: Some(model.clone()),
+                reason: Some(r.to_string()),
+                ..Default::default()
+            });
+            (next_tier, r)
         }
     } else {
-        tier
+        (tier, "")
     };
 
     let stream = payload
@@ -100,7 +173,6 @@ pub async fn post_messages(
 
     // Record routing decision in the trace ring buffer.
     let downgraded = effective_tier != tier;
-    let reason = if downgraded { "no thinking" } else { "" };
     state.push_trace(TraceEntry {
         seq: req_id,
         tier,
@@ -108,7 +180,11 @@ pub async fn post_messages(
         target: target.as_str().to_string(),
         model: model.clone(),
         downgraded,
-        reason: reason.to_string(),
+        reason: if downgraded {
+            reason.to_string()
+        } else {
+            String::new()
+        },
     });
 
     if stream {

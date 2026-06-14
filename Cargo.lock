@@ -848,6 +848,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

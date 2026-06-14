@@ -101,6 +101,17 @@ pub fn summarize_payload(payload: &Value) -> String {
             parts.push(format!("betas={:?}", beta_strs));
         }
     }
+    if let Some(thinking) = payload.get("thinking") {
+        let t = thinking.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+        let budget = thinking.get("budget_tokens").and_then(|v| v.as_u64());
+        if let Some(b) = budget {
+            parts.push(format!("thinking={}(budget:{b})", t));
+        } else {
+            parts.push(format!("thinking={}", t));
+        }
+    } else {
+        parts.push("thinking=not-present".to_string());
+    }
 
     parts.join(" | ")
 }

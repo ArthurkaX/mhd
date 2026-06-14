@@ -106,6 +106,20 @@ pub async fn send_request(
     }
 
     let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
+
+    // Hang detection: if the upstream was slow to respond with headers,
+    // log a structured HANG event.
+    const HANG_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(5);
+    if started.elapsed() >= HANG_THRESHOLD {
+        state.log_event(crate::db_log::LogEvent {
+            seq: req_id,
+            event_type: "HANG".to_string(),
+            target_model: Some(target_model.to_string()),
+            duration_ms: Some(started.elapsed().as_millis() as u64),
+            ..Default::default()
+        });
+    }
+
     let openai_resp: Value = resp.json().await?;
     if log {
         state.log_line(&format!(
@@ -487,6 +501,20 @@ pub async fn stream_request(
     }
 
     let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
+
+    // ── Hang detection ───────────────────────────────────────────
+    // If headers took longer than HANG_THRESHOLD to come back, log a
+    // structured HANG event so repeat-offending upstream models are visible.
+    const HANG_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(5);
+    if started.elapsed() >= HANG_THRESHOLD {
+        state.log_event(crate::db_log::LogEvent {
+            seq: req_id,
+            event_type: "HANG".to_string(),
+            target_model: Some(target_model.to_string()),
+            duration_ms: Some(started.elapsed().as_millis() as u64),
+            ..Default::default()
+        });
+    }
 
     if log {
         state.log_line(&format!(

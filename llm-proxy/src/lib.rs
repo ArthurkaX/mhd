@@ -6,6 +6,7 @@
 //! directly on the shared [`AppState`] — no self-HTTP needed.
 
 pub mod config;
+pub mod db_log;
 pub mod handlers;
 pub mod providers;
 pub mod state;

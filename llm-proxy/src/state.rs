@@ -1,6 +1,4 @@
 use std::collections::VecDeque;
-use std::io::Write;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -160,16 +158,19 @@ pub struct AppState {
     pub req_seq: AtomicU64,
     /// Number of upstream requests currently in flight (observability only).
     pub inflight: AtomicU64,
-    /// Path to the proxy's own log file (`~/.config/mhd/llm-proxy/proxy.log`).
-    /// Timing/concurrency lines go here so they're visible regardless of how the
-    /// host process redirects stderr.
-    pub log_path: PathBuf,
+    /// Structured SQLite + file log.
+    pub db_log: crate::db_log::DbLog,
     /// Ring buffer of recent routing decisions, newest at the back.
     pub trace: RwLock<VecDeque<TraceEntry>>,
+    /// Unix epoch ms of the most recently arrived request.
+    /// Used to measure inter-request gap: fast gaps (<25s) are tool loops;
+    /// slow gaps (>25s) mean a human was involved.
+    pub last_req_epoch_ms: AtomicU64,
 }
 
 impl AppState {
     pub fn from_config(cfg: &Config) -> Arc<Self> {
+        let db_path = crate::config::config_dir().join("proxy.db");
         Arc::new(Self {
             anthropic_key: RwLock::new(cfg.anthropic_key.clone()),
             upstream_base_url: RwLock::new(cfg.upstream_base_url.clone()),
@@ -184,20 +185,48 @@ impl AppState {
             http: reqwest::Client::new(),
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
-            log_path: crate::config::config_dir().join("proxy.log"),
+            db_log: crate::db_log::DbLog::open(&db_path).expect("Failed to open proxy.db"),
             trace: RwLock::new(VecDeque::with_capacity(MAX_TRACE_ENTRIES)),
+            last_req_epoch_ms: AtomicU64::new(0),
         })
     }
 
-    /// Append a line to the proxy log file. Best-effort: errors are swallowed so
-    /// logging never affects request handling.
+    /// Append a text line to both SQLite and the mirror log file.
+    /// Best-effort: errors are swallowed.
     pub fn log_line(&self, msg: &str) {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)
-        {
-            let _ = writeln!(f, "{msg}");
+        self.db_log.insert(
+            &crate::providers::now_ms(),
+            &crate::db_log::LogEvent {
+                seq: 0,
+                event_type: "RAW".to_string(),
+                detail: Some(msg.to_string()),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Log a structured event with typed fields.
+    /// Timestamp is automatic. Writes to SQLite + mirror log.
+    pub fn log_event(&self, event: crate::db_log::LogEvent) {
+        let ts = crate::providers::now_ms();
+        self.db_log.insert(&ts, &event);
+    }
+
+    /// Record that a request arrived and return the gap since the previous
+    /// request (in seconds). First request returns a large sentinel value so
+    /// it is never downgraded.
+    pub fn mark_request_arrival(&self) -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let prev = self.last_req_epoch_ms.swap(now, Ordering::Relaxed);
+        if prev == 0 {
+            // First request ever — sentinel that never triggers downgrade.
+            9999
+        } else {
+            (now - prev) / 1000
         }
     }
 

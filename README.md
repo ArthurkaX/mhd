@@ -286,6 +286,81 @@ claude-mhd --model sonnet -p "hi"   # pick a model and prompt
 
 The launcher has two modes depending on whether you have an Anthropic subscription (see comments inside the file).
 
+#### User experience flow
+
+```mermaid
+flowchart TB
+    subgraph User["👤 You (user)"]
+        CLI["`**CLI** — claude-mhd ...`
+        normal Claude Code commands`"]
+        HOTKEY["`**Hotkey** Ctrl+Alt+L
+        opens Model Selector overlay`"]
+        TRAY["`**Tray menu** → LLM Models
+        or → Proxy Trace overlay`"]
+    end
+
+    subgraph Proxy["mHD — LLM Proxy (embedded, port 3456)"]
+        ROUTER{{"Tier classifier 🔀"}}
+        SWITCH{{"Dynamic switch ⚡
+        model routing per slot"}}
+        TRACE["`Proxy Trace
+        live routing decisions`"]
+        PERSIST["auto-saves to config.toml"]
+    end
+
+    subgraph AI["AI backends"]
+        ANTHROPIC["Anthropic API
+        (native passthrough,
+        OAuth forwarded)"]
+        GATEWAY["OpenAI-compatible gateway
+        (DeepSeek, SVA, etc.)"]
+    end
+
+    subgraph Monitor["📊 Observability"]
+        OVERLAY["Model Selector overlay
+        · shows all configured models
+        · pick per tier: opus / sonnet / haiku
+        · switch takes effect on next request"]
+        TRACE_WIN["Proxy Trace overlay
+        · real-time routing table
+        · columns: # / Tier / Eff / Target / Reason
+        · ⚠ = auto-downgraded (no thinking)"]
+    end
+
+    CLI -->|"POST /v1/messages (model=claude-sonnet-...)"| ROUTER
+    TRAY --> OVERLAY
+    HOTKEY --> OVERLAY
+    TRAY --> TRACE_WIN
+
+    ROUTER -->|"classifies: opus / sonnet / haiku"| SWITCH
+    SWITCH -->|"native → passthrough"| ANTHROPIC
+    SWITCH -->|"model-id → gateway"| GATEWAY
+    ROUTER -.->|"smart downgrade
+    Opus/Sonnet → target
+    when no thinking requested"| TRACE
+    SWITCH -.-> PERSIST
+
+    OVERLAY -.->|"POST /set_model/{slot}"| SWITCH
+    TRACE_WIN -.->|"GET /trace (poll every 1s)"| TRACE
+
+    style User fill:#1a1a2e,stroke:#e94560,stroke-width:2px
+    style Proxy fill:#16213e,stroke:#0f3460,stroke-width:2px
+    style AI fill:#0f3460,stroke:#533483,stroke-width:2px
+    style Monitor fill:#1a1a2e,stroke:#e94560,stroke-width:1px,stroke-dasharray: 5 5
+```
+
+**The experience, step by step:**
+
+1. **Start.** mHD runs. The LLM proxy starts automatically on port 3456.
+2. **Connect.** Launch Claude Code via `claude-mhd.bat` (or set `ANTHROPIC_BASE_URL` yourself). Every API call now hits your local proxy instead of Anthropic directly.
+3. **Proxy decides.** Each request is classified by tier (`opus`/`sonnet`/`haiku`). The proxy checks its routing table: `native` → forwards to real Anthropic; a model id → routes to your gateway with that model.
+4. **Smart downgrade.** If you asked Opus or Sonnet for a task that doesn't use *thinking*, the proxy can automatically bump it down to a cheaper model — you save credits without changing anything.
+5. **Switch at any time.** Press **Ctrl+Alt+L** (or use the tray menu) → the Model Selector overlay appears. Click a different model for any tier. The change takes effect on the *next* API call — whatever Claude Code is doing right now keeps running uninterrupted.
+6. **See what happened.** Open the **Proxy Trace** from the tray menu to see a live table of every recent request, its original tier, the effective tier it was routed to, the target model, and a reason column showing auto-downgrades.
+7. **Changes stick.** Any runtime switch you make is persisted to `config.toml` automatically, so your routing survives a restart.
+
+**Key insight:** You never need to restart Claude Code, reload mHD, or kill an active conversation. The proxy table is live memory — switching a tier's target is a single method call on the shared `AppState`. In-flight streams keep their original routing; the switch applies cleanly to the next request.
+
 ### Config editor and tray
 
 The tray provides the operational entry point:
