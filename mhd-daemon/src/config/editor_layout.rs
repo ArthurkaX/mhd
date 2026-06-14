@@ -587,8 +587,10 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
     let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
     let gap = (8.0 * c.scale) as i32;
+    let col_h = (16.0 * c.scale) as i32; // table header height
     // Proxy settings: header + Anthropic Key + Bind Address
-    let proxy_h = section_h + row_h + gap + row_h + gap;
+    // Then ~24px for table headers + divider before the list starts.
+    let proxy_h = section_h + row_h + gap + row_h + gap + col_h + gap;
     // Auto downgrade section (at bottom): header + Opus toggle + gap + Sonnet toggle
     let downgrade_h = section_h + row_h + gap + row_h + gap;
     // Provider list fills remaining space between proxy settings and auto downgrade
