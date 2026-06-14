@@ -1,5 +1,6 @@
 /target
 dist/
+*.pdf
 nul
 _patch_*.py
 backLog.md

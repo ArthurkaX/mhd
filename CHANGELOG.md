@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-06-14
+
+- **LLM Proxy**: promoted the proxy into a full user-facing workflow for Claude Code.
+  - Configure OpenAI-compatible providers, API keys, and models from the native Settings -> LLM Proxy page.
+  - Switch `opus`, `sonnet`, and `haiku` routing live through the model selector without restarting Claude Code.
+  - Inspect recent proxy routing in the Proxy Trace overlay, including token counts and downgrade decisions.
+  - Store proxy settings in dedicated JSON files under `%USERPROFILE%\.config\mhd\llm-proxy\`.
+- **Documentation**: added concise LLM Proxy setup docs, user-facing routing diagrams, and clarified the optional local-only `blackbox` developer build.
+- **Release cleanup**: removed generated PDF/test artifacts from the tracked tree and ignored future PDF outputs.
+
 ## 0.2.0 - 2026-06-08
 
 - **LLM Proxy**: new built-in proxy server that intercepts Claude Code API calls and routes them to an OpenAI-compatible gateway.
