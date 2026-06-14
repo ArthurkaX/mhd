@@ -373,7 +373,7 @@ pub fn show_config_editor(handle: AppHandle) {
 
 fn build_theme_list(_default_theme: &NativeTheme) -> Vec<String> {
     let mut names = Vec::new();
-    names.push("Carbon".to_string());
+    names.push("Code".to_string());
 
     let dir = crate::native_theme::themes_dir();
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -392,9 +392,9 @@ fn build_theme_list(_default_theme: &NativeTheme) -> Vec<String> {
     }
 
     names.sort_by(|a, b| {
-        if a == "Carbon" {
+        if a == "Code" {
             std::cmp::Ordering::Less
-        } else if b == "Carbon" {
+        } else if b == "Code" {
             std::cmp::Ordering::Greater
         } else {
             a.to_lowercase().cmp(&b.to_lowercase())
@@ -1023,9 +1023,9 @@ fn apply_settings(state: &mut SettingsState) {
         .theme_names
         .get(state.theme_sel)
         .cloned()
-        .unwrap_or_else(|| "Carbon".to_string());
+        .unwrap_or_else(|| "Code".to_string());
 
-    let config_name = if theme_name == "Carbon" {
+    let config_name = if theme_name == "Code" {
         String::new()
     } else {
         let themes_dir = crate::native_theme::themes_dir();

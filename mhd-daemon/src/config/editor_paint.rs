@@ -507,7 +507,7 @@ pub fn build_general_controls(lay: &Layout, state: &SettingsState) -> ControlLis
         .theme_names
         .get(state.theme_sel)
         .map(|s| s.as_str())
-        .unwrap_or("Carbon");
+        .unwrap_or("Code");
     ctls.push(Control::Combo {
         rect: combo_rect,
         arrow_width: lay.arrow_w(),

@@ -616,7 +616,7 @@ mhd/
 
 The normal release build does not include `blackbox`.
 
-`blackbox` is left in the source tree as an optional compile-time module for personal developer builds. It is a small local SQLite-backed activity logger that can record daemon/session events, input activity categories, foreground app changes, quick notes, and a few custom tool events.
+`blackbox` is an optional local-only module I use for personal productivity analysis. It records activity into a SQLite database, so I can later ask an LLM to summarize how this computer was used and where time went.
 
 It writes to:
 
@@ -630,4 +630,4 @@ Build it explicitly when you want that local diagnostic/history layer:
 cargo build --release --features blackbox
 ```
 
-It is intentionally opt-in and should be treated as a local build option, not as part of the normal product.
+It is intentionally opt-in, not enabled in public builds, and should be treated as a private developer build option.

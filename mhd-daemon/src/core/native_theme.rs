@@ -171,15 +171,15 @@ pub struct NativeTheme {
 impl Default for NativeTheme {
     fn default() -> Self {
         Self {
-            name: "Carbon".into(),
-            background: Argb::new(0xFF, 0x18, 0x1B, 0x20),
-            surface: Argb::new(0xFF, 0x22, 0x28, 0x31),
-            border: Argb::new(0xFF, 0x39, 0x42, 0x4E),
-            text: Argb::new(0xFF, 0xE7, 0xEC, 0xF2),
-            text_muted: Argb::new(0xFF, 0x95, 0xA1, 0xAE),
-            accent: Argb::new(0xFF, 0x2F, 0xB7, 0xA3),
-            selected: Argb::new(0xFF, 0x31, 0x45, 0x56),
-            hover: Argb::new(0xFF, 0x29, 0x33, 0x3E),
+            name: "Code".into(),
+            background: Argb::new(0xFF, 0x0D, 0x11, 0x17),
+            surface: Argb::new(0xFF, 0x16, 0x1B, 0x22),
+            border: Argb::new(0xFF, 0x30, 0x36, 0x3D),
+            text: Argb::new(0xFF, 0xE6, 0xED, 0xF3),
+            text_muted: Argb::new(0xFF, 0x8B, 0x94, 0x9E),
+            accent: Argb::new(0xFF, 0x58, 0xA6, 0xFF),
+            selected: Argb::new(0xFF, 0x1C, 0x21, 0x28),
+            hover: Argb::new(0xFF, 0x1A, 0x1F, 0x26),
             bar_background: Argb::new(0xFF, 0x50, 0x50, 0x50),
         }
     }
@@ -381,12 +381,12 @@ mod tests {
     #[test]
     fn load_default_theme_when_none() {
         let t = load_theme(None);
-        assert_eq!(t.name, "Carbon");
+        assert_eq!(t.name, "Code");
     }
 
     #[test]
     fn load_default_theme_when_bad_name() {
         let t = load_theme(Some("nonexistent_theme_xyz"));
-        assert_eq!(t.name, "Carbon");
+        assert_eq!(t.name, "Code");
     }
 }
