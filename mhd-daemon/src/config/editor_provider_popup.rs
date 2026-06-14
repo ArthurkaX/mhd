@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::DataExchange::*;
+use windows::Win32::System::Memory::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
@@ -1067,6 +1069,42 @@ fn cancel_edit_field(state: &mut ProviderPopupState) {
     commit_edit_field(state);
 }
 
+/// Insert text from the clipboard at the cursor position.
+fn paste_from_clipboard(text: &mut String, cursor: &mut usize) {
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return;
+        }
+        let handle = match GetClipboardData(13u32) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseClipboard();
+                return;
+            }
+        };
+        if handle.is_invalid() {
+            let _ = CloseClipboard();
+            return;
+        }
+        let hglobal = windows::Win32::Foundation::HGLOBAL(handle.0);
+        let ptr = GlobalLock(hglobal) as *const u16;
+        if ptr.is_null() {
+            let _ = CloseClipboard();
+            return;
+        }
+        let buf = std::slice::from_raw_parts(ptr, 65536);
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(0);
+        if len > 0 {
+            if let Ok(s) = String::from_utf16(&buf[..len]) {
+                text.insert_str(*cursor, &s);
+                *cursor += s.len();
+            }
+        }
+        let _ = GlobalUnlock(hglobal);
+        let _ = CloseClipboard();
+    }
+}
+
 // ── Background provider test ─────────────────────────────────────────
 
 /// Post an update from the background thread to the popup window.
@@ -1491,6 +1529,13 @@ unsafe extern "system" fn provider_popup_wndproc(
                                         state.edit_cursor += i + c.len_utf8();
                                         paint_provider_popup(hwnd, state_ptr);
                                     }
+                                }
+                            }
+                            0x56 /* VK_V */ => {
+                                // Ctrl+V — paste from clipboard
+                                if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                                    paste_from_clipboard(&mut state.edit_text, &mut state.edit_cursor);
+                                    paint_provider_popup(hwnd, state_ptr);
                                 }
                             }
                             0x23 /* VK_END */ => {

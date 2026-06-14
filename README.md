@@ -227,139 +227,39 @@ The CPU power panel can switch Windows power plans, edit processor parking and f
 
 ### LLM Proxy
 
-mHD includes a built-in local proxy server that intercepts Claude Code's Anthropic API calls and can route them to a different (typically cheaper or self-hosted) OpenAI-compatible gateway. This lets you use alternative models for the `sonnet` or `haiku` tiers while keeping `opus` on real Anthropic, or route everything through a gateway if you don't have an Anthropic subscription.
+mHD includes a local LLM proxy for Claude Code. Its main job is runtime model switching: start Claude Code once through the proxy, then change the model route from the tray or a hotkey without restarting Claude Code, mHD, or the current conversation.
 
-Key concepts:
+Typical flow:
 
-- The proxy listens on `127.0.0.1:<port>` (default `3456`). Point Claude Code at it with `ANTHROPIC_BASE_URL=http://127.0.0.1:3456`.
-- Each model tier (`opus`, `sonnet`, `haiku`) can be set to `"native"` (pass through to real Anthropic using the forwarded OAuth) or to a gateway model ID.
-- Additional models can be registered under `[[llm_proxy.model]]` and switched at runtime via the model selector overlay (Ctrl+Alt+L by default) or the tray menu.
-- The proxy forwards the OAuth token from Claude Code for native tiers and injects the configured `api_key` for gateway tiers.
+1. Run mHD.
+2. Start Claude Code through [`claude-mhd.bat`](claude-mhd.bat), for example `C:\Workspace\Active\mhd\claude-mhd.bat`. The wrapper points `ANTHROPIC_BASE_URL` at the local proxy on `127.0.0.1:3456`.
+3. Open **System tray -> mHD -> right click -> Settings -> LLM Proxy**.
+4. Add an OpenAI-compatible provider, API key, and models.
+5. Assign a shortcut for `show_llm_models` on the **Shortcuts** page. For example, `Ctrl+Alt+L`.
+6. Press the shortcut while Claude Code is running and choose the target model for `opus`, `sonnet`, or `haiku`.
 
-Configuration in `config.toml`:
+The selected route applies to the next Claude Code request. In-flight streams continue on the model they started with, so switching is safe during an active session.
 
-```toml
-[llm_proxy]
-enabled = true
-port = 3456
-endpoint = "http://your-gateway:8080/v1"
-api_key = "your-gateway-api-key"
+Routing targets can be:
 
-# Per-tier override. "native" = use real Anthropic.
-opus = "native"
-sonnet = "deepseek-v4-flash"
-haiku = "deepseek-v4-flash"
-
-[[llm_proxy.model]]
-id = "deepseek-v4-flash"
-name = "DeepSeek V4 Flash"
-
-[[llm_proxy.model]]
-id = "deepseek-v4-pro"
-name = "DeepSeek V4 Pro"
-```
-
-#### `claude-mhd` launcher
-
-The repo includes `claude-mhd.bat` — a batch wrapper that launches Claude Code with `ANTHROPIC_BASE_URL` pointing at the local proxy:
-
-```bat
-@echo off
-setlocal
-set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"
-REM set "ANTHROPIC_AUTH_TOKEN=unused"
-call claude %*
-```
-
-To call it as `claude-mhd` from any terminal:
-
-1. Copy `claude-mhd.bat` to a folder of your choice.
-2. Add that folder to your `PATH` environment variable (System → Advanced system settings → Environment Variables → User `Path` → Edit → add the folder).
-3. Restart your terminal.
-
-Then use it like the real `claude` CLI:
-
-```powershell
-claude-mhd                          # default model
-claude-mhd --model sonnet -p "hi"   # pick a model and prompt
-```
-
-The launcher has two modes depending on whether you have an Anthropic subscription (see comments inside the file).
-
-#### User experience flow
+- `native` - pass through to Anthropic, forwarding Claude Code's OAuth token.
+- any configured OpenAI-compatible model - use your provider API key for the next request.
 
 ```mermaid
-flowchart TB
-    subgraph User["👤 You (user)"]
-        CLI["`**CLI** — claude-mhd ...`
-        normal Claude Code commands`"]
-        HOTKEY["`**Hotkey** Ctrl+Alt+L
-        opens Model Selector overlay`"]
-        TRAY["`**Tray menu** → LLM Models
-        or → Proxy Trace overlay`"]
-    end
+flowchart LR
+    CLI["Claude Code CLI"]
+    Proxy["mHD LLM Proxy<br/>local 127.0.0.1:3456"]
+    User["You<br/>tray / Ctrl+Alt+L"]
+    Anthropic["Anthropic<br/>native passthrough"]
+    Provider["OpenAI-compatible provider<br/>your API key"]
 
-    subgraph Proxy["mHD — LLM Proxy (embedded, port 3456)"]
-        ROUTER{{"Tier classifier 🔀"}}
-        SWITCH{{"Dynamic switch ⚡
-        model routing per slot"}}
-        TRACE["`Proxy Trace
-        live routing decisions`"]
-        PERSIST["auto-saves to config.toml"]
-    end
-
-    subgraph AI["AI backends"]
-        ANTHROPIC["Anthropic API
-        (native passthrough,
-        OAuth forwarded)"]
-        GATEWAY["OpenAI-compatible gateway
-        (DeepSeek, SVA, etc.)"]
-    end
-
-    subgraph Monitor["📊 Observability"]
-        OVERLAY["Model Selector overlay
-        · shows all configured models
-        · pick per tier: opus / sonnet / haiku
-        · switch takes effect on next request"]
-        TRACE_WIN["Proxy Trace overlay
-        · real-time routing table
-        · columns: # / Tier / Eff / Target / Reason
-        · ⚠ = auto-downgraded (no thinking)"]
-    end
-
-    CLI -->|"POST /v1/messages (model=claude-sonnet-...)"| ROUTER
-    TRAY --> OVERLAY
-    HOTKEY --> OVERLAY
-    TRAY --> TRACE_WIN
-
-    ROUTER -->|"classifies: opus / sonnet / haiku"| SWITCH
-    SWITCH -->|"native → passthrough"| ANTHROPIC
-    SWITCH -->|"model-id → gateway"| GATEWAY
-    ROUTER -.->|"smart downgrade
-    Opus/Sonnet → target
-    when no thinking requested"| TRACE
-    SWITCH -.-> PERSIST
-
-    OVERLAY -.->|"POST /set_model/{slot}"| SWITCH
-    TRACE_WIN -.->|"GET /trace (poll every 1s)"| TRACE
-
-    style User fill:#1a1a2e,stroke:#e94560,stroke-width:2px
-    style Proxy fill:#16213e,stroke:#0f3460,stroke-width:2px
-    style AI fill:#0f3460,stroke:#533483,stroke-width:2px
-    style Monitor fill:#1a1a2e,stroke:#e94560,stroke-width:1px,stroke-dasharray: 5 5
+    CLI --> Proxy
+    User -. "switch model" .-> Proxy
+    Proxy -->|"native"| Anthropic
+    Proxy -->|"side provider"| Provider
 ```
 
-**The experience, step by step:**
-
-1. **Start.** mHD runs. The LLM proxy starts automatically on port 3456.
-2. **Connect.** Launch Claude Code via `claude-mhd.bat` (or set `ANTHROPIC_BASE_URL` yourself). Every API call now hits your local proxy instead of Anthropic directly.
-3. **Proxy decides.** Each request is classified by tier (`opus`/`sonnet`/`haiku`). The proxy checks its routing table: `native` → forwards to real Anthropic; a model id → routes to your gateway with that model.
-4. **Smart downgrade.** If you asked Opus or Sonnet for a task that doesn't use *thinking*, the proxy can automatically bump it down to a cheaper model — you save credits without changing anything.
-5. **Switch at any time.** Press **Ctrl+Alt+L** (or use the tray menu) → the Model Selector overlay appears. Click a different model for any tier. The change takes effect on the *next* API call — whatever Claude Code is doing right now keeps running uninterrupted.
-6. **See what happened.** Open the **Proxy Trace** from the tray menu to see a live table of every recent request, its original tier, the effective tier it was routed to, the target model, and a reason column showing auto-downgrades.
-7. **Changes stick.** Any runtime switch you make is persisted to `config.toml` automatically, so your routing survives a restart.
-
-**Key insight:** You never need to restart Claude Code, reload mHD, or kill an active conversation. The proxy table is live memory — switching a tier's target is a single method call on the shared `AppState`. In-flight streams keep their original routing; the switch applies cleanly to the next request.
+See [llm-proxy/README.md](llm-proxy/README.md) for setup details, provider configuration, runtime switching, trace view, and the proxy configuration files.
 
 ### Config editor and tray
 
@@ -449,7 +349,7 @@ You can override the config path with:
 $env:MHD_CONFIG = "C:\path\to\config.toml"
 ```
 
-The config file is TOML. It can define:
+The main config file is TOML. It can define:
 
 - startup binding scheme;
 - active theme;
@@ -457,9 +357,14 @@ The config file is TOML. It can define:
 - autostart;
 - quick note settings;
 - power plan order;
-- LLM proxy server and model routing (`[llm_proxy]`);
 - optional developer-only blackbox settings when compiled with that feature;
 - bindings.
+
+LLM proxy settings are managed through the native settings UI and stored under:
+
+```text
+%USERPROFILE%\.config\mhd\llm-proxy\
+```
 
 ---
 
