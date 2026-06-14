@@ -107,6 +107,10 @@ pub struct TraceEntry {
     pub model: String,
     pub downgraded: bool,
     pub reason: String,
+    /// Input tokens reported in the response (0 if not yet available).
+    pub input_tokens: u64,
+    /// Output tokens reported in the response (0 if not yet available).
+    pub output_tokens: u64,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;

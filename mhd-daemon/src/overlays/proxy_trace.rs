@@ -345,16 +345,18 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     let total_cw = win_w - pad * 2;
-    let col_w = total_cw / 5;
-    // Seq gets less space, Target gets more: Seq 0.5x, Target 1.5x
+    let col_w = total_cw / 7;
+    // Column widths: Seq 0.35x, Tier 0.45x, Eff 0.45x, Target 0.80x, In 0.40x, Out 0.40x, Reason fills remainder
     let col_widths = [
-        (col_w as f32 * 0.5) as i32,                                // Seq (~40px)
-        (col_w as f32 * 0.7) as i32,                                // Tier (~56px)
-        (col_w as f32 * 0.7) as i32,                                // Eff (~56px)
-        total_cw - (col_w as f32 * (0.5 + 0.7 + 0.7 + 0.8)) as i32, // Target = remainder
-        (col_w as f32 * 0.8) as i32,                                // Reason (~64px)
+        (col_w as f32 * 0.35) as i32, // Seq
+        (col_w as f32 * 0.45) as i32, // Tier
+        (col_w as f32 * 0.45) as i32, // Eff
+        (col_w as f32 * 0.80) as i32, // Target
+        (col_w as f32 * 0.40) as i32, // In
+        (col_w as f32 * 0.40) as i32, // Out
+        total_cw - (col_w as f32 * (0.35 + 0.45 + 0.45 + 0.80 + 0.40 + 0.40)) as i32, // Reason
     ];
-    let col_headers = ["#", "Tier", "Eff", "Target", "Reason"];
+    let col_headers = ["#", "Tier", "Eff", "Target", "In", "Out", "Reason"];
     let mut col_x = pad;
     for (i, label) in col_headers.iter().enumerate() {
         let mut lw = crate::osd::to_utf16_z(label);
@@ -421,13 +423,25 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             let _ = SetTextColor(dib_dc, text_color.to_colorref());
         }
 
+        fn fmt_tokens(n: u64) -> String {
+            if n == 0 {
+                "\u{2014}".to_string() // em dash
+            } else if n >= 1000 {
+                format!("{:.1}k", n as f64 / 1000.0)
+            } else {
+                n.to_string()
+            }
+        }
+
         let values = [
             entry.seq.to_string(),
             format!("{:?}", entry.tier),
             format!("{:?}", entry.effective_tier),
             entry.target.clone(),
+            fmt_tokens(entry.input_tokens),
+            fmt_tokens(entry.output_tokens),
             if entry.downgraded {
-                format!("⚠ {}", entry.reason)
+                format!("\u{26A0} {}", entry.reason)
             } else {
                 String::new()
             },

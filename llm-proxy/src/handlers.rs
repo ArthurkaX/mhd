@@ -187,6 +187,8 @@ pub async fn post_messages(
         } else {
             String::new()
         },
+        input_tokens: 0,
+        output_tokens: 0,
     });
 
     if stream {
