@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::config::Config;
 
@@ -150,8 +150,6 @@ pub struct AppState {
     pub opus_downgrade_enabled: RwLock<bool>,
     /// Sonnet downgrade when no thinking.
     pub sonnet_downgrade_enabled: RwLock<bool>,
-    /// Whether to write to the database log.
-    pub db_log_enabled: AtomicBool,
     /// Shared HTTP client — reused across requests so connections (and TLS
     /// sessions) are pooled. Creating a fresh `reqwest::Client` per request
     /// defeats keep-alive and serializes parallel load behind new handshakes.
@@ -160,8 +158,8 @@ pub struct AppState {
     pub req_seq: AtomicU64,
     /// Number of upstream requests currently in flight (observability only).
     pub inflight: AtomicU64,
-    /// Structured SQLite + file log.
-    pub db_log: crate::db_log::DbLog,
+    /// Structured SQLite log (lazily created on first enable).
+    pub db_log: Mutex<Option<crate::db_log::DbLog>>,
     /// Ring buffer of recent routing decisions, newest at the back.
     pub trace: RwLock<VecDeque<TraceEntry>>,
     /// Unix epoch ms of the most recently arrived request.
@@ -172,7 +170,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn from_config(cfg: &Config) -> Arc<Self> {
-        let db_path = crate::config::config_dir().join("proxy.db");
         Arc::new(Self {
             anthropic_key: RwLock::new(cfg.anthropic_key.clone()),
             upstream_base_url: RwLock::new(cfg.upstream_base_url.clone()),
@@ -185,38 +182,68 @@ impl AppState {
             opus_downgrade_enabled: RwLock::new(cfg.opus_downgrade_enabled),
             sonnet_downgrade_enabled: RwLock::new(cfg.sonnet_downgrade_enabled),
             http: reqwest::Client::new(),
-            db_log_enabled: AtomicBool::new(false),
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
-            db_log: crate::db_log::DbLog::open(&db_path).expect("Failed to open proxy.db"),
+            db_log: Mutex::new(None),
             trace: RwLock::new(VecDeque::with_capacity(MAX_TRACE_ENTRIES)),
             last_req_epoch_ms: AtomicU64::new(0),
         })
     }
 
-    /// Append a text line to both SQLite and the mirror log file.
+    /// Append a text line to the database log.
     /// Best-effort: errors are swallowed.
     pub fn log_line(&self, msg: &str) {
-        if self.db_log_enabled.load(Ordering::Relaxed) {
-            self.db_log.insert(
-                &crate::providers::now_ms(),
-                &crate::db_log::LogEvent {
-                    seq: 0,
-                    event_type: "RAW".to_string(),
-                    detail: Some(msg.to_string()),
-                    ..Default::default()
-                },
-            );
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                db.insert(
+                    &crate::providers::now_ms(),
+                    &crate::db_log::LogEvent {
+                        seq: 0,
+                        event_type: "RAW".to_string(),
+                        detail: Some(msg.to_string()),
+                        ..Default::default()
+                    },
+                );
+            }
         }
     }
 
     /// Log a structured event with typed fields.
-    /// Timestamp is automatic. Writes to SQLite + mirror log.
+    /// Timestamp is automatic. Writes to SQLite.
     pub fn log_event(&self, event: crate::db_log::LogEvent) {
-        if self.db_log_enabled.load(Ordering::Relaxed) {
-            let ts = crate::providers::now_ms();
-            self.db_log.insert(&ts, &event);
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                let ts = crate::providers::now_ms();
+                db.insert(&ts, &event);
+            }
         }
+    }
+
+    /// Enable or disable the database log.
+    /// When enabling, the database is opened (and created if needed) lazily.
+    pub fn set_db_log_enabled(&self, enabled: bool) {
+        if enabled {
+            let mut guard = self.db_log.lock().unwrap();
+            if guard.is_none() {
+                let db_path = crate::config::config_dir().join("proxy.db");
+                match crate::db_log::DbLog::open(&db_path) {
+                    Ok(db) => {
+                        *guard = Some(db);
+                    }
+                    Err(e) => {
+                        eprintln!("mhd: failed to open proxy.db: {e}");
+                    }
+                }
+            }
+        } else {
+            let mut guard = self.db_log.lock().unwrap();
+            *guard = None;
+        }
+    }
+
+    /// Check whether the database log is currently enabled.
+    pub fn is_db_log_enabled(&self) -> bool {
+        self.db_log.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     /// Record that a request arrived and return the gap since the previous
@@ -294,15 +321,5 @@ impl AppState {
             opus_downgrade_enabled: *self.opus_downgrade_enabled.read().unwrap(),
             sonnet_downgrade_enabled: *self.sonnet_downgrade_enabled.read().unwrap(),
         }
-    }
-
-    /// Enable or disable the database log at runtime.
-    pub fn set_db_log_enabled(&self, enabled: bool) {
-        self.db_log_enabled.store(enabled, Ordering::Relaxed);
-    }
-
-    /// Check whether the database log is currently enabled.
-    pub fn is_db_log_enabled(&self) -> bool {
-        self.db_log_enabled.load(Ordering::Relaxed)
     }
 }
