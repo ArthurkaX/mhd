@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-06-18
+
+- **KeyCast overlay**: new keystroke visualizer for recordings and streams.
+  - Rounded pill carousel shows pressed shortcuts (e.g. `Ctrl+Alt+T`), mouse clicks, and modifier combos.
+  - Configurable position (6 presets) and display duration via Settings → General or `[keycast]` in config.
+  - `toggle_keycast` action and tray toggle with checkmark state.
+  - Toggle the overlay or bind it to any key combination.
+- **Typing block** (optional, off by default): single printable characters (letters, digits, space) appear in a fixed-width block with a mini-carousel animation.
+  - Characters are resolved via `ToUnicodeEx` against the **foreground window's keyboard layout**, so Russian, English, and other layouts show the correct glyph.
+  - Settings: Show typing toggle, width stepper, typing duration stepper.
+- **Key Shortcuts on/off**: tray item renamed from "mhd on/off" to clarify it suspends/resumes hotkey processing without stopping the daemon.
+- **Settings editor**: scroll area height now correctly matches the expanded General page layout.
+- **New files**: `mhd-daemon/src/overlays/keycast.rs`.
+
 ## 0.3.0 - 2026-06-14
 
 - **LLM Proxy**: promoted the proxy into a full user-facing workflow for Claude Code.

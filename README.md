@@ -315,17 +315,17 @@ This produces the normal public build. Optional developer features are disabled 
 The public release archive is portable and contains the normal build only:
 
 ```powershell
-.\scripts\package-release.ps1 -Version 0.3.0
+.\scripts\package-release.ps1 -Version 0.4.0
 ```
 
 The script creates:
 
 ```text
-dist\mhd-v0.3.0-windows-x64.zip
-dist\mhd-v0.3.0-windows-x64.zip.sha256
+dist\mhd-v0.4.0-windows-x64.zip
+dist\mhd-v0.4.0-windows-x64.zip.sha256
 ```
 
-Attach both files to the matching GitHub Release tag, for example `v0.3.0`.
+Attach both files to the matching GitHub Release tag, for example `v0.4.0`.
 
 ---
 
