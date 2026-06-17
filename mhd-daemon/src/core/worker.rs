@@ -149,6 +149,12 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             };
             crate::overlays::pomodoro::show(handle.theme(), bb);
         }
+        Action::ToggleKeycast => {
+            let on = crate::overlays::keycast::toggle(handle.theme(), handle.keycast_config());
+            handle
+                .osd
+                .show_notify(format!("KeyCast {}", if on { "on" } else { "off" }), 900);
+        }
         Action::BrightnessUp { value } => {
             if ddc::adjust_brightness(*value as i32).is_ok()
                 && let Ok((new_val, name)) = ddc::get_brightness()

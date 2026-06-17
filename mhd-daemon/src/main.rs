@@ -67,8 +67,8 @@ pub mod win32;
 pub use core::{action, hook, llm_proxy, native_theme, platform, trigger, worker};
 // Re-export overlay modules so existing `crate::tray::*` etc. still resolve.
 pub use overlays::{
-    about, autostart, cpu_plan, draw, monitor, note, power, suspend, throttle, topmost, tray,
-    volume,
+    about, autostart, cpu_plan, draw, keycast, monitor, note, power, suspend, throttle, topmost,
+    tray, volume,
 };
 use std::env;
 use std::process::ExitCode;

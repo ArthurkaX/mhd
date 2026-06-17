@@ -63,6 +63,26 @@ pub struct RawQuickDraw {
     pub draw_dir: Option<String>,
 }
 
+/// Raw TOML `[keycast]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawKeycast {
+    /// Overlay position: top_left, top_center, top_right, bottom_left, bottom_center, bottom_right.
+    #[serde(default)]
+    pub position: Option<String>,
+    /// How long a key label stays visible.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Show single printable keystrokes in a typing block. Default: false.
+    #[serde(default)]
+    pub show_typing: Option<bool>,
+    /// Width of the typing block in characters. Default: 22.
+    #[serde(default)]
+    pub typing_width_chars: Option<u32>,
+    /// How long a typed character stays visible. Default: 2500 ms.
+    #[serde(default)]
+    pub typing_duration_ms: Option<u64>,
+}
+
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
@@ -84,6 +104,8 @@ pub struct RawConfig {
     pub quicknote: Option<RawQuickNote>,
     #[serde(default)]
     pub quickdraw: Option<RawQuickDraw>,
+    #[serde(default)]
+    pub keycast: Option<RawKeycast>,
     /// Ordered list of power plan names for `switch_power_plan` with target="next".
     #[serde(default)]
     pub power_plans: Vec<String>,

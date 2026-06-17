@@ -10,6 +10,7 @@ use crate::app::AppHandle;
 use crate::config::editor_layout::Layout;
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::core::native_theme::NativeTheme;
+use crate::overlays::keycast::KeycastPosition;
 
 // ── UI Binding (row data) ─────────────────────────────────────────
 
@@ -77,6 +78,22 @@ pub enum SettingsHit {
     NotesDirBrowseBtn,
     /// Browse button for Quick Draw save path.
     DrawDirBrowseBtn,
+    /// KeyCast position preset.
+    KeycastPositionBtn(usize),
+    /// Decrease KeyCast display duration.
+    KeycastDurationDown,
+    /// Increase KeyCast display duration.
+    KeycastDurationUp,
+    /// Toggle KeyCast typing block on/off.
+    KeycastShowTypingToggle,
+    /// Decrease typing width.
+    KeycastTypingWidthDown,
+    /// Increase typing width.
+    KeycastTypingWidthUp,
+    /// Decrease typing duration.
+    KeycastTypingDurationDown,
+    /// Increase typing duration.
+    KeycastTypingDurationUp,
     // ── Accordion editor (inline, expanded row) ──────────────
     AccordionTriggerField,
     AccordionRecordBtn,
@@ -164,6 +181,19 @@ pub struct SettingsState {
 
     /// Quick Draw save directory
     pub draw_dir: PathBuf,
+
+    /// KeyCast overlay position
+    pub keycast_position: KeycastPosition,
+
+    /// KeyCast label display duration in milliseconds
+    pub keycast_duration_ms: u64,
+
+    /// Show typing block for single printable keystrokes.
+    pub keycast_show_typing: bool,
+    /// Typing block width in characters.
+    pub keycast_typing_width_chars: u32,
+    /// Typing block character duration in milliseconds.
+    pub keycast_typing_duration_ms: u64,
 
     /// List of bindings being edited
     pub bindings: Vec<UIBinding>,

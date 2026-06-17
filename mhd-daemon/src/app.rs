@@ -45,6 +45,8 @@ pub trait DaemonControl: Send + Sync {
     fn quicknote_config(&self) -> QuickNoteConfig;
     /// Quick Draw save directory.
     fn draw_dir(&self) -> std::path::PathBuf;
+    /// KeyCast config snapshot.
+    fn keycast_config(&self) -> crate::overlays::keycast::KeycastConfig;
     /// LLM proxy config snapshot.
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig;
 }
@@ -170,6 +172,10 @@ impl DaemonControl for AppHandle {
 
     fn draw_dir(&self) -> std::path::PathBuf {
         self.config.lock().unwrap().draw_dir().clone()
+    }
+
+    fn keycast_config(&self) -> crate::overlays::keycast::KeycastConfig {
+        self.config.lock().unwrap().keycast_config().clone()
     }
 
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig {

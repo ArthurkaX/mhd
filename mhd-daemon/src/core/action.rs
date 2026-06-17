@@ -63,6 +63,8 @@ pub enum Action {
     QuickNote,
     /// Show the Pomodoro timer overlay.
     Pomodoro,
+    /// Toggle KeyCast keystroke overlay for recording/streaming.
+    ToggleKeycast,
     /// Switch active Windows power plan. target = plan name or "next".
     SwitchPowerPlan {
         target: String,
@@ -156,6 +158,7 @@ impl Action {
             "quick_draw" => Ok(Action::QuickDraw),
             "quick_note" => Ok(Action::QuickNote),
             "pomodoro" => Ok(Action::Pomodoro),
+            "toggle_keycast" => Ok(Action::ToggleKeycast),
             "switch_power_plan" => {
                 let target = fields
                     .target
@@ -336,6 +339,7 @@ impl Action {
             Action::ShowProxyTrace => "show_proxy_trace",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
             Action::Pomodoro => "pomodoro",
+            Action::ToggleKeycast => "toggle_keycast",
             Action::Quit => "quit",
         }
     }
@@ -390,6 +394,7 @@ impl Action {
             | Action::ShowProxyTrace
             | Action::ToggleLlmProxy
             | Action::Pomodoro
+            | Action::ToggleKeycast
             | Action::Quit => self.name().to_string(),
         }
     }
@@ -654,6 +659,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "pomodoro",
         label: "Pomodoro Timer",
         description: "Open or control the Pomodoro timer.",
+        category: ActionCategory::Tools,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "toggle_keycast",
+        label: "Toggle KeyCast",
+        description: "Show or hide pressed keys for recordings and streams.",
         category: ActionCategory::Tools,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -1028,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(26)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
+        assert_eq!(find_action_index("quit"), Some(27)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

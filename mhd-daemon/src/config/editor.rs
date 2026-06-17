@@ -52,6 +52,7 @@ use crate::core::action::ActionParamSchema;
 use crate::core::native_theme::{Argb, NativeTheme, load_theme_from_path};
 use crate::core::trigger::{KeyCombo, Modifiers, PhysicalKey, keys_to_string};
 use crate::hook::WM_BINDING_CAPTURED;
+use crate::overlays::keycast::KeycastPosition;
 
 // Import editor layout constants for local use
 use crate::config::editor_layout::{
@@ -62,8 +63,8 @@ use crate::config::editor_layout::{
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
     COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, FONT_BODY_SIZE,
-    FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, SECTION_HEADER_HEIGHT_BASE, WIN_HEIGHT_BASE,
-    WIN_WIDTH_BASE, WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
+    FONT_SMALL_SIZE, FONT_TITLE_SIZE, Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
+    WIN_HEIGHT_BASE, WIN_WIDTH_BASE, WM_MOUSELEAVE, WM_PARAM_EDIT_COMMIT, compute_layout,
 };
 pub use crate::config::editor_paint::{
     build_advanced_controls, build_general_controls, build_llm_proxy_controls,
@@ -208,6 +209,7 @@ pub fn show_config_editor(handle: AppHandle) {
         .notes_dir
         .clone();
     let draw_dir = handle.config.lock().unwrap().draw_dir().clone();
+    let keycast_config = handle.keycast_config();
 
     let state = Box::into_raw(Box::new(SettingsState {
         handle: handle.clone(),
@@ -225,6 +227,11 @@ pub fn show_config_editor(handle: AppHandle) {
         autostart: crate::autostart::is_autostart_enabled(),
         notes_dir,
         draw_dir,
+        keycast_position: keycast_config.position,
+        keycast_duration_ms: keycast_config.duration_ms,
+        keycast_show_typing: keycast_config.show_typing,
+        keycast_typing_width_chars: keycast_config.typing_width_chars,
+        keycast_typing_duration_ms: keycast_config.typing_duration_ms,
         bindings,
         // Load global proxy settings: anthropic key + bind address
         anthropic_key: llm_proxy::config::load_secrets()
@@ -848,8 +855,18 @@ fn contrast_text_on(bg: Argb) -> bool {
 fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
     match state.active_section {
         SettingsPage::General => {
-            // Last control is Draw Path browse button row.
-            let last_y = lay.general.draw_path_y + (36.0 * lay.scale()) as i32;
+            // Match the exact layout from build_general_controls.
+            let row_h = (28.0 * lay.scale()) as i32;
+            let section_gap = (SECTION_GAP_BASE as f32 * lay.scale()) as i32;
+            let keycast_divider_y = lay.general.draw_path_y + row_h + section_gap / 2;
+            let keycast_header_y = keycast_divider_y + section_gap / 2;
+            let keycast_y =
+                keycast_header_y + (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32;
+            let pos_gap = (6.0 * lay.scale()) as i32;
+            let duration_y = keycast_y + (row_h + pos_gap) * 2 + section_gap / 2;
+            // Typing block controls (3 rows: toggle, width, duration)
+            let typing_start_y = duration_y + row_h + section_gap;
+            let last_y = typing_start_y + 3 * row_h + pos_gap;
             last_y + (20.0 * lay.scale()) as i32 - lay.content_y()
         }
         SettingsPage::Shortcuts => {
@@ -1064,6 +1081,11 @@ fn apply_settings(state: &mut SettingsState) {
         state.autostart,
         &state.notes_dir,
         &state.draw_dir,
+        state.keycast_position,
+        state.keycast_duration_ms,
+        state.keycast_show_typing,
+        state.keycast_typing_width_chars,
+        state.keycast_typing_duration_ms,
         &state.handle,
     ) {
         eprintln!("mhd: settings error: {e}");
@@ -1146,6 +1168,7 @@ fn apply_settings(state: &mut SettingsState) {
     }
 
     state.theme = state.handle.theme();
+    crate::keycast::sync_config(state.theme.clone(), state.handle.keycast_config());
 }
 
 fn save_config(
@@ -1155,6 +1178,11 @@ fn save_config(
     autostart: bool,
     notes_dir: &std::path::Path,
     draw_dir: &std::path::Path,
+    keycast_position: KeycastPosition,
+    keycast_duration_ms: u64,
+    keycast_show_typing: bool,
+    keycast_typing_width_chars: u32,
+    keycast_typing_duration_ms: u64,
     handle: &AppHandle,
 ) -> Result<(), String> {
     {
@@ -1224,6 +1252,34 @@ fn save_config(
                 qd_table.insert(
                     "draw_dir".to_string(),
                     toml::Value::String(draw_dir.to_string_lossy().into_owned()),
+                );
+            }
+        }
+
+        {
+            let kc = table
+                .entry("keycast".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+            if let Some(kc_table) = kc.as_table_mut() {
+                kc_table.insert(
+                    "position".to_string(),
+                    toml::Value::String(keycast_position.config_value().to_string()),
+                );
+                kc_table.insert(
+                    "duration_ms".to_string(),
+                    toml::Value::Integer(keycast_duration_ms as i64),
+                );
+                kc_table.insert(
+                    "show_typing".to_string(),
+                    toml::Value::Boolean(keycast_show_typing),
+                );
+                kc_table.insert(
+                    "typing_width_chars".to_string(),
+                    toml::Value::Integer(keycast_typing_width_chars as i64),
+                );
+                kc_table.insert(
+                    "typing_duration_ms".to_string(),
+                    toml::Value::Integer(keycast_typing_duration_ms as i64),
                 );
             }
         }
@@ -1508,6 +1564,63 @@ unsafe extern "system" fn settings_wndproc(
                             state.draw_dir = path;
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
+                    }
+                    SettingsHit::KeycastPositionBtn(idx) => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if let Some(position) = KeycastPosition::all().get(idx).copied() {
+                            state.keycast_position = position;
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                    }
+                    SettingsHit::KeycastDurationDown => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_duration_ms =
+                            state.keycast_duration_ms.saturating_sub(250).max(250);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::KeycastDurationUp => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_duration_ms = (state.keycast_duration_ms + 250).min(5000);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::KeycastShowTypingToggle => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_show_typing = !state.keycast_show_typing;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::KeycastTypingWidthDown => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_typing_width_chars =
+                            state.keycast_typing_width_chars.saturating_sub(1).max(4);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::KeycastTypingWidthUp => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_typing_width_chars =
+                            (state.keycast_typing_width_chars + 1).min(80);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::KeycastTypingDurationDown => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_typing_duration_ms = state
+                            .keycast_typing_duration_ms
+                            .saturating_sub(250)
+                            .max(250);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::KeycastTypingDurationUp => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        state.keycast_typing_duration_ms =
+                            (state.keycast_typing_duration_ms + 250).min(5000);
+                        paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     // ── LLM Proxy: global settings ────────────────────
                     SettingsHit::ProxyAnthropicKeyField => {

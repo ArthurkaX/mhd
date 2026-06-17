@@ -24,6 +24,7 @@ use crate::config::editor_theme::{
     draw_toggle_switch, to_utf16_z,
 };
 use crate::core::native_theme::{Argb, NativeTheme};
+use crate::overlays::keycast::KeycastPosition;
 
 // ── Convenience: resolve a FontChoice to an HFONT ───────────────────
 
@@ -759,6 +760,301 @@ pub fn build_general_controls(lay: &Layout, state: &SettingsState) -> ControlLis
         is_hovered: is_draw_browse_hovered,
         style: ButtonStyle::Secondary,
         hit: SettingsHit::DrawDirBrowseBtn,
+    });
+
+    // KeyCast divider
+    let keycast_divider_y = draw_path_y + draw_row_h + section_gap / 2;
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: lay.pad(),
+            top: keycast_divider_y,
+            right: lay.win_w() - lay.pad(),
+            bottom: keycast_divider_y + 1,
+        },
+    });
+
+    // KeyCast section header
+    let keycast_header_y = keycast_divider_y + section_gap / 2;
+    ctls.push(Control::Header {
+        rect: RECT {
+            left: lay.pad(),
+            top: keycast_header_y,
+            right: lay.win_w() - lay.pad(),
+            bottom: keycast_header_y + section_header_h,
+        },
+        label: "KeyCast".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    let keycast_y = keycast_header_y + section_header_h;
+    let keycast_row_h = (28.0 * scale) as i32;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: lay.pad(),
+            top: keycast_y,
+            right: lay.pad() + lay.label_w(),
+            bottom: keycast_y + keycast_row_h,
+        },
+        label: "Position".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    let pos_gap = (6.0 * scale) as i32;
+    let pos_btn_w = ((lay.win_w() - lay.combo_x() - lay.pad() - pos_gap * 2) / 3).max(1);
+    for (idx, position) in KeycastPosition::all().iter().copied().enumerate() {
+        let col = idx as i32 % 3;
+        let row = idx as i32 / 3;
+        let x = lay.combo_x() + col * (pos_btn_w + pos_gap);
+        let y = keycast_y + row * (keycast_row_h + pos_gap);
+        let selected = position == state.keycast_position;
+        let is_hovered = state.hovered_target == SettingsHit::KeycastPositionBtn(idx);
+        ctls.push(Control::Button {
+            rect: RECT {
+                left: x,
+                top: y,
+                right: x + pos_btn_w,
+                bottom: y + keycast_row_h,
+            },
+            label: position.label().into(),
+            font: FontChoice::Small,
+            is_hovered,
+            style: if selected {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Secondary
+            },
+            hit: SettingsHit::KeycastPositionBtn(idx),
+        });
+    }
+
+    let duration_y = keycast_y + (keycast_row_h + pos_gap) * 2 + section_gap / 2;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: lay.pad(),
+            top: duration_y,
+            right: lay.pad() + lay.label_w(),
+            bottom: duration_y + keycast_row_h,
+        },
+        label: "Duration".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    let step_btn_w = (36.0 * scale) as i32;
+    let value_w = (96.0 * scale) as i32;
+    let down_hovered = state.hovered_target == SettingsHit::KeycastDurationDown;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: lay.combo_x(),
+            top: duration_y,
+            right: lay.combo_x() + step_btn_w,
+            bottom: duration_y + keycast_row_h,
+        },
+        label: "-".into(),
+        font: FontChoice::Body,
+        is_hovered: down_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::KeycastDurationDown,
+    });
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: lay.combo_x() + step_btn_w + pos_gap,
+            top: duration_y,
+            right: lay.combo_x() + step_btn_w + pos_gap + value_w,
+            bottom: duration_y + keycast_row_h,
+        },
+        text: format!("{} ms", state.keycast_duration_ms),
+        placeholder: None,
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: theme_border(state),
+        text_color: theme_text(state),
+        hit: SettingsHit::None,
+    });
+    let up_x = lay.combo_x() + step_btn_w + pos_gap + value_w + pos_gap;
+    let up_hovered = state.hovered_target == SettingsHit::KeycastDurationUp;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: up_x,
+            top: duration_y,
+            right: up_x + step_btn_w,
+            bottom: duration_y + keycast_row_h,
+        },
+        label: "+".into(),
+        font: FontChoice::Body,
+        is_hovered: up_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::KeycastDurationUp,
+    });
+
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: up_x + step_btn_w + lay.pad(),
+            top: duration_y,
+            right: lay.win_w() - lay.pad(),
+            bottom: duration_y + keycast_row_h,
+        },
+        label: "Shown for keyboard and mouse clicks.".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // ── Typing block controls ────────────────────────────────────
+    let typing_start_y = duration_y + keycast_row_h + section_gap;
+
+    let typing_toggle_h = (18.0 * scale) as i32;
+    let typing_toggle_w = (36.0 * scale) as i32;
+    let typing_toggle_y = typing_start_y + (keycast_row_h - typing_toggle_h) / 2;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: lay.pad(),
+            top: typing_start_y,
+            right: lay.pad() + lay.label_w(),
+            bottom: typing_start_y + keycast_row_h,
+        },
+        label: "Show typing".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+    let typing_toggle_rect = RECT {
+        left: lay.combo_x(),
+        top: typing_toggle_y,
+        right: lay.combo_x() + typing_toggle_w,
+        bottom: typing_toggle_y + typing_toggle_h,
+    };
+    let typing_toggle_hovered = state.hovered_target == SettingsHit::KeycastShowTypingToggle;
+    ctls.push(Control::Toggle {
+        rect: typing_toggle_rect,
+        is_on: state.keycast_show_typing,
+        is_hovered: typing_toggle_hovered,
+        hit: SettingsHit::KeycastShowTypingToggle,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: lay.combo_x() + typing_toggle_w + lay.pad(),
+            top: typing_start_y,
+            right: lay.win_w() - lay.pad(),
+            bottom: typing_start_y + keycast_row_h,
+        },
+        label: "Show single printable keystrokes in a typing block.".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    let width_y = typing_start_y + keycast_row_h + pos_gap / 2;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: lay.pad(),
+            top: width_y,
+            right: lay.pad() + lay.label_w(),
+            bottom: width_y + keycast_row_h,
+        },
+        label: "Typing width".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+    let width_down_hovered = state.hovered_target == SettingsHit::KeycastTypingWidthDown;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: lay.combo_x(),
+            top: width_y,
+            right: lay.combo_x() + step_btn_w,
+            bottom: width_y + keycast_row_h,
+        },
+        label: "-".into(),
+        font: FontChoice::Body,
+        is_hovered: width_down_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::KeycastTypingWidthDown,
+    });
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: lay.combo_x() + step_btn_w + pos_gap,
+            top: width_y,
+            right: lay.combo_x() + step_btn_w + pos_gap + value_w,
+            bottom: width_y + keycast_row_h,
+        },
+        text: format!("{} chars", state.keycast_typing_width_chars),
+        placeholder: None,
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: theme_border(state),
+        text_color: theme_text(state),
+        hit: SettingsHit::None,
+    });
+    let width_up_x = lay.combo_x() + step_btn_w + pos_gap + value_w + pos_gap;
+    let width_up_hovered = state.hovered_target == SettingsHit::KeycastTypingWidthUp;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: width_up_x,
+            top: width_y,
+            right: width_up_x + step_btn_w,
+            bottom: width_y + keycast_row_h,
+        },
+        label: "+".into(),
+        font: FontChoice::Body,
+        is_hovered: width_up_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::KeycastTypingWidthUp,
+    });
+
+    let typing_dur_y = width_y + keycast_row_h + pos_gap / 2;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: lay.pad(),
+            top: typing_dur_y,
+            right: lay.pad() + lay.label_w(),
+            bottom: typing_dur_y + keycast_row_h,
+        },
+        label: "Typing duration".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+    let td_down_hovered = state.hovered_target == SettingsHit::KeycastTypingDurationDown;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: lay.combo_x(),
+            top: typing_dur_y,
+            right: lay.combo_x() + step_btn_w,
+            bottom: typing_dur_y + keycast_row_h,
+        },
+        label: "-".into(),
+        font: FontChoice::Body,
+        is_hovered: td_down_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::KeycastTypingDurationDown,
+    });
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: lay.combo_x() + step_btn_w + pos_gap,
+            top: typing_dur_y,
+            right: lay.combo_x() + step_btn_w + pos_gap + value_w,
+            bottom: typing_dur_y + keycast_row_h,
+        },
+        text: format!("{} ms", state.keycast_typing_duration_ms),
+        placeholder: None,
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: theme_border(state),
+        text_color: theme_text(state),
+        hit: SettingsHit::None,
+    });
+    let td_up_x = lay.combo_x() + step_btn_w + pos_gap + value_w + pos_gap;
+    let td_up_hovered = state.hovered_target == SettingsHit::KeycastTypingDurationUp;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: td_up_x,
+            top: typing_dur_y,
+            right: td_up_x + step_btn_w,
+            bottom: typing_dur_y + keycast_row_h,
+        },
+        label: "+".into(),
+        font: FontChoice::Body,
+        is_hovered: td_up_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::KeycastTypingDurationUp,
     });
 
     ctls

@@ -44,6 +44,7 @@ const CMD_CPU_PANEL: usize = 10;
 const CMD_LLM_MODELS: usize = 11;
 const CMD_PROXY_TRACE: usize = 12;
 const CMD_LLM_PROXY_TOGGLE: usize = 13;
+const CMD_KEYCAST_TOGGLE: usize = 14;
 const CMD_POWER_PLAN_BASE: usize = 100;
 const CMD_ABOUT: usize = 7;
 const CMD_QUIT: usize = 8;
@@ -141,7 +142,7 @@ fn show_menu(hwnd: HWND) {
         } else {
             MF_BYPOSITION | MF_STRING
         };
-        item(menu, mhd_flags, CMD_TOGGLE_SUSPEND, "mhd on/off");
+        item(menu, mhd_flags, CMD_TOGGLE_SUSPEND, "Key Shortcuts on/off");
 
         #[cfg(feature = "blackbox")]
         {
@@ -189,6 +190,12 @@ fn show_menu(hwnd: HWND) {
 
         item(menu, MF_BYPOSITION | MF_STRING, CMD_NOTE, "Note");
         item(menu, MF_BYPOSITION | MF_STRING, CMD_DRAW, "Draw");
+        let keycast_flags = if crate::keycast::is_enabled() {
+            MF_BYPOSITION | MF_STRING | MF_CHECKED
+        } else {
+            MF_BYPOSITION | MF_STRING
+        };
+        item(menu, keycast_flags, CMD_KEYCAST_TOGGLE, "KeyCast on/off");
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
@@ -316,6 +323,14 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_DRAW => {
                         draw::show(state.app.theme(), state.app.draw_dir());
+                    }
+                    CMD_KEYCAST_TOGGLE => {
+                        let on =
+                            crate::keycast::toggle(state.app.theme(), state.app.keycast_config());
+                        state
+                            .app
+                            .osd
+                            .show_notify(format!("KeyCast {}", if on { "on" } else { "off" }), 900);
                     }
                     CMD_EDIT_CONFIG => {
                         crate::config::editor::show_config_editor(state.app.clone());

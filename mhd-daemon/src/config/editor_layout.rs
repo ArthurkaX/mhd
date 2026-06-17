@@ -74,6 +74,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "quick_draw",
     "quick_note",
     "pomodoro",
+    "toggle_keycast",
     "switch_power_plan",
     "show_cpu_panel",
     "show_llm_models",

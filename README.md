@@ -214,6 +214,7 @@ The included overlays are:
 - Quick Note
 - Pomodoro timer
 - CPU power panel
+- KeyCast keystroke overlay
 
 Each one is a native window with a narrow task and a minimal control surface.
 
@@ -222,6 +223,10 @@ Quick Draw is a transparent drawing layer with pencil, rectangle, circle, and ar
 Quick Note is a hotkey popup for short Markdown notes. Enter saves, Shift+Enter inserts a new line, Escape cancels, and a second hotkey press closes the popup without saving. Notes are written by day into the configured notes directory.
 
 The Pomodoro tool keeps its timer state in a background thread, so the overlay can be opened and closed without losing the current timer. It supports task text, start/pause/stop, five-minute extension, break timing, and completion feedback.
+
+KeyCast shows pressed keys and mouse clicks in a small overlay for recordings and streams. It can be toggled from the tray or assigned to a shortcut with `toggle_keycast`.
+
+The Settings window exposes KeyCast position and display duration. Manual `[keycast]` settings can choose one of six positions: `top_left`, `top_center`, `top_right`, `bottom_left`, `bottom_center`, or `bottom_right`.
 
 The CPU power panel can switch Windows power plans, edit processor parking and frequency-related power settings, show live per-core load, expose P/E core topology when Windows reports it, and run a small local stress load for testing plan behaviour.
 
@@ -366,6 +371,14 @@ LLM proxy settings are managed through the native settings UI and stored under:
 %USERPROFILE%\.config\mhd\llm-proxy\
 ```
 
+Optional KeyCast placement can be configured manually:
+
+```toml
+[keycast]
+position = "bottom_center"
+duration_ms = 1200
+```
+
 ---
 
 ## Actions
@@ -428,6 +441,7 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 | `quick_draw` | - | Open the quick drawing overlay. |
 | `quick_note` | - | Open the quick note overlay. |
 | `pomodoro` | - | Open the Pomodoro timer overlay. |
+| `toggle_keycast` | - | Toggle the KeyCast keystroke overlay. |
 
 ### LLM Proxy
 

@@ -321,6 +321,19 @@ unsafe extern "system" fn keyboard_hook_proc(
                 key: PhysicalKey::Keyboard(vk as u8),
             };
 
+            // Route printable single keystrokes (no modifiers) to the typing
+            // block; everything else (shortcuts, special keys) goes to the
+            // shortcut carousel.
+            if modifiers.0 == 0 {
+                if let Some(ch) = crate::keycast::resolve_vk_to_char(vk as u8) {
+                    crate::keycast::show_key(ch);
+                } else {
+                    crate::keycast::show_trigger(trigger);
+                }
+            } else {
+                crate::keycast::show_trigger(trigger);
+            }
+
             if dispatch_trigger(state, trigger) {
                 return LRESULT(1);
             }
@@ -404,11 +417,18 @@ unsafe extern "system" fn mouse_hook_proc(
                 crate::suspend::resume_if_window_at_point(ms_struct.pt);
                 #[cfg(feature = "blackbox")]
                 bb_input(crate::blackbox::InputKind::MouseButton);
+                let label = if msg_type == WM_LBUTTONDOWN {
+                    "Left Click"
+                } else {
+                    "Right Click"
+                };
+                crate::keycast::show_mouse_button(label, get_pressed_modifiers());
             }
             WM_MBUTTONDOWN => {
                 crate::suspend::resume_if_window_at_point(ms_struct.pt);
                 #[cfg(feature = "blackbox")]
                 bb_input(crate::blackbox::InputKind::MouseButton);
+                crate::keycast::show_mouse_button("Middle Click", get_pressed_modifiers());
                 // Middle button
                 let modifiers = get_pressed_modifiers();
                 let trigger = Trigger {

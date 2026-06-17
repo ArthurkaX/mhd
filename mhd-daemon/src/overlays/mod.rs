@@ -4,6 +4,7 @@ pub mod about;
 pub mod autostart;
 pub mod cpu_plan;
 pub mod draw;
+pub mod keycast;
 pub mod llm_models;
 pub mod monitor;
 pub mod note;

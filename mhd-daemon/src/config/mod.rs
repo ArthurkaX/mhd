@@ -21,6 +21,7 @@ use crate::action::Action;
 #[cfg(feature = "blackbox")]
 use crate::blackbox::BlackboxConfig;
 use crate::config::path::home_dir;
+use crate::overlays::keycast::{KeycastConfig, KeycastPosition};
 use crate::overlays::note::QuickNoteConfig;
 use crate::trigger::parse_trigger;
 use llm_proxy;
@@ -138,6 +139,8 @@ pub struct AppConfig {
     pub quicknote: QuickNoteConfig,
     /// Quick Draw save directory.
     pub draw_dir: PathBuf,
+    /// KeyCast overlay config.
+    pub keycast: KeycastConfig,
     /// Ordered list of power plan names for rotation.
     pub power_plans: Vec<String>,
     /// LLM proxy integration config.
@@ -288,6 +291,7 @@ impl AppConfig {
                 .and_then(|q| q.draw_dir.as_ref())
                 .map(PathBuf::from)
                 .unwrap_or_else(default_draw_dir),
+            keycast: parse_keycast_config(raw.keycast.as_ref()),
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,
             // LLM proxy config is now stored in JSON files under the proxy's
@@ -623,10 +627,38 @@ impl AppConfig {
         &self.draw_dir
     }
 
+    pub fn keycast_config(&self) -> &KeycastConfig {
+        &self.keycast
+    }
+
     /// LLM proxy configuration.
     pub fn llm_proxy(&self) -> &LlmProxyConfig {
         &self.llm_proxy
     }
+}
+
+fn parse_keycast_config(raw: Option<&self::raw::RawKeycast>) -> KeycastConfig {
+    let Some(raw) = raw else {
+        return KeycastConfig::default();
+    };
+
+    let mut cfg = KeycastConfig::default();
+    if let Some(position) = raw.position.as_deref().and_then(KeycastPosition::parse) {
+        cfg.position = position;
+    }
+    if let Some(duration_ms) = raw.duration_ms.filter(|v| *v >= 250) {
+        cfg.duration_ms = duration_ms;
+    }
+    if let Some(show_typing) = raw.show_typing {
+        cfg.show_typing = show_typing;
+    }
+    if let Some(width) = raw.typing_width_chars.filter(|v| *v >= 4 && *v <= 80) {
+        cfg.typing_width_chars = width;
+    }
+    if let Some(typing_ms) = raw.typing_duration_ms.filter(|v| *v >= 250) {
+        cfg.typing_duration_ms = typing_ms;
+    }
+    cfg
 }
 
 #[cfg(test)]
