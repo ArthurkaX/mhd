@@ -192,6 +192,7 @@ impl AppConfig {
                     value: raw_b.value.as_deref(),
                     code: raw_b.code.as_deref(),
                     target: raw_b.target.as_deref(),
+                    preset: raw_b.preset.as_deref(),
                 },
             ) {
                 Ok(a) => a,

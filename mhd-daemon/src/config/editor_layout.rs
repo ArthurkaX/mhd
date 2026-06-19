@@ -80,6 +80,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "show_llm_models",
     "show_proxy_trace",
     "toggle_llm_proxy",
+    "breathe",
     "quit",
 ];
 

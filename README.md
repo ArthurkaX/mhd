@@ -39,7 +39,7 @@ The product is built around a simple idea:
 | Automation | PowerShell commands, program launch, hotkey-driven actions |
 | Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
 | Audio | Master volume, per-app mixer, media key actions |
-| Desktop tools | Quick Note, Quick Draw, Pomodoro, power panel, CPU plan panel |
+| Desktop tools | Quick Note, Quick Draw, Pomodoro, Breathe, power panel, CPU plan panel |
 | LLM Proxy | Local proxy for Claude Code — intercepts API calls, remaps models |
 | Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
 | Settings | Native config editor, theme selection, autostart, shortcut editing |
@@ -213,6 +213,7 @@ The included overlays are:
 - Quick Draw
 - Quick Note
 - Pomodoro timer
+- Breathe pacer
 - CPU power panel
 - KeyCast keystroke overlay
 
@@ -223,6 +224,8 @@ Quick Draw is a transparent drawing layer with pencil, rectangle, circle, and ar
 Quick Note is a hotkey popup for short Markdown notes. Enter saves, Shift+Enter inserts a new line, Escape cancels, and a second hotkey press closes the popup without saving. Notes are written by day into the configured notes directory.
 
 The Pomodoro tool keeps its timer state in a background thread, so the overlay can be opened and closed without losing the current timer. It supports task text, start/pause/stop, five-minute extension, break timing, and completion feedback.
+
+The Breathe pacer visualises paced resonance breathing at 6 breaths per minute using an expanding/contracting sphere. Three presets are available: `balanced` (10 min, 5-5), `calm` (15 min, 4-6), and `extended` (20 min, 4-6). When invoked without a preset, the tool auto-selects by time of day. The overlay supports pause/resume (snap-back to the beginning of inhale), mute, and quit. Completion beeps and logs to blackbox when enabled.
 
 KeyCast shows pressed keys and mouse clicks in a small overlay for recordings and streams. It can be toggled from the tray or assigned to a shortcut with `toggle_keycast`.
 
@@ -441,6 +444,7 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 | `quick_draw` | - | Open the quick drawing overlay. |
 | `quick_note` | - | Open the quick note overlay. |
 | `pomodoro` | - | Open the Pomodoro timer overlay. |
+| `breathe` | `preset` | Open the Breathe pacer. Optional preset: `balanced`, `calm`, `extended`, or omit for time-of-day auto-select. |
 | `toggle_keycast` | - | Toggle the KeyCast keystroke overlay. |
 
 ### LLM Proxy
@@ -517,6 +521,17 @@ action = "toggle_throttle_on_blur"
 trigger = "ctrl+alt+t"
 action = "run_ps"
 command = "Start-Process wt"
+
+# Open the Breathe pacer with the time-of-day preset.
+[[binding]]
+trigger = "ctrl+alt+b"
+action = "breathe"
+
+# Open the Breathe pacer with the calm preset (15 min, 4-6 ratio).
+[[binding]]
+trigger = "ctrl+alt+shift+b"
+action = "breathe"
+preset = "calm"
 
 ```
 

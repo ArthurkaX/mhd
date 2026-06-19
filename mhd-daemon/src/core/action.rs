@@ -65,6 +65,10 @@ pub enum Action {
     Pomodoro,
     /// Toggle KeyCast keystroke overlay for recording/streaming.
     ToggleKeycast,
+    /// Show the Breathe pacer overlay. Optional preset: balanced, calm, extended, auto.
+    Breathe {
+        preset: Option<String>,
+    },
     /// Switch active Windows power plan. target = plan name or "next".
     SwitchPowerPlan {
         target: String,
@@ -90,6 +94,7 @@ pub struct ActionRawFields<'a> {
     pub value: Option<&'a str>,
     pub code: Option<&'a str>,
     pub target: Option<&'a str>,
+    pub preset: Option<&'a str>,
 }
 
 impl Action {
@@ -159,6 +164,14 @@ impl Action {
             "quick_note" => Ok(Action::QuickNote),
             "pomodoro" => Ok(Action::Pomodoro),
             "toggle_keycast" => Ok(Action::ToggleKeycast),
+            "breathe" => {
+                // `preset` field is optional. If absent or empty => auto-select by time of day.
+                let preset = fields
+                    .preset
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string());
+                Ok(Action::Breathe { preset })
+            }
             "switch_power_plan" => {
                 let target = fields
                     .target
@@ -340,6 +353,7 @@ impl Action {
             Action::ToggleLlmProxy => "toggle_llm_proxy",
             Action::Pomodoro => "pomodoro",
             Action::ToggleKeycast => "toggle_keycast",
+            Action::Breathe { .. } => "breathe",
             Action::Quit => "quit",
         }
     }
@@ -395,6 +409,7 @@ impl Action {
             | Action::ToggleLlmProxy
             | Action::Pomodoro
             | Action::ToggleKeycast
+            | Action::Breathe { .. }
             | Action::Quit => self.name().to_string(),
         }
     }
@@ -672,6 +687,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
+        name: "breathe",
+        label: "Breathe",
+        description: "Open the paced breathing overlay. Optional preset: balanced, calm, extended, or auto.",
+        category: ActionCategory::Tools,
+        param_key: Some("preset"),
+        param_schema: ActionParamSchema::Text,
+    },
+    ActionDescriptor {
         name: "switch_power_plan",
         label: "Switch Power Plan",
         description: "Switch to a configured Windows power plan.",
@@ -801,6 +824,7 @@ mod tests {
                     value: None,
                     code: None,
                     target: None,
+                    preset: None,
                 },
                 Action::RunPs { .. } => ActionRawFields {
                     command: Some("echo test"),
@@ -810,6 +834,7 @@ mod tests {
                     value: None,
                     code: None,
                     target: None,
+                    preset: None,
                 },
                 Action::RunProgram { .. } => ActionRawFields {
                     path: Some("notepad.exe"),
@@ -819,6 +844,7 @@ mod tests {
                     value: None,
                     code: None,
                     target: None,
+                    preset: None,
                 },
                 Action::SwitchScheme { .. } => ActionRawFields {
                     target_scheme: Some("default"),
@@ -828,6 +854,7 @@ mod tests {
                     value: None,
                     code: None,
                     target: None,
+                    preset: None,
                 },
                 Action::BrightnessUp { .. }
                 | Action::BrightnessDown { .. }
@@ -839,6 +866,7 @@ mod tests {
                     target_scheme: None,
                     code: None,
                     target: None,
+                    preset: None,
                 },
                 Action::Vcp { .. } => ActionRawFields {
                     code: Some("0x10"),
@@ -848,6 +876,7 @@ mod tests {
                     path: None,
                     target_scheme: None,
                     target: None,
+                    preset: None,
                 },
                 Action::SwitchPowerPlan { .. } => ActionRawFields {
                     target: Some("next"),
@@ -857,6 +886,7 @@ mod tests {
                     target_scheme: None,
                     value: None,
                     code: None,
+                    preset: None,
                 },
                 _ => ActionRawFields {
                     keys: None,
@@ -866,6 +896,7 @@ mod tests {
                     value: None,
                     code: None,
                     target: None,
+                    preset: None,
                 },
             };
             let roundtrip = Action::from_raw(name, fields);
@@ -992,6 +1023,7 @@ mod tests {
             value: None,
             code: None,
             target: None,
+            preset: None,
         };
         let result = Action::from_raw("nonexistent_action", fields);
         assert!(result.is_err());
@@ -1009,6 +1041,7 @@ mod tests {
             value: None,
             code: None,
             target: None,
+            preset: None,
         };
         let result = Action::from_raw("replace_key", fields);
         assert!(result.is_err());
@@ -1027,6 +1060,7 @@ mod tests {
             value: None,
             code: None,
             target: None,
+            preset: None,
         };
         let result = Action::from_raw("run_program", fields);
         assert!(result.is_err());
@@ -1041,7 +1075,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(27)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
+        assert_eq!(find_action_index("quit"), Some(28)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }
@@ -1076,6 +1110,7 @@ mod tests {
                 value: Some("10"),
                 code: Some("0x10"),
                 target: Some("next"),
+                preset: Some("calm"),
             };
             let result = Action::from_raw(desc.name, fields);
             assert!(

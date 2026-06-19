@@ -149,6 +149,24 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             };
             crate::overlays::pomodoro::show(handle.theme(), bb);
         }
+        Action::Breathe { preset } => {
+            let bb = {
+                #[cfg(feature = "blackbox")]
+                {
+                    handle.blackbox_enabled()
+                }
+                #[cfg(not(feature = "blackbox"))]
+                {
+                    false
+                }
+            };
+            let config = match preset.as_deref() {
+                Some("auto") | None => crate::overlays::breathe::auto_preset(),
+                Some(name) => crate::overlays::breathe::preset_config(name)
+                    .unwrap_or_else(|| crate::overlays::breathe::auto_preset()),
+            };
+            crate::overlays::breathe::show(handle.theme(), config, bb);
+        }
         Action::ToggleKeycast => {
             let on = crate::overlays::keycast::toggle(handle.theme(), handle.keycast_config());
             handle

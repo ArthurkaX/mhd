@@ -45,6 +45,7 @@ const CMD_LLM_MODELS: usize = 11;
 const CMD_PROXY_TRACE: usize = 12;
 const CMD_LLM_PROXY_TOGGLE: usize = 13;
 const CMD_KEYCAST_TOGGLE: usize = 14;
+const CMD_BREATHE: usize = 15;
 const CMD_POWER_PLAN_BASE: usize = 100;
 const CMD_ABOUT: usize = 7;
 const CMD_QUIT: usize = 8;
@@ -190,6 +191,7 @@ fn show_menu(hwnd: HWND) {
 
         item(menu, MF_BYPOSITION | MF_STRING, CMD_NOTE, "Note");
         item(menu, MF_BYPOSITION | MF_STRING, CMD_DRAW, "Draw");
+        item(menu, MF_BYPOSITION | MF_STRING, CMD_BREATHE, "Breathe");
         let keycast_flags = if crate::keycast::is_enabled() {
             MF_BYPOSITION | MF_STRING | MF_CHECKED
         } else {
@@ -323,6 +325,20 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_DRAW => {
                         draw::show(state.app.theme(), state.app.draw_dir());
+                    }
+                    CMD_BREATHE => {
+                        let bb = {
+                            #[cfg(feature = "blackbox")]
+                            {
+                                state.app.blackbox_enabled()
+                            }
+                            #[cfg(not(feature = "blackbox"))]
+                            {
+                                false
+                            }
+                        };
+                        let config = crate::overlays::breathe::auto_preset();
+                        crate::overlays::breathe::show(state.app.theme(), config, bb);
                     }
                     CMD_KEYCAST_TOGGLE => {
                         let on =

@@ -2,6 +2,7 @@
 
 pub mod about;
 pub mod autostart;
+pub mod breathe;
 pub mod cpu_plan;
 pub mod draw;
 pub mod keycast;

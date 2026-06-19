@@ -21,6 +21,8 @@ pub struct RawBinding {
     pub code: Option<String>,
     #[serde(default)]
     pub target: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 /// Raw TOML `[blackbox]` section.
