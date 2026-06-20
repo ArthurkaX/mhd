@@ -18,6 +18,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use tower_http::catch_panic::CatchPanicLayer;
 
 pub use config::{Config, Secrets, Settings};
 pub use state::{AppState, Target, Tier, TraceEntry};
@@ -35,6 +36,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/debug", post(handlers::toggle_debug))
         .route("/health", get(handlers::health))
         .with_state(state)
+        .layer(CatchPanicLayer::new())
 }
 
 /// Apply environment-variable fallbacks for API keys not set in the config.
@@ -102,12 +104,12 @@ impl ProxyControl {
 
     /// Set the debug log level on the embedded state (no disk persist).
     pub fn set_log_level(&self, level: &str) {
-        *self.state.log_level.write().unwrap() = crate::state::DebugLevel::parse(level);
+        *self.state.log_level.write().unwrap_or_else(|e| e.into_inner()) = crate::state::DebugLevel::parse(level);
     }
 
     /// Current debug log level.
     pub fn log_level(&self) -> String {
-        self.state.log_level.read().unwrap().as_str().to_string()
+        self.state.log_level.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string()
     }
 
     /// Snapshot of recent routing decisions.

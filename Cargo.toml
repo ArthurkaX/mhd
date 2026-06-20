@@ -10,4 +10,7 @@ opt-level = 3
 lto = true
 strip = true
 codegen-units = 1
-panic = "abort"
+# Unwind required so the embedded proxy can catch handler panics
+# (CatchPanicLayer) and so the daemon's FFI hook callbacks can
+# catch_unwind at their boundary -- preventing a proxy/handler
+# fault from aborting the host process.

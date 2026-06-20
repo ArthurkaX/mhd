@@ -25,8 +25,8 @@ async fn post_chat_completions(
     state: &Arc<AppState>,
     payload: &Value,
 ) -> Result<(reqwest::Response, String)> {
-    let base_url = state.upstream_base_url.read().unwrap().clone();
-    let api_key = state.upstream_key.read().unwrap().clone();
+    let base_url = state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let api_key = state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).clone();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let req_builder = state
         .http
@@ -67,7 +67,7 @@ pub async fn send_request(
     payload: Value,
     target_model: &str,
 ) -> Result<Value> {
-    let debug = state.log_level.read().unwrap().dump_bodies();
+    let debug = state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies();
 
     // Anthropic → OpenAI, then force the real upstream model id.
     let mut openai_payload = transform::anthropic_to_openai(payload.clone());
@@ -76,7 +76,7 @@ pub async fn send_request(
     }
 
     if debug {
-        let base_url = state.upstream_base_url.read().unwrap().clone();
+        let base_url = state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone();
         eprintln!(
             "[llm-proxy] upstream request → {} (model={target_model}):\n{}",
             base_url,
@@ -86,7 +86,7 @@ pub async fn send_request(
 
     // Observability: log timing + concurrency under `maximal`. This is how you
     // confirm whether parallel requests are queueing behind one another.
-    let log = state.log_level.read().unwrap().log_errors();
+    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
     let _guard = InflightGuard::new(state.clone());
     let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
     let started = std::time::Instant::now();
@@ -96,7 +96,7 @@ pub async fn send_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap().log_detailed();
+    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} upstream REQ {}",
@@ -494,7 +494,7 @@ pub async fn stream_request(
 
     // Observability: streaming is the path Claude Code actually uses. Log the
     // concurrency at send time so overlapping parallel requests are visible.
-    let log = state.log_level.read().unwrap().log_errors();
+    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
     let started = std::time::Instant::now();
     // Guard is moved into the stream below, so the in-flight count stays
     // elevated for the full duration of the stream (and decrements on drop even
@@ -507,7 +507,7 @@ pub async fn stream_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap().log_detailed();
+    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} stream REQ {}",

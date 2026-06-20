@@ -37,7 +37,7 @@ async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap) -> reqwest::
         req = req.header("x-api-key", key);
     } else {
         // Fall back to the configured API key.
-        let api_key = state.anthropic_key.read().unwrap().clone();
+        let api_key = state.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).clone();
         req = req.header("x-api-key", api_key);
     }
 
@@ -62,7 +62,7 @@ pub async fn send_request(
     payload: Value,
     incoming: &HeaderMap,
 ) -> Result<Value> {
-    let log = state.log_level.read().unwrap().log_errors();
+    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
     let _guard = InflightGuard::new(state.clone());
     let started = std::time::Instant::now();
     if log {
@@ -72,7 +72,7 @@ pub async fn send_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap().log_detailed();
+    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} native REQ {}",
@@ -171,7 +171,7 @@ pub async fn stream_request(
     payload: Value,
     incoming: &HeaderMap,
 ) -> Result<Body> {
-    let log = state.log_level.read().unwrap().log_errors();
+    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
     let guard = InflightGuard::new(state.clone());
     let started = std::time::Instant::now();
     if log {
@@ -181,7 +181,7 @@ pub async fn stream_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap().log_detailed();
+    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} native stream REQ {}",

@@ -88,18 +88,22 @@ pub fn send_keys(keys: &KeyCombo) {
         }
     }
 
-    // Release modifiers in reverse order (only for combos that have a main key)
+    // Release modifiers in reverse order (only for combos that have a main key).
+    // Skip any modifier the user is still physically holding — the trigger combo
+    // usually includes those same modifiers, so a synthetic key-up here would
+    // desync modifier state until the user physically re-presses. The physical
+    // key-up will release them naturally.
     if !is_modifier_only {
-        if keys.modifiers.win() {
+        if keys.modifiers.win() && !is_pressed(0x5B) {
             push_key_event(&mut inputs, 0x5B, true);
         }
-        if keys.modifiers.shift() {
+        if keys.modifiers.shift() && !is_pressed(0x10) {
             push_key_event(&mut inputs, 0x10, true);
         }
-        if keys.modifiers.ctrl() {
+        if keys.modifiers.ctrl() && !is_pressed(0x11) {
             push_key_event(&mut inputs, 0x11, true);
         }
-        if keys.modifiers.alt() {
+        if keys.modifiers.alt() && !is_pressed(0x12) {
             push_key_event(&mut inputs, 0x12, true);
         }
     }

@@ -280,6 +280,10 @@ unsafe extern "system" fn keyboard_hook_proc(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
+    // A Rust panic must never unwind across this `extern "system"` boundary
+    // into Windows — that is undefined behavior. `catch_unwind` degrades any
+    // panic in dispatch/keycast to a safe pass-through for this single event.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     if n_code >= 0 {
         // Lock-free access — OnceLock::get() is a simple pointer read.
         let state = match HOOK_STATE.get() {
@@ -343,6 +347,11 @@ unsafe extern "system" fn keyboard_hook_proc(
     }
 
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+    }));
+    match result {
+        Ok(lr) => lr,
+        Err(_) => unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
+    }
 }
 
 /// Return the wheel delta from MSLLHOOKSTRUCT.mouseData.
@@ -358,6 +367,8 @@ unsafe extern "system" fn mouse_hook_proc(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
+    // See `keyboard_hook_proc`: a panic must not unwind across the FFI boundary.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     if n_code >= 0 {
         // Lock-free access — OnceLock::get() is a simple pointer read.
         let state = match HOOK_STATE.get() {
@@ -492,6 +503,11 @@ unsafe extern "system" fn mouse_hook_proc(
     }
 
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+    }));
+    match result {
+        Ok(lr) => lr,
+        Err(_) => unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
+    }
 }
 
 /// Convert mouse button number to bit flag for `swallowed_mouse` AtomicU8.

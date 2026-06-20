@@ -18,6 +18,7 @@ bytes = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+tower-http = { version = "0.6", features = ["catch-panic"] }
 anyhow = "1.0"
 dirs = "5"
 tracing = "0.1"

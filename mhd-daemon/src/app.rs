@@ -78,7 +78,7 @@ pub struct AppHandle {
 
 impl DaemonControl for AppHandle {
     fn theme(&self) -> NativeTheme {
-        self.theme.lock().unwrap().clone()
+        self.theme.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn status(&self) -> bool {
@@ -94,11 +94,11 @@ impl DaemonControl for AppHandle {
         let bindings_count = new_config.active_bindings().len();
 
         {
-            let mut theme = self.theme.lock().unwrap();
+            let mut theme = self.theme.lock().unwrap_or_else(|e| e.into_inner());
             *theme = new_theme;
         }
         {
-            let mut config = self.config.lock().unwrap();
+            let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
             *config = new_config;
         }
 
@@ -121,26 +121,32 @@ impl DaemonControl for AppHandle {
     }
 
     fn switch_scheme(&self, name: &str) -> bool {
-        let mut config = self.config.lock().unwrap();
-        if config.switch_scheme(name) {
-            let new_theme = crate::native_theme::load_theme(config.theme.as_deref());
-            {
-                let mut theme = self.theme.lock().unwrap();
-                *theme = new_theme;
+        // Read the theme name under the lock, then release it BEFORE the disk
+        // I/O in `load_theme`. The keyboard hot path also locks `config`
+        // (`lookup_trigger`), so holding it across disk I/O can stall keystrokes
+        // long enough to trip the low-level-hook timeout.
+        let theme_name = {
+            let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+            if !config.switch_scheme(name) {
+                return false;
             }
-            self.osd.set_theme(self.theme());
-            true
-        } else {
-            false
+            config.theme.clone()
+        };
+        let new_theme = crate::native_theme::load_theme(theme_name.as_deref());
+        {
+            let mut theme = self.theme.lock().unwrap_or_else(|e| e.into_inner());
+            *theme = new_theme;
         }
+        self.osd.set_theme(self.theme());
+        true
     }
 
     fn active_scheme(&self) -> String {
-        self.config.lock().unwrap().active_scheme().to_string()
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).active_scheme().to_string()
     }
 
     fn lookup_trigger(&self, trigger: &Trigger) -> Option<Action> {
-        let config = self.config.lock().unwrap();
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
         config.lookup_trigger(trigger).map(|b| b.action.clone())
     }
 
@@ -167,19 +173,19 @@ impl DaemonControl for AppHandle {
     }
 
     fn quicknote_config(&self) -> QuickNoteConfig {
-        self.config.lock().unwrap().quicknote_config().clone()
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).quicknote_config().clone()
     }
 
     fn draw_dir(&self) -> std::path::PathBuf {
-        self.config.lock().unwrap().draw_dir().clone()
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).draw_dir().clone()
     }
 
     fn keycast_config(&self) -> crate::overlays::keycast::KeycastConfig {
-        self.config.lock().unwrap().keycast_config().clone()
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).keycast_config().clone()
     }
 
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig {
-        self.config.lock().unwrap().llm_proxy().clone()
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).llm_proxy().clone()
     }
 }
 
@@ -302,7 +308,7 @@ impl App {
         // Start blackbox if configured
         #[cfg(feature = "blackbox")]
         {
-            let config = self.config.lock().unwrap();
+            let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
             let bb_config = config.blackbox().clone();
             if bb_config.enabled {
                 if let Some(h) = Self::start_blackbox(&bb_config) {

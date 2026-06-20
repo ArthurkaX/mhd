@@ -116,8 +116,8 @@ pub async fn post_messages(
 
     // Calculate per-session gap for expensive tiers that can be downgraded.
     // Only for Opus/Sonnet — cheap tiers and background calls don't stamp the clock.
-    let opus_enabled = *state.opus_downgrade_enabled.read().unwrap();
-    let sonnet_enabled = *state.sonnet_downgrade_enabled.read().unwrap();
+    let opus_enabled = *state.opus_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner());
+    let sonnet_enabled = *state.sonnet_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner());
     let may_downgrade =
         (tier == Tier::Opus && opus_enabled) || (tier == Tier::Sonnet && sonnet_enabled);
 
@@ -138,8 +138,6 @@ pub async fn post_messages(
     // Downgrade cascades to the next tier: Opus→Sonnet, Sonnet→Haiku
     // (using whatever target that tier is configured to route to).
     let (effective_tier, reason) = {
-        let opus_enabled = *state.opus_downgrade_enabled.read().unwrap();
-        let sonnet_enabled = *state.sonnet_downgrade_enabled.read().unwrap();
         if (tier == Tier::Opus && opus_enabled) || (tier == Tier::Sonnet && sonnet_enabled) {
             let (keep, r) = should_keep_on_expensive_tier(&payload, gap_s);
             if keep {
@@ -183,7 +181,7 @@ pub async fn post_messages(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if state.log_level.read().unwrap().dump_bodies() {
+    if state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies() {
         // Show how Claude Code authenticated (helps verify OAuth passthrough).
         let auth = headers
             .get("authorization")
@@ -317,20 +315,20 @@ pub async fn set_model(
 /// `GET /config` — show the current effective routing config (keys masked).
 pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(serde_json::json!({
-        "opus": state.opus_target.read().unwrap().as_str(),
-        "sonnet": state.sonnet_target.read().unwrap().as_str(),
-        "haiku": state.haiku_target.read().unwrap().as_str(),
-        "fable": state.fable_target.read().unwrap().as_str(),
-        "upstream_base_url": *state.upstream_base_url.read().unwrap(),
-        "anthropic_key_set": !state.anthropic_key.read().unwrap().is_empty(),
-        "upstream_key_set": !state.upstream_key.read().unwrap().is_empty(),
-        "log_level": state.log_level.read().unwrap().as_str(),
+        "opus": state.opus_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "sonnet": state.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "haiku": state.haiku_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "fable": state.fable_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "upstream_base_url": *state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()),
+        "anthropic_key_set": !state.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        "upstream_key_set": !state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        "log_level": state.log_level.read().unwrap_or_else(|e| e.into_inner()).as_str(),
     }))
 }
 
 /// `POST /debug` — toggle debug dump mode.
 pub async fn toggle_debug(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let mut ll = state.log_level.write().unwrap();
+    let mut ll = state.log_level.write().unwrap_or_else(|e| e.into_inner());
     let new = match *ll {
         crate::state::DebugLevel::None => crate::state::DebugLevel::Maximal,
         _ => crate::state::DebugLevel::None,

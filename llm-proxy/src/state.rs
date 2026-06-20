@@ -230,7 +230,7 @@ impl AppState {
     /// When enabling, the database is opened (and created if needed) lazily.
     pub fn set_db_log_enabled(&self, enabled: bool) {
         if enabled {
-            let mut guard = self.db_log.lock().unwrap();
+            let mut guard = self.db_log.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {
                 let db_path = crate::config::config_dir().join("proxy.db");
                 match crate::db_log::DbLog::open(&db_path) {
@@ -243,7 +243,7 @@ impl AppState {
                 }
             }
         } else {
-            let mut guard = self.db_log.lock().unwrap();
+            let mut guard = self.db_log.lock().unwrap_or_else(|e| e.into_inner());
             *guard = None;
         }
     }
@@ -256,7 +256,7 @@ impl AppState {
     /// Record a request arrival for a given session and return the gap in seconds.
     /// Returns a sentinel (9999) on first request for this session so it's never downgraded.
     pub fn mark_session_request(&self, session_hash: u64, now_ms: u64) -> u64 {
-        let mut map = self.session_last_ts.write().unwrap();
+        let mut map = self.session_last_ts.write().unwrap_or_else(|e| e.into_inner());
 
         // Lazy TTL cleanup: if map is too large, remove entries older than 10 minutes
         if map.len() > 100 {
@@ -274,7 +274,7 @@ impl AppState {
     /// Record a routing decision into the ring buffer, evicting the oldest
     /// entry if the buffer is full.
     pub fn push_trace(&self, entry: TraceEntry) {
-        let mut trace = self.trace.write().unwrap();
+        let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         if trace.len() >= MAX_TRACE_ENTRIES {
             trace.pop_front();
         }
@@ -284,7 +284,7 @@ impl AppState {
     /// Update token counts on the trace entry matching this req_id.
     /// Best-effort: silently no-ops if the entry was already evicted.
     pub fn update_trace_tokens(&self, req_id: u64, input_tokens: u64, output_tokens: u64) {
-        let mut trace = self.trace.write().unwrap();
+        let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         // Search from the back — the matching entry is almost certainly recent.
         for entry in trace.iter_mut().rev() {
             if entry.seq == req_id {
@@ -297,7 +297,7 @@ impl AppState {
 
     /// Snapshot of recent routing decisions (newest at the end).
     pub fn trace_snapshot(&self) -> Vec<TraceEntry> {
-        self.trace.read().unwrap().iter().cloned().collect()
+        self.trace.read().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
     }
 
     /// Allocate the next request id.
@@ -308,10 +308,10 @@ impl AppState {
     /// Current target for a tier.
     pub fn target_for(&self, tier: Tier) -> Target {
         match tier {
-            Tier::Opus => self.opus_target.read().unwrap().clone(),
-            Tier::Sonnet => self.sonnet_target.read().unwrap().clone(),
-            Tier::Haiku => self.haiku_target.read().unwrap().clone(),
-            Tier::Fable => self.fable_target.read().unwrap().clone(),
+            Tier::Opus => self.opus_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Tier::Sonnet => self.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Tier::Haiku => self.haiku_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Tier::Fable => self.fable_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
         }
     }
 
@@ -319,10 +319,10 @@ impl AppState {
     /// Returns false for an unknown slot.
     pub fn set_target(&self, slot: &str, target: Target) -> bool {
         match slot {
-            "opus" => *self.opus_target.write().unwrap() = target,
-            "sonnet" => *self.sonnet_target.write().unwrap() = target,
-            "haiku" => *self.haiku_target.write().unwrap() = target,
-            "fable" => *self.fable_target.write().unwrap() = target,
+            "opus" => *self.opus_target.write().unwrap_or_else(|e| e.into_inner()) = target,
+            "sonnet" => *self.sonnet_target.write().unwrap_or_else(|e| e.into_inner()) = target,
+            "haiku" => *self.haiku_target.write().unwrap_or_else(|e| e.into_inner()) = target,
+            "fable" => *self.fable_target.write().unwrap_or_else(|e| e.into_inner()) = target,
             _ => return false,
         }
         true
@@ -331,16 +331,16 @@ impl AppState {
     /// Snapshot current state back into a Config (for persisting changes).
     pub fn to_config(&self) -> Config {
         Config {
-            anthropic_key: self.anthropic_key.read().unwrap().clone(),
-            upstream_base_url: self.upstream_base_url.read().unwrap().clone(),
-            upstream_key: self.upstream_key.read().unwrap().clone(),
-            opus_target: self.opus_target.read().unwrap().as_str().to_string(),
-            sonnet_target: self.sonnet_target.read().unwrap().as_str().to_string(),
-            haiku_target: self.haiku_target.read().unwrap().as_str().to_string(),
-            fable_target: self.fable_target.read().unwrap().as_str().to_string(),
-            log_level: self.log_level.read().unwrap().as_str().to_string(),
-            opus_downgrade_enabled: *self.opus_downgrade_enabled.read().unwrap(),
-            sonnet_downgrade_enabled: *self.sonnet_downgrade_enabled.read().unwrap(),
+            anthropic_key: self.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            upstream_base_url: self.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            upstream_key: self.upstream_key.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            opus_target: self.opus_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
+            sonnet_target: self.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
+            haiku_target: self.haiku_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
+            fable_target: self.fable_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
+            log_level: self.log_level.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
+            opus_downgrade_enabled: *self.opus_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            sonnet_downgrade_enabled: *self.sonnet_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner()),
         }
     }
 }
