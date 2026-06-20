@@ -2,16 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.5.0 - 2026-06-20
 
 - **Breathe pacer**: new paced breathing overlay with an expanding/contracting sphere visualisation.
   - Three presets at 6 breaths per minute: `balanced` (10 min, 5-5), `calm` (15 min, 4-6), `extended` (20 min, 4-6).
-  - Time-of-day auto-select when the `breathe` action is invoked without a preset (morning: balanced, afternoon: extended, evening: calm).
-  - Pause/resume snaps back to the beginning of inhale (matching the breathe-cli model).
-  - Audio cues via Win32 `Beep` on phase transitions, with a mute toggle.
-  - Session progress bar, breath counter, and phase label in the native overlay.
+  - Preset selection flow: click a preset to highlight, click again to start. Changing presets requires reopening.
+  - Cosine-based sphere easing for smooth transitions (no endpoint freezing).
+  - Continuous color interpolation between phase colours (no abrupt jumps on transition).
+  - Pause/resume snaps back to the beginning of inhale.
+  - Session progress bar, breath counter, and phase labels in the native overlay.
   - `breathe` action with optional `preset` field, and a tray menu item.
   - Blackbox logging of start/complete/abandon events when the blackbox feature is enabled.
+  - No audio cues (silent — removed `Beep` FFI, synthesis, and mute logic).
 - **New files**: `mhd-daemon/src/overlays/breathe.rs`.
 
 ## 0.4.0 - 2026-06-18
