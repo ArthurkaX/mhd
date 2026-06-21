@@ -2,9 +2,9 @@
 
 ![mHD logo](icons/mHD_256.png)
 
-**Minimal Hotkey Daemon for Windows**
+**Switch Claude Code between Anthropic and Ollama Cloud with one hotkey.**
 
-One native tray process for hotkeys, remaps, monitor control, audio control, notes, timers, and small desktop tools.
+Plan with Opus, execute with an Ollama model, and route sub-agents independently — without restarting Claude Code, handing off the session, or losing context.
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square)
 ![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)
@@ -12,22 +12,62 @@ One native tray process for hotkeys, remaps, monitor control, audio control, not
 ![No WebView](https://img.shields.io/badge/WebView-not%20required-555555?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)
 
-**mHD** is a small Windows utility daemon for people who are tired of installing, launching, and keeping several separate tools around just to get a practical desktop workflow.
+**mHD** is a free, open-source Windows utility with a built-in local proxy for Claude Code. It maps Claude's `opus`, `sonnet`, and `haiku` tiers to native Anthropic or any OpenAI-compatible provider, including Ollama Cloud.
 
-The intent is to cover the everyday power-user actions that often end up split across products such as Windows PowerToys, monitor utilities, audio mixers, key remappers, launcher scripts, small note tools, timer apps, and window helpers. mHD puts those jobs behind one native tray process, one config file, and one hotkey system.
+The route can be changed live from a global hotkey or the system tray. The next request uses the new model; an active streaming response is not interrupted.
 
-It is not a replacement for every large productivity suite. The point is narrower: keep the useful parts close, fast, local, and lightweight.
+This enables workflows such as:
 
-mHD ships as a single `mhd.exe`. It does not install a driver, does not require a service, does not need WebView2, and does not bring a large UI framework just to draw a few utility windows.
+- keep Opus as the lead for architecture and review;
+- send implementation work and parallel sub-agents to Ollama Cloud;
+- route lightweight work to a smaller or faster model;
+- compare models inside the same Claude Code session;
+- return any tier to native Anthropic instantly.
 
-The product is built around a simple idea:
+There is no model handoff. Claude Code remains the interface and agent runtime while mHD chooses where each request is executed.
 
-- one background daemon;
-- one tray icon;
-- one TOML config;
-- native Win32 overlays;
-- hotkeys for the tools you actually use;
-- no separate helper apps for every small task.
+> [!NOTE]
+> Claude Code is still required. Native routes use your existing Claude Code authentication; Ollama Cloud routes use your Ollama API key.
+
+## Quick Start: Claude Code + Ollama Cloud
+
+1. Download the latest `mhd-v*-windows-x64.zip` from [GitHub Releases](https://github.com/ArthurkaX/mhd/releases) and extract it.
+2. Run `mhd.exe`.
+3. Open **System tray -> mHD -> right click -> Settings -> LLM Proxy**.
+4. Add Ollama Cloud as an OpenAI-compatible provider:
+   - endpoint: `https://ollama.com/v1`;
+   - API key: your Ollama API key;
+   - models: the Ollama Cloud model IDs you want to use.
+5. In **Settings -> Shortcuts**, bind `show_llm_models` to a key such as `Ctrl+Alt+L`.
+6. Add the extracted directory to `PATH`, then launch Claude Code through the included wrapper:
+
+   ```powershell
+   claude-mhd
+   ```
+
+7. Press the hotkey and assign a target to `opus`, `sonnet`, or `haiku`.
+
+The wrapper points Claude Code at the local proxy on `127.0.0.1:3456`. It also identifies Claude Code sub-agents as Sonnet 4.6, so the Sonnet tier can be routed to a separate provider or model.
+
+```mermaid
+flowchart LR
+    CLI["Claude Code CLI"]
+    Proxy["mHD<br/>127.0.0.1:3456"]
+    Opus["Anthropic Opus<br/>planning and review"]
+    Ollama["Ollama Cloud<br/>implementation"]
+    Small["Another model<br/>lightweight work"]
+
+    CLI --> Proxy
+    Proxy -->|"opus → native"| Opus
+    Proxy -->|"sonnet → Ollama model"| Ollama
+    Proxy -->|"haiku → selected model"| Small
+```
+
+![LLM Model Selector](img/LLM%20Models.png)
+
+Each tier keeps routing automatically after selection. Unlike a static model-name proxy, mHD lets you change the routing table at runtime without editing configuration or restarting Claude Code.
+
+See [LLM Proxy documentation](llm-proxy/README.md) for provider setup, routing behavior, tracing, and configuration details.
 
 ---
 
@@ -40,15 +80,15 @@ The product is built around a simple idea:
 | Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
 | Audio | Master volume, per-app mixer, media key actions |
 | Desktop tools | Quick Note, Quick Draw, Pomodoro, Breathe, power panel, CPU plan panel |
-| LLM Proxy | Local proxy for Claude Code — intercepts API calls, remaps models |
+| LLM Proxy | Live per-tier routing for Claude Code across Anthropic, Ollama Cloud, and OpenAI-compatible providers |
 | Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
 | Settings | Native config editor, theme selection, autostart, shortcut editing |
 
 ---
 
-## Positioning
+## More Than an LLM Proxy
 
-mHD is a compact desktop control layer for Windows.
+mHD started as a compact desktop control layer for Windows. The same native tray process also provides:
 
 It is useful when you want one tool to handle:
 
@@ -65,7 +105,7 @@ It is useful when you want one tool to handle:
 - process suspend/throttle behaviour;
 - small native control panels available from hotkeys or tray.
 
-The target user is someone who knows what they want their desktop to do and would rather configure a small daemon than keep a stack of unrelated utilities running.
+It ships as a single `mhd.exe`: no driver, service, WebView2, or heavyweight UI framework.
 
 ---
 
@@ -88,12 +128,6 @@ Config editor with shortcut bindings and action selection.
 ### CPU power plan panel
 
 ![CPU Power Plan](img/cpu-power-plan.png)
-
-### LLM Model Selector
-
-![LLM Model Selector](img/LLM%20Models.png)
-
-Quick-model-switcher for the built-in LLM proxy. Cycles through configured gateway models on the fly without restarting the proxy or Claude Code.
 
 ---
 
