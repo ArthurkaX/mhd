@@ -8,6 +8,7 @@ REM Usage: claude-mhd [args...]
 
 setlocal
 set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"
+set "CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-4-6"
 
 REM set "ANTHROPIC_AUTH_TOKEN=unused"
 
