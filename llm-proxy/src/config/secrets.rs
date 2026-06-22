@@ -17,6 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 /// The secrets payload: the actual API keys we protect.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Secrets {
@@ -24,6 +26,10 @@ pub struct Secrets {
     pub anthropic_key: String,
     #[serde(default)]
     pub upstream_key: String,
+    /// Per-provider API keys, keyed by provider name.
+    /// Fallback: if a provider has no entry here, `upstream_key` is used.
+    #[serde(default)]
+    pub provider_keys: HashMap<String, String>,
 }
 
 /// JSON envelope stored on disk.

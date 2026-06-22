@@ -1185,6 +1185,100 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         hit: SettingsHit::ProxyBindAddressField,
     });
 
+    // ── Vision / Screenshot Model section ───────────────────────────
+    let vision_y = lay.llm_proxy.vision_y;
+    ctls.push(Control::Header {
+        rect: RECT {
+            left: pad,
+            top: vision_y,
+            right: win_w_val - pad,
+            bottom: vision_y + section_h,
+        },
+        label: "Screenshot Model".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // Vision model combo row
+    let vision_row_y = vision_y + section_h + gap;
+    let combo_w = lay.llm_proxy.vision_combo_w;
+    let test_w = lay.llm_proxy.vision_test_w;
+    let combo_h = field_h;
+
+    // Combo box for model selection
+    let is_vision_hovered = state.hovered_target == SettingsHit::VisionModelCombo;
+    let vision_display = state
+        .vision_model
+        .as_ref()
+        .map(|vm| format!("{} / {}", vm.provider, vm.model))
+        .unwrap_or_else(|| "Not configured".to_string());
+    let vision_border = if is_vision_hovered {
+        state.theme.text
+    } else {
+        state.theme.border
+    };
+    ctls.push(Control::TextField {
+        rect: RECT {
+            left: pad,
+            top: vision_row_y,
+            right: pad + combo_w,
+            bottom: vision_row_y + combo_h,
+        },
+        text: vision_display,
+        placeholder: Some("Not configured".into()),
+        font: FontChoice::Small,
+        bg_color: theme_surface(state).blend_over(theme_background(state)),
+        border_color: vision_border,
+        text_color: theme_text(state),
+        hit: SettingsHit::VisionModelCombo,
+    });
+
+    // Test button
+    let test_x = pad + combo_w + gap;
+    let test_btn_color = if state.vision_test_status == "Passed" {
+        ButtonStyle::Success
+    } else {
+        ButtonStyle::Secondary
+    };
+    let test_label = if state.vision_test_running {
+        "Testing..."
+    } else if !state.vision_test_status.is_empty() && state.vision_test_status != "Test" {
+        &state.vision_test_status
+    } else {
+        "Test"
+    };
+    let is_test_hovered = state.hovered_target == SettingsHit::VisionTestBtn;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: test_x,
+            top: vision_row_y,
+            right: test_x + test_w,
+            bottom: vision_row_y + combo_h,
+        },
+        label: test_label.into(),
+        font: FontChoice::Small,
+        is_hovered: is_test_hovered,
+        style: test_btn_color,
+        hit: SettingsHit::VisionTestBtn,
+    });
+
+    // Prompt button
+    let prompt_x = test_x + test_w + gap;
+    let is_prompt_hovered = state.hovered_target == SettingsHit::VisionPromptBtn;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: prompt_x,
+            top: vision_row_y,
+            right: prompt_x + lay.llm_proxy.vision_prompt_w,
+            bottom: vision_row_y + combo_h,
+        },
+        label: "Prompt".into(),
+        font: FontChoice::Small,
+        is_hovered: is_prompt_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::VisionPromptBtn,
+    });
+
     // ── Provider list section ──────────────────────────────────────
     let list_y = lay.llm_proxy.list_y;
     let list_h = lay.llm_proxy.list_h;

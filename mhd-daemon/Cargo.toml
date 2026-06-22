@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 mhd-llm-proxy = { path = "../llm-proxy" }
+base64 = "0.22"
 png = "0.17"
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 serde = { version = "1.0", features = ["derive"] }

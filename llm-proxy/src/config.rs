@@ -20,6 +20,16 @@ use serde::{Deserialize, Serialize};
 pub mod secrets;
 pub use secrets::Secrets;
 
+// ── ModelRef (provider-qualified model reference) ─────────────────────
+
+/// A provider-qualified model reference used by vision and other features
+/// that select a single model rather than a routing tier.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelRef {
+    pub provider: String,
+    pub model: String,
+}
+
 // ── Settings (plain JSON) ─────────────────────────────────────────────
 
 /// Proxy settings that are safe to store in plaintext.
@@ -68,6 +78,14 @@ pub struct Settings {
     /// When true, sonnet requests without `thinking` in betas are downgraded.
     #[serde(default)]
     pub sonnet_downgrade_enabled: bool,
+
+    /// Selected model for vision screenshot feature (provider-qualified).
+    #[serde(default)]
+    pub vision_model: Option<ModelRef>,
+
+    /// Custom prompt sent with the screenshot to the vision model.
+    #[serde(default = "default_vision_prompt")]
+    pub vision_prompt: String,
 }
 
 impl Default for Settings {
@@ -84,6 +102,8 @@ impl Default for Settings {
             bind_ip: default_bind_ip(),
             opus_downgrade_enabled: false,
             sonnet_downgrade_enabled: false,
+            vision_model: None,
+            vision_prompt: default_vision_prompt(),
         }
     }
 }
@@ -176,6 +196,8 @@ impl Config {
             bind_ip: String::new(),
             opus_downgrade_enabled: self.opus_downgrade_enabled,
             sonnet_downgrade_enabled: self.sonnet_downgrade_enabled,
+            vision_model: None,
+            vision_prompt: default_vision_prompt(),
         }
     }
 
@@ -184,6 +206,7 @@ impl Config {
         Secrets {
             anthropic_key: self.anthropic_key.clone(),
             upstream_key: self.upstream_key.clone(),
+            provider_keys: std::collections::HashMap::new(),
         }
     }
 
@@ -238,6 +261,12 @@ fn default_fable_target() -> String {
 
 fn default_log_level() -> String {
     "none".to_string()
+}
+
+fn default_vision_prompt() -> String {
+    "Analyze this screenshot and return the useful visible text. Preserve the \
+        original language and structure. Return only the result, without commentary."
+        .to_string()
 }
 
 fn default_bind_ip() -> String {
@@ -297,6 +326,7 @@ pub fn save(cfg: &Config) -> anyhow::Result<()> {
     settings.log_level = cfg.log_level.clone();
     settings.opus_downgrade_enabled = cfg.opus_downgrade_enabled;
     settings.sonnet_downgrade_enabled = cfg.sonnet_downgrade_enabled;
+    // vision_model is managed separately via save_settings/load_settings
 
     persist_settings(&dir, &settings)?;
     persist_secrets(&dir, &cfg.into_secrets())?;
@@ -326,6 +356,85 @@ fn persist_settings(dir: &PathBuf, settings: &Settings) -> anyhow::Result<()> {
     let data = serde_json::to_string_pretty(settings)?;
     std::fs::write(settings_path(dir), data)?;
     Ok(())
+}
+
+// ── Provider-qualified endpoint resolution ────────────────────────────
+
+/// A fully resolved model endpoint ready for use by the vision client.
+#[derive(Debug, Clone)]
+pub struct ResolvedModelEndpoint {
+    pub provider: String,
+    pub model: String,
+    pub endpoint: String,
+    pub api_key: String,
+}
+
+/// Resolve a [`ModelRef`] into a complete endpoint with URL and API key.
+///
+/// Looks up the provider by name, then the model by id, and retrieves the
+/// API key from secrets (falling back to the global `upstream_key`).
+pub fn resolve_model_endpoint(
+    model_ref: &ModelRef,
+    providers: &[Provider],
+    secrets: &Secrets,
+) -> anyhow::Result<ResolvedModelEndpoint> {
+    let provider = providers
+        .iter()
+        .find(|p| p.name == model_ref.provider)
+        .ok_or_else(|| anyhow::anyhow!("provider '{}' not found", model_ref.provider))?;
+
+    // Normalize endpoint: ensure it ends with /chat/completions
+    let endpoint = normalize_endpoint(&provider.endpoint);
+
+    // Resolve API key: first try per-provider key, then global upstream_key
+    let api_key = secrets
+        .provider_keys
+        .get(&model_ref.provider)
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if !secrets.upstream_key.is_empty() {
+                Some(secrets.upstream_key.as_str())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("API key not found for provider '{}'", model_ref.provider)
+        })?;
+
+    Ok(ResolvedModelEndpoint {
+        provider: model_ref.provider.clone(),
+        model: model_ref.model.clone(),
+        endpoint,
+        api_key: api_key.to_string(),
+    })
+}
+
+/// Normalize a provider endpoint to end with exactly one `/chat/completions` suffix.
+/// Strips trailing `/v1` or trailing slashes and appends `/chat/completions`.
+///
+/// Used by the Claude Code proxy path, where `upstream_base_url` includes `/v1`
+/// and the proxy appends its own `/chat/completions`.
+pub fn normalize_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('/');
+    let trimmed = trimmed.trim_end_matches("/v1");
+    format!("{}/chat/completions", trimmed)
+}
+
+/// Normalize an endpoint for direct OpenAI-compatible vision requests.
+///
+/// Keeps an existing `/v1` segment (unlike [`normalize_endpoint`]) and appends
+/// `/chat/completions` only if it is not already present. This prevents the
+/// `405 Not Allowed` errors that happen when a provider such as Ollama Cloud
+/// receives `https://ollama.com/chat/completions` instead of
+/// `https://ollama.com/v1/chat/completions`.
+pub fn normalize_vision_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        return trimmed.to_string();
+    }
+    format!("{}/chat/completions", trimmed)
 }
 
 fn load_settings_from(dir: &PathBuf) -> anyhow::Result<Settings> {
