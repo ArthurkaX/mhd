@@ -643,6 +643,13 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let mut old_org = POINT { x: 0, y: 0 };
         let _ = SetViewportOrgEx(dib_dc, 0, -state.content_scroll_y, Some(&mut old_org));
 
+        // Direct pixel-buffer draws bypass the GDI clip region, so constrain
+        // them to the content viewport too (device coords, fixed by scroll).
+        let prev_clip = crate::config::editor_theme::set_buffer_clip_y(Some((
+            lay.content_y(),
+            lay.content_y() + lay.content_visible_h(),
+        )));
+
         match state.active_section {
             SettingsPage::General => {
                 let ctls = build_general_controls(lay, state);
@@ -706,8 +713,9 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             }
         }
 
-        // Restore viewport origin
+        // Restore viewport origin and the buffer clip band.
         let _ = SetViewportOrgEx(dib_dc, old_org.x, old_org.y, None);
+        crate::config::editor_theme::set_buffer_clip_y(prev_clip);
     }
 
     // ── Content scrollbar ──────────────────────────────────────────
@@ -1900,7 +1908,7 @@ unsafe extern "system" fn settings_wndproc(
                         // Close the other combo if it was open
                         state.combo_open.store(false, Ordering::SeqCst);
                         if let Some(popup) = state.combo_popup.take() {
-                            let _ = unsafe { DestroyWindow(popup) };
+                            let _ = DestroyWindow(popup);
                         }
                         state.theme_dropdown.close();
                         paint_settings(hwnd, state_ptr, &state.layout);
@@ -1934,16 +1942,14 @@ unsafe extern "system" fn settings_wndproc(
                                 let result = run_vision_test(&vision_model, &providers);
                                 // SAFETY: hwnd_val and state_ptr_val are valid for the
                                 // lifetime of the editor window
-                                let s = unsafe { &mut *(state_ptr_val as *mut SettingsState) };
+                                let s = &mut *(state_ptr_val as *mut SettingsState);
                                 s.vision_test_running = false;
                                 s.vision_test_status = match &result {
                                     Ok(()) => "Passed".to_string(),
                                     Err(e) => format!("Failed: {}", e),
                                 };
-                                unsafe {
-                                    let hwnd_copy = HWND(hwnd_val as *mut std::ffi::c_void);
-                                    let _ = InvalidateRect(hwnd_copy, None, false);
-                                }
+                                let hwnd_copy = HWND(hwnd_val as *mut std::ffi::c_void);
+                                let _ = InvalidateRect(hwnd_copy, None, false);
                             });
                         }
                     }

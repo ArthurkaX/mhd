@@ -3,6 +3,7 @@
 //! Provides pixel‑buffer operations for rounded rects, buttons, and
 //! text styling used by all editor pages.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{POINT, RECT};
@@ -11,6 +12,32 @@ use windows::Win32::Graphics::Gdi::*;
 use crate::config::editor_layout::WIN_WIDTH_BASE;
 use crate::config::editor_state::ButtonStyle;
 use crate::core::native_theme::{Argb, NativeTheme};
+
+// ── Vertical clip band for buffer draws ───────────────────────────
+//
+// Direct pixel-buffer draws bypass the GDI clip region, so a separate
+// software clip is needed to keep scrolled content inside its viewport.
+// The band is in device (post-scroll) pixel coordinates.
+
+thread_local! {
+    static BUFFER_CLIP_Y: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+}
+
+/// Set the vertical clip band `(top, bottom)` applied to subsequent
+/// `*_in_buffer` draws. Pass `None` to disable. Returns the previous value
+/// so the caller can restore it.
+pub fn set_buffer_clip_y(band: Option<(i32, i32)>) -> Option<(i32, i32)> {
+    BUFFER_CLIP_Y.with(|c| c.replace(band))
+}
+
+/// Intersect `[y1, y2)` with the active clip band, if any.
+#[inline]
+fn apply_clip_y(y1: i32, y2: i32) -> (i32, i32) {
+    BUFFER_CLIP_Y.with(|c| match c.get() {
+        Some((top, bottom)) => (y1.max(top), y2.min(bottom)),
+        None => (y1, y2),
+    })
+}
 
 // ── Colour blending ───────────────────────────────────────────────
 
@@ -59,6 +86,7 @@ pub fn draw_rounded_rect_in_buffer(
     let x2 = rect.right.clamp(0, win_w);
     let y1 = rect.top.clamp(0, win_h);
     let y2 = rect.bottom.clamp(0, win_h);
+    let (y1, y2) = apply_clip_y(y1, y2);
 
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
@@ -137,6 +165,7 @@ pub fn draw_rounded_border_in_buffer(
     let x2 = rect.right.clamp(0, win_w);
     let y1 = rect.top.clamp(0, win_h);
     let y2 = rect.bottom.clamp(0, win_h);
+    let (y1, y2) = apply_clip_y(y1, y2);
 
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
@@ -247,6 +276,7 @@ pub fn clear_rect_in_buffer(bits: *mut c_void, win_w: i32, win_h: i32, rect: REC
     let x2 = rect.right.clamp(0, win_w);
     let y1 = rect.top.clamp(0, win_h);
     let y2 = rect.bottom.clamp(0, win_h);
+    let (y1, y2) = apply_clip_y(y1, y2);
     for y in y1..y2 {
         let row_start = (y * win_w) as usize;
         for x in x1..x2 {

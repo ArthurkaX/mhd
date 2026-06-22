@@ -5,6 +5,7 @@
 //! markers, arrows, rectangles), edit descriptions, and send the result
 //! for analysis.
 
+pub mod draw;
 pub mod editor;
 pub mod input;
 pub mod model;
@@ -57,9 +58,8 @@ pub enum VisionSnipResult {
     Analyze {
         /// The cropped image with annotations rendered onto it.
         image: CapturedImage,
-        /// Structured annotation metadata for the prompt.
-        annotations: Vec<crate::overlays::vision_snip::model::ModelAnnotation>,
-        /// The generated prompt text.
+        /// The generated prompt text (embeds the structured annotation
+        /// metadata: labels, normalized coordinates, and user descriptions).
         prompt: String,
     },
     /// User cancelled the operation.
@@ -145,7 +145,7 @@ fn run(
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: hinst,
-            hCursor: match unsafe { LoadCursorW(None, IDC_ARROW) } {
+            hCursor: match LoadCursorW(None, IDC_ARROW) {
                 Ok(c) => c,
                 Err(_) => HCURSOR::default(),
             },
@@ -180,7 +180,7 @@ fn run(
     };
 
     // ── Allocate DIB ─────────────────────────────────────────────────
-    let mut frame = match DibFrame::new(w, h) {
+    let frame = match DibFrame::new(w, h) {
         Some(f) => f,
         None => {
             let _ = result_tx.send(VisionSnipResult::Failed(
@@ -269,11 +269,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 /// hold the returned reference across `DispatchMessageW` or any other
 /// call that may re-enter the window procedure.
 unsafe fn state_unchecked(hwnd: HWND) -> Option<&'static mut SnipState> {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-    if ptr == 0 {
-        None
-    } else {
-        Some(&mut *(ptr as *mut SnipState))
+    unsafe {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        if ptr == 0 {
+            None
+        } else {
+            Some(&mut *(ptr as *mut SnipState))
+        }
     }
 }
 
@@ -456,9 +458,10 @@ fn handler_lbuttondown(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
         return;
     }
 
-    let cx = x.max(0).min(st.model.monitor_width as i32 - 1);
-    let cy = y.max(0).min(st.model.monitor_height as i32 - 1);
-    let pt = Point { x: cx, y: cy };
+    // Annotation tools clamp to the crop rectangle; the Crop tool itself
+    // clamps to the full monitor (it is what defines the crop).
+    let pt = clamp_to_active_bounds(&st.model, x, y);
+    let (cx, cy) = (pt.x, pt.y);
 
     match st.model.active_tool {
         Tool::Crop => {
@@ -469,10 +472,7 @@ fn handler_lbuttondown(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
             }
         }
         Tool::Marker => {
-            let badge = Point {
-                x: cx + 20,
-                y: cy - 24,
-            };
+            let badge = clamp_to_active_bounds(&st.model, cx + 20, cy - 24);
             let geom = AnnotationGeometry::Point {
                 anchor: pt,
                 badge_origin: badge,
@@ -494,35 +494,47 @@ fn handler_lbuttondown(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
                 let _ = SetCapture(hwnd);
             }
         }
-        Tool::None | Tool::Color => {}
+        Tool::None => {}
     }
 }
 
 fn handler_mousemove(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
-    st.mouse_pos = Point { x, y };
+    // The DragState stores only the START point; the current end is taken
+    // from `mouse_pos`. Clamp it to the active drawing bounds (crop for
+    // annotations, full monitor for the Crop tool) and do NOT overwrite the
+    // drag's start — otherwise the geometry collapses to zero size.
+    st.mouse_pos = clamp_to_active_bounds(&st.model, x, y);
 
-    // Hover detection
+    // Hover detection (uses raw coords against the toolbar band).
     let new_hover = hit_test(&st.model, x, y, st.scale).map(|_| compute_hover_index(x, st));
     if new_hover != st.hovered_btn {
         st.hovered_btn = new_hover;
         do_paint(st, hwnd);
     }
 
-    // Drag update
+    // Drag update — rebuild the pending geometry from start→current.
     if st.model.drag.is_some() {
-        let pt = Point {
-            x: x.max(0).min(st.model.monitor_width as i32 - 1),
-            y: y.max(0).min(st.model.monitor_height as i32 - 1),
-        };
-        let new_drag = match st.model.drag {
-            Some(DragState::Crop(_)) => Some(DragState::Crop(pt)),
-            Some(DragState::Arrow(_)) => Some(DragState::Arrow(pt)),
-            Some(DragState::Rectangle(_)) => Some(DragState::Rectangle(pt)),
-            None => None,
-        };
-        st.model.drag = new_drag;
         update_pending_from_drag(st);
         do_paint(st, hwnd);
+    }
+}
+
+/// Clamp a raw cursor position to the bounds the active tool may draw in:
+/// the full monitor while cropping, the crop rectangle otherwise.
+fn clamp_to_active_bounds(model: &VisionSnipModel, x: i32, y: i32) -> Point {
+    let (min_x, min_y, max_x, max_y) = if model.active_tool == Tool::Crop {
+        (0, 0, model.monitor_width as i32 - 1, model.monitor_height as i32 - 1)
+    } else {
+        (
+            model.crop.left.max(0),
+            model.crop.top.max(0),
+            model.crop.right.min(model.monitor_width as i32 - 1),
+            model.crop.bottom.min(model.monitor_height as i32 - 1),
+        )
+    };
+    Point {
+        x: x.max(min_x).min(max_x),
+        y: y.max(min_y).min(max_y),
     }
 }
 
@@ -541,8 +553,9 @@ fn handler_lbuttonup(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
                 let _ = st.model.set_crop(rect);
             }
             DragState::Arrow(_) | DragState::Rectangle(_) => {
-                if st.model.pending.is_some() {
-                    let _ = st.model.commit_pending(String::new());
+                if st.model.pending.is_some() && st.model.commit_pending(String::new()).is_err() {
+                    // Too short / too small — drop the preview instead of leaving it.
+                    st.model.cancel_pending();
                 }
             }
         }
@@ -560,10 +573,10 @@ fn handler_lbuttonup(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
 fn handler_rbuttondown(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
     let click_pt = Point { x, y };
     for ann in &st.model.annotations {
-        let badge_pos = badge_center(&ann.geometry);
+        let badge_pos = draw::badge_center(&ann.geometry);
         let dx = click_pt.x - badge_pos.x;
         let dy = click_pt.y - badge_pos.y;
-        let dist2 = (paint::BADGE_R + 4) * (paint::BADGE_R + 4);
+        let dist2 = (draw::BADGE_R + 4) * (draw::BADGE_R + 4);
         if dx * dx + dy * dy <= dist2 {
             open_editor(st, hwnd, ann.label);
             return;
@@ -709,15 +722,13 @@ fn do_analyze(st: &mut SnipState, hwnd: HWND) {
         }
     }
 
-    // 5. Build metadata
-    let model_anns = st.model.build_model_annotations();
+    // 5. Build the structured prompt (embeds annotation metadata).
     let prompt = st.model.build_prompt();
 
     // 6. Send + close
     if let Some(tx) = st.result_tx.take() {
         let _ = tx.send(VisionSnipResult::Analyze {
             image: cropped,
-            annotations: model_anns,
             prompt,
         });
     }
@@ -735,12 +746,18 @@ fn send_cancel(st: &mut SnipState) {
 }
 
 fn do_paint(st: &mut SnipState, hwnd: HWND) {
+    let drag_current = if st.model.drag.is_some() {
+        Some(st.mouse_pos)
+    } else {
+        None
+    };
     paint::paint_overlay(
         &mut st.frame,
         &st.model,
         &st.screenshot,
         st.scale,
         st.hovered_btn,
+        drag_current,
     );
     st.frame.present_layered(hwnd, 0, 0, 255);
 }
@@ -812,20 +829,6 @@ fn compute_hover_index(x: i32, st: &SnipState) -> usize {
         idx += 1;
     }
     idx
-}
-
-fn badge_center(geom: &AnnotationGeometry) -> Point {
-    match geom {
-        AnnotationGeometry::Point { badge_origin, .. } => *badge_origin,
-        AnnotationGeometry::Arrow { from, .. } => Point {
-            x: from.x - 4,
-            y: from.y - 16,
-        },
-        AnnotationGeometry::Rectangle { rect } => Point {
-            x: rect.left + 2,
-            y: rect.top - 22,
-        },
-    }
 }
 
 fn unpack_lp(lp: LPARAM) -> (i32, i32) {

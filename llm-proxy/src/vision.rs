@@ -1,28 +1,25 @@
-//! Vision (multimodal) client for sending screenshot images to vision-capable
+//! Multimodal vision client for sending screenshot images to vision-capable
 //! LLMs via the OpenAI-compatible `/chat/completions` endpoint.
+//!
+//! Request construction ([`build_multimodal_body`]) and response parsing
+//! ([`parse_vision_response`]) are shared; [`analyze_png_blocking`] ties them
+//! together over a blocking HTTP client.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use llm_proxy::vision::analyze_png;
+//! use llm_proxy::vision::analyze_png_blocking;
 //! use llm_proxy::config::ResolvedModelEndpoint;
 //!
-//! let client = reqwest::Client::new();
+//! let client = reqwest::blocking::Client::new();
 //! let target = ResolvedModelEndpoint {
 //!     provider: "my-provider".into(),
 //!     model: "vision-model".into(),
 //!     endpoint: "http://localhost:8080/v1/chat/completions".into(),
 //!     api_key: "sk-...".into(),
 //! };
-//! let result = analyze_png(&client, &target, "Analyze this", &png_bytes).await?;
+//! let result = analyze_png_blocking(&client, &target, "Analyze this", &png_bytes)?;
 //! ```
-
-//! Multimodal vision client for sending images to vision-capable LLMs.
-//!
-//! Provides both async ([`analyze_png`]) and blocking ([`analyze_png_blocking`])
-//! APIs that share the same request construction and response parsing logic.
-
-use std::time::Duration;
 
 use base64::Engine;
 use serde_json::Value;
@@ -100,72 +97,14 @@ pub fn parse_vision_response(body: &[u8]) -> Result<String, String> {
     Ok(trimmed)
 }
 
-/// Try to parse a response from a `reqwest` response, handling both success
-/// and HTTP error responses.
-pub fn parse_vision_reqwest_response(
-    response: reqwest::blocking::Response,
-) -> Result<String, (Option<u16>, String)> {
-    let status = response.status();
-    let status_u16 = status.as_u16();
+// ── Request API ──────────────────────────────────────────────────────────
 
-    if !status.is_success() {
-        let body_text = response.text().unwrap_or_default();
-        let excerpt: String = body_text.chars().take(300).collect();
-        return Err((Some(status_u16), format!("HTTP {status_u16}: {excerpt}")));
-    }
-
-    let body = response.bytes().map(|b| b.to_vec()).map_err(|e| {
-        (
-            Some(status_u16),
-            format!("Failed to read response body: {e}"),
-        )
-    })?;
-
-    parse_vision_response(&body).map_err(|e| (Some(status_u16), e))
-}
-
-// ── Async API ────────────────────────────────────────────────────────────
-
-/// Send a non-streaming multimodal request to the OpenAI-compatible endpoint.
+/// Send a non-streaming multimodal request over a blocking HTTP client.
 ///
 /// Encodes the PNG as a `data:image/png;base64,` URL and sends it alongside
 /// the text prompt in a single user message with two content blocks.
 ///
 /// Returns the model's text response, trimmed.
-pub async fn analyze_png(
-    client: &reqwest::Client,
-    target: &ResolvedModelEndpoint,
-    prompt: &str,
-    png: &[u8],
-) -> anyhow::Result<String> {
-    let body = build_multimodal_body(&target.model, prompt, png);
-
-    let response = client
-        .post(&target.endpoint)
-        .header("Authorization", format!("Bearer {}", target.api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(Duration::from_secs(120))
-        .send()
-        .await?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        let excerpt: String = body_text.chars().take(500).collect();
-        return Err(anyhow::anyhow!(
-            "Vision request failed with HTTP {status}: {excerpt}"
-        ));
-    }
-
-    let resp: Value = response.json().await?;
-    let body_bytes = serde_json::to_vec(&resp).unwrap_or_default();
-    parse_vision_response(&body_bytes).map_err(anyhow::Error::msg)
-}
-
-// ── Blocking API ─────────────────────────────────────────────────────────
-
-/// Blocking version of [`analyze_png`]. Uses `reqwest::blocking::Client`.
 pub fn analyze_png_blocking(
     client: &reqwest::blocking::Client,
     target: &ResolvedModelEndpoint,

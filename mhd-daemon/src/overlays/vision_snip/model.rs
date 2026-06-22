@@ -88,11 +88,6 @@ impl AnnotationColor {
         AnnotationColor::White,
     ];
 
-    /// Default color (index into ALL).
-    pub const fn default_index() -> usize {
-        0 // Red
-    }
-
     /// Return the RGBA colour value for rendering.
     pub fn rgba(&self) -> (u8, u8, u8, u8) {
         match self {
@@ -170,11 +165,7 @@ pub enum EditCommand {
     /// An annotation was replaced (arrow or rectangle replacement).
     AnnotationReplaced { old: Annotation, new: Annotation },
     /// An annotation's description was edited.
-    DescriptionEdited {
-        label: char,
-        old: String,
-        new: String,
-    },
+    DescriptionEdited { label: char, old: String },
     /// All annotations were cleared (Clear command).
     Clear { annotations: Vec<Annotation> },
 }
@@ -183,8 +174,6 @@ pub enum EditCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelError {
     LabelLimitReached,
-    ArrowAlreadyExists,
-    RectangleAlreadyExists,
     AnnotationOutsideCrop,
     CropTooSmall,
     ArrowTooShort,
@@ -198,10 +187,6 @@ impl std::fmt::Display for ModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ModelError::LabelLimitReached => write!(f, "Maximum number of annotations reached"),
-            ModelError::ArrowAlreadyExists => write!(f, "An arrow already exists"),
-            ModelError::RectangleAlreadyExists => {
-                write!(f, "A rectangle annotation already exists")
-            }
             ModelError::AnnotationOutsideCrop => write!(f, "Move annotations inside the crop"),
             ModelError::CropTooSmall => write!(f, "Crop is too small"),
             ModelError::ArrowTooShort => write!(f, "Arrow is too short"),
@@ -223,7 +208,6 @@ pub enum Tool {
     Marker,
     Arrow,
     Rectangle,
-    Color,
     None,
 }
 
@@ -234,7 +218,6 @@ pub enum Tool {
 pub struct ModelAnnotation {
     pub label: char,
     pub geometry_type: String,
-    pub color: String,
     pub description: String,
     /// Normalized coordinates [x, y] or [x1, y1, x2, y2].
     pub coordinates: Vec<i32>,
@@ -319,6 +302,7 @@ impl VisionSnipModel {
     // ── Arrow singleton ──────────────────────────────────────────────
 
     /// Return the arrow annotation if one exists.
+    #[cfg(test)]
     pub fn arrow(&self) -> Option<&Annotation> {
         self.annotations
             .iter()
@@ -335,6 +319,7 @@ impl VisionSnipModel {
     // ── Rectangle singleton ──────────────────────────────────────────
 
     /// Return the rectangle annotation if one exists.
+    #[cfg(test)]
     pub fn rectangle(&self) -> Option<&Annotation> {
         self.annotations
             .iter()
@@ -536,7 +521,7 @@ impl VisionSnipModel {
                     self.annotations[idx] = old;
                 }
             }
-            EditCommand::DescriptionEdited { label, old, new: _ } => {
+            EditCommand::DescriptionEdited { label, old } => {
                 if let Some(ann) = self.annotations.iter_mut().find(|a| a.label == label) {
                     ann.description = old;
                 }
@@ -574,11 +559,7 @@ impl VisionSnipModel {
         }
         let old = ann.description.clone();
         if old != trimmed {
-            self.history.push(EditCommand::DescriptionEdited {
-                label,
-                old,
-                new: trimmed.clone(),
-            });
+            self.history.push(EditCommand::DescriptionEdited { label, old });
             ann.description = trimmed;
         }
         Ok(())
@@ -634,11 +615,9 @@ impl VisionSnipModel {
                         ("rectangle".to_string(), vec![lx, ty, rx, by])
                     }
                 };
-                let color_name = format!("{:?}", ann.color);
                 ModelAnnotation {
                     label: ann.label,
                     geometry_type,
-                    color: color_name,
                     description: ann.description.clone(),
                     coordinates,
                 }

@@ -7,11 +7,38 @@
 use windows::Win32::Foundation::{COLORREF, RECT};
 use windows::Win32::Graphics::Gdi::*;
 
+use crate::overlays::vision_snip::draw::{self, Canvas};
 use crate::overlays::vision_snip::model::{
-    Annotation, AnnotationColor, AnnotationGeometry, Point, Rect, Tool, VisionSnipModel,
+    AnnotationColor, DragState, Point, Rect, Tool, VisionSnipModel,
 };
 use crate::renderer::{DibFrame, to_utf16_z};
 use crate::win32::screen_capture::CapturedImage;
+
+// ── Overlay canvas ──────────────────────────────────────────────────────
+
+/// A [`Canvas`] over the layered-window DIB pixel buffer.
+///
+/// Pixels are stored as `0xAARRGGBB`; blending overwrites the destination
+/// with the source colour (the overlay composites onto an opaque screenshot,
+/// and the layered window honours per-pixel alpha at present time).
+struct DibCanvas<'a> {
+    pixels: &'a mut [u32],
+    w: i32,
+    h: i32,
+}
+
+impl Canvas for DibCanvas<'_> {
+    fn blend(&mut self, x: i32, y: i32, (r, g, b, a): (u8, u8, u8, u8)) {
+        if x < 0 || x >= self.w || y < 0 || y >= self.h {
+            return;
+        }
+        let idx = (y * self.w + x) as usize;
+        if idx < self.pixels.len() {
+            self.pixels[idx] =
+                (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+        }
+    }
+}
 
 // ── Toolbar constants ──────────────────────────────────────────────────
 
@@ -23,8 +50,6 @@ pub const BTN_GAP: i32 = 4;
 pub const SWATCH_SIZE: i32 = 18;
 pub const SWATCH_GAP: i32 = 4;
 pub const SEP_W: i32 = 6;
-pub const BADGE_R: i32 = 18;
-pub const DIM_ALPHA: u8 = 100;
 
 /// Background alpha for the toolbar panel.
 const TOOLBAR_BG_ALPHA: u8 = 180;
@@ -83,34 +108,43 @@ pub enum ToolbarAction {
 /// * `screenshot`   – captured monitor pixels (RGBA bytes).
 /// * `scale`        – DPI scaling factor.
 /// * `hovered_btn`  – optional toolbar button index for hover highlight.
+/// * `drag_current` – current mouse position during a drag (for preview).
 pub fn paint_overlay(
     frame: &mut DibFrame,
     model: &VisionSnipModel,
     screenshot: &CapturedImage,
     scale: f32,
     hovered_btn: Option<usize>,
+    drag_current: Option<Point>,
 ) {
     let w = frame.width();
     let h = frame.height();
-    let pixels = frame.pixels_mut();
 
-    // 1. Copy screenshot into the DIB (converting RGBA → BGRA u32).
-    copy_screenshot(pixels, w, h, screenshot);
+    {
+        let pixels = frame.pixels_mut();
 
-    // 2. Dim the area outside the crop rectangle.
-    dim_outside_crop(pixels, w, h, &model.crop);
+        // 1. Copy screenshot into the DIB (converting RGBA → BGRA u32).
+        copy_screenshot(pixels, w, h, screenshot);
 
-    // 3. Draw crop border.
-    draw_crop_border(pixels, w, h, &model.crop, scale);
+        // 2. Dim the area outside the crop rectangle.
+        let effective_crop = match (&model.drag, drag_current) {
+            (Some(DragState::Crop(start)), Some(cur)) => Rect::new(start.x, start.y, cur.x, cur.y),
+            _ => model.crop,
+        };
+        dim_outside_crop(pixels, w, h, &effective_crop);
 
-    // 4. Draw committed annotations.
-    for ann in &model.annotations {
-        render_annotation(pixels, w, h, ann, scale);
-    }
+        // 3. Draw crop border.
+        draw_crop_border(pixels, w, h, &model.crop, scale, &model.drag, drag_current);
 
-    // 5. If there is a pending annotation, draw it as a rubber-band preview.
-    if let Some(ref pending) = model.pending {
-        render_geometry(pixels, w, h, &pending.geometry, &pending.color, scale);
+        // 4 & 5. Draw committed annotations and any pending preview through the
+        // shared renderer so the overlay matches the final image exactly.
+        let mut canvas = DibCanvas { pixels, w, h };
+        for ann in &model.annotations {
+            draw::render_annotation(&mut canvas, ann);
+        }
+        if let Some(ref pending) = model.pending {
+            draw::render_geometry(&mut canvas, &pending.geometry, pending.color);
+        }
     }
 
     // 6. Draw the toolbar on top.
@@ -204,11 +238,25 @@ fn darken_pixel(pixels: &mut [u32], y: i32, w: i32, x: i32) {
 
 // ── Crop border ────────────────────────────────────────────────────────
 
-fn draw_crop_border(pixels: &mut [u32], w: i32, h: i32, crop: &Rect, _scale: f32) {
-    let left = crop.left.max(0);
-    let top = crop.top.max(0);
-    let right = crop.right.min(w);
-    let bottom = crop.bottom.min(h);
+fn draw_crop_border(
+    pixels: &mut [u32],
+    w: i32,
+    h: i32,
+    crop: &Rect,
+    _scale: f32,
+    drag: &Option<DragState>,
+    drag_current: Option<Point>,
+) {
+    // Compute the effective crop rect (committed or during drag)
+    let rect = match (drag, drag_current) {
+        (Some(DragState::Crop(start)), Some(cur)) => Rect::new(start.x, start.y, cur.x, cur.y),
+        _ => *crop,
+    };
+
+    let left = rect.left.max(0);
+    let top = rect.top.max(0);
+    let right = rect.right.min(w);
+    let bottom = rect.bottom.min(h);
 
     if right <= left || bottom <= top {
         return;
@@ -255,153 +303,6 @@ fn draw_crop_border(pixels: &mut [u32], w: i32, h: i32, crop: &Rect, _scale: f32
     }
 }
 
-// ── Annotation rendering on the overlay ────────────────────────────────
-
-/// Render a single committed annotation onto the DIB.
-fn render_annotation(pixels: &mut [u32], w: i32, h: i32, ann: &Annotation, scale: f32) {
-    render_geometry(pixels, w, h, &ann.geometry, &ann.color, scale);
-}
-
-/// Render an annotation geometry (committed or pending).
-fn render_geometry(
-    pixels: &mut [u32],
-    w: i32,
-    h: i32,
-    geometry: &AnnotationGeometry,
-    color: &AnnotationColor,
-    scale: f32,
-) {
-    match geometry {
-        AnnotationGeometry::Point {
-            anchor,
-            badge_origin,
-        } => {
-            render_point(pixels, w, h, anchor, badge_origin, color, scale);
-        }
-        AnnotationGeometry::Arrow { from, to } => {
-            render_arrow(pixels, w, h, from, to, color, scale);
-        }
-        AnnotationGeometry::Rectangle { rect } => {
-            render_rect(pixels, w, h, rect, color, scale);
-        }
-    }
-}
-
-fn render_point(
-    pixels: &mut [u32],
-    w: i32,
-    h: i32,
-    anchor: &Point,
-    badge_origin: &Point,
-    color: &AnnotationColor,
-    _scale: f32,
-) {
-    let (cr, cg, cb, _) = color.rgba();
-    let main_col = argb_u32(255, cr, cg, cb);
-    let outline_col = argb_u32(200, 0, 0, 0);
-
-    // Anchor dot
-    fill_circle(pixels, w, h, anchor.x, anchor.y, 4, outline_col);
-    fill_circle(pixels, w, h, anchor.x, anchor.y, 3, main_col);
-
-    // Leader line
-    draw_bresenham_line(
-        pixels,
-        w,
-        h,
-        anchor.x,
-        anchor.y,
-        badge_origin.x,
-        badge_origin.y,
-        argb_u32(180, 0, 0, 0),
-    );
-
-    // Badge outline
-    fill_circle(
-        pixels,
-        w,
-        h,
-        badge_origin.x,
-        badge_origin.y,
-        BADGE_R + 1,
-        outline_col,
-    );
-    fill_circle(
-        pixels,
-        w,
-        h,
-        badge_origin.x,
-        badge_origin.y,
-        BADGE_R,
-        main_col,
-    );
-}
-
-fn render_arrow(
-    pixels: &mut [u32],
-    w: i32,
-    h: i32,
-    from: &Point,
-    to: &Point,
-    color: &AnnotationColor,
-    _scale: f32,
-) {
-    let (cr, cg, cb, _) = color.rgba();
-    let main_col = argb_u32(255, cr, cg, cb);
-    let outline_col = argb_u32(200, 0, 0, 0);
-
-    // Thick line
-    draw_thick_line(pixels, w, h, from.x, from.y, to.x, to.y, main_col, 3);
-
-    // Arrowhead at `to`
-    let dx = (to.x - from.x) as f64;
-    let dy = (to.y - from.y) as f64;
-    let len = dx.hypot(dy);
-    if len > 1.0 {
-        let ux = dx / len;
-        let uy = dy / len;
-        let head_len = 12.0;
-        let spread = 0.4;
-        let lx = to.x - (ux * head_len - uy * head_len * spread) as i32;
-        let ly = to.y - (uy * head_len + ux * head_len * spread) as i32;
-        let rx = to.x - (ux * head_len + uy * head_len * spread) as i32;
-        let ry = to.y - (uy * head_len - ux * head_len * spread) as i32;
-
-        draw_thick_line(pixels, w, h, to.x, to.y, lx, ly, outline_col, 2);
-        draw_thick_line(pixels, w, h, to.x, to.y, rx, ry, outline_col, 2);
-        draw_thick_line(pixels, w, h, lx, ly, rx, ry, outline_col, 2);
-    }
-
-    // Badge near tail
-    let bx = from.x - 10;
-    let by = from.y - 22;
-    fill_circle(pixels, w, h, bx + 10, by + 14, 15, outline_col);
-    fill_circle(pixels, w, h, bx + 10, by + 14, 14, main_col);
-}
-
-fn render_rect(
-    pixels: &mut [u32],
-    w: i32,
-    h: i32,
-    rect: &Rect,
-    color: &AnnotationColor,
-    _scale: f32,
-) {
-    let (cr, cg, cb, _) = color.rgba();
-    let main_col = argb_u32(255, cr, cg, cb);
-    let outline_col = argb_u32(200, 0, 0, 0);
-
-    // Outline border (3px)
-    draw_rect_outline(pixels, w, h, rect, outline_col, 5);
-    draw_rect_outline(pixels, w, h, rect, main_col, 3);
-
-    // Badge at top-left
-    let bx = rect.left - 8;
-    let by = rect.top - 30;
-    fill_circle(pixels, w, h, bx + 10, by + 14, 15, outline_col);
-    fill_circle(pixels, w, h, bx + 10, by + 14, 14, main_col);
-}
-
 // ── Drawing primitives ─────────────────────────────────────────────────
 
 #[inline]
@@ -418,141 +319,6 @@ fn set_pixel_raw(pixels: &mut [u32], w: i32, _h: i32, x: i32, y: i32, color: u32
     if idx < pixels.len() {
         pixels[idx] = color;
     }
-}
-
-fn fill_circle(pixels: &mut [u32], w: i32, h: i32, cx: i32, cy: i32, radius: i32, color: u32) {
-    let r2 = radius * radius;
-    for y in (cy - radius).max(0)..=(cy + radius).min(h - 1) {
-        for x in (cx - radius).max(0)..=(cx + radius).min(w - 1) {
-            let dx = x - cx;
-            let dy = y - cy;
-            if dx * dx + dy * dy <= r2 {
-                let idx = (y * w + x) as usize;
-                if idx < pixels.len() {
-                    pixels[idx] = color;
-                }
-            }
-        }
-    }
-}
-
-fn draw_bresenham_line(
-    pixels: &mut [u32],
-    w: i32,
-    h: i32,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: u32,
-) {
-    let mut x = x0;
-    let mut y = y0;
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-
-    loop {
-        set_pixel_raw(pixels, w, h, x, y, color);
-        if x == x1 && y == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y += sy;
-        }
-    }
-}
-
-fn draw_thick_line(
-    pixels: &mut [u32],
-    w: i32,
-    h: i32,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: u32,
-    thickness: i32,
-) {
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    let mut x = x0;
-    let mut y = y0;
-    let half = thickness / 2;
-
-    loop {
-        for ty in (y - half)..=(y + half) {
-            for tx in (x - half)..=(x + half) {
-                set_pixel_raw(pixels, w, h, tx, ty, color);
-            }
-        }
-        if x == x1 && y == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y += sy;
-        }
-    }
-}
-
-fn draw_rect_outline(pixels: &mut [u32], w: i32, h: i32, rect: &Rect, color: u32, thickness: i32) {
-    // Top
-    draw_thick_line(
-        pixels, w, h, rect.left, rect.top, rect.right, rect.top, color, thickness,
-    );
-    // Bottom
-    draw_thick_line(
-        pixels,
-        w,
-        h,
-        rect.left,
-        rect.bottom,
-        rect.right,
-        rect.bottom,
-        color,
-        thickness,
-    );
-    // Left
-    draw_thick_line(
-        pixels,
-        w,
-        h,
-        rect.left,
-        rect.top,
-        rect.left,
-        rect.bottom,
-        color,
-        thickness,
-    );
-    // Right
-    draw_thick_line(
-        pixels,
-        w,
-        h,
-        rect.right,
-        rect.top,
-        rect.right,
-        rect.bottom,
-        color,
-        thickness,
-    );
 }
 
 // ── Toolbar drawing ────────────────────────────────────────────────────
@@ -606,7 +372,7 @@ fn draw_toolbar(
     let mut left = tx + gap;
 
     // Helper to record a button region and advance
-    let mut add_tool =
+    let add_tool =
         |label: &str, btn_w: i32, active: bool, left: &mut i32, btn_index: &mut usize| {
             let idx = *btn_index;
             let is_hovered = hovered_btn == Some(idx);

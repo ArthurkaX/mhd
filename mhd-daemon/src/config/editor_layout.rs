@@ -82,6 +82,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "toggle_llm_proxy",
     "breathe",
     "vision_screenshot",
+    "vision_snip",
     "quit",
 ];
 

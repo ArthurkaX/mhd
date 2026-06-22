@@ -197,11 +197,6 @@ impl DescriptionEditor {
         })
     }
 
-    /// The editor window handle.
-    pub fn hwnd(&self) -> HWND {
-        self.hwnd
-    }
-
     /// Read the current text from the editor.
     pub fn get_text(&self) -> String {
         unsafe { (*self.state.as_ptr()).text_host.get_text() }
@@ -230,9 +225,10 @@ impl Drop for DescriptionEditor {
                 let _ = DestroyWindow(self.hwnd);
             }
         }
-        // Free the boxed EditorState (drops TextHost + deletes font)
+        // Free the boxed EditorState (drops TextHost) and delete the font.
         unsafe {
-            let _ = Box::from_raw(self.state.as_ptr());
+            let state = Box::from_raw(self.state.as_ptr());
+            let _ = DeleteObject(state.edit_font);
         }
     }
 }
