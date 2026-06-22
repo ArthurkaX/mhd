@@ -4,53 +4,25 @@
 //! Capture, encoding, network request, and clipboard copy happen on a dedicated
 //! background thread so the action worker remains responsive.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use llm_proxy::LogEvent;
 use llm_proxy::state::VisionTraceEntry;
 use llm_proxy::vision::DEFAULT_VISION_PROMPT;
 
 use crate::app::{AppHandle, DaemonControl};
+use crate::core::vision_guard::VisionGuard;
 use crate::osd::OsdHandle;
 use crate::win32::clipboard;
 use crate::win32::encode_png;
 use crate::win32::screen_capture::capture_foreground_monitor;
-
-/// Global running flag — prevents concurrent vision requests.
-static RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// RAII guard that clears the running flag on drop.
-struct RunningGuard;
-
-impl RunningGuard {
-    fn acquire() -> Option<Self> {
-        if RUNNING.swap(true, Ordering::Acquire) {
-            None
-        } else {
-            Some(Self)
-        }
-    }
-}
-
-impl Drop for RunningGuard {
-    fn drop(&mut self) {
-        RUNNING.store(false, Ordering::Release);
-    }
-}
 
 /// Execute a vision screenshot: capture, analyze, copy result.
 ///
 /// This function is called from the action worker. It validates configuration
 /// upfront and spawns the heavy work on a background thread.
 pub fn execute(handle: &AppHandle) {
-    let _guard = match RunningGuard::acquire() {
+    let _guard = match VisionGuard::acquire(&handle.osd) {
         Some(g) => g,
-        None => {
-            handle
-                .osd
-                .show_notify("Screenshot analysis already running", 2000);
-            return;
-        }
+        None => return,
     };
 
     let osd = handle.osd.clone();
@@ -189,7 +161,6 @@ fn run_vision_workflow(
         );
     }
 
-    // Create a blocking reqwest client (we're on a background thread, no async context easily available)
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -199,32 +170,30 @@ fn run_vision_workflow(
             "Vision request failed".to_string()
         })?;
 
-    // We need to run the async analyze_png in a blocking context.
-    // Since analyze_png is a simple async function, we use tokio::runtime::Runtime
-    // or just use the blocking reqwest API directly. Let's build the request manually.
+    let target = llm_proxy::ResolvedModelEndpoint {
+        provider: vm.provider.clone(),
+        model: vm.model.clone(),
+        endpoint: endpoint_url.clone(),
+        api_key: vm.api_key.clone(),
+    };
+
     let started = std::time::Instant::now();
-    let result = send_vision_request_blocking(
-        &client,
-        &endpoint_url,
-        &vm.model,
-        &vm.api_key,
-        &vm.prompt,
-        &png,
-    )
-    .map_err(|(status, e)| {
-        let duration_ms = started.elapsed().as_millis() as u64;
-        log_vision_error(
-            seq,
-            &vm.provider,
-            &vm.model,
-            &endpoint_url,
-            status,
-            &e,
-            duration_ms,
-        );
-        eprintln!("mhd: vision: request failed: {e}");
-        format!("Vision request failed: {e}")
-    })?;
+    let result = llm_proxy::vision::analyze_png_blocking(&client, &target, &vm.prompt, &png)
+        .map_err(|e| {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            let status = None::<u16>;
+            log_vision_error(
+                seq,
+                &vm.provider,
+                &vm.model,
+                &endpoint_url,
+                status,
+                &e.to_string(),
+                duration_ms,
+            );
+            eprintln!("mhd: vision: request failed: {e}");
+            format!("Vision request failed: {e}")
+        })?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
     log_vision_success(seq, &vm.provider, &vm.model, &endpoint_url, duration_ms);
@@ -330,90 +299,4 @@ fn log_vision_error(
             ..Default::default()
         }),
     );
-}
-
-/// Send the vision request using a blocking reqwest client.
-fn send_vision_request_blocking(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    model: &str,
-    api_key: &str,
-    prompt: &str,
-    png: &[u8],
-) -> Result<String, (Option<u16>, String)> {
-    use base64::Engine;
-
-    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-    let data_url = format!("data:image/png;base64,{}", b64);
-
-    let body = serde_json::json!({
-        "model": model,
-        "stream": false,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": data_url
-                        }
-                    }
-                ]
-            }
-        ]
-    });
-
-    let response = client
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| (None, format!("Network error: {e}")))?;
-
-    let status = response.status();
-    let status_u16 = status.as_u16();
-    if !status.is_success() {
-        let body_text = response.text().unwrap_or_default();
-        let excerpt: String = body_text.chars().take(300).collect();
-        return Err((Some(status_u16), format!("HTTP {status_u16}: {excerpt}")));
-    }
-
-    let resp: serde_json::Value = response
-        .json()
-        .map_err(|e| (Some(status_u16), format!("Parse error: {e}")))?;
-
-    let content = resp
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .ok_or_else(|| (Some(status_u16), "Empty response".to_string()))?;
-
-    let text = if let Some(s) = content.as_str() {
-        s.to_string()
-    } else if let Some(blocks) = content.as_array() {
-        let mut result = String::new();
-        for block in blocks {
-            if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                result.push_str(t);
-            }
-        }
-        result
-    } else {
-        return Err((Some(200), "Unexpected response format".to_string()));
-    };
-
-    let trimmed = text.trim().to_string();
-    if trimmed.is_empty() {
-        return Err((Some(200), "Vision model returned no text".to_string()));
-    }
-
-    Ok(trimmed)
 }

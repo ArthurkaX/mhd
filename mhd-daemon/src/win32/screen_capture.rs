@@ -15,10 +15,20 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 /// Captured image data in RGBA format.
+#[derive(Debug, Clone)]
 pub struct CapturedImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+}
+
+/// A resolved monitor target ready for capture.
+#[derive(Debug, Clone)]
+pub struct CaptureTarget {
+    pub left: i32,
+    pub top: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Errors that can occur during screen capture.
@@ -75,6 +85,116 @@ fn get_target_monitor_rect() -> Result<(RECT, i32, i32), CaptureError> {
         let w = r.right - r.left;
         let h = r.bottom - r.top;
         Ok((r, w, h))
+    }
+}
+
+/// Resolve the foreground monitor into a [`CaptureTarget`] without capturing.
+///
+/// Falls back to the primary monitor if no foreground window or its monitor
+/// cannot be resolved.
+pub fn resolve_foreground_monitor() -> Result<CaptureTarget, CaptureError> {
+    let (rect, width, height) = get_target_monitor_rect()?;
+    if width <= 0 || height <= 0 {
+        return Err(CaptureError::NoMonitor);
+    }
+    Ok(CaptureTarget {
+        left: rect.left,
+        top: rect.top,
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
+/// Capture a specific monitor rect. The rect is obtained from [`resolve_foreground_monitor`].
+pub fn capture_target(target: &CaptureTarget) -> Result<CapturedImage, CaptureError> {
+    let w = target.width;
+    let h = target.height;
+
+    if w == 0 || h == 0 {
+        return Err(CaptureError::NoMonitor);
+    }
+
+    unsafe {
+        let hdc_screen = GetDC(HWND::default());
+        if hdc_screen.is_invalid() {
+            return Err(CaptureError::NoDeviceContext);
+        }
+
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
+        if hdc_mem.is_invalid() {
+            let _ = ReleaseDC(HWND::default(), hdc_screen);
+            return Err(CaptureError::NoDeviceContext);
+        }
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w as i32,
+                biHeight: -(h as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0,
+                ..Default::default()
+            },
+            bmiColors: [RGBQUAD::default(); 1],
+        };
+
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let dib = match CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(dib) => dib,
+            Err(_) => {
+                let _ = DeleteDC(hdc_mem);
+                let _ = ReleaseDC(HWND::default(), hdc_screen);
+                return Err(CaptureError::DibCreationFailed);
+            }
+        };
+
+        let _old_obj = SelectObject(hdc_mem, dib);
+
+        let result = BitBlt(
+            hdc_mem,
+            0,
+            0,
+            w as i32,
+            h as i32,
+            hdc_screen,
+            target.left,
+            target.top,
+            SRCCOPY,
+        );
+
+        if result.is_err() {
+            let _ = SelectObject(hdc_mem, _old_obj);
+            let _ = DeleteObject(dib);
+            let _ = DeleteDC(hdc_mem);
+            let _ = ReleaseDC(HWND::default(), hdc_screen);
+            return Err(CaptureError::BitBltFailed);
+        }
+
+        let bgra_slice = std::slice::from_raw_parts(bits as *const u32, (w * h) as usize);
+
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for &pixel in bgra_slice {
+            let b = (pixel & 0xFF) as u8;
+            let g = ((pixel >> 8) & 0xFF) as u8;
+            let r = ((pixel >> 16) & 0xFF) as u8;
+            let a = ((pixel >> 24) & 0xFF) as u8;
+            rgba.push(r);
+            rgba.push(g);
+            rgba.push(b);
+            rgba.push(a);
+        }
+
+        let _ = SelectObject(hdc_mem, _old_obj);
+        let _ = DeleteObject(dib);
+        let _ = DeleteDC(hdc_mem);
+        let _ = ReleaseDC(HWND::default(), hdc_screen);
+
+        Ok(CapturedImage {
+            width: w,
+            height: h,
+            rgba,
+        })
     }
 }
 

@@ -251,6 +251,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::VisionScreenshot => {
             crate::core::vision_screenshot::execute(handle);
         }
+        Action::VisionSnip => {
+            crate::core::vision_snip::execute(handle);
+        }
         // SwitchScheme and Quit are dispatched via dedicated ActionMessage
         // variants, never wrapped in ActionMessage::Execute.
         Action::SwitchScheme { .. } | Action::Quit => {}

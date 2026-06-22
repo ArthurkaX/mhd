@@ -17,6 +17,11 @@
 //! let result = analyze_png(&client, &target, "Analyze this", &png_bytes).await?;
 //! ```
 
+//! Multimodal vision client for sending images to vision-capable LLMs.
+//!
+//! Provides both async ([`analyze_png`]) and blocking ([`analyze_png_blocking`])
+//! APIs that share the same request construction and response parsing logic.
+
 use std::time::Duration;
 
 use base64::Engine;
@@ -28,32 +33,14 @@ use crate::config::ResolvedModelEndpoint;
 pub const DEFAULT_VISION_PROMPT: &str = "Analyze this screenshot and return the useful visible text. Preserve the \
      original language and structure. Return only the result, without commentary.";
 
-/// Send a non-streaming multimodal request to the OpenAI-compatible endpoint.
-///
-/// Encodes the PNG as a `data:image/png;base64,` URL and sends it alongside
-/// the text prompt in a single user message with two content blocks.
-///
-/// Returns the model's text response, trimmed.
-///
-/// # Errors
-///
-/// - Network/timeout errors from reqwest.
-/// - HTTP non-200 responses (includes bounded body excerpt).
-/// - Missing or empty `choices[0].message.content`.
-/// - Malformed response JSON.
-pub async fn analyze_png(
-    client: &reqwest::Client,
-    target: &ResolvedModelEndpoint,
-    prompt: &str,
-    png: &[u8],
-) -> anyhow::Result<String> {
-    // Base64-encode the PNG
+// ── Shared request/response helpers ─────────────────────────────────────
+
+/// Build the multimodal request body JSON.
+pub fn build_multimodal_body(model: &str, prompt: &str, png: &[u8]) -> serde_json::Value {
     let b64 = base64::engine::general_purpose::STANDARD.encode(png);
     let data_url = format!("data:image/png;base64,{}", b64);
-
-    // Build the multimodal request body
-    let body = serde_json::json!({
-        "model": target.model,
+    serde_json::json!({
+        "model": model,
         "stream": false,
         "messages": [
             {
@@ -72,9 +59,87 @@ pub async fn analyze_png(
                 ]
             }
         ]
-    });
+    })
+}
 
-    // Send the request
+/// Parse the response body and extract the text content.
+///
+/// Handles both string content and text-block array formats.
+/// Returns `None` if parsing fails or content is empty.
+pub fn parse_vision_response(body: &[u8]) -> Result<String, String> {
+    let resp: Value =
+        serde_json::from_slice(body).map_err(|e| format!("Invalid JSON response: {e}"))?;
+
+    let content = resp
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .ok_or_else(|| "Vision response missing choices[0].message.content".to_string())?;
+
+    let text = if let Some(s) = content.as_str() {
+        s.to_string()
+    } else if let Some(blocks) = content.as_array() {
+        let mut result = String::new();
+        for block in blocks {
+            if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                result.push_str(t);
+            }
+        }
+        result
+    } else {
+        return Err("Vision response content is neither a string nor text blocks".to_string());
+    };
+
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Vision model returned no text".to_string());
+    }
+
+    Ok(trimmed)
+}
+
+/// Try to parse a response from a `reqwest` response, handling both success
+/// and HTTP error responses.
+pub fn parse_vision_reqwest_response(
+    response: reqwest::blocking::Response,
+) -> Result<String, (Option<u16>, String)> {
+    let status = response.status();
+    let status_u16 = status.as_u16();
+
+    if !status.is_success() {
+        let body_text = response.text().unwrap_or_default();
+        let excerpt: String = body_text.chars().take(300).collect();
+        return Err((Some(status_u16), format!("HTTP {status_u16}: {excerpt}")));
+    }
+
+    let body = response.bytes().map(|b| b.to_vec()).map_err(|e| {
+        (
+            Some(status_u16),
+            format!("Failed to read response body: {e}"),
+        )
+    })?;
+
+    parse_vision_response(&body).map_err(|e| (Some(status_u16), e))
+}
+
+// ── Async API ────────────────────────────────────────────────────────────
+
+/// Send a non-streaming multimodal request to the OpenAI-compatible endpoint.
+///
+/// Encodes the PNG as a `data:image/png;base64,` URL and sends it alongside
+/// the text prompt in a single user message with two content blocks.
+///
+/// Returns the model's text response, trimmed.
+pub async fn analyze_png(
+    client: &reqwest::Client,
+    target: &ResolvedModelEndpoint,
+    prompt: &str,
+    png: &[u8],
+) -> anyhow::Result<String> {
+    let body = build_multimodal_body(&target.model, prompt, png);
+
     let response = client
         .post(&target.endpoint)
         .header("Authorization", format!("Bearer {}", target.api_key))
@@ -84,7 +149,6 @@ pub async fn analyze_png(
         .send()
         .await?;
 
-    // Check HTTP status
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
@@ -94,40 +158,43 @@ pub async fn analyze_png(
         ));
     }
 
-    // Parse JSON response
     let resp: Value = response.json().await?;
+    let body_bytes = serde_json::to_vec(&resp).unwrap_or_default();
+    parse_vision_response(&body_bytes).map_err(anyhow::Error::msg)
+}
 
-    // Extract choices[0].message.content
-    let content = resp
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .ok_or_else(|| anyhow::anyhow!("Vision response missing choices[0].message.content"))?;
+// ── Blocking API ─────────────────────────────────────────────────────────
 
-    // Handle string content
-    let text = if let Some(s) = content.as_str() {
-        s.to_string()
-    } else if let Some(blocks) = content.as_array() {
-        // Handle content block array format
-        let mut result = String::new();
-        for block in blocks {
-            if let Some(text_block) = block.get("text").and_then(|t| t.as_str()) {
-                result.push_str(text_block);
-            }
-        }
-        result
-    } else {
+/// Blocking version of [`analyze_png`]. Uses `reqwest::blocking::Client`.
+pub fn analyze_png_blocking(
+    client: &reqwest::blocking::Client,
+    target: &ResolvedModelEndpoint,
+    prompt: &str,
+    png: &[u8],
+) -> anyhow::Result<String> {
+    let body = build_multimodal_body(&target.model, prompt, png);
+
+    let response = client
+        .post(&target.endpoint)
+        .header("Authorization", format!("Bearer {}", target.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().unwrap_or_default();
+        let excerpt: String = body_text.chars().take(500).collect();
         return Err(anyhow::anyhow!(
-            "Vision response content is neither a string nor text blocks"
+            "Vision request failed with HTTP {status}: {excerpt}"
         ));
-    };
-
-    let trimmed = text.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(anyhow::anyhow!("Vision model returned no text"));
     }
 
-    Ok(trimmed)
+    let body_bytes = response
+        .bytes()
+        .map(|b| b.to_vec())
+        .map_err(|e| anyhow::anyhow!("Failed to read response: {e}"))?;
+
+    parse_vision_response(&body_bytes).map_err(anyhow::Error::msg)
 }

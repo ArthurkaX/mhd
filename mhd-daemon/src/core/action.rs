@@ -83,6 +83,8 @@ pub enum Action {
     ToggleLlmProxy,
     /// Capture the foreground monitor, send to a vision LLM, copy result to clipboard.
     VisionScreenshot,
+    /// Capture, crop, annotate, and analyze a screenshot interactively.
+    VisionSnip,
     Quit,
 }
 
@@ -188,6 +190,7 @@ impl Action {
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
             "power_actions" => Ok(Action::PowerActions),
             "vision_screenshot" => Ok(Action::VisionScreenshot),
+            "vision_snip" => Ok(Action::VisionSnip),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
         }
@@ -355,6 +358,7 @@ impl Action {
             Action::ShowProxyTrace => "show_proxy_trace",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
             Action::VisionScreenshot => "vision_screenshot",
+            Action::VisionSnip => "vision_snip",
             Action::Pomodoro => "pomodoro",
             Action::ToggleKeycast => "toggle_keycast",
             Action::Breathe { .. } => "breathe",
@@ -415,6 +419,7 @@ impl Action {
             | Action::ToggleKeycast
             | Action::Breathe { .. }
             | Action::VisionScreenshot
+            | Action::VisionSnip
             | Action::Quit => self.name().to_string(),
         }
     }
@@ -751,6 +756,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "vision_screenshot",
         label: "Vision Screenshot",
         description: "Capture screen, analyze with vision LLM, copy result.",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "vision_snip",
+        label: "Vision Snip",
+        description: "Capture, crop, annotate, and analyze a screenshot.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,

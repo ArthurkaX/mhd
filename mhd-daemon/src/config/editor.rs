@@ -47,6 +47,7 @@ use windows::Win32::UI::Controls::RichEdit::{
     CFE_EFFECTS, CFM_COLOR, CHARFORMATW, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_DEFAULT,
 };
 
+#[allow(unused_imports)]
 use base64::Engine;
 
 use crate::app::{AppHandle, DaemonControl};
@@ -1117,95 +1118,16 @@ fn run_vision_test(
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&test_png);
-    let data_url = format!("data:image/png;base64,{}", b64);
-
-    let body = serde_json::json!({
-        "model": model_ref.model,
-        "stream": false,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": VISION_TEST_PROMPT
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": data_url
-                        }
-                    }
-                ]
-            }
-        ]
-    });
-
-    let response = client
-        .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Request failed: {e}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().unwrap_or_default();
-        let excerpt: String = body_text.chars().take(200).collect();
-        let err = format!("HTTP {}: {excerpt}", status.as_u16());
-        crate::core::llm_proxy::log_vision(
-            llm_proxy::state::VisionTraceEntry {
-                seq,
-                provider: model_ref.provider.clone(),
-                model: model_ref.model.clone(),
-                endpoint: endpoint.clone(),
-                status: Some(status.as_u16()),
-                error: Some(err.clone()),
-                duration_ms: 0,
-            },
-            Some(llm_proxy::LogEvent {
-                seq,
-                event_type: "VISION_TEST_ERR".to_string(),
-                model: Some(model_ref.model.clone()),
-                target: Some(model_ref.provider.clone()),
-                target_model: Some(endpoint.clone()),
-                error: Some(err.clone()),
-                status: Some(status.as_u16()),
-                ..Default::default()
-            }),
-        );
-        return Err(err);
-    }
-
-    let resp: serde_json::Value = response.json().map_err(|e| format!("Parse error: {e}"))?;
-
-    let content = resp
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .ok_or_else(|| "Empty response".to_string())?;
-
-    let text = if let Some(s) = content.as_str() {
-        s.to_string()
-    } else if let Some(blocks) = content.as_array() {
-        let mut result = String::new();
-        for block in blocks {
-            if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                result.push_str(t);
-            }
-        }
-        result
-    } else {
-        return Err("Unexpected response format".to_string());
+    let target = llm_proxy::ResolvedModelEndpoint {
+        provider: model_ref.provider.clone(),
+        model: model_ref.model.clone(),
+        endpoint: endpoint.clone(),
+        api_key: api_key.to_string(),
     };
 
-    if text.trim().is_empty() {
-        return Err("Model returned empty text".to_string());
-    }
+    let result =
+        llm_proxy::vision::analyze_png_blocking(&client, &target, VISION_TEST_PROMPT, test_png)
+            .map_err(|e| format!("{e}"))?;
 
     crate::core::llm_proxy::log_vision(
         llm_proxy::state::VisionTraceEntry {
@@ -1232,7 +1154,7 @@ fn run_vision_test(
         "mhd: vision test succeeded for {} / {}: '{}'",
         model_ref.provider,
         model_ref.model,
-        text.trim().chars().take(60).collect::<String>()
+        result.chars().take(60).collect::<String>()
     );
     Ok(())
 }
