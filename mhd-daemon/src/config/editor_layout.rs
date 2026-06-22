@@ -81,6 +81,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "show_proxy_trace",
     "toggle_llm_proxy",
     "breathe",
+    "vision_screenshot",
     "quit",
 ];
 
@@ -246,6 +247,8 @@ pub struct LlmProxyLayout {
     pub proxy_y: i32,
     /// Height of the proxy settings section (fields + header).
     pub proxy_h: i32,
+    /// Y offset of the "Screenshot Model" section header.
+    pub vision_y: i32,
     /// Y offset of the provider list (below the proxy settings).
     pub list_y: i32,
     /// Available height of the provider list area.
@@ -258,6 +261,12 @@ pub struct LlmProxyLayout {
     pub name_w: i32,
     /// Width of the delete button.
     pub del_w: i32,
+    /// Width of the vision model combo box.
+    pub vision_combo_w: i32,
+    /// Width of the vision test button.
+    pub vision_test_w: i32,
+    /// Width of the vision prompt button.
+    pub vision_prompt_w: i32,
 }
 
 /// Top-level layout composition.
@@ -591,23 +600,34 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
     let gap = (8.0 * c.scale) as i32;
     let col_h = (16.0 * c.scale) as i32; // table header height
     // Proxy settings: header + Anthropic Key + Bind Address
-    // Then ~24px for table headers + divider before the list starts.
-    let proxy_h = section_h + row_h + gap + row_h + gap + col_h + gap;
+    let proxy_h = section_h + row_h + gap + row_h + gap;
+    // Vision model section: section header + one row
+    let vision_h = section_h + row_h + gap;
+    let vision_y = c.content_y + proxy_h;
+    // Provider list section: table headers + scrollable list above auto downgrade.
+    let table_header_h = col_h + gap;
     // Auto downgrade section (at bottom): header + Opus toggle + gap + Sonnet toggle
     let downgrade_h = section_h + row_h + gap + row_h + gap;
-    // Provider list fills remaining space between proxy settings and auto downgrade
-    let list_y = c.content_y + proxy_h;
-    let list_h = c.content_visible_h - proxy_h - downgrade_h;
+    // Provider list fills remaining space between vision model and auto downgrade
+    let provider_start = vision_y + vision_h;
+    let provider_available = c.content_visible_h - proxy_h - vision_h - downgrade_h;
+    // The table headers are a fixed band at the top of the provider area
+    let list_y = provider_start + table_header_h;
+    let list_h = provider_available - table_header_h;
     let downgrade_y = list_y + list_h;
     LlmProxyLayout {
         top_y: c.content_y,
         proxy_y: c.content_y,
         proxy_h,
+        vision_y,
         list_y,
         list_h,
         downgrade_y,
         row_h,
         name_w: (260.0 * c.scale) as i32,
         del_w: (28.0 * c.scale) as i32,
+        vision_combo_w: (250.0 * c.scale) as i32,
+        vision_test_w: (80.0 * c.scale) as i32,
+        vision_prompt_w: (80.0 * c.scale) as i32,
     }
 }

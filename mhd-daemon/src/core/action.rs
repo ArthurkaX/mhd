@@ -81,6 +81,8 @@ pub enum Action {
     ShowProxyTrace,
     /// Toggle the llm-proxy process on/off.
     ToggleLlmProxy,
+    /// Capture the foreground monitor, send to a vision LLM, copy result to clipboard.
+    VisionScreenshot,
     Quit,
 }
 
@@ -185,6 +187,7 @@ impl Action {
             "show_proxy_trace" => Ok(Action::ShowProxyTrace),
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
             "power_actions" => Ok(Action::PowerActions),
+            "vision_screenshot" => Ok(Action::VisionScreenshot),
             "quit" => Ok(Action::Quit),
             other => Err(format!("unknown action: {other}")),
         }
@@ -351,6 +354,7 @@ impl Action {
             Action::ShowLlmModels => "show_llm_models",
             Action::ShowProxyTrace => "show_proxy_trace",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
+            Action::VisionScreenshot => "vision_screenshot",
             Action::Pomodoro => "pomodoro",
             Action::ToggleKeycast => "toggle_keycast",
             Action::Breathe { .. } => "breathe",
@@ -410,6 +414,7 @@ impl Action {
             | Action::Pomodoro
             | Action::ToggleKeycast
             | Action::Breathe { .. }
+            | Action::VisionScreenshot
             | Action::Quit => self.name().to_string(),
         }
     }
@@ -742,6 +747,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_key: None,
         param_schema: ActionParamSchema::None,
     },
+    ActionDescriptor {
+        name: "vision_screenshot",
+        label: "Vision Screenshot",
+        description: "Capture screen, analyze with vision LLM, copy result.",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
 ];
 
 /// Find the index of an action descriptor by its TOML name.
@@ -806,6 +819,7 @@ mod tests {
                 target: "next".into(),
             },
             Action::ShowCpuPanel,
+            Action::VisionScreenshot,
             Action::Quit,
         ];
 

@@ -84,6 +84,8 @@ pub struct LlmProxyConfig {
     pub opus_downgrade_enabled: bool,
     /// Sonnet downgrade when no thinking.
     pub sonnet_downgrade_enabled: bool,
+    /// Selected model for vision screenshot feature.
+    pub vision_model: Option<llm_proxy::config::ModelRef>,
 }
 
 impl Default for LlmProxyConfig {
@@ -103,6 +105,7 @@ impl Default for LlmProxyConfig {
             models: Vec::new(),
             opus_downgrade_enabled: false,
             sonnet_downgrade_enabled: false,
+            vision_model: None,
         }
     }
 }
@@ -377,6 +380,7 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.sonnet_downgrade_enabled)
                 .unwrap_or(false),
+            vision_model: settings.as_ref().and_then(|s| s.vision_model.clone()),
         }
     }
 

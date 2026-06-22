@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use llm_proxy::ProxyControl;
-use llm_proxy::state::TraceEntry;
+use llm_proxy::state::{TraceEntry, VisionTraceEntry};
 
 use crate::config::LlmProxyConfig;
 
@@ -117,6 +117,37 @@ pub fn get_trace() -> Vec<TraceEntry> {
         .as_ref()
         .map(|c| c.trace())
         .unwrap_or_default()
+}
+
+/// Snapshot of recent vision screenshot requests.
+pub fn get_vision_trace() -> Vec<VisionTraceEntry> {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.vision_trace())
+        .unwrap_or_default()
+}
+
+/// Record a vision screenshot request in the proxy's trace buffer and SQLite log.
+/// Silently no-ops if the proxy is not running.
+pub fn log_vision(entry: VisionTraceEntry, db_event: Option<llm_proxy::LogEvent>) {
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref c) = *guard {
+        c.push_vision_trace(entry);
+        if let Some(event) = db_event {
+            c.log_event(event);
+        }
+    }
+}
+
+/// Log a structured event to the proxy's SQLite database.
+/// Silently no-ops if the proxy is not running.
+pub fn log_event(event: llm_proxy::LogEvent) {
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref c) = *guard {
+        c.log_event(event);
+    }
 }
 
 /// Whether debug logging is enabled on the proxy.

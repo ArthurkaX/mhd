@@ -47,6 +47,8 @@ use windows::Win32::UI::Controls::RichEdit::{
     CFE_EFFECTS, CFM_COLOR, CHARFORMATW, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_DEFAULT,
 };
 
+use base64::Engine;
+
 use crate::app::{AppHandle, DaemonControl};
 use crate::core::action::ActionParamSchema;
 use crate::core::native_theme::{Argb, NativeTheme, load_theme_from_path};
@@ -79,6 +81,10 @@ pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
 
 const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "Advanced"];
+const WM_VISION_PROMPT_UPDATED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
+const VISION_TEST_PROMPT: &str = "Describe this image in one short sentence.";
+const VISION_TEST_ICON_PNG: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../icons/mHD_256.png"));
 
 // ═══════════════════════════════════════════════════════════════════════
 // Folder browser (IFileOpenDialog, Vista+)
@@ -246,6 +252,17 @@ pub fn show_config_editor(handle: AppHandle) {
         sonnet_downgrade_enabled: llm_proxy::config::load_settings()
             .map(|s| s.sonnet_downgrade_enabled)
             .unwrap_or(false),
+        vision_model: llm_proxy::config::load_settings()
+            .ok()
+            .and_then(|s| s.vision_model),
+        vision_prompt: llm_proxy::config::load_settings()
+            .ok()
+            .map(|s| s.vision_prompt)
+            .unwrap_or_else(|| llm_proxy::vision::DEFAULT_VISION_PROMPT.to_string()),
+        vision_model_items: Vec::new(),
+        vision_model_dropdown: SearchDropdownState::default(),
+        vision_test_status: String::new(),
+        vision_test_running: false,
         providers: {
             // Load providers from the proxy JSON files.
             // Also load secrets for the API key (first provider gets the upstream key).
@@ -741,6 +758,11 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         draw_theme_dropdown(dib_dc, bits, lay, state, body_font, small_font);
     }
 
+    // ── Vision model search dropdown overlay ──────────────────────────
+    if state.active_section == SettingsPage::LlmProxy && state.vision_model_dropdown.is_open {
+        draw_vision_model_dropdown(dib_dc, bits, lay, state, body_font, small_font);
+    }
+
     // Separator above footer
     let footer_y = lay.win_h() - lay.footer_h();
     unsafe {
@@ -1031,6 +1053,197 @@ fn cancel_inline_edit(state: &mut SettingsState) {
     }
 }
 
+/// Run a vision connectivity test using the selected model.
+/// Sends a tiny embedded PNG to validate multimodal capability.
+fn run_vision_test(
+    vision_model: &Option<llm_proxy::config::ModelRef>,
+    providers: &[crate::config::editor_state::UiProvider],
+) -> Result<(), String> {
+    let model_ref = vision_model
+        .as_ref()
+        .ok_or_else(|| "No model selected".to_string())?;
+
+    let provider = providers
+        .iter()
+        .find(|p| p.name == model_ref.provider)
+        .ok_or_else(|| format!("Provider '{}' not found", model_ref.provider))?;
+
+    let secrets =
+        llm_proxy::config::load_secrets().map_err(|_| "Could not load secrets".to_string())?;
+
+    let api_key = secrets
+        .provider_keys
+        .get(&model_ref.provider)
+        .filter(|k| !k.is_empty())
+        .map(|s| s.as_str())
+        .or_else(|| {
+            if !secrets.upstream_key.is_empty() {
+                Some(secrets.upstream_key.as_str())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "API key is missing".to_string())?;
+
+    // Use the application icon as the test image.
+    let test_png = VISION_TEST_ICON_PNG;
+
+    let endpoint = llm_proxy::config::normalize_vision_endpoint(&provider.endpoint);
+    let seq = next_vision_seq();
+
+    crate::core::llm_proxy::log_vision(
+        llm_proxy::state::VisionTraceEntry {
+            seq,
+            provider: model_ref.provider.clone(),
+            model: model_ref.model.clone(),
+            endpoint: endpoint.clone(),
+            status: None,
+            error: None,
+            duration_ms: 0,
+        },
+        Some(llm_proxy::LogEvent {
+            seq,
+            event_type: "VISION_TEST".to_string(),
+            model: Some(model_ref.model.clone()),
+            target: Some(model_ref.provider.clone()),
+            target_model: Some(endpoint.clone()),
+            ..Default::default()
+        }),
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&test_png);
+    let data_url = format!("data:image/png;base64,{}", b64);
+
+    let body = serde_json::json!({
+        "model": model_ref.model,
+        "stream": false,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": VISION_TEST_PROMPT
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": data_url
+                        }
+                    }
+                ]
+            }
+        ]
+    });
+
+    let response = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().unwrap_or_default();
+        let excerpt: String = body_text.chars().take(200).collect();
+        let err = format!("HTTP {}: {excerpt}", status.as_u16());
+        crate::core::llm_proxy::log_vision(
+            llm_proxy::state::VisionTraceEntry {
+                seq,
+                provider: model_ref.provider.clone(),
+                model: model_ref.model.clone(),
+                endpoint: endpoint.clone(),
+                status: Some(status.as_u16()),
+                error: Some(err.clone()),
+                duration_ms: 0,
+            },
+            Some(llm_proxy::LogEvent {
+                seq,
+                event_type: "VISION_TEST_ERR".to_string(),
+                model: Some(model_ref.model.clone()),
+                target: Some(model_ref.provider.clone()),
+                target_model: Some(endpoint.clone()),
+                error: Some(err.clone()),
+                status: Some(status.as_u16()),
+                ..Default::default()
+            }),
+        );
+        return Err(err);
+    }
+
+    let resp: serde_json::Value = response.json().map_err(|e| format!("Parse error: {e}"))?;
+
+    let content = resp
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .ok_or_else(|| "Empty response".to_string())?;
+
+    let text = if let Some(s) = content.as_str() {
+        s.to_string()
+    } else if let Some(blocks) = content.as_array() {
+        let mut result = String::new();
+        for block in blocks {
+            if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                result.push_str(t);
+            }
+        }
+        result
+    } else {
+        return Err("Unexpected response format".to_string());
+    };
+
+    if text.trim().is_empty() {
+        return Err("Model returned empty text".to_string());
+    }
+
+    crate::core::llm_proxy::log_vision(
+        llm_proxy::state::VisionTraceEntry {
+            seq,
+            provider: model_ref.provider.clone(),
+            model: model_ref.model.clone(),
+            endpoint: endpoint.clone(),
+            status: Some(200),
+            error: None,
+            duration_ms: 0,
+        },
+        Some(llm_proxy::LogEvent {
+            seq,
+            event_type: "VISION_TEST_OK".to_string(),
+            model: Some(model_ref.model.clone()),
+            target: Some(model_ref.provider.clone()),
+            target_model: Some(endpoint.clone()),
+            status: Some(200),
+            ..Default::default()
+        }),
+    );
+
+    eprintln!(
+        "mhd: vision test succeeded for {} / {}: '{}'",
+        model_ref.provider,
+        model_ref.model,
+        text.trim().chars().take(60).collect::<String>()
+    );
+    Ok(())
+}
+
+/// Monotonic sequence number for vision test requests.
+fn next_vision_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Apply & Save
 // ═══════════════════════════════════════════════════════════════════════
@@ -1125,7 +1338,13 @@ fn apply_settings(state: &mut SettingsState) {
             eprintln!("mhd: failed to save models: {e}");
         }
 
-        // Save the API key from the first provider as upstream_key.
+        // Save per-provider API keys + upstream_key fallback + anthropic_key.
+        let mut provider_keys = std::collections::HashMap::new();
+        for p in &state.providers {
+            if !p.api_key.is_empty() {
+                provider_keys.insert(p.name.clone(), p.api_key.clone());
+            }
+        }
         let api_key = state.providers.first().and_then(|p| {
             if p.api_key.is_empty() {
                 None
@@ -1133,10 +1352,11 @@ fn apply_settings(state: &mut SettingsState) {
                 Some(p.api_key.clone())
             }
         });
-        if api_key.is_some() || !state.anthropic_key.is_empty() {
+        if api_key.is_some() || !state.anthropic_key.is_empty() || !provider_keys.is_empty() {
             let secrets = llm_proxy::config::Secrets {
                 anthropic_key: state.anthropic_key.clone(),
                 upstream_key: api_key.unwrap_or_default(),
+                provider_keys,
             };
             if let Err(e) = llm_proxy::config::save_secrets(&secrets) {
                 eprintln!("mhd: failed to save secrets: {e}");
@@ -1156,6 +1376,8 @@ fn apply_settings(state: &mut SettingsState) {
             }
             settings.opus_downgrade_enabled = state.opus_downgrade_enabled;
             settings.sonnet_downgrade_enabled = state.sonnet_downgrade_enabled;
+            settings.vision_model = state.vision_model.clone();
+            settings.vision_prompt = state.vision_prompt.clone();
             if let Err(e) = llm_proxy::config::save_settings(&settings) {
                 eprintln!("mhd: failed to save proxy settings: {e}");
             }
@@ -1426,6 +1648,62 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
 
+                // ── Vision model search dropdown hit test ───────────
+                if state.vision_model_dropdown.is_open
+                    && state.active_section == SettingsPage::LlmProxy
+                {
+                    let scale = state.layout.scale();
+                    let vision_y = state.layout.llm_proxy.vision_y;
+                    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+                    let gap = (8.0 * scale) as i32;
+                    let combo_h = (30.0 * scale) as i32;
+                    let combo_y = vision_y + section_h + gap;
+                    let combo_x = state.layout.pad();
+                    let combo_w = state.layout.llm_proxy.vision_combo_w;
+                    let dropdown_top = combo_y + combo_h;
+                    let item_h = (24.0 * scale) as i32;
+                    let search_h = (30.0 * scale) as i32;
+                    let visible_rows = 8;
+                    let filtered_count = state
+                        .vision_model_dropdown
+                        .filtered_count(&state.vision_model_items);
+                    let max_visible = filtered_count.min(visible_rows);
+                    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+                    let dropdown_w = combo_w;
+
+                    let on_combo_button = y >= combo_y
+                        && y < combo_y + combo_h
+                        && x >= combo_x
+                        && x < combo_x + combo_w;
+
+                    let on_dropdown = y >= dropdown_top
+                        && y < dropdown_top + dropdown_h
+                        && x >= combo_x
+                        && x < combo_x + dropdown_w;
+
+                    if on_combo_button {
+                        // fall through to VisionModelCombo handler (toggles close)
+                    } else if on_dropdown {
+                        if y >= dropdown_top + search_h {
+                            let item_idx = (y - (dropdown_top + search_h)) / item_h;
+                            let visible_items = state
+                                .vision_model_dropdown
+                                .visible_items(&state.vision_model_items, visible_rows);
+                            if (item_idx as usize) < visible_items.len() {
+                                let selected = visible_items[item_idx as usize];
+                                select_vision_model(state, selected.id);
+                                state.vision_model_dropdown.close();
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                        }
+                        return LRESULT(0);
+                    } else {
+                        state.vision_model_dropdown.close();
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+                }
+
                 let hit = hit_test_settings(state, x, y);
                 match hit {
                     SettingsHit::Tab(ti) => {
@@ -1646,6 +1924,106 @@ unsafe extern "system" fn settings_wndproc(
                     SettingsHit::ProxySonnetDowngradeToggle => {
                         state.sonnet_downgrade_enabled = !state.sonnet_downgrade_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+
+                    // ── Vision model ───────────────────────────────────
+                    SettingsHit::VisionModelCombo => {
+                        close_kind_popup(state);
+                        // Build items: all provider/model pairs
+                        let mut items = Vec::new();
+                        items.push(SearchDropdownItem::new(
+                            0,
+                            "Not configured",
+                            vec!["none".to_string(), "not configured".to_string()],
+                        ));
+                        let mut id = 1;
+                        for p in &state.providers {
+                            for m in &p.models {
+                                let display_name = if m.contains('/') {
+                                    m.split('/').last().unwrap_or(m).to_string()
+                                } else {
+                                    m.clone()
+                                };
+                                let label = format!("{} / {}", p.name, display_name);
+                                items.push(SearchDropdownItem::new(
+                                    id,
+                                    label,
+                                    vec![
+                                        p.name.to_lowercase(),
+                                        display_name.to_lowercase(),
+                                        m.to_lowercase(),
+                                    ],
+                                ));
+                                id += 1;
+                            }
+                        }
+                        state.vision_model_items = items;
+
+                        // Determine selected ID
+                        let selected_id = state
+                            .vision_model
+                            .as_ref()
+                            .and_then(|vm| {
+                                let target_label = format!("{} / {}", vm.provider, vm.model);
+                                state
+                                    .vision_model_items
+                                    .iter()
+                                    .position(|item| item.label == target_label)
+                            })
+                            .unwrap_or(0);
+
+                        state
+                            .vision_model_dropdown
+                            .open(&state.vision_model_items, selected_id, 8);
+                        // Close the other combo if it was open
+                        state.combo_open.store(false, Ordering::SeqCst);
+                        if let Some(popup) = state.combo_popup.take() {
+                            let _ = unsafe { DestroyWindow(popup) };
+                        }
+                        state.theme_dropdown.close();
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::VisionPromptBtn => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        let theme = state.theme.clone();
+                        let prompt = state.vision_prompt.clone();
+                        crate::overlays::vision_prompt::show(
+                            theme,
+                            prompt,
+                            Some((crate::app::SendHwnd(hwnd), WM_VISION_PROMPT_UPDATED)),
+                        );
+                    }
+                    SettingsHit::VisionTestBtn => {
+                        close_combo_popup(state);
+                        close_kind_popup(state);
+                        if !state.vision_test_running {
+                            state.vision_test_running = true;
+                            state.vision_test_status = String::new();
+                            paint_settings(hwnd, state_ptr, &state.layout);
+
+                            // Run test on a background thread
+                            // Use raw usize to pass values across thread boundary safely
+                            let hwnd_val = hwnd.0 as usize;
+                            let state_ptr_val = state_ptr as usize;
+                            let vision_model = state.vision_model.clone();
+                            let providers = state.providers.clone();
+                            std::thread::spawn(move || {
+                                let result = run_vision_test(&vision_model, &providers);
+                                // SAFETY: hwnd_val and state_ptr_val are valid for the
+                                // lifetime of the editor window
+                                let s = unsafe { &mut *(state_ptr_val as *mut SettingsState) };
+                                s.vision_test_running = false;
+                                s.vision_test_status = match &result {
+                                    Ok(()) => "Passed".to_string(),
+                                    Err(e) => format!("Failed: {}", e),
+                                };
+                                unsafe {
+                                    let hwnd_copy = HWND(hwnd_val as *mut std::ffi::c_void);
+                                    let _ = InvalidateRect(hwnd_copy, None, false);
+                                }
+                            });
+                        }
                     }
 
                     // ── LLM Proxy: provider list ─────────────────────
@@ -2074,6 +2452,20 @@ unsafe extern "system" fn settings_wndproc(
                         return LRESULT(0);
                     }
 
+                    // Vision model search dropdown scroll
+                    if state.vision_model_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmProxy
+                    {
+                        let delta_rows = if delta > 0 { -3 } else { 3 };
+                        state.vision_model_dropdown.scroll_by(
+                            delta_rows,
+                            &state.vision_model_items,
+                            8,
+                        );
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+
                     let lay = state.layout;
                     let content_h = page_control_content_height(state, &lay);
                     let max_scroll = (content_h - lay.content_visible_h()).max(0);
@@ -2361,6 +2753,69 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
+
+                    // Vision model search dropdown keyboard handling
+                    if state.vision_model_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmProxy
+                    {
+                        let vk = wparam.0 as u32;
+                        match vk {
+                            0x0D => {
+                                let visible = state
+                                    .vision_model_dropdown
+                                    .visible_items(&state.vision_model_items, 8);
+                                if let Some(first) = visible.first() {
+                                    select_vision_model(state, first.id);
+                                    state.vision_model_dropdown.close();
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x1B => {
+                                state.vision_model_dropdown.close();
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x08 => {
+                                state
+                                    .vision_model_dropdown
+                                    .backspace(&state.vision_model_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x26 => {
+                                state.vision_model_dropdown.scroll_by(
+                                    -1,
+                                    &state.vision_model_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x28 => {
+                                state.vision_model_dropdown.scroll_by(
+                                    1,
+                                    &state.vision_model_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x21 => {
+                                state.vision_model_dropdown.scroll_by(
+                                    -8,
+                                    &state.vision_model_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x22 => {
+                                state.vision_model_dropdown.scroll_by(
+                                    8,
+                                    &state.vision_model_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            _ => {}
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -2399,8 +2854,37 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
+
+                    // Vision model search dropdown character input
+                    if state.vision_model_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmProxy
+                    {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            state.vision_model_dropdown.input_char(
+                                ch,
+                                &state.vision_model_items,
+                                8,
+                            );
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_VISION_PROMPT_UPDATED => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    state.vision_prompt = llm_proxy::config::load_settings()
+                        .ok()
+                        .map(|s| s.vision_prompt)
+                        .unwrap_or_else(|| llm_proxy::vision::DEFAULT_VISION_PROMPT.to_string());
+                    paint_settings(hwnd, state_ptr, &state.layout);
+                }
+                LRESULT(0)
             }
 
             WM_DESTROY => {
@@ -2416,6 +2900,19 @@ unsafe extern "system" fn settings_wndproc(
             }
 
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+fn select_vision_model(state: &mut SettingsState, item_id: usize) {
+    if item_id == 0 {
+        state.vision_model = None;
+    } else if let Some(item) = state.vision_model_items.get(item_id) {
+        if let Some((prov, model_name)) = item.label.split_once(" / ") {
+            state.vision_model = Some(llm_proxy::config::ModelRef {
+                provider: prov.to_string(),
+                model: model_name.to_string(),
+            });
         }
     }
 }
@@ -2874,6 +3371,7 @@ fn close_combo_popup(state: &mut SettingsState) {
     }
     state.combo_open.store(false, Ordering::SeqCst);
     state.theme_dropdown.close();
+    state.vision_model_dropdown.close();
 }
 
 fn close_kind_popup(_state: &mut SettingsState) {
@@ -3188,6 +3686,194 @@ fn draw_theme_dropdown(
             let _ = SelectObject(dib_dc, small_font);
             let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
             let mut empty_wz = to_utf16_z("No matching themes");
+            let mut empty_rc = RECT {
+                left: combo_x + 4,
+                top: list_top,
+                right: combo_x + dropdown_w - 4,
+                bottom: list_top + item_h,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut empty_wz,
+                &mut empty_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
+}
+
+fn draw_vision_model_dropdown(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    lay: &Layout,
+    state: &SettingsState,
+    body_font: HFONT,
+    small_font: HFONT,
+) {
+    let theme = &state.theme;
+    let scale = lay.scale();
+    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
+    let gap = (8.0 * scale) as i32;
+    let combo_h = (30.0 * scale) as i32;
+    let vision_y = lay.llm_proxy.vision_y;
+    let combo_y = vision_y + section_h + gap;
+    let combo_x = lay.pad();
+    let combo_w = lay.llm_proxy.vision_combo_w;
+    let dropdown_top = combo_y + combo_h;
+    let item_h = (24.0 * scale) as i32;
+    let search_h = (30.0 * scale) as i32;
+    let visible_rows = 8;
+    let filtered_count = state
+        .vision_model_dropdown
+        .filtered_count(&state.vision_model_items);
+    let max_visible = filtered_count.min(visible_rows);
+    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+    let dropdown_w = combo_w;
+
+    let dropdown_rect = RECT {
+        left: combo_x,
+        top: dropdown_top,
+        right: combo_x + dropdown_w,
+        bottom: dropdown_top + dropdown_h,
+    };
+
+    // Background
+    let bg = theme.surface.blend_over(theme.background);
+    draw_rounded_rect_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
+    );
+
+    // Search field
+    let search_rect = RECT {
+        left: combo_x + 4,
+        top: dropdown_top + 2,
+        right: combo_x + dropdown_w - 4,
+        bottom: dropdown_top + 2 + search_h,
+    };
+    let search_bg = theme.background;
+    draw_rounded_rect_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        search_bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
+    );
+
+    unsafe {
+        let _ = SelectObject(dib_dc, body_font);
+        let search_text = if state.vision_model_dropdown.filter.is_empty() {
+            "Search models\u{2026}"
+        } else {
+            state.vision_model_dropdown.filter.as_str()
+        };
+        let _ = SetTextColor(
+            dib_dc,
+            if state.vision_model_dropdown.filter.is_empty() {
+                theme.text_muted
+            } else {
+                theme.text
+            }
+            .to_colorref(),
+        );
+        let mut search_wz = to_utf16_z(search_text);
+        let mut search_text_rc = RECT {
+            left: search_rect.left + 4,
+            top: search_rect.top,
+            right: search_rect.right - 4,
+            bottom: search_rect.bottom,
+        };
+        let _ = DrawTextW(
+            dib_dc,
+            &mut search_wz,
+            &mut search_text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // Items list
+    let visible_items = state
+        .vision_model_dropdown
+        .visible_items(&state.vision_model_items, visible_rows);
+    let list_top = dropdown_top + 2 + search_h;
+
+    for (i, item) in visible_items.iter().enumerate() {
+        let item_rect = RECT {
+            left: combo_x + 4,
+            top: list_top + i as i32 * item_h,
+            right: combo_x + dropdown_w - 4,
+            bottom: list_top + (i as i32 + 1) * item_h,
+        };
+
+        let is_selected = state
+            .vision_model
+            .as_ref()
+            .map(|vm| format!("{} / {}", vm.provider, vm.model) == item.label)
+            .unwrap_or(false);
+        let highlight = if is_selected {
+            Some(theme.selected)
+        } else {
+            None
+        };
+        if let Some(c) = highlight {
+            draw_rounded_rect_in_buffer(
+                bits,
+                lay.win_w(),
+                lay.win_h(),
+                item_rect,
+                (2.0 * scale) as i32,
+                c,
+            );
+        }
+
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            let mut label_wz = to_utf16_z(&item.label);
+            let mut label_rc = RECT {
+                left: item_rect.left + 4,
+                top: item_rect.top,
+                right: item_rect.right - 4,
+                bottom: item_rect.bottom,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut label_wz,
+                &mut label_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
+
+    // No results message
+    if visible_items.is_empty() {
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            let mut empty_wz = to_utf16_z("No matching models");
             let mut empty_rc = RECT {
                 left: combo_x + 4,
                 top: list_top,

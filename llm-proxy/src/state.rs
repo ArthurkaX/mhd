@@ -115,6 +115,20 @@ pub struct TraceEntry {
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
 
+/// A single vision screenshot request recorded for the live trace overlay.
+#[derive(Debug, Clone)]
+pub struct VisionTraceEntry {
+    pub seq: u64,
+    pub provider: String,
+    pub model: String,
+    pub endpoint: String,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+pub const MAX_VISION_TRACE_ENTRIES: usize = 50;
+
 /// The sentinel string used on the wire / in config to mean "Anthropic native".
 pub const NATIVE: &str = "native";
 
@@ -166,6 +180,8 @@ pub struct AppState {
     pub db_log: Mutex<Option<crate::db_log::DbLog>>,
     /// Ring buffer of recent routing decisions, newest at the back.
     pub trace: RwLock<VecDeque<TraceEntry>>,
+    /// Ring buffer of recent vision screenshot requests, newest at the back.
+    pub vision_trace: RwLock<VecDeque<VisionTraceEntry>>,
     /// Per-session last-request timestamp (epoch ms). Key = session hash.
     /// Only updated for Opus/Sonnet requests when a downgrade tier is enabled.
     pub session_last_ts: RwLock<HashMap<u64, u64>>,
@@ -193,6 +209,7 @@ impl AppState {
             inflight: AtomicU64::new(0),
             db_log: Mutex::new(None),
             trace: RwLock::new(VecDeque::with_capacity(MAX_TRACE_ENTRIES)),
+            vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
         })
     }
@@ -256,7 +273,10 @@ impl AppState {
     /// Record a request arrival for a given session and return the gap in seconds.
     /// Returns a sentinel (9999) on first request for this session so it's never downgraded.
     pub fn mark_session_request(&self, session_hash: u64, now_ms: u64) -> u64 {
-        let mut map = self.session_last_ts.write().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .session_last_ts
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
 
         // Lazy TTL cleanup: if map is too large, remove entries older than 10 minutes
         if map.len() > 100 {
@@ -295,9 +315,33 @@ impl AppState {
         }
     }
 
+    /// Record a vision screenshot request into the ring buffer.
+    pub fn push_vision_trace(&self, entry: VisionTraceEntry) {
+        let mut trace = self.vision_trace.write().unwrap_or_else(|e| e.into_inner());
+        if trace.len() >= MAX_VISION_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(entry);
+    }
+
+    /// Snapshot of recent vision screenshot requests (newest at the end).
+    pub fn vision_trace_snapshot(&self) -> Vec<VisionTraceEntry> {
+        self.vision_trace
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     /// Snapshot of recent routing decisions (newest at the end).
     pub fn trace_snapshot(&self) -> Vec<TraceEntry> {
-        self.trace.read().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
+        self.trace
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Allocate the next request id.
@@ -308,10 +352,26 @@ impl AppState {
     /// Current target for a tier.
     pub fn target_for(&self, tier: Tier) -> Target {
         match tier {
-            Tier::Opus => self.opus_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
-            Tier::Sonnet => self.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
-            Tier::Haiku => self.haiku_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
-            Tier::Fable => self.fable_target.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Tier::Opus => self
+                .opus_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            Tier::Sonnet => self
+                .sonnet_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            Tier::Haiku => self
+                .haiku_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            Tier::Fable => self
+                .fable_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 
@@ -320,7 +380,12 @@ impl AppState {
     pub fn set_target(&self, slot: &str, target: Target) -> bool {
         match slot {
             "opus" => *self.opus_target.write().unwrap_or_else(|e| e.into_inner()) = target,
-            "sonnet" => *self.sonnet_target.write().unwrap_or_else(|e| e.into_inner()) = target,
+            "sonnet" => {
+                *self
+                    .sonnet_target
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner()) = target
+            }
             "haiku" => *self.haiku_target.write().unwrap_or_else(|e| e.into_inner()) = target,
             "fable" => *self.fable_target.write().unwrap_or_else(|e| e.into_inner()) = target,
             _ => return false,
@@ -331,16 +396,59 @@ impl AppState {
     /// Snapshot current state back into a Config (for persisting changes).
     pub fn to_config(&self) -> Config {
         Config {
-            anthropic_key: self.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).clone(),
-            upstream_base_url: self.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone(),
-            upstream_key: self.upstream_key.read().unwrap_or_else(|e| e.into_inner()).clone(),
-            opus_target: self.opus_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
-            sonnet_target: self.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
-            haiku_target: self.haiku_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
-            fable_target: self.fable_target.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
-            log_level: self.log_level.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string(),
-            opus_downgrade_enabled: *self.opus_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner()),
-            sonnet_downgrade_enabled: *self.sonnet_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            anthropic_key: self
+                .anthropic_key
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            upstream_base_url: self
+                .upstream_base_url
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            upstream_key: self
+                .upstream_key
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            opus_target: self
+                .opus_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_str()
+                .to_string(),
+            sonnet_target: self
+                .sonnet_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_str()
+                .to_string(),
+            haiku_target: self
+                .haiku_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_str()
+                .to_string(),
+            fable_target: self
+                .fable_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_str()
+                .to_string(),
+            log_level: self
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_str()
+                .to_string(),
+            opus_downgrade_enabled: *self
+                .opus_downgrade_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            sonnet_downgrade_enabled: *self
+                .sonnet_downgrade_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
         }
     }
 }

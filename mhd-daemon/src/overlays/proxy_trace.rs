@@ -17,12 +17,13 @@ use windows::core::PCWSTR;
 
 use crate::config::editor_state::ButtonStyle;
 use crate::config::editor_theme::draw_button;
+use crate::core::llm_proxy;
 use crate::core::native_theme::NativeTheme;
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const WIN_W_BASE: i32 = 520;
-const WIN_H_BASE: i32 = 400;
+const WIN_H_BASE: i32 = 560;
 const PAD_BASE: i32 = 12;
 const RADIUS_BASE: f32 = 10.0;
 const HEADER_H_BASE: i32 = 28;
@@ -378,14 +379,16 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     // ── Trace rows ───────────────────────────────────────────────
-    let trace = crate::llm_proxy::get_trace();
+    let trace = llm_proxy::get_trace();
+    let vision_trace = llm_proxy::get_vision_trace();
     let list_top = col_y + header_h;
+    let max_rows: i32 = if vision_trace.is_empty() { 50 } else { 32 };
 
     unsafe {
         let _ = SelectObject(dib_dc, hfont_small);
     }
 
-    for (i, entry) in trace.iter().rev().take(50).enumerate() {
+    for (i, entry) in trace.iter().rev().take(max_rows as usize).enumerate() {
         let ry = list_top + i as i32 * row_h;
         if ry + row_h > win_h - pad {
             break;
@@ -464,6 +467,139 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                     &mut rc,
                     DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                 );
+            }
+        }
+    }
+
+    // ── Vision trace section ─────────────────────────────────────
+    if !vision_trace.is_empty() {
+        let vision_top = list_top + max_rows * row_h + (8.0 * scale) as i32;
+        if vision_top + row_h <= win_h - pad {
+            // Separator + title
+            let sep_y = vision_top - (4.0 * scale) as i32;
+            let sep_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
+            unsafe {
+                let _ = FillRect(
+                    dib_dc,
+                    &RECT {
+                        left: pad,
+                        top: sep_y,
+                        right: win_w - pad,
+                        bottom: sep_y + 1,
+                    },
+                    sep_brush,
+                );
+                let _ = DeleteObject(sep_brush);
+            }
+
+            unsafe {
+                let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            }
+            let mut title_wz = crate::osd::to_utf16_z("Vision");
+            let mut title_rc = RECT {
+                left: pad,
+                top: vision_top,
+                right: win_w - pad,
+                bottom: vision_top + row_h,
+            };
+            unsafe {
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut title_wz,
+                    &mut title_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
+            }
+
+            unsafe {
+                let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            }
+            let mut col_x = pad;
+            let v_col_headers = ["#", "Status", "Provider / Model", "Endpoint"];
+            let v_col_widths = [
+                (32.0 * scale) as i32,
+                (50.0 * scale) as i32,
+                (160.0 * scale) as i32,
+                total_cw - ((32.0 + 50.0 + 160.0) * scale) as i32,
+            ];
+            let hdr_y = vision_top + row_h;
+            for (i, label) in v_col_headers.iter().enumerate() {
+                let mut lw = crate::osd::to_utf16_z(label);
+                let cw = v_col_widths[i];
+                let mut rc = RECT {
+                    left: col_x,
+                    top: hdr_y,
+                    right: col_x + cw,
+                    bottom: hdr_y + header_h,
+                };
+                unsafe {
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut lw,
+                        &mut rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                    );
+                }
+                col_x += cw;
+            }
+
+            let v_list_top = hdr_y + header_h;
+            for (i, entry) in vision_trace.iter().rev().take(5).enumerate() {
+                let ry = v_list_top + i as i32 * row_h;
+                if ry + row_h > win_h - pad {
+                    break;
+                }
+
+                let status_text = match entry.status {
+                    Some(s) => s.to_string(),
+                    None => "…".to_string(),
+                };
+                let status_color = match entry.status {
+                    Some(200..=299) => theme.accent,
+                    _ => theme.text_muted,
+                };
+                let model_text = format!("{} / {}", entry.provider, entry.model);
+                let endpoint_text = if let Some(ref err) = entry.error {
+                    format!("{} — {}", entry.endpoint, err)
+                } else {
+                    entry.endpoint.clone()
+                };
+
+                let values = [
+                    entry.seq.to_string(),
+                    status_text,
+                    model_text,
+                    endpoint_text,
+                ];
+
+                let mut col_x = pad;
+                for (j, val) in values.iter().enumerate() {
+                    let color = if j == 1 {
+                        status_color
+                    } else {
+                        theme.text_muted
+                    };
+                    unsafe {
+                        let _ = SetTextColor(dib_dc, color.to_colorref());
+                    }
+                    let mut vw = crate::osd::to_utf16_z(val);
+                    let cw = v_col_widths[j];
+                    let mut rc = RECT {
+                        left: col_x,
+                        top: ry,
+                        right: col_x + cw,
+                        bottom: ry + row_h,
+                    };
+                    col_x += cw;
+                    unsafe {
+                        let _ = DrawTextW(
+                            dib_dc,
+                            &mut vw,
+                            &mut rc,
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                        );
+                    }
+                }
             }
         }
     }

@@ -16,4 +16,5 @@ pub mod suspend;
 pub mod throttle;
 pub mod topmost;
 pub mod tray;
+pub mod vision_prompt;
 pub mod volume;

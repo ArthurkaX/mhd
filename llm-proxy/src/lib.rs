@@ -11,6 +11,7 @@ pub mod handlers;
 pub mod providers;
 pub mod state;
 pub mod transform;
+pub mod vision;
 
 use std::sync::Arc;
 
@@ -20,8 +21,12 @@ use axum::{
 };
 use tower_http::catch_panic::CatchPanicLayer;
 
-pub use config::{Config, Secrets, Settings};
-pub use state::{AppState, Target, Tier, TraceEntry};
+pub use config::{
+    Config, ModelRef, Provider, ResolvedModelEndpoint, Secrets, Settings, normalize_endpoint,
+    normalize_vision_endpoint, resolve_model_endpoint,
+};
+pub use db_log::LogEvent;
+pub use state::{AppState, Target, Tier, TraceEntry, VisionTraceEntry};
 
 /// Build the Axum router for a given shared state.
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -104,17 +109,41 @@ impl ProxyControl {
 
     /// Set the debug log level on the embedded state (no disk persist).
     pub fn set_log_level(&self, level: &str) {
-        *self.state.log_level.write().unwrap_or_else(|e| e.into_inner()) = crate::state::DebugLevel::parse(level);
+        *self
+            .state
+            .log_level
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = crate::state::DebugLevel::parse(level);
     }
 
     /// Current debug log level.
     pub fn log_level(&self) -> String {
-        self.state.log_level.read().unwrap_or_else(|e| e.into_inner()).as_str().to_string()
+        self.state
+            .log_level
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_str()
+            .to_string()
     }
 
     /// Snapshot of recent routing decisions.
     pub fn trace(&self) -> Vec<TraceEntry> {
         self.state.trace_snapshot()
+    }
+
+    /// Record a vision screenshot request in the live trace buffer.
+    pub fn push_vision_trace(&self, entry: VisionTraceEntry) {
+        self.state.push_vision_trace(entry);
+    }
+
+    /// Snapshot of recent vision screenshot requests.
+    pub fn vision_trace(&self) -> Vec<VisionTraceEntry> {
+        self.state.vision_trace_snapshot()
+    }
+
+    /// Log a structured event to the SQLite database (if debug logging is on).
+    pub fn log_event(&self, event: crate::db_log::LogEvent) {
+        self.state.log_event(event);
     }
 
     /// Enable or disable the database log at runtime.

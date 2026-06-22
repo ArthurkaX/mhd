@@ -111,6 +111,12 @@ pub enum SettingsHit {
     ProxyOpusDowngradeToggle,
     /// Sonnet downgrade toggle.
     ProxySonnetDowngradeToggle,
+    /// Vision model selector dropdown.
+    VisionModelCombo,
+    /// Vision model Test button.
+    VisionTestBtn,
+    /// Vision prompt edit button.
+    VisionPromptBtn,
 }
 
 /// Which global proxy field is being inline-edited.
@@ -258,4 +264,17 @@ pub struct SettingsState {
     /// Hit-testable rects for the active page, rebuilt on every paint.
     /// Looked up linearly by `hit_test_settings`.
     pub hit_regions: Vec<crate::config::editor_control::HitRegion>,
+
+    /// Selected vision model reference (provider + model id).
+    pub vision_model: Option<llm_proxy::config::ModelRef>,
+    /// Custom prompt used for the vision screenshot request.
+    pub vision_prompt: String,
+    /// Items for the vision model search dropdown.
+    pub vision_model_items: Vec<SearchDropdownItem>,
+    /// Search dropdown state for vision model selection.
+    pub vision_model_dropdown: SearchDropdownState,
+    /// Vision test button state: "Test", "Testing...", "Passed", or error message.
+    pub vision_test_status: String,
+    /// Whether a vision test is currently running.
+    pub vision_test_running: bool,
 }
