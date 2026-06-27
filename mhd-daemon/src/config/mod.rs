@@ -86,6 +86,10 @@ pub struct LlmProxyConfig {
     pub sonnet_downgrade_enabled: bool,
     /// Selected model for vision screenshot feature.
     pub vision_model: Option<llm_proxy::config::ModelRef>,
+    /// Enable llmtrim-powered request compression.
+    pub trim_enabled: bool,
+    /// llmtrim preset: "auto" | "agent" | "aggressive" | "code" | "rag" | "safe".
+    pub trim_preset: String,
 }
 
 impl Default for LlmProxyConfig {
@@ -106,6 +110,11 @@ impl Default for LlmProxyConfig {
             opus_downgrade_enabled: false,
             sonnet_downgrade_enabled: false,
             vision_model: None,
+            trim_enabled: false,
+            // auto lets llmtrim pick agent/code/rag/aggressive per-request from
+            // the payload shape — correct for mixed clients without knowing the
+            // client.
+            trim_preset: "auto".to_string(),
         }
     }
 }
@@ -381,6 +390,14 @@ impl AppConfig {
                 .map(|s| s.sonnet_downgrade_enabled)
                 .unwrap_or(false),
             vision_model: settings.as_ref().and_then(|s| s.vision_model.clone()),
+            trim_enabled: settings
+                .as_ref()
+                .map(|s| s.trim_enabled)
+                .unwrap_or(false),
+            trim_preset: settings
+                .as_ref()
+                .map(|s| s.trim_preset.clone())
+                .unwrap_or_else(|| "auto".to_string()),
         }
     }
 

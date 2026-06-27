@@ -646,9 +646,141 @@ fn sse(event: &str, data: &Value) -> Bytes {
 
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
-pub async fn send_raw_openai(state: &Arc<AppState>, payload: Value) -> Result<Value> {
+pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value) -> Result<Value> {
     let (resp, _url) = post_chat_completions(state, &payload).await?;
-    Ok(resp.json().await?)
+    let body: Value = resp.json().await?;
+
+    // Fill the trace entry's token counts from the OpenAI usage block
+    // (prompt_tokens/completion_tokens, with input_/output_ as a fallback).
+    if let Some(usage) = body.get("usage").filter(|u| !u.is_null()) {
+        let inp = usage
+            .get("prompt_tokens")
+            .or_else(|| usage.get("input_tokens"))
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        let out = usage
+            .get("completion_tokens")
+            .or_else(|| usage.get("output_tokens"))
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        if inp > 0 || out > 0 {
+            state.update_trace_tokens(req_id, inp, out);
+        }
+    }
+
+    Ok(body)
+}
+
+/// Streaming variant — sends `stream: true` to the upstream, then forwards all
+/// SSE bytes through unchanged (no Anthropic transform). Used by the
+/// `/v1/chat/completions` endpoint for OpenAI-native streaming clients.
+pub async fn stream_raw_openai(
+    state: &Arc<AppState>,
+    req_id: u64,
+    mut payload: Value,
+) -> Result<Body> {
+    // Inject stream=true and stream_options so the upstream sends SSE.
+    if let Value::Object(ref mut map) = payload {
+        map.insert("stream".to_string(), Value::Bool(true));
+        map.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
+    }
+
+    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
+    let started = std::time::Instant::now();
+    let guard = InflightGuard::new(state.clone());
+    if log {
+        let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
+        state.log_line(&format!(
+            "{} #{req_id} stream-openai START inflight={}",
+            now_ms(),
+            inflight
+        ));
+    }
+
+    let (resp, _url) = post_chat_completions(state, &payload).await?;
+
+    if log {
+        state.log_line(&format!(
+            "{} #{req_id} stream-openai headers after {} ms",
+            now_ms(),
+            started.elapsed().as_millis()
+        ));
+    }
+
+    let mut byte_stream = resp.bytes_stream();
+    let state_for_log = state.clone();
+
+    let s = async_stream::stream! {
+        let _guard = guard;
+        let mut had_error = false;
+
+        // Parallel line buffer used only to observe the OpenAI `usage` block.
+        // The raw upstream bytes are forwarded unchanged — this never alters
+        // what the client receives.
+        let mut scan: Vec<u8> = Vec::new();
+        let mut in_tok: u64 = 0;
+        let mut out_tok: u64 = 0;
+
+        while let Some(item) = byte_stream.next().await {
+            let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
+            // Forward verbatim (Bytes clone is a cheap refcount bump).
+            yield Ok::<Bytes, std::io::Error>(chunk.clone());
+
+            // Observe: scan complete `data:` lines for a usage object.
+            scan.extend_from_slice(&chunk);
+            while let Some(pos) = scan.iter().position(|&b| b == b'\n') {
+                let raw: Vec<u8> = scan.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&raw);
+                let line = line.trim();
+                let Some(data) = line.strip_prefix("data:") else { continue };
+                let data = data.trim();
+                if data.is_empty() || data == "[DONE]" { continue; }
+                let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
+                    if let Some(n) = usage
+                        .get("prompt_tokens")
+                        .or_else(|| usage.get("input_tokens"))
+                        .and_then(|n| n.as_u64())
+                    {
+                        in_tok = n;
+                    }
+                    if let Some(n) = usage
+                        .get("completion_tokens")
+                        .or_else(|| usage.get("output_tokens"))
+                        .and_then(|n| n.as_u64())
+                    {
+                        out_tok = n;
+                    }
+                }
+            }
+        }
+
+        // Push final token counts into the trace entry.
+        if in_tok > 0 || out_tok > 0 {
+            state_for_log.update_trace_tokens(req_id, in_tok, out_tok);
+        }
+
+        if log {
+            if had_error {
+                state_for_log.log_line(&format!(
+                    "{} #{req_id} stream-openai ERROR after {} ms",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
+            } else {
+                state_for_log.log_line(&format!(
+                    "{} #{req_id} stream-openai DONE after {} ms",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
+            }
+        }
+    };
+
+    Ok(Body::from_stream(s))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────

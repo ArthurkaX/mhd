@@ -11,6 +11,7 @@ pub mod handlers;
 pub mod providers;
 pub mod state;
 pub mod transform;
+pub mod trim;
 pub mod vision;
 
 use std::sync::Arc;
@@ -36,6 +37,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/chat/completions",
             post(handlers::post_chat_completions),
         )
+        .route("/v1/models", get(handlers::get_models))
         .route("/set_model/{slot}", post(handlers::set_model))
         .route("/config", get(handlers::get_config))
         .route("/debug", post(handlers::toggle_debug))
@@ -124,6 +126,40 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner())
             .as_str()
             .to_string()
+    }
+
+    /// Enable or disable request compression via llmtrim.
+    pub fn set_trim_enabled(&self, enabled: bool) {
+        *self
+            .state
+            .trim_enabled
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
+    /// Set the llmtrim preset ("auto", "agent", "aggressive", "code", "rag", "safe").
+    pub fn set_trim_preset(&self, preset: &str) {
+        *self
+            .state
+            .trim_preset
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = preset.to_string();
+    }
+
+    /// Current trim status: (enabled, preset).
+    pub fn trim_status(&self) -> (bool, String) {
+        let enabled = *self
+            .state
+            .trim_enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let preset = self
+            .state
+            .trim_preset
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        (enabled, preset)
     }
 
     /// Snapshot of recent routing decisions.

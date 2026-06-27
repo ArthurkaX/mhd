@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.0 - 2026-06-28
+
+- **Request Compression (Trim)**: optional, deterministic, zero-extra-LLM-call compression of outgoing requests, powered by `llmtrim-core`.
+  - Trims verbose tool outputs, logs, diffs, duplicate lines, and fat JSON while leaving any `cache_control`-frozen prefix byte-identical, so the Anthropic prompt cache keeps hitting.
+  - Fail-open: any error, a body below the size threshold, or a result that does not shrink forwards the original request untouched — Trim never breaks a request.
+  - A single tray toggle (**Settings -> LLM Proxy -> Request Compression**) governs both Claude Code (`/v1/messages`) and OpenAI-compatible (`/v1/chat/completions`) traffic.
+  - Preset defaults to `auto`, which picks the per-request strategy (agent / code / rag / aggressive) from the request shape, adapting to mixed clients.
+- **OpenAI-compatible clients** (e.g. Zed): the proxy now trims, streams, and serves a model list on its OpenAI surface.
+  - `POST /v1/chat/completions` supports both streaming (SSE forwarded unchanged) and non-streaming responses, each passing through Trim under the same toggle.
+  - `GET /v1/models` returns the configured models in OpenAI list format.
+  - Requests are accepted with any API key or none; the proxy uses its own configured upstream key.
+- **Proxy Trace**: OpenAI-compatible requests now appear in the trace overlay alongside Claude Code, showing the model, token usage, and per-request trim savings. Widened the trace window and the Reason column so savings fit.
+
 ## 0.5.0 - 2026-06-20
 
 - **Breathe pacer**: new paced breathing overlay with an expanding/contracting sphere visualisation.

@@ -22,7 +22,7 @@ use crate::core::native_theme::NativeTheme;
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const WIN_W_BASE: i32 = 520;
+const WIN_W_BASE: i32 = 668;
 const WIN_H_BASE: i32 = 560;
 const PAD_BASE: i32 = 12;
 const RADIUS_BASE: f32 = 10.0;
@@ -351,10 +351,10 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         (32.0 * scale) as i32, // # (~32px)
         (60.0 * scale) as i32, // Tier (~60px)
         (60.0 * scale) as i32, // Eff (~60px)
-        total_cw - ((32.0 + 60.0 + 60.0 + 48.0 + 48.0 + 90.0) * scale) as i32, // Target = remainder
+        total_cw - ((32.0 + 60.0 + 60.0 + 48.0 + 48.0 + 125.0) * scale) as i32, // Target = remainder
         (48.0 * scale) as i32, // In (~48px)
         (48.0 * scale) as i32, // Out (~48px)
-        (90.0 * scale) as i32, // Reason (~90px)
+        (125.0 * scale) as i32, // Reason (~125px, +5 chars over the original 90)
     ];
     let col_headers = ["#", "Tier", "Eff", "Target", "In", "Out", "Reason"];
     let mut col_x = pad;
@@ -444,6 +444,14 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             fmt_tokens(entry.output_tokens),
             if entry.downgraded {
                 format!("\u{26A0} {}", entry.reason)
+            } else if entry.trim_applied {
+                let saved = entry.trim_tokens_before.saturating_sub(entry.trim_tokens_after);
+                if saved > 0 && entry.trim_tokens_before > 0 {
+                    let pct = saved as f64 / entry.trim_tokens_before as f64 * 100.0;
+                    format!("\u{2212}{} tok ({:.0}%)", fmt_tokens(saved), pct)
+                } else {
+                    String::new()
+                }
             } else {
                 String::new()
             },

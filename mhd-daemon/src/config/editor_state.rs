@@ -117,6 +117,8 @@ pub enum SettingsHit {
     VisionTestBtn,
     /// Vision prompt edit button.
     VisionPromptBtn,
+    /// Trim (request compression) toggle.
+    TrimToggle,
 }
 
 /// Which global proxy field is being inline-edited.
@@ -277,4 +279,8 @@ pub struct SettingsState {
     pub vision_test_status: String,
     /// Whether a vision test is currently running.
     pub vision_test_running: bool,
+    /// Enable llmtrim-powered request compression.
+    pub trim_enabled: bool,
+    /// Active llmtrim preset (shown in the Request Compression label).
+    pub trim_preset: String,
 }

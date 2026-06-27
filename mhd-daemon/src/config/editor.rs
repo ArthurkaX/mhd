@@ -253,6 +253,12 @@ pub fn show_config_editor(handle: AppHandle) {
         sonnet_downgrade_enabled: llm_proxy::config::load_settings()
             .map(|s| s.sonnet_downgrade_enabled)
             .unwrap_or(false),
+        trim_enabled: llm_proxy::config::load_settings()
+            .map(|s| s.trim_enabled)
+            .unwrap_or(false),
+        trim_preset: llm_proxy::config::load_settings()
+            .map(|s| s.trim_preset)
+            .unwrap_or_else(|_| "auto".to_string()),
         vision_model: llm_proxy::config::load_settings()
             .ok()
             .and_then(|s| s.vision_model),
@@ -919,15 +925,17 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
         }
         SettingsPage::LlmProxy => {
             let n = state.providers.len() as i32;
-            // Include proxy settings + provider list + auto downgrade section
-            let proxy_section_h = lay.llm_proxy.proxy_h;
             let row_h = lay.provider_row_h();
             let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32;
             let gap = (8.0 * lay.scale()) as i32;
-            let downgrade_h = section_h + row_h + gap + row_h + gap;
-            let list_end = lay.provider_list_y() + n * row_h + row_h;
-            (list_end + downgrade_h + (16.0 * lay.scale()) as i32 - lay.content_y())
-                .max(proxy_section_h + downgrade_h)
+            let col_h = (16.0 * lay.scale()) as i32;
+            let table_header_h = col_h + gap;
+            // Providers section (last): section header + table headers + rows + add button
+            let providers_end = lay.llm_proxy.providers_header_y + section_h
+                + table_header_h + n * row_h + row_h;
+            (providers_end + (16.0 * lay.scale()) as i32 - lay.content_y())
+                .max(lay.llm_proxy.providers_header_y + section_h + table_header_h
+                    + row_h - lay.content_y())
         }
     }
 }
@@ -1306,6 +1314,7 @@ fn apply_settings(state: &mut SettingsState) {
             }
             settings.opus_downgrade_enabled = state.opus_downgrade_enabled;
             settings.sonnet_downgrade_enabled = state.sonnet_downgrade_enabled;
+            settings.trim_enabled = state.trim_enabled;
             settings.vision_model = state.vision_model.clone();
             settings.vision_prompt = state.vision_prompt.clone();
             if let Err(e) = llm_proxy::config::save_settings(&settings) {
@@ -1853,6 +1862,10 @@ unsafe extern "system" fn settings_wndproc(
                     }
                     SettingsHit::ProxySonnetDowngradeToggle => {
                         state.sonnet_downgrade_enabled = !state.sonnet_downgrade_enabled;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimToggle => {
+                        state.trim_enabled = !state.trim_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
 

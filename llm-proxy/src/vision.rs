@@ -132,8 +132,8 @@ pub fn analyze_png_blocking(
 
     let body_bytes = response
         .bytes()
-        .map(|b| b.to_vec())
-        .map_err(|e| anyhow::anyhow!("Failed to read response: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to read response: {e}"))?
+        .to_vec();
 
     parse_vision_response(&body_bytes).map_err(anyhow::Error::msg)
 }

@@ -256,6 +256,10 @@ pub struct LlmProxyLayout {
     pub list_h: i32,
     /// Y offset of the "Auto Downgrade" section.
     pub downgrade_y: i32,
+    /// Y offset of the "Request Compression" section header.
+    pub trim_y: i32,
+    /// Y offset of the "Providers" section header.
+    pub providers_header_y: i32,
     /// Single row height.
     pub row_h: i32,
     /// Width of the name column.
@@ -605,17 +609,17 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
     // Vision model section: section header + one row
     let vision_h = section_h + row_h + gap;
     let vision_y = c.content_y + proxy_h;
-    // Provider list section: table headers + scrollable list above auto downgrade.
-    let table_header_h = col_h + gap;
-    // Auto downgrade section (at bottom): header + Opus toggle + gap + Sonnet toggle
+    // Auto Downgrade section: header + Opus toggle + gap + Sonnet toggle
     let downgrade_h = section_h + row_h + gap + row_h + gap;
-    // Provider list fills remaining space between vision model and auto downgrade
-    let provider_start = vision_y + vision_h;
-    let provider_available = c.content_visible_h - proxy_h - vision_h - downgrade_h;
-    // The table headers are a fixed band at the top of the provider area
-    let list_y = provider_start + table_header_h;
-    let list_h = provider_available - table_header_h;
-    let downgrade_y = list_y + list_h;
+    let downgrade_y = vision_y + vision_h;
+    // Request Compression section: header + toggle row
+    let trim_h = section_h + row_h + gap;
+    let trim_y = downgrade_y + downgrade_h;
+    // Providers section: section header + table headers + list (last)
+    let table_header_h = col_h + gap;
+    let providers_header_y = trim_y + trim_h;
+    let list_y = providers_header_y + section_h + table_header_h;
+    let list_h = (c.content_visible_h - (list_y - c.content_y)).max(row_h);
     LlmProxyLayout {
         top_y: c.content_y,
         proxy_y: c.content_y,
@@ -624,6 +628,8 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
         list_y,
         list_h,
         downgrade_y,
+        trim_y,
+        providers_header_y,
         row_h,
         name_w: (260.0 * c.scale) as i32,
         del_w: (28.0 * c.scale) as i32,

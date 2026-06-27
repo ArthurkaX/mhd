@@ -43,6 +43,8 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         log_level: cfg.log_level.clone(),
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
         sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,
+        trim_enabled: cfg.trim_enabled,
+        trim_preset: cfg.trim_preset.clone(),
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -91,6 +93,8 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_target("haiku", &cfg.haiku);
         control.set_target("fable", &cfg.fable);
         control.set_log_level(&cfg.log_level);
+        control.set_trim_enabled(cfg.trim_enabled);
+        control.set_trim_preset(&cfg.trim_preset);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
             drop(guard);
@@ -175,6 +179,63 @@ pub fn toggle_debug_logging() -> bool {
         let enabled = new != "none";
         c.set_db_log_enabled(enabled);
         enabled
+    } else {
+        false
+    }
+}
+
+/// Enable or disable request compression via llmtrim.
+pub fn set_trim_enabled(enabled: bool) -> bool {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| {
+            c.set_trim_enabled(enabled);
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// Current trim toggle state.
+pub fn is_trim_enabled() -> bool {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.trim_status().0)
+        .unwrap_or(false)
+}
+
+/// Toggle trim on/off. Returns the new state.
+pub fn toggle_trim() -> bool {
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref c) = *guard {
+        let (enabled, preset) = c.trim_status();
+        let new = !enabled;
+        c.set_trim_enabled(new);
+        // Persist the change via settings save
+        if let Ok(mut settings) = llm_proxy::config::load_settings() {
+            settings.trim_enabled = new;
+            settings.trim_preset = preset;
+            let _ = llm_proxy::config::save_settings(&settings);
+        }
+        new
+    } else {
+        false
+    }
+}
+
+/// Set the trim preset (persisted to settings).
+pub fn set_trim_preset(preset: &str) -> bool {
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref c) = *guard {
+        c.set_trim_preset(preset);
+        if let Ok(mut settings) = llm_proxy::config::load_settings() {
+            settings.trim_preset = preset.to_string();
+            let _ = llm_proxy::config::save_settings(&settings);
+        }
+        true
     } else {
         false
     }

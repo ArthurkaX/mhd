@@ -4,13 +4,18 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::config::Config;
 
-/// Which Claude tier an incoming request belongs to.
+/// Which tier an incoming request belongs to — one of the four Claude tiers,
+/// or `OpenAi` for a raw `/v1/chat/completions` passthrough (Zed and other
+/// OpenAI-native clients). The `OpenAi` variant carries no routing/downgrade
+/// semantics; it exists only so passthrough requests show up in the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     Opus,
     Sonnet,
     Haiku,
     Fable,
+    /// Raw OpenAI-compatible passthrough (no Claude tier / no downgrade logic).
+    OpenAi,
 }
 
 impl Tier {
@@ -35,6 +40,7 @@ impl Tier {
             Self::Sonnet => "sonnet",
             Self::Haiku => "haiku",
             Self::Fable => "fable",
+            Self::OpenAi => "openai",
         }
     }
 }
@@ -111,6 +117,12 @@ pub struct TraceEntry {
     pub input_tokens: u64,
     /// Output tokens reported in the response (0 if not yet available).
     pub output_tokens: u64,
+    /// True if llmtrim was applied to this request.
+    pub trim_applied: bool,
+    /// Estimated tokens before trimming.
+    pub trim_tokens_before: u64,
+    /// Estimated tokens after trimming.
+    pub trim_tokens_after: u64,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -185,6 +197,11 @@ pub struct AppState {
     /// Per-session last-request timestamp (epoch ms). Key = session hash.
     /// Only updated for Opus/Sonnet requests when a downgrade tier is enabled.
     pub session_last_ts: RwLock<HashMap<u64, u64>>,
+
+    /// Master switch for llmtrim request compression.
+    pub trim_enabled: RwLock<bool>,
+    /// llmtrim preset name.
+    pub trim_preset: RwLock<String>,
 }
 
 impl AppState {
@@ -211,6 +228,8 @@ impl AppState {
             trace: RwLock::new(VecDeque::with_capacity(MAX_TRACE_ENTRIES)),
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
+            trim_enabled: RwLock::new(cfg.trim_enabled),
+            trim_preset: RwLock::new(cfg.trim_preset.clone()),
         })
     }
 
@@ -372,6 +391,9 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            // OpenAI passthrough is never routed through tier targets; this
+            // arm only satisfies exhaustiveness and is never reached.
+            Tier::OpenAi => Target::Native,
         }
     }
 
@@ -449,6 +471,15 @@ impl AppState {
                 .sonnet_downgrade_enabled
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+            trim_enabled: *self
+                .trim_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_preset: self
+                .trim_preset
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 }

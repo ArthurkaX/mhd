@@ -80,7 +80,7 @@ See [LLM Proxy documentation](llm-proxy/README.md) for provider setup, routing b
 | Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
 | Audio | Master volume, per-app mixer, media key actions |
 | Desktop tools | Quick Note, Quick Draw, Pomodoro, Breathe, power panel, CPU plan panel |
-| LLM Proxy | Live per-tier routing for Claude Code across Anthropic, Ollama Cloud, and OpenAI-compatible providers |
+| LLM Proxy | Live per-tier routing for Claude Code across Anthropic, Ollama Cloud, and OpenAI-compatible providers, with optional request compression |
 | Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
 | Settings | Native config editor, theme selection, autostart, shortcut editing |
 
@@ -286,6 +286,11 @@ Routing targets can be:
 
 - `native` - pass through to Anthropic, forwarding Claude Code's OAuth token.
 - any configured OpenAI-compatible model - use your provider API key for the next request.
+
+Two optional features build on this:
+
+- **Request Compression (Trim)** - a single toggle deterministically shrinks outgoing requests (verbose tool output, logs, duplicate lines) without busting the Anthropic prompt cache, with no extra model calls. It applies to both Claude Code and OpenAI-compatible traffic.
+- **OpenAI-compatible clients** - editors like Zed can point at the same proxy (`http://127.0.0.1:3456/v1`) for streaming, a `/v1/models` list, and the same compression, and they show up in the Proxy Trace too.
 
 ```mermaid
 flowchart LR

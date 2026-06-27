@@ -101,6 +101,39 @@ C:\Workspace\Active\mhd\claude-mhd.bat --model sonnet -p "hi"
 
 If you have normal Claude Code authentication, leave the wrapper as-is. For providers that do not require Anthropic authentication, the commented `ANTHROPIC_AUTH_TOKEN=unused` line can be enabled so the SDK has a token value to send.
 
+## Zed Editor Integration
+
+Zed and other OpenAI-native clients can use the proxy directly through the
+OpenAI-compatible surface. Add a provider in Zed's `settings.json`:
+
+```json
+{
+  "language_models": {
+    "openai_compatible": {
+      "mhd": {
+        "api_url": "http://localhost:3456/v1",
+        "api_key": "ignored-by-proxy",
+        "available_models": [
+          { "name": "sva-opencode/deepseek-v4-flash", "max_tokens": 1048576 }
+        ]
+      }
+    }
+  }
+}
+```
+
+The proxy listens on `127.0.0.1:3456`. Zed adds `/chat/completions` and `/models`
+to the base URL automatically, so `http://localhost:3456/v1` is all you need.
+
+Each model `name` is forwarded to the upstream gateway as-is, so use IDs your
+gateway understands (the same ones you would configure on the LLM Proxy page).
+The `api_key` is not validated by the proxy (it uses its own configured keys),
+but Zed requires the field to be present.
+
+These requests share the same routing, streaming, `GET /v1/models` list, and
+[Request Compression](#request-compression-trim) toggle as Claude Code traffic,
+and they appear in the Proxy Trace overlay with their model and token counts.
+
 ## Provider Setup
 
 Use the native settings UI:
@@ -151,6 +184,7 @@ The tray menu exposes the operational controls:
 
 - **LLM Models** - open the model selector.
 - **LLM Proxy on/off** - toggle the embedded proxy server.
+- **Trim (compress requests)** - toggle request compression for all proxy traffic.
 - **Proxy Trace** - inspect recent routing decisions.
 - **Settings -> LLM Proxy** - configure providers, models, keys, and defaults.
 
@@ -162,6 +196,8 @@ The proxy trace overlay shows recent requests and routing decisions. It is usefu
 - which target the proxy selected;
 - whether traffic went to Anthropic native or a provider;
 - whether an automatic downgrade rule changed the target;
+- whether [Request Compression](#request-compression-trim) shrank the request, and by how much;
+- requests from OpenAI-compatible clients (e.g. Zed), shown with their model and token usage;
 - whether requests are currently in flight.
 
 ## Configuration Files
@@ -200,3 +236,16 @@ For native Anthropic routes, Claude Code's existing auth is passed through. For 
 Manual switching is the primary control. Optional downgrade settings can also route selected mechanical turns to a cheaper model.
 
 The current design is conservative: automatic downgrade is intended for fast tool-loop continuations where Claude Code is mostly processing tool results, while human-facing turns stay on the manually selected ceiling. See [`concept.md`](concept.md) for the reasoning and threshold model.
+
+## Request Compression (Trim)
+
+Trim is an optional, deterministic compression pass that runs in-process before the proxy forwards a request. It shrinks the parts of a request that cost tokens without adding value — long tool outputs, logs, diffs, duplicate lines, and fat JSON arrays — while leaving any `cache_control`-frozen prefix byte-identical, so the Anthropic prompt cache keeps hitting.
+
+Key properties:
+
+- **Zero extra model calls.** Compression is pure local computation (powered by [`llmtrim-core`](https://github.com/fkiene/llmtrim)), adding milliseconds rather than a round-trip.
+- **Fail-open.** Any error, a request below the size threshold, or a result that does not actually shrink forwards the original request untouched. Trim never breaks a request.
+- **One toggle, both protocols.** A single switch governs Claude Code (`/v1/messages`) and OpenAI-compatible (`/v1/chat/completions`) traffic.
+- **`auto` preset.** By default Trim picks the per-request strategy (agent / code / rag / aggressive) from the request shape, so it adapts to mixed clients automatically.
+
+Enable it from **Settings -> LLM Proxy -> Request Compression**, or the **Trim (compress requests)** tray item. Per-request savings show up in the [Proxy Trace](#trace-view) overlay.

@@ -212,6 +212,62 @@ pub async fn post_messages(
     // Resolve where this tier routes: Anthropic native, or an upstream model.
     let target = state.target_for(effective_tier);
 
+    // ── Trim hook ───────────────────────────────────────────────────
+    // Run llmtrim-powered request compression before forwarding.
+    // Fail-open: any error or no-gain returns the original body.
+    let mut trim_applied = false;
+    let mut trim_tokens_before = 0u64;
+    let mut trim_tokens_after = 0u64;
+    let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+        let preset = state.trim_preset.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::trim::trim_anthropic(payload, &preset);
+        trim_applied = out.applied;
+        trim_tokens_before = out.tokens_before;
+        trim_tokens_after = out.tokens_after;
+
+        if out.applied {
+            let saved = trim_tokens_before.saturating_sub(trim_tokens_after);
+            let pct = if trim_tokens_before > 0 {
+                saved as f64 / trim_tokens_before as f64 * 100.0
+            } else {
+                0.0
+            };
+
+            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies() {
+                eprintln!(
+                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset={preset}",
+                    saved, pct,
+                );
+            }
+
+            // Emit a TRIM event when detailed logging is on.
+            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
+                let stages_json = serde_json::to_string(&out.stages.iter().map(|s| serde_json::json!({
+                    "name": s.name,
+                    "applied": s.applied,
+                    "before": s.tokens_before,
+                    "after": s.tokens_after,
+                    "note": s.note,
+                })).collect::<Vec<_>>()).unwrap_or_default();
+                state.log_event(crate::db_log::LogEvent {
+                    seq: req_id,
+                    event_type: "TRIM".to_string(),
+                    tier: Some(format!("{tier:?}")),
+                    effective_tier: Some(format!("{effective_tier:?}")),
+                    target: Some(target.as_str().to_string()),
+                    model: Some(model.clone()),
+                    reason: Some(format!("before={} after={} preset={preset}", trim_tokens_before, trim_tokens_after)),
+                    detail: Some(stages_json),
+                    ..Default::default()
+                });
+            }
+        }
+
+        out.body
+    } else {
+        payload
+    };
+
     // Record routing decision in the trace ring buffer.
     let downgraded = effective_tier != tier;
     state.push_trace(TraceEntry {
@@ -228,6 +284,9 @@ pub async fn post_messages(
         },
         input_tokens: 0,
         output_tokens: 0,
+        trim_applied,
+        trim_tokens_before,
+        trim_tokens_after,
     });
 
     if stream {
@@ -258,13 +317,137 @@ pub async fn post_messages(
 }
 
 /// Handler for `POST /v1/chat/completions` — OpenAI-compatible passthrough to
-/// the upstream gateway (for OpenAI-native clients).
+/// the upstream gateway (for OpenAI-native clients like Zed).
+///
+/// Supports non-streaming and streaming responses. Trim (llmtrim compression)
+/// is applied under the same single `state.trim_enabled` flag that governs the
+/// `/v1/messages` path.
+///
+/// The request is recorded in the Proxy Trace ring buffer as a `Tier::OpenAi`
+/// passthrough (model + trim stats now, token usage filled from the upstream
+/// response), so OpenAI clients appear alongside Claude Code traffic.
 pub async fn post_chat_completions(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Value>,
-) -> Result<Json<Value>, AppError> {
-    let resp = providers::upstream::send_raw_openai(&state, payload).await?;
-    Ok(Json(resp))
+) -> Result<Response, AppError> {
+    let req_id = state.next_req_id();
+    let model = payload
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let stream = payload
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // ── Trim hook ───────────────────────────────────────────────────
+    // Same single flag as the /v1/messages path.
+    let mut trim_applied = false;
+    let mut trim_tokens_before = 0u64;
+    let mut trim_tokens_after = 0u64;
+    let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+        let preset = state.trim_preset.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::trim::trim_openai(payload, &preset);
+        trim_applied = out.applied;
+        trim_tokens_before = out.tokens_before;
+        trim_tokens_after = out.tokens_after;
+
+        if out.applied {
+            let saved = trim_tokens_before.saturating_sub(trim_tokens_after);
+            let pct = if trim_tokens_before > 0 {
+                saved as f64 / trim_tokens_before as f64 * 100.0
+            } else {
+                0.0
+            };
+
+            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies() {
+                eprintln!(
+                    "[llm-proxy] trim(openai): −{} tok ({:.1}%) — preset={preset}",
+                    saved, pct,
+                );
+            }
+
+            // Emit a TRIM event when detailed logging is on (mirrors /v1/messages).
+            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
+                let stages_json = serde_json::to_string(&out.stages.iter().map(|s| serde_json::json!({
+                    "name": s.name,
+                    "applied": s.applied,
+                    "before": s.tokens_before,
+                    "after": s.tokens_after,
+                    "note": s.note,
+                })).collect::<Vec<_>>()).unwrap_or_default();
+                state.log_event(crate::db_log::LogEvent {
+                    seq: req_id,
+                    event_type: "TRIM".to_string(),
+                    tier: Some(format!("{:?}", Tier::OpenAi)),
+                    effective_tier: Some(format!("{:?}", Tier::OpenAi)),
+                    target: Some(model.clone()),
+                    model: Some(model.clone()),
+                    reason: Some(format!("before={} after={} preset={preset}", trim_tokens_before, trim_tokens_after)),
+                    detail: Some(stages_json),
+                    ..Default::default()
+                });
+            }
+        }
+
+        out.body
+    } else {
+        payload
+    };
+
+    // Record this passthrough in the trace ring buffer. Tokens are 0 here and
+    // get filled from the upstream response usage (see `*_raw_openai`).
+    state.push_trace(TraceEntry {
+        seq: req_id,
+        tier: Tier::OpenAi,
+        effective_tier: Tier::OpenAi,
+        target: model.clone(),
+        model: model.clone(),
+        downgraded: false,
+        reason: String::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        trim_applied,
+        trim_tokens_before,
+        trim_tokens_after,
+    });
+
+    if stream {
+        let body = providers::upstream::stream_raw_openai(&state, req_id, payload).await?;
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .header("cache-control", "no-cache")
+            .body(body)
+            .map_err(|e| AppError(e.into()))?);
+    }
+
+    let resp = providers::upstream::send_raw_openai(&state, req_id, payload).await?;
+    Ok(Json(resp).into_response())
+}
+
+/// Handler for `GET /v1/models` — list available models in OpenAI format.
+pub async fn get_models() -> Json<Value> {
+    let models = crate::config::load_models().unwrap_or_default();
+    let data: Vec<Value> = models
+        .into_iter()
+        .map(|m| {
+            let mut entry = serde_json::json!({
+                "id": m.id,
+                "object": "model",
+                "owned_by": m.provider,
+            });
+            if !m.display_name.is_empty() {
+                entry["display_name"] = Value::String(m.display_name);
+            }
+            entry
+        })
+        .collect();
+    Json(serde_json::json!({
+        "object": "list",
+        "data": data,
+    }))
 }
 
 // ─── Model switching endpoints ───────────────────────────────────────
