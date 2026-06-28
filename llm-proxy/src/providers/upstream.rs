@@ -129,21 +129,41 @@ pub async fn send_request(
             state.inflight.load(std::sync::atomic::Ordering::SeqCst) - 1
         ));
     }
+    // Extract cache info from the original OpenAI response before transforming.
+    let cached_tokens = openai_resp
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens_details"))
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0);
+
     let anthropic_resp = transform::openai_to_anthropic(openai_resp);
 
     // Push token usage into the trace entry.
+    let mut input_tokens = 0u64;
     if let Some(usage) = anthropic_resp.get("usage") {
-        let inp = usage
+        input_tokens = usage
             .get("input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let out = usage
+        let output_tokens = usage
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        if inp > 0 || out > 0 {
-            state.update_trace_tokens(req_id, inp, out);
+        if input_tokens > 0 || output_tokens > 0 {
+            state.update_trace_tokens(req_id, input_tokens, output_tokens, cached_tokens);
         }
+    }
+
+    // Emit a CACHE event when detailed logging is on.
+    if input_tokens > 0 && detailed {
+        state.log_event(crate::db_log::LogEvent {
+            seq: req_id,
+            event_type: "CACHE".to_string(),
+            model: Some(target_model.to_string()),
+            reason: Some(cache_event_reason(input_tokens, cached_tokens)),
+            ..Default::default()
+        });
     }
 
     if detailed {
@@ -187,6 +207,7 @@ struct SseTranslator {
     stop_reason: String,
     output_tokens: u64,
     input_tokens: u64,
+    cached_tokens: u64,
     any_tool: bool,
 }
 
@@ -201,24 +222,39 @@ impl SseTranslator {
             stop_reason: "end_turn".to_string(),
             output_tokens: 0,
             input_tokens: 0,
+            cached_tokens: 0,
             any_tool: false,
         }
     }
 
     /// Process one parsed OpenAI SSE chunk (the full JSON value and its
     /// `choices[0]`), returning Anthropic SSE frames to emit.
-    fn process_chunk(&mut self, v: &Value, choice: &Value) -> Vec<Bytes> {
-        let mut frames = Vec::new();
-
-        // ── token accounting ───────────────────────────────────────
-        if let Some(u) = v.get("usage") {
-            if let Some(x) = u.get("completion_tokens").and_then(|x| x.as_u64()) {
-                self.output_tokens = x;
-            }
-            if let Some(x) = u.get("prompt_tokens").and_then(|x| x.as_u64()) {
-                self.input_tokens = x;
-            }
+    /// Capture token usage from a chunk. The OpenAI `include_usage` trailer
+    /// arrives in a chunk with an **empty `choices` array**, so this must be
+    /// called for every chunk *before* the `choices` guard skips it — otherwise
+    /// `input_tokens`/`cached_tokens` are never read (issue: Reason colour never
+    /// updated, In/Out columns stayed blank on streaming responses).
+    fn observe_usage(&mut self, v: &Value) {
+        let Some(u) = v.get("usage").filter(|u| !u.is_null()) else {
+            return;
+        };
+        if let Some(x) = u.get("completion_tokens").and_then(|x| x.as_u64()) {
+            self.output_tokens = x;
         }
+        if let Some(x) = u.get("prompt_tokens").and_then(|x| x.as_u64()) {
+            self.input_tokens = x;
+        }
+        if let Some(x) = u
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|x| x.as_u64())
+        {
+            self.cached_tokens = x;
+        }
+    }
+
+    fn process_chunk(&mut self, _v: &Value, choice: &Value) -> Vec<Bytes> {
+        let mut frames = Vec::new();
 
         // ── reasoning delta (thinking) ────────────────────────────
         if let Some(rc) = choice
@@ -552,6 +588,7 @@ pub async fn stream_request(
 
     // Clone the Arc so the stream has its own handle to log DONE/ERROR.
     let state_for_log = state.clone();
+    let target_model_owned = target_model.to_string();
 
     let s = async_stream::stream! {
         // Hold the in-flight guard for the lifetime of the stream.
@@ -596,6 +633,10 @@ pub async fn stream_request(
                 if data.is_empty() || data == "[DONE]" { continue; }
                 let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
 
+                // Capture usage first: the `include_usage` trailer rides a chunk
+                // with an empty `choices` array, which the guard below skips.
+                translator.observe_usage(&v);
+
                 let Some(choice) = v
                     .get("choices")
                     .and_then(|c| c.as_array())
@@ -610,7 +651,27 @@ pub async fn stream_request(
 
         // ── end-of-stream log ──────────────────────────────────────
         // Push final token counts into the trace entry.
-        state_for_log.update_trace_tokens(req_id, translator.input_tokens, translator.output_tokens);
+        let in_tok = translator.input_tokens;
+        let out_tok = translator.output_tokens;
+        let cached = translator.cached_tokens;
+        state_for_log.update_trace_tokens(req_id, in_tok, out_tok, cached);
+
+        // Emit a CACHE event when detailed logging is on.
+        if in_tok > 0
+            && state_for_log
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .log_detailed()
+        {
+            state_for_log.log_event(crate::db_log::LogEvent {
+                seq: req_id,
+                event_type: "CACHE".to_string(),
+                model: Some(target_model_owned.clone()),
+                reason: Some(cache_event_reason(in_tok, cached)),
+                ..Default::default()
+            });
+        }
 
         if log {
             if had_error {
@@ -644,11 +705,41 @@ fn sse(event: &str, data: &Value) -> Bytes {
     Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
 }
 
+/// Build a human-readable CACHE event reason string from token counts.
+/// Shared with the native Anthropic path (`providers::anthropic`).
+pub(crate) fn cache_event_reason(prompt_tokens: u64, cached_tokens: u64) -> String {
+    let ratio_pct = if prompt_tokens > 0 {
+        cached_tokens as f64 / prompt_tokens as f64 * 100.0
+    } else {
+        0.0
+    };
+    let state = if cached_tokens > 0 {
+        "hit"
+    } else if prompt_tokens >= 1024 {
+        "miss"
+    } else {
+        "cold"
+    };
+    format!(
+        "prompt={} cached={} ratio={:.0}% state={}",
+        prompt_tokens, cached_tokens, ratio_pct, state
+    )
+}
+
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
 pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value) -> Result<Value> {
     let (resp, _url) = post_chat_completions(state, &payload).await?;
     let body: Value = resp.json().await?;
+    let model = payload
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    let detailed = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_detailed();
 
     // Fill the trace entry's token counts from the OpenAI usage block
     // (prompt_tokens/completion_tokens, with input_/output_ as a fallback).
@@ -663,8 +754,24 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
             .or_else(|| usage.get("output_tokens"))
             .and_then(|n| n.as_u64())
             .unwrap_or(0);
-        if inp > 0 || out > 0 {
-            state.update_trace_tokens(req_id, inp, out);
+        let cached = usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        if inp > 0 || out > 0 || cached > 0 {
+            state.update_trace_tokens(req_id, inp, out, cached);
+        }
+
+        // Emit a CACHE event when detailed logging is on.
+        if inp > 0 && detailed {
+            state.log_event(crate::db_log::LogEvent {
+                seq: req_id,
+                event_type: "CACHE".to_string(),
+                model: Some(model.to_string()),
+                reason: Some(cache_event_reason(inp, cached)),
+                ..Default::default()
+            });
         }
     }
 
@@ -712,6 +819,11 @@ pub async fn stream_raw_openai(
 
     let mut byte_stream = resp.bytes_stream();
     let state_for_log = state.clone();
+    let model_owned = payload
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let s = async_stream::stream! {
         let _guard = guard;
@@ -723,6 +835,7 @@ pub async fn stream_raw_openai(
         let mut scan: Vec<u8> = Vec::new();
         let mut in_tok: u64 = 0;
         let mut out_tok: u64 = 0;
+        let mut cached_tok: u64 = 0;
 
         while let Some(item) = byte_stream.next().await {
             let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
@@ -754,13 +867,37 @@ pub async fn stream_raw_openai(
                     {
                         out_tok = n;
                     }
+                    if let Some(n) = usage
+                        .get("prompt_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                        .and_then(|n| n.as_u64())
+                    {
+                        cached_tok = n;
+                    }
                 }
             }
         }
 
         // Push final token counts into the trace entry.
-        if in_tok > 0 || out_tok > 0 {
-            state_for_log.update_trace_tokens(req_id, in_tok, out_tok);
+        if in_tok > 0 || out_tok > 0 || cached_tok > 0 {
+            state_for_log.update_trace_tokens(req_id, in_tok, out_tok, cached_tok);
+        }
+
+        // Emit a CACHE event when detailed logging is on.
+        if in_tok > 0
+            && state_for_log
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .log_detailed()
+        {
+            state_for_log.log_event(crate::db_log::LogEvent {
+                seq: req_id,
+                event_type: "CACHE".to_string(),
+                model: Some(model_owned.clone()),
+                reason: Some(cache_event_reason(in_tok, cached_tok)),
+                ..Default::default()
+            });
         }
 
         if log {

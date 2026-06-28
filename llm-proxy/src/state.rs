@@ -117,6 +117,10 @@ pub struct TraceEntry {
     pub input_tokens: u64,
     /// Output tokens reported in the response (0 if not yet available).
     pub output_tokens: u64,
+    /// Cached prompt tokens reported by the upstream
+    /// (`usage.prompt_tokens_details.cached_tokens`); 0 = no cache hit / not
+    /// reported.
+    pub cached_tokens: u64,
     /// True if llmtrim was applied to this request.
     pub trim_applied: bool,
     /// Estimated tokens before trimming.
@@ -308,8 +312,19 @@ impl AppState {
     }
 
     /// Record a routing decision into the ring buffer, evicting the oldest
-    /// entry if the buffer is full.
+    /// entry if the buffer is full. Also mirrors the entry to proxy.db as a
+    /// `TRACE` event so everything visible in the overlay is queryable later.
     pub fn push_trace(&self, entry: TraceEntry) {
+        self.log_event(crate::db_log::LogEvent {
+            seq: entry.seq,
+            event_type: "TRACE".to_string(),
+            tier: Some(format!("{:?}", entry.tier)),
+            effective_tier: Some(format!("{:?}", entry.effective_tier)),
+            target: Some(entry.target.clone()),
+            model: Some(entry.model.clone()),
+            reason: Some(entry.reason.clone()),
+            ..Default::default()
+        });
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         if trace.len() >= MAX_TRACE_ENTRIES {
             trace.pop_front();
@@ -319,16 +334,34 @@ impl AppState {
 
     /// Update token counts on the trace entry matching this req_id.
     /// Best-effort: silently no-ops if the entry was already evicted.
-    pub fn update_trace_tokens(&self, req_id: u64, input_tokens: u64, output_tokens: u64) {
+    /// Also mirrors the token update to proxy.db as a `TRACE_TOKENS` event
+    /// (same `seq` as the original `TRACE` event, so they are correlated).
+    pub fn update_trace_tokens(
+        &self,
+        req_id: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_tokens: u64,
+    ) {
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         // Search from the back — the matching entry is almost certainly recent.
         for entry in trace.iter_mut().rev() {
             if entry.seq == req_id {
                 entry.input_tokens = input_tokens;
                 entry.output_tokens = output_tokens;
+                entry.cached_tokens = cached_tokens;
                 break;
             }
         }
+        self.log_event(crate::db_log::LogEvent {
+            seq: req_id,
+            event_type: "TRACE_TOKENS".to_string(),
+            reason: Some(format!(
+                "input_tokens={} output_tokens={} cached_tokens={}",
+                input_tokens, output_tokens, cached_tokens
+            )),
+            ..Default::default()
+        });
     }
 
     /// Record a vision screenshot request into the ring buffer.

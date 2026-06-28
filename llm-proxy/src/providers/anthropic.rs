@@ -134,7 +134,7 @@ pub async fn send_request(
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if inp > 0 || out > 0 {
-            state.update_trace_tokens(req_id, inp, out);
+            state.update_trace_tokens(req_id, inp, out, 0);
         }
     }
 
@@ -232,12 +232,24 @@ pub async fn stream_request(
 
     let mut byte_stream = resp.bytes_stream();
     let state_for_log = state.clone();
+    let model_owned = payload
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     let s = async_stream::stream! {
         // Hold the in-flight guard for the lifetime of the stream.
         let _guard = guard;
         let mut had_error = false;
         let mut line_buf: Vec<u8> = Vec::new();
-        let mut input_tokens: u64 = 0;
+        // Anthropic splits usage across two events: `message_start` carries the
+        // prompt side (input + cache_read + cache_creation), `message_delta`
+        // carries the running output count. We must read BOTH — reading only
+        // message_delta (the old behaviour) left input/cache at 0, so the In
+        // column and the cache colour never populated on the native path.
+        let mut base_input: u64 = 0;
+        let mut cache_read: u64 = 0;
+        let mut cache_creation: u64 = 0;
         let mut output_tokens: u64 = 0;
         while let Some(item) = byte_stream.next().await {
             let chunk = match item {
@@ -245,7 +257,7 @@ pub async fn stream_request(
                 Err(_) => { had_error = true; break },
             };
 
-            // Accumulate lines and scan for message_delta with usage.
+            // Accumulate lines and scan for usage on message_start / message_delta.
             line_buf.extend_from_slice(&chunk);
             while let Some(pos) = line_buf.iter().position(|&b| b == b'\n') {
                 let line_bytes: Vec<u8> = line_buf.drain(..=pos).collect();
@@ -253,15 +265,36 @@ pub async fn stream_request(
                     let data = line.trim();
                     if let Some(json_str) = data.strip_prefix("data:") {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
-                            if v.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
-                                if let Some(usage) = v.get("usage") {
-                                    if let Some(n) = usage.get("input_tokens").and_then(|n| n.as_u64()) {
-                                        input_tokens = n;
-                                    }
-                                    if let Some(n) = usage.get("output_tokens").and_then(|n| n.as_u64()) {
-                                        output_tokens = n;
+                            match v.get("type").and_then(|t| t.as_str()) {
+                                // Prompt-side usage (incl. real Anthropic prompt cache).
+                                Some("message_start") => {
+                                    if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+                                        if let Some(n) = usage.get("input_tokens").and_then(|n| n.as_u64()) {
+                                            base_input = n;
+                                        }
+                                        if let Some(n) = usage.get("cache_read_input_tokens").and_then(|n| n.as_u64()) {
+                                            cache_read = n;
+                                        }
+                                        if let Some(n) = usage.get("cache_creation_input_tokens").and_then(|n| n.as_u64()) {
+                                            cache_creation = n;
+                                        }
+                                        if let Some(n) = usage.get("output_tokens").and_then(|n| n.as_u64()) {
+                                            output_tokens = n;
+                                        }
                                     }
                                 }
+                                // Output-side running total (occasionally restates input).
+                                Some("message_delta") => {
+                                    if let Some(usage) = v.get("usage") {
+                                        if let Some(n) = usage.get("input_tokens").and_then(|n| n.as_u64()) {
+                                            base_input = n;
+                                        }
+                                        if let Some(n) = usage.get("output_tokens").and_then(|n| n.as_u64()) {
+                                            output_tokens = n;
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -270,9 +303,22 @@ pub async fn stream_request(
 
             yield Ok::<_, std::io::Error>(chunk);
         }
-        // Push token usage into the trace entry.
+        // Total prompt = fresh input + cache read + cache creation, mirroring the
+        // OpenAI path where `input_tokens` is the whole prompt and `cached` a subset.
+        let input_tokens = base_input + cache_read + cache_creation;
+        // Push token usage into the trace entry (cache_read drives the hit colour).
         if input_tokens > 0 || output_tokens > 0 {
-            state_for_log.update_trace_tokens(req_id, input_tokens, output_tokens);
+            state_for_log.update_trace_tokens(req_id, input_tokens, output_tokens, cache_read);
+        }
+        // Emit a CACHE event when detailed logging is on (mirrors the upstream path).
+        if input_tokens > 0 && detailed {
+            state_for_log.log_event(crate::db_log::LogEvent {
+                seq: req_id,
+                event_type: "CACHE".to_string(),
+                model: Some(model_owned.clone()),
+                reason: Some(super::upstream::cache_event_reason(input_tokens, cache_read)),
+                ..Default::default()
+            });
         }
         if log {
             if had_error {

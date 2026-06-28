@@ -18,7 +18,7 @@ use windows::core::PCWSTR;
 use crate::config::editor_state::ButtonStyle;
 use crate::config::editor_theme::draw_button;
 use crate::core::llm_proxy;
-use crate::core::native_theme::NativeTheme;
+use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -500,6 +500,81 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             }
         }
 
+        // Cache state classification for this row.
+        let cache_hit = entry.cached_tokens > 0;
+        let cache_miss = entry.cached_tokens == 0 && entry.input_tokens >= 1024;
+        let cache_ratio = if entry.input_tokens > 0 {
+            entry.cached_tokens as f64 / entry.input_tokens as f64
+        } else {
+            0.0
+        };
+
+        /// Convert HSV to Argb. h in degrees [0,360), s/v in [0,1].
+        fn hsv_to_argb(h: f64, s: f64, v: f64) -> Argb {
+            let c = v * s;
+            let hh = h / 60.0;
+            let x = c * (1.0 - (hh % 2.0 - 1.0).abs());
+            let m = v - c;
+            let (r1, g1, b1) = match hh as u8 % 6 {
+                0 | 6 => (c, x, 0.0),
+                1 => (x, c, 0.0),
+                2 => (0.0, c, x),
+                3 => (0.0, x, c),
+                4 => (x, 0.0, c),
+                _ => (c, 0.0, x),
+            };
+            Argb::new(
+                255,
+                ((r1 + m) * 255.0) as u8,
+                ((g1 + m) * 255.0) as u8,
+                ((b1 + m) * 255.0) as u8,
+            )
+        }
+
+        // Build reason text: downgrade warning wins, then trim, then cache fallback.
+        let reason_text = if entry.downgraded {
+            format!("\u{26A0} {}", entry.reason)
+        } else if entry.trim_applied {
+            let saved = entry.trim_tokens_before.saturating_sub(entry.trim_tokens_after);
+            if saved > 0 && entry.trim_tokens_before > 0 {
+                let pct = saved as f64 / entry.trim_tokens_before as f64 * 100.0;
+                format!("\u{2212}{} tok ({:.0}%)", fmt_tokens(saved), pct)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // When reason would otherwise be empty, fill with cache info
+        // (the color alone conveys cache state, but the text helps at a glance).
+        let reason_display = if reason_text.is_empty() && (cache_hit || cache_miss) {
+            if cache_hit {
+                format!(
+                    "cache {} ({:.0}%)",
+                    fmt_tokens(entry.cached_tokens),
+                    cache_ratio * 100.0
+                )
+            } else {
+                "cache miss".to_string()
+            }
+        } else {
+            reason_text
+        };
+
+        // Cache-aware colour gradient for the Reason column only.
+        //   Hit:   hue 0° (red, small ratio) → 120° (green, full cache hit).
+        //   Miss:  pale red (small prompt) → vivid red (large prompt, bigger miss).
+        let cache_color = if cache_hit {
+            let t = cache_ratio.clamp(0.0, 1.0);
+            hsv_to_argb(120.0 * t, 0.7, 0.9)
+        } else if cache_miss {
+            let severity = (entry.input_tokens as f64 / 100_000.0).clamp(0.0, 1.0);
+            hsv_to_argb(0.0, 0.3 + severity * 0.5, 0.6 + severity * 0.4)
+        } else {
+            text_color
+        };
+
         let values = [
             entry.seq.to_string(),
             format!("{:?}", entry.tier),
@@ -507,23 +582,16 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             entry.target.clone(),
             fmt_tokens(entry.input_tokens),
             fmt_tokens(entry.output_tokens),
-            if entry.downgraded {
-                format!("\u{26A0} {}", entry.reason)
-            } else if entry.trim_applied {
-                let saved = entry.trim_tokens_before.saturating_sub(entry.trim_tokens_after);
-                if saved > 0 && entry.trim_tokens_before > 0 {
-                    let pct = saved as f64 / entry.trim_tokens_before as f64 * 100.0;
-                    format!("\u{2212}{} tok ({:.0}%)", fmt_tokens(saved), pct)
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            },
+            reason_display,
         ];
 
         let mut col_x = pad;
         for (j, val) in values.iter().enumerate() {
+            // Override text color for the Reason column based on cache state.
+            let col_color = if j == 6 { cache_color } else { text_color };
+            unsafe {
+                let _ = SetTextColor(dib_dc, col_color.to_colorref());
+            }
             let mut vw = crate::osd::to_utf16_z(val);
             let cw = col_widths[j];
             let mut rc = RECT {
