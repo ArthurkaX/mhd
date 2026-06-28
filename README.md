@@ -2,6 +2,12 @@
 
 ![mHD logo](icons/mHD_256.png)
 
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square)
+![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)
+![Native Win32](https://img.shields.io/badge/UI-native%20Win32-2F6F4E?style=flat-square)
+![No WebView](https://img.shields.io/badge/WebView-not%20required-555555?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)
+
 **A Windows key daemon and desktop control layer with a built-in LLM proxy for Claude Code.**
 
 mHD started as a personal always-on key daemon: one small native tray process for remapping keys and mouse buttons, binding global shortcuts, launching actions, and opening compact desktop panels without pulling in a heavy automation suite.
@@ -9,12 +15,6 @@ mHD started as a personal always-on key daemon: one small native tray process fo
 The second major part is the LLM proxy. It lets Claude Code keep running while `opus`, `sonnet`, and `haiku` routes are switched or delegated to cheaper models across Anthropic and any OpenAI-compatible provider. The main point is saving paid limits and context-budget pressure by moving mechanical work, sub-agents, and lightweight turns away from the expensive provider when they do not need the top model.
 
 mHD also embeds request compression powered by [`llmtrim-core`](https://github.com/fkiene/llmtrim). Trim can shrink verbose tool output, logs, diffs, repeated lines, and bulky JSON before a request is sent, without making an extra LLM call.
-
-![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square)
-![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)
-![Native Win32](https://img.shields.io/badge/UI-native%20Win32-2F6F4E?style=flat-square)
-![No WebView](https://img.shields.io/badge/WebView-not%20required-555555?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)
 
 **mHD** is a free, open-source Windows utility. Its core job is keyboard/mouse control: remap awkward inputs, turn hotkeys into actions, switch schemes, and keep small native tools one shortcut away.
 
