@@ -1071,8 +1071,8 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let win_w_val = lay.win_w();
 
     // ── Proxy Settings section header ──────────────────────────────
-    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * scale) as i32;
-    let gap = (8.0 * scale) as i32;
+    let section_h = (20.0 * scale) as i32;
+    let gap = (6.0 * scale) as i32;
     ctls.push(Control::Header {
         rect: RECT {
             left: pad,
@@ -1187,6 +1187,14 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
 
     // ── Vision / Screenshot Model section ───────────────────────────
     let vision_y = lay.llm_proxy.vision_y;
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: vision_y - gap / 2,
+            right: win_w_val - pad,
+            bottom: vision_y - gap / 2 + 1,
+        },
+    });
     ctls.push(Control::Header {
         rect: RECT {
             left: pad,
@@ -1285,6 +1293,14 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let toggle_h = (18.0 * scale) as i32;
 
     // Section header
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: downgrade_y - gap / 2,
+            right: win_w_val - pad,
+            bottom: downgrade_y - gap / 2 + 1,
+        },
+    });
     ctls.push(Control::Header {
         rect: RECT {
             left: pad,
@@ -1351,6 +1367,14 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
 
     // ── Request Compression section ────────────────────────────
     let trim_y = lay.llm_proxy.trim_y;
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: trim_y - gap / 2,
+            right: win_w_val - pad,
+            bottom: trim_y - gap / 2 + 1,
+        },
+    });
     ctls.push(Control::Header {
         rect: RECT {
             left: pad,
@@ -1395,6 +1419,14 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
 
     // ── Providers section ──────────────────────────────────────
     // Section header
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_proxy.providers_header_y - gap / 2,
+            right: win_w_val - pad,
+            bottom: lay.llm_proxy.providers_header_y - gap / 2 + 1,
+        },
+    });
     ctls.push(Control::Header {
         rect: RECT {
             left: pad,
@@ -1407,14 +1439,15 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         text_color: theme_text_muted(state),
     });
 
-    let list_y = lay.llm_proxy.list_y;
-    let list_h = lay.llm_proxy.list_h;
     let scroll_y = state.content_scroll_y;
+    let viewport_top = lay.content_y() + scroll_y;
+    let viewport_bottom = lay.content_y() + lay.content_visible_h() + scroll_y;
 
-    // Table headers sit above the list clip area so they stay visible
-    // when scrolled. They scroll with content via + scroll_y.
+    // Providers are part of the page-level scroll. Keep the section header,
+    // table header, rows, and add button in the same logical coordinate flow
+    // so the table does not split apart near the bottom of the page.
     let col_h = (16.0 * scale) as i32;
-    let table_header_y = list_y - col_h - (gap / 2) + scroll_y;
+    let table_header_y = lay.llm_proxy.list_y - col_h - (gap / 2);
     let name_end_x = pad + lay.provider_name_w() + (8.0 * scale) as i32;
 
     // ── Column header: Name ────────────────────────────────────────
@@ -1454,19 +1487,6 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         },
     });
 
-    // Content height for scroll calculation
-    let _content_h = state.providers.len() as i32 * row_h + row_h;
-
-    // ── Clipped list area ──────────────────────────────────────────
-    ctls.push(Control::ClipStart {
-        rect: RECT {
-            left: pad,
-            top: list_y,
-            right: win_w_val - pad,
-            bottom: list_y + list_h,
-        },
-    });
-
     // Button sizes (right-aligned in each row)
     let del_w = lay.provider_del_w();
     let edit_btn_w = (50.0 * scale) as i32;
@@ -1476,9 +1496,9 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
     let btn_h = (24.0 * scale) as i32;
 
     // ── Provider rows ──────────────────────────────────────────────
-    let mut row_y = list_y;
+    let mut row_y = lay.llm_proxy.list_y;
     for (i, p) in state.providers.iter().enumerate() {
-        if row_y + row_h > list_y + scroll_y && row_y < list_y + list_h + scroll_y {
+        if row_y + row_h > viewport_top && row_y < viewport_bottom {
             let is_row_hovered = state.hovered_target == SettingsHit::ProviderRow(i);
             let zebra_on = i % 2 == 1;
 
@@ -1594,25 +1614,24 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         row_y += row_h;
     }
 
-    // End clip
-    ctls.push(Control::ClipEnd);
-
     // Add provider button
-    let add_y = list_y + state.providers.len() as i32 * row_h;
-    let is_add_hovered = state.hovered_target == SettingsHit::ProviderAddBtn;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: pad,
-            top: add_y,
-            right: pad + (150.0 * scale) as i32,
-            bottom: add_y + row_h,
-        },
-        label: "+ Add Provider".into(),
-        font: FontChoice::Body,
-        is_hovered: is_add_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::ProviderAddBtn,
-    });
+    let add_y = lay.llm_proxy.list_y + state.providers.len() as i32 * row_h;
+    if add_y + row_h > viewport_top && add_y < viewport_bottom {
+        let is_add_hovered = state.hovered_target == SettingsHit::ProviderAddBtn;
+        ctls.push(Control::Button {
+            rect: RECT {
+                left: pad,
+                top: add_y,
+                right: pad + (150.0 * scale) as i32,
+                bottom: add_y + row_h,
+            },
+            label: "+ Add Provider".into(),
+            font: FontChoice::Body,
+            is_hovered: is_add_hovered,
+            style: ButtonStyle::Secondary,
+            hit: SettingsHit::ProviderAddBtn,
+        });
+    }
 
     ctls
 }

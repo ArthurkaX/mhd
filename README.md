@@ -2,9 +2,13 @@
 
 ![mHD logo](icons/mHD_256.png)
 
-**Switch Claude Code between Anthropic and Ollama Cloud with one hotkey.**
+**A Windows key daemon and desktop control layer with a built-in LLM proxy for Claude Code.**
 
-Plan with Opus, execute with an Ollama model, and route sub-agents independently — without restarting Claude Code, handing off the session, or losing context.
+mHD started as a personal always-on key daemon: one small native tray process for remapping keys and mouse buttons, binding global shortcuts, launching actions, and opening compact desktop panels without pulling in a heavy automation suite.
+
+The second major part is the LLM proxy. It lets Claude Code keep running while `opus`, `sonnet`, and `haiku` routes are switched or delegated to cheaper models across Anthropic and any OpenAI-compatible provider. The main point is saving paid limits and context-budget pressure by moving mechanical work, sub-agents, and lightweight turns away from the expensive provider when they do not need the top model.
+
+mHD also embeds request compression powered by [`llmtrim-core`](https://github.com/fkiene/llmtrim). Trim can shrink verbose tool output, logs, diffs, repeated lines, and bulky JSON before a request is sent, without making an extra LLM call.
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square)
 ![Rust](https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square)
@@ -12,14 +16,21 @@ Plan with Opus, execute with an Ollama model, and route sub-agents independently
 ![No WebView](https://img.shields.io/badge/WebView-not%20required-555555?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)
 
-**mHD** is a free, open-source Windows utility with a built-in local proxy for Claude Code. It maps Claude's `opus`, `sonnet`, and `haiku` tiers to native Anthropic or any OpenAI-compatible provider, including Ollama Cloud.
+**mHD** is a free, open-source Windows utility. Its core job is keyboard/mouse control: remap awkward inputs, turn hotkeys into actions, switch schemes, and keep small native tools one shortcut away.
+
+The built-in local proxy for Claude Code maps Claude's `opus`, `sonnet`, and `haiku` tiers to native Anthropic or any OpenAI-compatible provider.
 
 The route can be changed live from a global hotkey or the system tray. The next request uses the new model; an active streaming response is not interrupted.
 
-This enables workflows such as:
+The two main workflows are:
+
+- make Windows input behave the way you want: `CapsLock -> Alt+Shift`, mouse thumb buttons for virtual desktops, brightness or mixer panels on hotkeys;
+- keep Claude Code as the interface while mHD routes expensive and cheap model work independently.
+
+The LLM proxy enables workflows such as:
 
 - keep Opus as the lead for architecture and review;
-- send implementation work and parallel sub-agents to Ollama Cloud;
+- send implementation work and parallel sub-agents to a cheaper OpenAI-compatible model;
 - route lightweight work to a smaller or faster model;
 - compare models inside the same Claude Code session;
 - return any tier to native Anthropic instantly.
@@ -27,17 +38,43 @@ This enables workflows such as:
 There is no model handoff. Claude Code remains the interface and agent runtime while mHD chooses where each request is executed.
 
 > [!NOTE]
-> Claude Code is still required. Native routes use your existing Claude Code authentication; Ollama Cloud routes use your Ollama API key.
+> Claude Code is still required. Native routes use your existing Claude Code authentication; provider routes use the API key you configure in mHD.
 
-## Quick Start: Claude Code + Ollama Cloud
+## Quick Start: Key Daemon
+
+1. Download the latest `mhd-v*-windows-x64.zip` from [GitHub Releases](https://github.com/ArthurkaX/mhd/releases) and extract it.
+2. Run `mhd.exe`.
+3. Open **System tray -> mHD -> right click -> Settings -> Shortcuts**.
+4. Add or edit bindings for the actions you use most: `replace_key`, `show_volume_mixer`, `show_monitor_panel`, `quick_note`, `quick_draw`, `switch_power_plan`, or `toggle_topmost`.
+5. Use **Reload config** from the tray after manual TOML edits.
+
+Example bindings:
+
+```toml
+[[binding]]
+trigger = "capslock"
+action = "replace_key"
+keys = "alt+shift"
+
+[[binding]]
+trigger = "mouseButton4"
+action = "replace_key"
+keys = "ctrl+win+left"
+
+[[binding]]
+trigger = "ctrl+alt+numpad_star"
+action = "show_volume_mixer"
+```
+
+## Quick Start: LLM Proxy
 
 1. Download the latest `mhd-v*-windows-x64.zip` from [GitHub Releases](https://github.com/ArthurkaX/mhd/releases) and extract it.
 2. Run `mhd.exe`.
 3. Open **System tray -> mHD -> right click -> Settings -> LLM Proxy**.
-4. Add Ollama Cloud as an OpenAI-compatible provider:
-   - endpoint: `https://ollama.com/v1`;
-   - API key: your Ollama API key;
-   - models: the Ollama Cloud model IDs you want to use.
+4. Add an OpenAI-compatible provider:
+   - endpoint: the provider's `/v1` base URL;
+   - API key: the provider API key;
+   - models: the provider model IDs you want to use.
 5. In **Settings -> Shortcuts**, bind `show_llm_models` to a key such as `Ctrl+Alt+L`.
 6. Add the extracted directory to `PATH`, then launch Claude Code through the included wrapper:
 
@@ -54,12 +91,12 @@ flowchart LR
     CLI["Claude Code CLI"]
     Proxy["mHD<br/>127.0.0.1:3456"]
     Opus["Anthropic Opus<br/>planning and review"]
-    Ollama["Ollama Cloud<br/>implementation"]
+    Provider["OpenAI-compatible provider<br/>implementation"]
     Small["Another model<br/>lightweight work"]
 
     CLI --> Proxy
     Proxy -->|"opus → native"| Opus
-    Proxy -->|"sonnet → Ollama model"| Ollama
+    Proxy -->|"sonnet → provider model"| Provider
     Proxy -->|"haiku → selected model"| Small
 ```
 
@@ -75,22 +112,21 @@ See [LLM Proxy documentation](llm-proxy/README.md) for provider setup, routing b
 
 | Area | What mHD does |
 |------|---------------|
-| Input | Keyboard remaps, mouse bindings, scheme switching |
-| Automation | PowerShell commands, program launch, hotkey-driven actions |
+| Key daemon | Keyboard remaps, mouse bindings, global shortcuts, scheme switching |
+| Shortcut actions | PowerShell commands, program launch, hotkey-driven desktop control |
+| LLM Proxy | Live per-tier routing for Claude Code across Anthropic and OpenAI-compatible providers |
+| Request Compression | Built-in llmtrim-powered trimming for Claude Code and OpenAI-compatible proxy traffic |
 | Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
 | Audio | Master volume, per-app mixer, media key actions |
-| Desktop tools | Quick Note, Quick Draw, Pomodoro, Breathe, power panel, CPU plan panel |
-| LLM Proxy | Live per-tier routing for Claude Code across Anthropic, Ollama Cloud, and OpenAI-compatible providers, with optional request compression |
+| Desktop tools | Quick Note, Quick Draw, Pomodoro, Breathe, power panel, CPU plan panel, screenshot vision tools |
 | Window/process control | Always-on-top, suspend-on-blur, throttle-on-blur |
 | Settings | Native config editor, theme selection, autostart, shortcut editing |
 
 ---
 
-## More Than an LLM Proxy
+## Native Windows Utility Layer
 
-mHD started as a compact desktop control layer for Windows. The same native tray process also provides:
-
-It is useful when you want one tool to handle:
+mHD is primarily a compact desktop control layer for Windows. It is useful when you want one daemon to handle:
 
 - keyboard and mouse remapping;
 - shortcut-driven automation;
@@ -250,6 +286,7 @@ The included overlays are:
 - Breathe pacer
 - CPU power panel
 - KeyCast keystroke overlay
+- Vision Screenshot and Vision Snip
 
 Each one is a native window with a narrow task and a minimal control surface.
 
@@ -267,9 +304,13 @@ The Settings window exposes KeyCast position and display duration. Manual `[keyc
 
 The CPU power panel can switch Windows power plans, edit processor parking and frequency-related power settings, show live per-core load, expose P/E core topology when Windows reports it, and run a small local stress load for testing plan behaviour.
 
+If a configured provider has a vision-capable model, mHD can send a full-screen screenshot to it with your prompt, or open an interactive snip tool where you crop and mark up the screenshot before analysis.
+
 ### LLM Proxy
 
-mHD includes a local LLM proxy for Claude Code. Its main job is runtime model switching: start Claude Code once through the proxy, then change the model route from the tray or a hotkey without restarting Claude Code, mHD, or the current conversation.
+mHD includes a local LLM proxy for Claude Code. Its main job is limit-aware runtime model routing: start Claude Code once through the proxy, then move `opus`, `sonnet`, and `haiku` traffic between Anthropic native models and cheaper OpenAI-compatible provider models from the tray or a hotkey, without restarting Claude Code, mHD, or the current conversation.
+
+This is meant for workflows where the expensive model should stay available for planning, architecture, review, and hard turns, while implementation loops, sub-agents, or lightweight requests can be delegated to cheaper models outside a single provider.
 
 Typical flow:
 
@@ -289,7 +330,7 @@ Routing targets can be:
 
 Two optional features build on this:
 
-- **Request Compression (Trim)** - a single toggle deterministically shrinks outgoing requests (verbose tool output, logs, duplicate lines) without busting the Anthropic prompt cache, with no extra model calls. It applies to both Claude Code and OpenAI-compatible traffic.
+- **Request Compression (Trim)** - a built-in integration of the [`llmtrim`](https://github.com/fkiene/llmtrim) project. A single toggle deterministically shrinks outgoing requests (verbose tool output, logs, diffs, duplicate lines, bulky JSON) without busting the Anthropic prompt cache, with no extra model calls. It applies to both Claude Code and OpenAI-compatible traffic.
 - **OpenAI-compatible clients** - editors like Zed can point at the same proxy (`http://127.0.0.1:3456/v1`) for streaming, a `/v1/models` list, and the same compression, and they show up in the Proxy Trace too.
 
 ```mermaid
@@ -485,6 +526,8 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 | `pomodoro` | - | Open the Pomodoro timer overlay. |
 | `breathe` | `preset` | Open the Breathe pacer. Optional preset: `balanced`, `calm`, `extended`, or omit for time-of-day auto-select. |
 | `toggle_keycast` | - | Toggle the KeyCast keystroke overlay. |
+| `vision_screenshot` | - | Capture the screen, analyze it with the configured vision model, and copy the result. |
+| `vision_snip` | - | Capture, crop, annotate, and analyze a screenshot with the configured vision model. |
 
 ### LLM Proxy
 

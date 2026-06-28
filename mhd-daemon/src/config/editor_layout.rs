@@ -496,7 +496,7 @@ fn compute_common_layout(scale: f32) -> CommonLayout {
     let radius = (ROUND_RADIUS_BASE * scale) as i32;
 
     let content_visible_h = btn_y - content_y - (8.0 * scale) as i32;
-    let scrollbar_w = (8.0 * scale).max(6.0) as i32;
+    let scrollbar_w = (10.0 * scale).max(8.0) as i32;
 
     CommonLayout {
         scale,
@@ -600,9 +600,9 @@ fn compute_advanced_layout(c: &CommonLayout) -> AdvancedLayout {
 }
 
 fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
-    let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * c.scale) as i32;
+    let section_h = (20.0 * c.scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
-    let gap = (8.0 * c.scale) as i32;
+    let gap = (6.0 * c.scale) as i32;
     let col_h = (16.0 * c.scale) as i32; // table header height
     // Proxy settings: header + Anthropic Key + Bind Address
     let proxy_h = section_h + row_h + gap + row_h + gap;

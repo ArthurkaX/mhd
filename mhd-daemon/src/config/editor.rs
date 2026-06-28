@@ -743,7 +743,7 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             right: scrollbar_x + lay.scrollbar_w(),
             bottom: lay.content_y() + scrollbar_h,
         };
-        draw_rounded_rect_in_buffer(bits, lay.win_w(), lay.win_h(), track_rect, 0, theme.surface);
+        draw_rounded_rect_in_buffer(bits, lay.win_w(), lay.win_h(), track_rect, 0, theme.border);
 
         // Thumb
         let thumb_rect = RECT {
@@ -757,8 +757,8 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
             lay.win_w(),
             lay.win_h(),
             thumb_rect,
-            (2.0 * lay.scale()) as i32,
-            theme.hover.blend_over(theme.surface),
+            (4.0 * lay.scale()) as i32,
+            theme.accent,
         );
     }
 
@@ -926,16 +926,17 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
         SettingsPage::LlmProxy => {
             let n = state.providers.len() as i32;
             let row_h = lay.provider_row_h();
-            let section_h = (SECTION_HEADER_HEIGHT_BASE as f32 * lay.scale()) as i32;
-            let gap = (8.0 * lay.scale()) as i32;
+            let section_h = (20.0 * lay.scale()) as i32;
+            let gap = (6.0 * lay.scale()) as i32;
             let col_h = (16.0 * lay.scale()) as i32;
             let table_header_h = col_h + gap;
             // Providers section (last): section header + table headers + rows + add button
-            let providers_end = lay.llm_proxy.providers_header_y + section_h
-                + table_header_h + n * row_h + row_h;
-            (providers_end + (16.0 * lay.scale()) as i32 - lay.content_y())
-                .max(lay.llm_proxy.providers_header_y + section_h + table_header_h
-                    + row_h - lay.content_y())
+            let providers_end =
+                lay.llm_proxy.providers_header_y + section_h + table_header_h + n * row_h + row_h;
+            (providers_end + (16.0 * lay.scale()) as i32 - lay.content_y()).max(
+                lay.llm_proxy.providers_header_y + section_h + table_header_h + row_h
+                    - lay.content_y(),
+            )
         }
     }
 }

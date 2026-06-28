@@ -58,6 +58,10 @@ pub fn hit_test_settings(state: &SettingsState, x: i32, y: i32) -> SettingsHit {
         }
     }
 
+    if y < lay.content_y() || y >= lay.content_y() + lay.content_visible_h() {
+        return SettingsHit::None;
+    }
+
     // ── Page-specific controls (resolved via region list) ────────
     // Controls are pushed in draw order (back-to-front).  Scanning
     // backwards finds the topmost (last-drawn) control first.
