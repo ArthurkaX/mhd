@@ -1156,7 +1156,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "mhd-daemon"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64",
  "embed-resource",
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "mhd-llm-proxy"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-stream",
