@@ -28,9 +28,7 @@ const PAD_BASE: i32 = 12;
 const RADIUS_BASE: f32 = 10.0;
 const HEADER_H_BASE: i32 = 28;
 const ROW_H_BASE: i32 = 22;
-const HIDE_TIMEOUT_MS: u32 = 60_000;
-const HIDE_TIMER_ID: usize = 1;
-const REFRESH_TIMER_ID: usize = 2;
+const REFRESH_TIMER_ID: usize = 1;
 
 // ── Safe wrapper for the event handle ────────────────────────────────
 
@@ -41,6 +39,30 @@ unsafe impl Sync for SafeHandle {}
 // ── Toggle / show ───────────────────────────────────────────────────
 
 pub fn show(theme: &NativeTheme) {
+    // If a trace window already exists (e.g. minimized via the − button, which
+    // minimizes it to the taskbar), restore that one instead of spawning a
+    // duplicate thread + window and orphaning the existing instance.
+    let cls_name = crate::osd::to_utf16_z("mhd_proxy_trace_cls");
+    if let Ok(existing) = unsafe { FindWindowW(PCWSTR::from_raw(cls_name.as_ptr()), PCWSTR::null()) }
+    {
+        if !existing.is_invalid() {
+            unsafe {
+                let _ = ShowWindow(existing, SW_RESTORE);
+                let _ = SetWindowPos(
+                    existing,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE,
+                );
+                let _ = SetForegroundWindow(existing);
+            }
+            return;
+        }
+    }
+
     let event = unsafe { CreateEventW(None, false, false, None).unwrap() };
     let handle = SafeHandle(event);
     let dying = Arc::new(AtomicBool::new(false));
@@ -77,10 +99,10 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
 
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_APPWINDOW,
             PCWSTR::from_raw(cls_name.as_ptr()),
             PCWSTR::null(),
-            WS_POPUP,
+            WS_POPUP | WS_MINIMIZEBOX,
             0,
             0,
             win_w,
@@ -104,6 +126,15 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
             GWLP_USERDATA,
             Box::into_raw(Box::new(theme.clone())) as isize,
         );
+    }
+
+    // Set window icon for taskbar button and Alt+Tab
+    let icon = crate::overlays::tray::load_tray_icon();
+    unsafe {
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(icon.0 as isize));
+    }
+    unsafe {
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(icon.0 as isize));
     }
 
     // Position at right side of primary monitor
@@ -262,7 +293,8 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     // Debug button
     let debug_btn_w = (42.0 * scale) as i32;
     let debug_btn_h = (20.0 * scale) as i32;
-    let debug_btn_x = close_btn_x - (4.0 * scale) as i32 - debug_btn_w;
+    let minimize_btn_x = close_btn_x - (4.0 * scale) as i32 - close_btn_w;
+    let debug_btn_x = minimize_btn_x - (4.0 * scale) as i32 - debug_btn_w;
     let debug_btn_y = close_btn_y + (close_btn_w - debug_btn_h) / 2;
     let debug_on = crate::llm_proxy::is_debug_logging();
     let debug_style = if debug_on {
@@ -285,6 +317,39 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         false,
         debug_style,
     );
+
+    // Minimize button (between debug and close)
+    let minimize_btn_rect = RECT {
+        left: minimize_btn_x,
+        top: close_btn_y,
+        right: minimize_btn_x + close_btn_w,
+        bottom: close_btn_y + close_btn_w,
+    };
+    let minimize_brush =
+        unsafe { CreateSolidBrush(theme.hover.blend_over(theme.background).to_colorref()) };
+    unsafe {
+        let _ = FillRect(dib_dc, &minimize_btn_rect, minimize_brush);
+        let _ = DeleteObject(minimize_brush);
+    }
+    unsafe {
+        let _ = SelectObject(dib_dc, hfont_small);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
+    let mut min_wz = crate::osd::to_utf16_z("\u{2212}");
+    let mut min_text_rc = RECT {
+        left: minimize_btn_rect.left + 2,
+        top: minimize_btn_rect.top,
+        right: minimize_btn_rect.right + 4,
+        bottom: minimize_btn_rect.bottom,
+    };
+    unsafe {
+        let _ = DrawTextW(
+            dib_dc,
+            &mut min_wz,
+            &mut min_text_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     // Draw close × button
     let close_btn_rect = RECT {
@@ -656,12 +721,22 @@ unsafe extern "system" fn panel_wndproc(
                 let _ = GetWindowRect(hwnd, &mut wr);
                 let win_w = wr.right - wr.left;
                 let close_btn_x = win_w - pad - close_btn_w;
-                let debug_btn_x = close_btn_x - (4.0 * scale) as i32 - debug_btn_w;
+                let minimize_btn_x = close_btn_x - (4.0 * scale) as i32 - btn_size;
+                let debug_btn_x = minimize_btn_x - (4.0 * scale) as i32 - debug_btn_w;
                 let debug_btn_y = pad + (close_btn_w - debug_btn_h) / 2;
                 // Check close button first
                 let btn_left = win_w - pad - btn_size;
                 if pt.x >= btn_left - 4
                     && pt.x < win_w - pad + 4
+                    && pt.y >= pad - 4
+                    && pt.y < pad + btn_size + 4
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
+                // Check minimize button
+                let min_btn_left = minimize_btn_x;
+                if pt.x >= min_btn_left - 4
+                    && pt.x < min_btn_left + btn_size + 4
                     && pt.y >= pad - 4
                     && pt.y < pad + btn_size + 4
                 {
@@ -704,8 +779,19 @@ unsafe extern "system" fn panel_wndproc(
                 let x = (lparam.0 as i16) as i32;
                 let y = ((lparam.0 >> 16) as i16) as i32;
                 let close_btn_x = win_w - pad - btn_size;
-                let debug_btn_x = close_btn_x - (4.0 * scale) as i32 - debug_btn_w;
+                let minimize_btn_x = close_btn_x - (4.0 * scale) as i32 - btn_size;
+                let debug_btn_x = minimize_btn_x - (4.0 * scale) as i32 - debug_btn_w;
                 let debug_btn_y = pad + (btn_size - debug_btn_h) / 2;
+                // Check minimize button
+                let min_btn_left = minimize_btn_x;
+                if x >= min_btn_left - 4
+                    && x < min_btn_left + btn_size + 4
+                    && y >= pad - 4
+                    && y < pad + btn_size + 4
+                {
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                    return LRESULT(0);
+                }
                 // Check debug button
                 if x >= debug_btn_x
                     && x < debug_btn_x + debug_btn_w
@@ -727,6 +813,13 @@ unsafe extern "system" fn panel_wndproc(
                 }
                 LRESULT(0)
             }
+            WM_ACTIVATE => {
+                // When restored from minimized (taskbar click, Alt+Tab, etc.)
+                // force a full repaint.  Layered WS_POPUP windows don't paint
+                // themselves correctly after being minimized.
+                paint_panel(hwnd, 0.0, 0, 0);
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
             WM_PAINT => {
                 let scale = {
                     let dpi = GetDpiForWindow(hwnd) as f32;
@@ -735,18 +828,6 @@ unsafe extern "system" fn panel_wndproc(
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
                 paint_panel(hwnd, scale, wr.right - wr.left, wr.bottom - wr.top);
-                LRESULT(0)
-            }
-            WM_ACTIVATE => {
-                if (wparam.0 & 0xFFFF) == 0 {
-                    let _ = SetTimer(hwnd, HIDE_TIMER_ID, HIDE_TIMEOUT_MS, None);
-                } else {
-                    let _ = KillTimer(hwnd, HIDE_TIMER_ID);
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
-                let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == REFRESH_TIMER_ID => {

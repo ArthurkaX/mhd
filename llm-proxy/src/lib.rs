@@ -137,29 +137,13 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = enabled;
     }
 
-    /// Set the llmtrim preset ("auto", "agent", "aggressive", "code", "rag", "safe").
-    pub fn set_trim_preset(&self, preset: &str) {
+    /// Whether trim is currently enabled.
+    pub fn is_trim_enabled(&self) -> bool {
         *self
-            .state
-            .trim_preset
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = preset.to_string();
-    }
-
-    /// Current trim status: (enabled, preset).
-    pub fn trim_status(&self) -> (bool, String) {
-        let enabled = *self
             .state
             .trim_enabled
             .read()
-            .unwrap_or_else(|e| e.into_inner());
-        let preset = self
-            .state
-            .trim_preset
-            .read()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        (enabled, preset)
     }
 
     /// Snapshot of recent routing decisions.

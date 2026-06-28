@@ -200,8 +200,6 @@ pub struct AppState {
 
     /// Master switch for llmtrim request compression.
     pub trim_enabled: RwLock<bool>,
-    /// llmtrim preset name.
-    pub trim_preset: RwLock<String>,
 }
 
 impl AppState {
@@ -229,7 +227,6 @@ impl AppState {
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
-            trim_preset: RwLock::new(cfg.trim_preset.clone()),
         })
     }
 
@@ -471,15 +468,7 @@ impl AppState {
                 .sonnet_downgrade_enabled
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
-            trim_enabled: *self
-                .trim_enabled
-                .read()
-                .unwrap_or_else(|e| e.into_inner()),
-            trim_preset: self
-                .trim_preset
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
+            trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
         }
     }
 }

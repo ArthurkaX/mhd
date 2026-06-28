@@ -44,7 +44,6 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
         sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,
         trim_enabled: cfg.trim_enabled,
-        trim_preset: cfg.trim_preset.clone(),
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -94,7 +93,6 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_target("fable", &cfg.fable);
         control.set_log_level(&cfg.log_level);
         control.set_trim_enabled(cfg.trim_enabled);
-        control.set_trim_preset(&cfg.trim_preset);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
             drop(guard);
@@ -203,7 +201,7 @@ pub fn is_trim_enabled() -> bool {
         .lock()
         .unwrap()
         .as_ref()
-        .map(|c| c.trim_status().0)
+        .map(|c| c.is_trim_enabled())
         .unwrap_or(false)
 }
 
@@ -211,13 +209,12 @@ pub fn is_trim_enabled() -> bool {
 pub fn toggle_trim() -> bool {
     let guard = CONTROL.lock().unwrap();
     if let Some(ref c) = *guard {
-        let (enabled, preset) = c.trim_status();
+        let enabled = c.is_trim_enabled();
         let new = !enabled;
         c.set_trim_enabled(new);
         // Persist the change via settings save
         if let Ok(mut settings) = llm_proxy::config::load_settings() {
             settings.trim_enabled = new;
-            settings.trim_preset = preset;
             let _ = llm_proxy::config::save_settings(&settings);
         }
         new
@@ -226,24 +223,25 @@ pub fn toggle_trim() -> bool {
     }
 }
 
-/// Set the trim preset (persisted to settings).
-pub fn set_trim_preset(preset: &str) -> bool {
-    let guard = CONTROL.lock().unwrap();
-    if let Some(ref c) = *guard {
-        c.set_trim_preset(preset);
-        if let Ok(mut settings) = llm_proxy::config::load_settings() {
-            settings.trim_preset = preset.to_string();
-            let _ = llm_proxy::config::save_settings(&settings);
-        }
-        true
-    } else {
-        false
-    }
-}
-
 /// Set a tier's target. `slot` is "opus"/"sonnet"/"haiku"/"fable"; `target` is "native"
-/// or an upstream model id. Returns false if the proxy is off or the slot is unknown.
+/// or an upstream model id. The selection is persisted to settings.json so a chosen
+/// model survives daemon restarts instead of reverting to the previously saved value.
+/// Returns false if the proxy is off or the slot is unknown (the value is persisted
+/// regardless of the running state).
 pub fn set_target(slot: &str, target: &str) -> bool {
+    // Persist the selection so it is restored on the next start.
+    if let Ok(mut settings) = llm_proxy::config::load_settings() {
+        match slot {
+            "opus" => settings.opus_target = target.to_string(),
+            "sonnet" => settings.sonnet_target = target.to_string(),
+            "haiku" => settings.haiku_target = target.to_string(),
+            "fable" => settings.fable_target = target.to_string(),
+            _ => {}
+        }
+        let _ = llm_proxy::config::save_settings(&settings);
+    }
+
+    // Apply to the live proxy if it is running.
     CONTROL
         .lock()
         .unwrap()

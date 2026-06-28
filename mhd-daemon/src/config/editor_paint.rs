@@ -1408,11 +1408,7 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
             right: win_w_val - pad,
             bottom: trim_toggle_y + row_h,
         },
-        label: format!(
-            "Compress outgoing requests (llmtrim, preset: {})",
-            state.trim_preset
-        )
-        .into(),
+        label: format!("Compress outgoing requests").into(),
         font: FontChoice::Body,
         text_color: theme_text(state),
     });

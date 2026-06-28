@@ -256,9 +256,6 @@ pub fn show_config_editor(handle: AppHandle) {
         trim_enabled: llm_proxy::config::load_settings()
             .map(|s| s.trim_enabled)
             .unwrap_or(false),
-        trim_preset: llm_proxy::config::load_settings()
-            .map(|s| s.trim_preset)
-            .unwrap_or_else(|_| "auto".to_string()),
         vision_model: llm_proxy::config::load_settings()
             .ok()
             .and_then(|s| s.vision_model),

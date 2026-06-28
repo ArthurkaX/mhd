@@ -281,6 +281,4 @@ pub struct SettingsState {
     pub vision_test_running: bool,
     /// Enable llmtrim-powered request compression.
     pub trim_enabled: bool,
-    /// Active llmtrim preset (shown in the Request Compression label).
-    pub trim_preset: String,
 }

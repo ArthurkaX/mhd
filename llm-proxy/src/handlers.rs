@@ -116,8 +116,14 @@ pub async fn post_messages(
 
     // Calculate per-session gap for expensive tiers that can be downgraded.
     // Only for Opus/Sonnet — cheap tiers and background calls don't stamp the clock.
-    let opus_enabled = *state.opus_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner());
-    let sonnet_enabled = *state.sonnet_downgrade_enabled.read().unwrap_or_else(|e| e.into_inner());
+    let opus_enabled = *state
+        .opus_downgrade_enabled
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    let sonnet_enabled = *state
+        .sonnet_downgrade_enabled
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     let may_downgrade =
         (tier == Tier::Opus && opus_enabled) || (tier == Tier::Sonnet && sonnet_enabled);
 
@@ -181,7 +187,12 @@ pub async fn post_messages(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies() {
+    if state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .dump_bodies()
+    {
         // Show how Claude Code authenticated (helps verify OAuth passthrough).
         let auth = headers
             .get("authorization")
@@ -219,8 +230,8 @@ pub async fn post_messages(
     let mut trim_tokens_before = 0u64;
     let mut trim_tokens_after = 0u64;
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
-        let preset = state.trim_preset.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let out = crate::trim::trim_anthropic(payload, &preset);
+        // Claude Code is always an agent — use the agent preset for cache safety.
+        let out = crate::trim::trim_anthropic(payload, "agent");
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;
@@ -233,30 +244,52 @@ pub async fn post_messages(
                 0.0
             };
 
-            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies() {
+            if state
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .dump_bodies()
+            {
                 eprintln!(
-                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset={preset}",
+                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset=agent",
                     saved, pct,
                 );
             }
 
             // Emit a TRIM event when detailed logging is on.
-            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
-                let stages_json = serde_json::to_string(&out.stages.iter().map(|s| serde_json::json!({
-                    "name": s.name,
-                    "applied": s.applied,
-                    "before": s.tokens_before,
-                    "after": s.tokens_after,
-                    "note": s.note,
-                })).collect::<Vec<_>>()).unwrap_or_default();
+            if state
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .log_detailed()
+            {
+                let stages_json = serde_json::to_string(
+                    &out.stages
+                        .iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "applied": s.applied,
+                                "before": s.tokens_before,
+                                "after": s.tokens_after,
+                                "note": s.note,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default();
                 state.log_event(crate::db_log::LogEvent {
                     seq: req_id,
                     event_type: "TRIM".to_string(),
                     tier: Some(format!("{tier:?}")),
-                    effective_tier: Some(format!("{effective_tier:?}")),
-                    target: Some(target.as_str().to_string()),
+                    effective_tier: None,
+                    target: None,
                     model: Some(model.clone()),
-                    reason: Some(format!("before={} after={} preset={preset}", trim_tokens_before, trim_tokens_after)),
+                    target_model: None,
+                    reason: Some(format!(
+                        "before={} after={} preset=agent",
+                        trim_tokens_before, trim_tokens_after
+                    )),
                     detail: Some(stages_json),
                     ..Default::default()
                 });
@@ -347,8 +380,8 @@ pub async fn post_chat_completions(
     let mut trim_tokens_before = 0u64;
     let mut trim_tokens_after = 0u64;
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
-        let preset = state.trim_preset.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let out = crate::trim::trim_openai(payload, &preset);
+        // OpenAI clients (Zed etc.) get the auto preset for shape-routing.
+        let out = crate::trim::trim_openai(payload, "auto");
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;
@@ -361,30 +394,52 @@ pub async fn post_chat_completions(
                 0.0
             };
 
-            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies() {
+            if state
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .dump_bodies()
+            {
                 eprintln!(
-                    "[llm-proxy] trim(openai): −{} tok ({:.1}%) — preset={preset}",
+                    "[llm-proxy] trim(openai): −{} tok ({:.1}%) — preset=auto",
                     saved, pct,
                 );
             }
 
             // Emit a TRIM event when detailed logging is on (mirrors /v1/messages).
-            if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
-                let stages_json = serde_json::to_string(&out.stages.iter().map(|s| serde_json::json!({
-                    "name": s.name,
-                    "applied": s.applied,
-                    "before": s.tokens_before,
-                    "after": s.tokens_after,
-                    "note": s.note,
-                })).collect::<Vec<_>>()).unwrap_or_default();
+            if state
+                .log_level
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .log_detailed()
+            {
+                let stages_json = serde_json::to_string(
+                    &out.stages
+                        .iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "applied": s.applied,
+                                "before": s.tokens_before,
+                                "after": s.tokens_after,
+                                "note": s.note,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default();
                 state.log_event(crate::db_log::LogEvent {
                     seq: req_id,
                     event_type: "TRIM".to_string(),
                     tier: Some(format!("{:?}", Tier::OpenAi)),
-                    effective_tier: Some(format!("{:?}", Tier::OpenAi)),
-                    target: Some(model.clone()),
+                    effective_tier: None,
+                    target: None,
                     model: Some(model.clone()),
-                    reason: Some(format!("before={} after={} preset={preset}", trim_tokens_before, trim_tokens_after)),
+                    target_model: None,
+                    reason: Some(format!(
+                        "before={} after={} preset=auto",
+                        trim_tokens_before, trim_tokens_after
+                    )),
                     detail: Some(stages_json),
                     ..Default::default()
                 });

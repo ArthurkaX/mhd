@@ -88,14 +88,9 @@ pub struct Settings {
     pub vision_prompt: String,
 
     /// Master switch for llmtrim-powered request compression.
+    /// Default: off.
     #[serde(default)]
     pub trim_enabled: bool,
-
-    /// llmtrim preset: "auto" picks agent/code/rag/aggressive per-request from
-    /// the payload shape, which is correct for mixed clients (Claude Code, Zed,
-    /// raw OpenAI) without knowing the client.
-    #[serde(default = "default_trim_preset")]
-    pub trim_preset: String,
 }
 
 impl Default for Settings {
@@ -115,7 +110,6 @@ impl Default for Settings {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: false,
-            trim_preset: default_trim_preset(),
         }
     }
 }
@@ -175,10 +169,7 @@ pub struct Config {
     pub opus_downgrade_enabled: bool,
     /// Sonnet downgrade when no thinking.
     pub sonnet_downgrade_enabled: bool,
-    /// Enable llmtrim-powered request compression.
     pub trim_enabled: bool,
-    /// llmtrim preset: "auto" | "agent" | "aggressive" | "code" | "rag" | "safe".
-    pub trim_preset: String,
 }
 
 impl Config {
@@ -196,7 +187,6 @@ impl Config {
             opus_downgrade_enabled: settings.opus_downgrade_enabled,
             sonnet_downgrade_enabled: settings.sonnet_downgrade_enabled,
             trim_enabled: settings.trim_enabled,
-            trim_preset: settings.trim_preset.clone(),
         }
     }
 
@@ -217,7 +207,6 @@ impl Config {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: self.trim_enabled,
-            trim_preset: self.trim_preset.clone(),
         }
     }
 
@@ -291,12 +280,6 @@ fn default_vision_prompt() -> String {
 
 fn default_bind_ip() -> String {
     "127.0.0.1".to_string()
-}
-
-fn default_trim_preset() -> String {
-    // auto lets llmtrim pick agent/code/rag/aggressive per-request from the
-    // payload shape — correct for mixed clients without knowing the client.
-    "auto".to_string()
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────

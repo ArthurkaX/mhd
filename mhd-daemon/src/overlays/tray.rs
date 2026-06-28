@@ -67,7 +67,7 @@ fn state_ref() -> Option<&'static TrayState> {
 
 // ── Icon loading ───────────────────────────────────────────────────────
 
-fn load_tray_icon() -> HICON {
+pub(crate) fn load_tray_icon() -> HICON {
     unsafe {
         let hinst = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
 
