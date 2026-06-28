@@ -11,6 +11,8 @@
 
 use serde_json::Value;
 
+use llmtrim_core::compress_with_config;
+use llmtrim_core::config::DenseConfig;
 use llmtrim_core::ir::ProviderKind;
 
 /// Minimum serialised body length (in bytes) before Trim even attempts work.
@@ -53,7 +55,12 @@ pub struct TrimOutcome {
 /// - `rewrite_request` returns an error.
 /// - Result JSON fails to re-parse.
 /// - Result is not smaller (`after ≥ before`).
-fn trim_with_provider(payload: Value, provider: Option<ProviderKind>, preset: &str) -> TrimOutcome {
+fn trim_with_provider(
+    payload: Value,
+    provider: Option<ProviderKind>,
+    preset: &str,
+    custom_config: Option<&DenseConfig>,
+) -> TrimOutcome {
     let original = payload;
     let preset = preset.to_string();
 
@@ -68,11 +75,16 @@ fn trim_with_provider(payload: Value, provider: Option<ProviderKind>, preset: &s
                 tokens_after: 0,
                 preset,
                 stages: Vec::new(),
-            }
+            };
         }
     };
 
-    match llmtrim_core::rewrite_request(&input, provider, Some(&preset)) {
+    let result = match custom_config {
+        Some(cfg) => compress_with_config(&input, provider, cfg),
+        None => llmtrim_core::rewrite_request(&input, provider, Some(&preset)),
+    };
+
+    match result {
         Ok(res) if res.input_tokens_after.0 < res.input_tokens_before.0 => {
             match serde_json::from_str::<Value>(&res.request_json) {
                 Ok(body) => TrimOutcome {
@@ -124,7 +136,15 @@ fn trim_with_provider(payload: Value, provider: Option<ProviderKind>, preset: &s
 /// - Result JSON fails to re-parse.
 /// - Result is not smaller (`after ≥ before`).
 pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
-    trim_with_provider(payload, Some(ProviderKind::Anthropic), preset)
+    // Build combined config from the accepted Phase 2 tunings.
+    // Falls back to preset-based rewrite_request if the preset is unknown.
+    let cfg = DenseConfig::preset(preset).map(|mut cfg| {
+        cfg.normalize_unicode = true;
+        cfg.toolout_max_lines = 25;
+        cfg.tool_max_desc_chars = 150;
+        cfg
+    });
+    trim_with_provider(payload, Some(ProviderKind::Anthropic), preset, cfg.as_ref())
 }
 
 /// Run an OpenAI-format request body through `llmtrim-core`'s `rewrite_request`.
@@ -133,7 +153,7 @@ pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
 ///
 /// Same guarantees as [`trim_anthropic`].
 pub fn trim_openai(payload: Value, preset: &str) -> TrimOutcome {
-    trim_with_provider(payload, Some(ProviderKind::OpenAi), preset)
+    trim_with_provider(payload, Some(ProviderKind::OpenAi), preset, None)
 }
 
 #[cfg(test)]
