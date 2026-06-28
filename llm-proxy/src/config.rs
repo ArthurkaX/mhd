@@ -91,6 +91,11 @@ pub struct Settings {
     /// Default: off.
     #[serde(default)]
     pub trim_enabled: bool,
+
+    /// Whether to write structured events to `proxy.db`.
+    /// Default: on — the DB log is opened at proxy startup when true.
+    #[serde(default = "default_db_log_enabled")]
+    pub db_log_enabled: bool,
 }
 
 impl Default for Settings {
@@ -110,6 +115,7 @@ impl Default for Settings {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: false,
+            db_log_enabled: default_db_log_enabled(),
         }
     }
 }
@@ -170,6 +176,8 @@ pub struct Config {
     /// Sonnet downgrade when no thinking.
     pub sonnet_downgrade_enabled: bool,
     pub trim_enabled: bool,
+    /// Whether to write structured events to `proxy.db`.
+    pub db_log_enabled: bool,
 }
 
 impl Config {
@@ -187,6 +195,7 @@ impl Config {
             opus_downgrade_enabled: settings.opus_downgrade_enabled,
             sonnet_downgrade_enabled: settings.sonnet_downgrade_enabled,
             trim_enabled: settings.trim_enabled,
+            db_log_enabled: settings.db_log_enabled,
         }
     }
 
@@ -207,6 +216,7 @@ impl Config {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: self.trim_enabled,
+            db_log_enabled: self.db_log_enabled,
         }
     }
 
@@ -269,7 +279,11 @@ fn default_fable_target() -> String {
 }
 
 fn default_log_level() -> String {
-    "none".to_string()
+    "maximal".to_string()
+}
+
+fn default_db_log_enabled() -> bool {
+    true
 }
 
 fn default_vision_prompt() -> String {
@@ -335,6 +349,7 @@ pub fn save(cfg: &Config) -> anyhow::Result<()> {
     settings.log_level = cfg.log_level.clone();
     settings.opus_downgrade_enabled = cfg.opus_downgrade_enabled;
     settings.sonnet_downgrade_enabled = cfg.sonnet_downgrade_enabled;
+    settings.db_log_enabled = cfg.db_log_enabled;
     // vision_model is managed separately via save_settings/load_settings
 
     persist_settings(&dir, &settings)?;

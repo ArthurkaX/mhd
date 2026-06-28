@@ -113,20 +113,26 @@ pub struct TraceEntry {
     pub model: String,
     pub downgraded: bool,
     pub reason: String,
-    /// Input tokens reported in the response (0 if not yet available).
+    /// Fresh (uncached) prompt tokens billed at 1× (0 until response arrives).
     pub input_tokens: u64,
-    /// Output tokens reported in the response (0 if not yet available).
+    /// Output tokens reported in the response (0 until response arrives).
     pub output_tokens: u64,
-    /// Cached prompt tokens reported by the upstream
-    /// (`usage.prompt_tokens_details.cached_tokens`); 0 = no cache hit / not
-    /// reported.
-    pub cached_tokens: u64,
+    /// Tokens served from the prompt cache (cache_read_input_tokens / cached_tokens).
+    pub cache_read_tokens: u64,
+    /// Tokens written to the prompt cache this turn (Anthropic only; 0 for OpenAI).
+    pub cache_creation_tokens: u64,
     /// True if llmtrim was applied to this request.
     pub trim_applied: bool,
     /// Estimated tokens before trimming.
     pub trim_tokens_before: u64,
     /// Estimated tokens after trimming.
     pub trim_tokens_after: u64,
+    /// Active trim preset name (e.g. "agent", "auto"). Empty when not applied.
+    pub trim_preset: String,
+    /// JSON snapshot of active trim knobs. Empty when not applied.
+    pub trim_config_json: String,
+    /// JSON array of per-stage trim reports. Empty when not applied.
+    pub trim_stages_json: String,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -204,10 +210,18 @@ pub struct AppState {
 
     /// Master switch for llmtrim request compression.
     pub trim_enabled: RwLock<bool>,
+
+    /// Stable id for this daemon run (epoch-millis at construction). Used to
+    /// group all requests from one process lifetime in the `requests` table.
+    pub run_id: u64,
 }
 
 impl AppState {
     pub fn from_config(cfg: &Config) -> Arc<Self> {
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
         Arc::new(Self {
             anthropic_key: RwLock::new(cfg.anthropic_key.clone()),
             upstream_base_url: RwLock::new(cfg.upstream_base_url.clone()),
@@ -231,6 +245,7 @@ impl AppState {
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
+            run_id,
         })
     }
 
@@ -312,19 +327,56 @@ impl AppState {
     }
 
     /// Record a routing decision into the ring buffer, evicting the oldest
-    /// entry if the buffer is full. Also mirrors the entry to proxy.db as a
-    /// `TRACE` event so everything visible in the overlay is queryable later.
+    /// entry if the buffer is full. Also writes a typed row to proxy.db's
+    /// `requests` table so everything visible in the overlay is queryable later.
+    /// DB write happens whenever the log is enabled — independent of log_level.
     pub fn push_trace(&self, entry: TraceEntry) {
-        self.log_event(crate::db_log::LogEvent {
-            seq: entry.seq,
-            event_type: "TRACE".to_string(),
-            tier: Some(format!("{:?}", entry.tier)),
-            effective_tier: Some(format!("{:?}", entry.effective_tier)),
-            target: Some(entry.target.clone()),
-            model: Some(entry.model.clone()),
-            reason: Some(entry.reason.clone()),
-            ..Default::default()
-        });
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                let row = crate::db_log::RequestRow {
+                    run_id: self.run_id,
+                    seq: entry.seq,
+                    ts_start: crate::providers::now_ms(),
+                    tier: Some(entry.tier.slot().to_string()),
+                    effective_tier: Some(entry.effective_tier.slot().to_string()),
+                    target: Some(entry.target.clone()),
+                    model: Some(entry.model.clone()),
+                    downgraded: entry.downgraded,
+                    downgrade_reason: if entry.downgraded {
+                        Some(entry.reason.clone())
+                    } else {
+                        None
+                    },
+                    trim_applied: entry.trim_applied,
+                    trim_preset: if entry.trim_applied {
+                        Some(entry.trim_preset.clone())
+                    } else {
+                        None
+                    },
+                    trim_config: if entry.trim_applied {
+                        Some(entry.trim_config_json.clone())
+                    } else {
+                        None
+                    },
+                    trim_tokens_before: if entry.trim_applied {
+                        Some(entry.trim_tokens_before)
+                    } else {
+                        None
+                    },
+                    trim_tokens_after: if entry.trim_applied {
+                        Some(entry.trim_tokens_after)
+                    } else {
+                        None
+                    },
+                    trim_stages: if entry.trim_applied {
+                        Some(entry.trim_stages_json.clone())
+                    } else {
+                        None
+                    },
+                };
+                db.insert_request(&row);
+            }
+        }
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         if trace.len() >= MAX_TRACE_ENTRIES {
             trace.pop_front();
@@ -334,14 +386,15 @@ impl AppState {
 
     /// Update token counts on the trace entry matching this req_id.
     /// Best-effort: silently no-ops if the entry was already evicted.
-    /// Also mirrors the token update to proxy.db as a `TRACE_TOKENS` event
-    /// (same `seq` as the original `TRACE` event, so they are correlated).
+    /// Also updates the completion columns on proxy.db's `requests` row
+    /// (independent of log_level — DB write happens whenever the log is open).
     pub fn update_trace_tokens(
         &self,
         req_id: u64,
         input_tokens: u64,
         output_tokens: u64,
-        cached_tokens: u64,
+        cache_read_tokens: u64,
+        cache_creation_tokens: u64,
     ) {
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         // Search from the back — the matching entry is almost certainly recent.
@@ -349,19 +402,39 @@ impl AppState {
             if entry.seq == req_id {
                 entry.input_tokens = input_tokens;
                 entry.output_tokens = output_tokens;
-                entry.cached_tokens = cached_tokens;
+                entry.cache_read_tokens = cache_read_tokens;
+                entry.cache_creation_tokens = cache_creation_tokens;
                 break;
             }
         }
-        self.log_event(crate::db_log::LogEvent {
-            seq: req_id,
-            event_type: "TRACE_TOKENS".to_string(),
-            reason: Some(format!(
-                "input_tokens={} output_tokens={} cached_tokens={}",
-                input_tokens, output_tokens, cached_tokens
-            )),
-            ..Default::default()
-        });
+        drop(trace);
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                db.update_request_completion(
+                    self.run_id,
+                    req_id,
+                    &crate::providers::now_ms(),
+                    None,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
+    /// Write a free-text note to the `notes` table in proxy.db.
+    /// Best-effort: no-ops if the log is disabled or the write fails.
+    pub fn log_note(&self, text: &str) {
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                db.insert_note(&crate::providers::now_ms(), text);
+            }
+        }
     }
 
     /// Record a vision screenshot request into the ring buffer.
@@ -502,6 +575,7 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            db_log_enabled: self.is_db_log_enabled(),
         }
     }
 }

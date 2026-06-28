@@ -44,6 +44,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
         sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,
         trim_enabled: cfg.trim_enabled,
+        db_log_enabled: true, // DB log is always on; verbosity is a separate knob
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -149,6 +150,15 @@ pub fn log_event(event: llm_proxy::LogEvent) {
     let guard = CONTROL.lock().unwrap();
     if let Some(ref c) = *guard {
         c.log_event(event);
+    }
+}
+
+/// Write a free-text note to the proxy's SQLite database.
+/// Silently no-ops if the proxy is not running.
+pub fn log_note(text: &str) {
+    let guard = CONTROL.lock().unwrap();
+    if let Some(ref c) = *guard {
+        c.log_note(text);
     }
 }
 

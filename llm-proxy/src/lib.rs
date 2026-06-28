@@ -176,6 +176,12 @@ impl ProxyControl {
         self.state.is_db_log_enabled()
     }
 
+    /// Write a free-text note to the `notes` table in proxy.db.
+    /// Best-effort: no-ops if the log is disabled or the write fails.
+    pub fn log_note(&self, text: &str) {
+        self.state.log_note(text);
+    }
+
     /// Shut the server down gracefully and join its thread.
     pub fn stop(&mut self) {
         if let Some(tx) = self.shutdown.take() {
@@ -218,6 +224,11 @@ pub fn start_embedded_with(
     apply_env_fallbacks(&mut cfg);
 
     let state = AppState::from_config(&cfg);
+
+    // Open the database log at startup when configured (independent of verbosity).
+    if cfg.db_log_enabled {
+        state.set_db_log_enabled(true);
+    }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     // Reports whether the listener bound successfully.

@@ -124,6 +124,8 @@ pub async fn send_request(
     let json: Value = resp.json().await?;
 
     // Push token usage into the trace entry.
+    // On the Anthropic native path, input_tokens is already fresh (uncached).
+    // cache_read_input_tokens and cache_creation_input_tokens are separate fields.
     if let Some(usage) = json.get("usage") {
         let inp = usage
             .get("input_tokens")
@@ -133,8 +135,16 @@ pub async fn send_request(
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_creation = usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if inp > 0 || out > 0 {
-            state.update_trace_tokens(req_id, inp, out, 0);
+            state.update_trace_tokens(req_id, inp, out, cache_read, cache_creation);
         }
     }
 
@@ -232,11 +242,6 @@ pub async fn stream_request(
 
     let mut byte_stream = resp.bytes_stream();
     let state_for_log = state.clone();
-    let model_owned = payload
-        .get("model")
-        .and_then(|m| m.as_str())
-        .unwrap_or("")
-        .to_string();
     let s = async_stream::stream! {
         // Hold the in-flight guard for the lifetime of the stream.
         let _guard = guard;
@@ -303,22 +308,12 @@ pub async fn stream_request(
 
             yield Ok::<_, std::io::Error>(chunk);
         }
-        // Total prompt = fresh input + cache read + cache creation, mirroring the
-        // OpenAI path where `input_tokens` is the whole prompt and `cached` a subset.
-        let input_tokens = base_input + cache_read + cache_creation;
-        // Push token usage into the trace entry (cache_read drives the hit colour).
-        if input_tokens > 0 || output_tokens > 0 {
-            state_for_log.update_trace_tokens(req_id, input_tokens, output_tokens, cache_read);
-        }
-        // Emit a CACHE event when detailed logging is on (mirrors the upstream path).
-        if input_tokens > 0 && detailed {
-            state_for_log.log_event(crate::db_log::LogEvent {
-                seq: req_id,
-                event_type: "CACHE".to_string(),
-                model: Some(model_owned.clone()),
-                reason: Some(super::upstream::cache_event_reason(input_tokens, cache_read)),
-                ..Default::default()
-            });
+        // Push token usage into the trace entry with correctly separated counts:
+        //   input_tokens        = fresh (uncached) prompt tokens billed at 1×
+        //   cache_read          = tokens served from the prompt cache
+        //   cache_creation      = tokens written to the cache this turn
+        if base_input > 0 || output_tokens > 0 {
+            state_for_log.update_trace_tokens(req_id, base_input, output_tokens, cache_read, cache_creation);
         }
         if log {
             if had_error {

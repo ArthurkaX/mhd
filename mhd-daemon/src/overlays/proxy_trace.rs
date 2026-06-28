@@ -318,6 +318,27 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         debug_style,
     );
 
+    // Note button (left of Debug)
+    let note_btn_w = (42.0 * scale) as i32;
+    let note_btn_h = (20.0 * scale) as i32;
+    let note_btn_x = debug_btn_x - (4.0 * scale) as i32 - note_btn_w;
+    let note_btn_y = debug_btn_y;
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        note_btn_x,
+        note_btn_y,
+        note_btn_w,
+        note_btn_h,
+        "Note",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Secondary,
+    );
+
     // Minimize button (between debug and close)
     let minimize_btn_rect = RECT {
         left: minimize_btn_x,
@@ -401,27 +422,94 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let _ = DeleteObject(sep_brush);
     }
 
-    // ── Column headers ───────────────────────────────────────────
-    let col_y = sep_y + (4.0 * scale) as i32;
+    // ── Fetch trace snapshot (needed for summary + rows) ─────────
+    let trace = llm_proxy::get_trace();
+    let total_cw = win_w - pad * 2;
+
+    // ── Summary line ─────────────────────────────────────────────
+    let summary_y = sep_y + (4.0 * scale) as i32;
     unsafe {
         let _ = SelectObject(dib_dc, hfont_small);
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
+    {
+        let n = trace.len();
+        // Trim avg: average saved% over entries that had trim applied with savings.
+        let (trim_count, trim_sum) =
+            trace.iter().fold((0usize, 0.0f64), |(cnt, sum), e| {
+                if e.trim_applied && e.trim_tokens_before > 0 {
+                    let saved = e.trim_tokens_before.saturating_sub(e.trim_tokens_after);
+                    if saved > 0 {
+                        let pct = saved as f64 / e.trim_tokens_before as f64 * 100.0;
+                        (cnt + 1, sum + pct)
+                    } else {
+                        (cnt, sum)
+                    }
+                } else {
+                    (cnt, sum)
+                }
+            });
+        // Cache-hit avg: average cache_read/total_prompt% over sizeable requests.
+        let (cache_count, cache_sum) =
+            trace.iter().fold((0usize, 0.0f64), |(cnt, sum), e| {
+                let total = e.input_tokens + e.cache_read_tokens + e.cache_creation_tokens;
+                if total >= 1024 {
+                    let ratio = e.cache_read_tokens as f64 / total as f64 * 100.0;
+                    (cnt + 1, sum + ratio)
+                } else {
+                    (cnt, sum)
+                }
+            });
+        let trim_avg = if trim_count > 0 {
+            format!("{:.0}%", trim_sum / trim_count as f64)
+        } else {
+            "\u{2014}".to_string()
+        };
+        let cache_avg = if cache_count > 0 {
+            format!("{:.0}%", cache_sum / cache_count as f64)
+        } else {
+            "\u{2014}".to_string()
+        };
+        let summary = format!(
+            "trim avg {} \u{00B7} cache-hit {} \u{00B7} n={}",
+            trim_avg, cache_avg, n
+        );
+        let mut sw = crate::osd::to_utf16_z(&summary);
+        let mut summary_rc = RECT {
+            left: pad,
+            top: summary_y,
+            right: win_w - pad,
+            bottom: summary_y + row_h,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut sw,
+                &mut summary_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
+    }
+
+    // ── Column headers ───────────────────────────────────────────
+    // Shift down one row to make room for the summary line.
+    let col_y = summary_y + row_h;
     unsafe {
+        let _ = SelectObject(dib_dc, hfont_small);
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
 
-    let total_cw = win_w - pad * 2;
-    // Column widths: fixed reasonable sizes so Tier/Eff fit "Sonnet" comfortably
+    // Columns: #  Route  Target  In  Out  Cache  Trim
     let col_widths = [
-        (32.0 * scale) as i32, // # (~32px)
-        (60.0 * scale) as i32, // Tier (~60px)
-        (60.0 * scale) as i32, // Eff (~60px)
-        total_cw - ((32.0 + 60.0 + 60.0 + 48.0 + 48.0 + 125.0) * scale) as i32, // Target = remainder
-        (48.0 * scale) as i32, // In (~48px)
-        (48.0 * scale) as i32, // Out (~48px)
-        (125.0 * scale) as i32, // Reason (~125px, +5 chars over the original 90)
+        (32.0 * scale) as i32,  // # (~32px)
+        (95.0 * scale) as i32,  // Route (~95px — fits "Sonnet→Haiku")
+        total_cw - ((32.0 + 95.0 + 48.0 + 48.0 + 88.0 + 80.0) * scale) as i32, // Target = remainder
+        (48.0 * scale) as i32,  // In (~48px)
+        (48.0 * scale) as i32,  // Out (~48px)
+        (88.0 * scale) as i32,  // Cache (~88px)
+        (80.0 * scale) as i32,  // Trim (~80px)
     ];
-    let col_headers = ["#", "Tier", "Eff", "Target", "In", "Out", "Reason"];
+    let col_headers = ["#", "Route", "Target", "In", "Out", "Cache", "Trim"];
     let mut col_x = pad;
     for (i, label) in col_headers.iter().enumerate() {
         let mut lw = crate::osd::to_utf16_z(label);
@@ -444,7 +532,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     // ── Trace rows ───────────────────────────────────────────────
-    let trace = llm_proxy::get_trace();
     let vision_trace = llm_proxy::get_vision_trace();
     let list_top = col_y + header_h;
     let max_rows: i32 = if vision_trace.is_empty() { 50 } else { 32 };
@@ -458,8 +545,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         if ry + row_h > win_h - pad {
             break;
         }
-
-        let is_downgraded = entry.downgraded;
 
         // Row background (zebra)
         if i % 2 == 1 {
@@ -480,16 +565,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             }
         }
 
-        // Dimmed if not downgraded
-        let text_color = if is_downgraded {
-            theme.text
-        } else {
-            theme.text_muted
-        };
-        unsafe {
-            let _ = SetTextColor(dib_dc, text_color.to_colorref());
-        }
-
         fn fmt_tokens(n: u64) -> String {
             if n == 0 {
                 "\u{2014}".to_string() // em dash
@@ -499,15 +574,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 n.to_string()
             }
         }
-
-        // Cache state classification for this row.
-        let cache_hit = entry.cached_tokens > 0;
-        let cache_miss = entry.cached_tokens == 0 && entry.input_tokens >= 1024;
-        let cache_ratio = if entry.input_tokens > 0 {
-            entry.cached_tokens as f64 / entry.input_tokens as f64
-        } else {
-            0.0
-        };
 
         /// Convert HSV to Argb. h in degrees [0,360), s/v in [0,1].
         fn hsv_to_argb(h: f64, s: f64, v: f64) -> Argb {
@@ -531,66 +597,95 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             )
         }
 
-        // Build reason text: downgrade warning wins, then trim, then cache fallback.
-        let reason_text = if entry.downgraded {
-            format!("\u{26A0} {}", entry.reason)
-        } else if entry.trim_applied {
-            let saved = entry.trim_tokens_before.saturating_sub(entry.trim_tokens_after);
-            if saved > 0 && entry.trim_tokens_before > 0 {
-                let pct = saved as f64 / entry.trim_tokens_before as f64 * 100.0;
-                format!("\u{2212}{} tok ({:.0}%)", fmt_tokens(saved), pct)
+        // total_prompt = fresh input + cache reads + cache writes.
+        let total_prompt =
+            entry.input_tokens + entry.cache_read_tokens + entry.cache_creation_tokens;
+        let cache_hit = entry.cache_read_tokens > 0;
+        let cache_miss = entry.cache_read_tokens == 0 && total_prompt >= 1024;
+        let cache_ratio = if total_prompt > 0 {
+            entry.cache_read_tokens as f64 / total_prompt as f64
+        } else {
+            0.0
+        };
+
+        // ── Route column (col 1) ─────────────────────────────────
+        // Downgraded: "{tier}→{eff}" in accent; otherwise "{tier}" in muted.
+        let (route_text, route_color) = if entry.downgraded {
+            (
+                format!("{:?}\u{2192}{:?}", entry.tier, entry.effective_tier),
+                theme.accent,
+            )
+        } else {
+            (format!("{:?}", entry.tier), theme.text_muted)
+        };
+
+        // ── Cache column (col 5) ─────────────────────────────────
+        let cache_text = if cache_hit {
+            let ratio_pct = cache_ratio * 100.0;
+            if entry.cache_creation_tokens > 0 {
+                format!(
+                    "{:.0}% +{}",
+                    ratio_pct,
+                    fmt_tokens(entry.cache_creation_tokens)
+                )
             } else {
-                String::new()
+                format!("{:.0}%", ratio_pct)
             }
+        } else if cache_miss {
+            "miss".to_string()
         } else {
             String::new()
         };
-
-        // When reason would otherwise be empty, fill with cache info
-        // (the color alone conveys cache state, but the text helps at a glance).
-        let reason_display = if reason_text.is_empty() && (cache_hit || cache_miss) {
-            if cache_hit {
-                format!(
-                    "cache {} ({:.0}%)",
-                    fmt_tokens(entry.cached_tokens),
-                    cache_ratio * 100.0
-                )
-            } else {
-                "cache miss".to_string()
-            }
-        } else {
-            reason_text
-        };
-
-        // Cache-aware colour gradient for the Reason column only.
-        //   Hit:   hue 0° (red, small ratio) → 120° (green, full cache hit).
-        //   Miss:  pale red (small prompt) → vivid red (large prompt, bigger miss).
         let cache_color = if cache_hit {
             let t = cache_ratio.clamp(0.0, 1.0);
             hsv_to_argb(120.0 * t, 0.7, 0.9)
         } else if cache_miss {
-            let severity = (entry.input_tokens as f64 / 100_000.0).clamp(0.0, 1.0);
+            let severity = (total_prompt as f64 / 100_000.0).clamp(0.0, 1.0);
             hsv_to_argb(0.0, 0.3 + severity * 0.5, 0.6 + severity * 0.4)
         } else {
-            text_color
+            theme.text
+        };
+
+        // ── Trim column (col 6) ──────────────────────────────────
+        let (trim_text, trim_color) = if entry.trim_applied && entry.trim_tokens_before > 0 {
+            let saved = entry.trim_tokens_before.saturating_sub(entry.trim_tokens_after);
+            if saved > 0 {
+                let pct = saved as f64 / entry.trim_tokens_before as f64 * 100.0;
+                (
+                    format!("\u{2212}{} ({:.0}%)", fmt_tokens(saved), pct),
+                    theme.accent,
+                )
+            } else {
+                (String::new(), theme.text)
+            }
+        } else {
+            (String::new(), theme.text)
         };
 
         let values = [
             entry.seq.to_string(),
-            format!("{:?}", entry.tier),
-            format!("{:?}", entry.effective_tier),
+            route_text,
             entry.target.clone(),
-            fmt_tokens(entry.input_tokens),
+            fmt_tokens(total_prompt),
             fmt_tokens(entry.output_tokens),
-            reason_display,
+            cache_text,
+            trim_text,
+        ];
+        // Per-column colors: # and Target/In/Out in theme.text; Route/Cache/Trim have own colors.
+        let col_colors = [
+            theme.text,
+            route_color,
+            theme.text,
+            theme.text,
+            theme.text,
+            cache_color,
+            trim_color,
         ];
 
         let mut col_x = pad;
         for (j, val) in values.iter().enumerate() {
-            // Override text color for the Reason column based on cache state.
-            let col_color = if j == 6 { cache_color } else { text_color };
             unsafe {
-                let _ = SetTextColor(dib_dc, col_color.to_colorref());
+                let _ = SetTextColor(dib_dc, col_colors[j].to_colorref());
             }
             let mut vw = crate::osd::to_utf16_z(val);
             let cw = col_widths[j];
@@ -792,6 +887,10 @@ unsafe extern "system" fn panel_wndproc(
                 let minimize_btn_x = close_btn_x - (4.0 * scale) as i32 - btn_size;
                 let debug_btn_x = minimize_btn_x - (4.0 * scale) as i32 - debug_btn_w;
                 let debug_btn_y = pad + (close_btn_w - debug_btn_h) / 2;
+                let note_btn_w = (42.0 * scale) as i32;
+                let note_btn_h = (20.0 * scale) as i32;
+                let note_btn_x = debug_btn_x - (4.0 * scale) as i32 - note_btn_w;
+                let note_btn_y = debug_btn_y;
                 // Check close button first
                 let btn_left = win_w - pad - btn_size;
                 if pt.x >= btn_left - 4
@@ -818,6 +917,14 @@ unsafe extern "system" fn panel_wndproc(
                 {
                     return LRESULT(HTCLIENT as isize);
                 }
+                // Check note button
+                if pt.x >= note_btn_x
+                    && pt.x < note_btn_x + note_btn_w
+                    && pt.y >= note_btn_y
+                    && pt.y < note_btn_y + note_btn_h
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
                 let font_h = -(14.0 * scale) as i32;
                 let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
                 if pt.y < header_bottom {
@@ -841,6 +948,8 @@ unsafe extern "system" fn panel_wndproc(
                 let btn_size = (20.0 * scale) as i32;
                 let debug_btn_w = (42.0 * scale) as i32;
                 let debug_btn_h = (20.0 * scale) as i32;
+                let note_btn_w = (42.0 * scale) as i32;
+                let note_btn_h = (20.0 * scale) as i32;
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
                 let win_w = wr.right - wr.left;
@@ -850,6 +959,8 @@ unsafe extern "system" fn panel_wndproc(
                 let minimize_btn_x = close_btn_x - (4.0 * scale) as i32 - btn_size;
                 let debug_btn_x = minimize_btn_x - (4.0 * scale) as i32 - debug_btn_w;
                 let debug_btn_y = pad + (btn_size - debug_btn_h) / 2;
+                let note_btn_x = debug_btn_x - (4.0 * scale) as i32 - note_btn_w;
+                let note_btn_y = debug_btn_y;
                 // Check minimize button
                 let min_btn_left = minimize_btn_x;
                 if x >= min_btn_left - 4
@@ -868,6 +979,24 @@ unsafe extern "system" fn panel_wndproc(
                 {
                     crate::llm_proxy::toggle_debug_logging();
                     paint_panel(hwnd, 0.0, 0, 0);
+                    return LRESULT(0);
+                }
+                // Check note button — opens Quick Note writing to proxy.db
+                if x >= note_btn_x
+                    && x < note_btn_x + note_btn_w
+                    && y >= note_btn_y
+                    && y < note_btn_y + note_btn_h
+                {
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme;
+                    if !state_ptr.is_null() {
+                        let theme = (*state_ptr).clone();
+                        crate::overlays::note::show(
+                            theme,
+                            crate::overlays::note::NoteSink::ProxyDb,
+                            false,
+                        );
+                    }
                     return LRESULT(0);
                 }
                 // Check close button

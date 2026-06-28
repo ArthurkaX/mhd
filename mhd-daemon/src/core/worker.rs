@@ -134,7 +134,11 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                     false
                 }
             };
-            crate::overlays::note::show(handle.theme(), cfg.notes_dir.clone(), bb);
+            crate::overlays::note::show(
+                handle.theme(),
+                crate::overlays::note::NoteSink::File(cfg.notes_dir.clone()),
+                bb,
+            );
         }
         Action::Pomodoro => {
             let bb = {

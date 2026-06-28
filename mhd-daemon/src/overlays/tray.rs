@@ -321,7 +321,11 @@ unsafe extern "system" fn wnd_proc(
                         let bb = state.app.blackbox_enabled();
                         #[cfg(not(feature = "blackbox"))]
                         let bb = false;
-                        note::show(state.app.theme(), cfg.notes_dir.clone(), bb);
+                        note::show(
+                            state.app.theme(),
+                            note::NoteSink::File(cfg.notes_dir.clone()),
+                            bb,
+                        );
                     }
                     CMD_DRAW => {
                         draw::show(state.app.theme(), state.app.draw_dir());

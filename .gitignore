@@ -6,3 +6,4 @@ _patch_*.py
 backLog.md
 /.claude/
 Plan.md
+.roadmap/

@@ -44,6 +44,8 @@ pub struct TrimOutcome {
     pub preset: String,
     /// Per-stage reports (empty if not applied).
     pub stages: Vec<StageInfo>,
+    /// JSON snapshot of the active compression knobs (empty when not applied).
+    pub config_json: String,
 }
 
 /// Run a provider-agnostic request body through `llmtrim-core`'s `rewrite_request`.
@@ -60,6 +62,7 @@ fn trim_with_provider(
     provider: Option<ProviderKind>,
     preset: &str,
     custom_config: Option<&DenseConfig>,
+    config_json: String,
 ) -> TrimOutcome {
     let original = payload;
     let preset = preset.to_string();
@@ -75,6 +78,7 @@ fn trim_with_provider(
                 tokens_after: 0,
                 preset,
                 stages: Vec::new(),
+                config_json: String::new(),
             };
         }
     };
@@ -104,6 +108,7 @@ fn trim_with_provider(
                             note: s.note.clone(),
                         })
                         .collect(),
+                    config_json,
                 },
                 Err(_) => TrimOutcome {
                     body: original,
@@ -112,6 +117,7 @@ fn trim_with_provider(
                     tokens_after: 0,
                     preset,
                     stages: Vec::new(),
+                    config_json: String::new(),
                 },
             }
         }
@@ -122,6 +128,7 @@ fn trim_with_provider(
             tokens_after: 0,
             preset,
             stages: Vec::new(),
+            config_json: String::new(),
         },
     }
 }
@@ -144,7 +151,15 @@ pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
         cfg.tool_max_desc_chars = 150;
         cfg
     });
-    trim_with_provider(payload, Some(ProviderKind::Anthropic), preset, cfg.as_ref())
+    // Snapshot the active knobs so the DB row knows exactly what ran.
+    let config_json = serde_json::json!({
+        "preset": preset,
+        "normalize_unicode": true,
+        "toolout_max_lines": 25,
+        "tool_max_desc_chars": 150,
+    })
+    .to_string();
+    trim_with_provider(payload, Some(ProviderKind::Anthropic), preset, cfg.as_ref(), config_json)
 }
 
 /// Run an OpenAI-format request body through `llmtrim-core`'s `rewrite_request`.
@@ -153,7 +168,8 @@ pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
 ///
 /// Same guarantees as [`trim_anthropic`].
 pub fn trim_openai(payload: Value, preset: &str) -> TrimOutcome {
-    trim_with_provider(payload, Some(ProviderKind::OpenAi), preset, None)
+    let config_json = serde_json::json!({ "preset": preset }).to_string();
+    trim_with_provider(payload, Some(ProviderKind::OpenAi), preset, None, config_json)
 }
 
 #[cfg(test)]

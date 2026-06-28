@@ -143,38 +143,18 @@ pub async fn post_messages(
     // while keeping real tasks on the expensive tier.
     // Downgrade cascades to the next tier: Opus→Sonnet, Sonnet→Haiku
     // (using whatever target that tier is configured to route to).
+    // The routing decision (downgraded + reason) is captured as typed columns
+    // on the requests DB row — no separate KEEP/DOWNGRADE event needed.
     let (effective_tier, reason) = {
         if (tier == Tier::Opus && opus_enabled) || (tier == Tier::Sonnet && sonnet_enabled) {
             let (keep, r) = should_keep_on_expensive_tier(&payload, gap_s);
             if keep {
-                let target_keep = state.target_for(tier);
-                state.log_event(crate::db_log::LogEvent {
-                    seq: req_id,
-                    event_type: "KEEP".to_string(),
-                    tier: Some(format!("{tier:?}")),
-                    effective_tier: Some(format!("{tier:?}")),
-                    target: Some(target_keep.as_str().to_string()),
-                    model: Some(model.clone()),
-                    reason: Some(r.to_string()),
-                    ..Default::default()
-                });
                 (tier, r)
             } else {
                 let next_tier = match tier {
                     Tier::Opus => Tier::Sonnet,
                     _ => Tier::Haiku,
                 };
-                let next_target = state.target_for(next_tier);
-                state.log_event(crate::db_log::LogEvent {
-                    seq: req_id,
-                    event_type: "DOWNGRADE".to_string(),
-                    tier: Some(format!("{tier:?}")),
-                    effective_tier: Some(format!("{next_tier:?}")),
-                    target: Some(next_target.as_str().to_string()),
-                    model: Some(model.clone()),
-                    reason: Some(r.to_string()),
-                    ..Default::default()
-                });
                 (next_tier, r)
             }
         } else {
@@ -226,9 +206,14 @@ pub async fn post_messages(
     // ── Trim hook ───────────────────────────────────────────────────
     // Run llmtrim-powered request compression before forwarding.
     // Fail-open: any error or no-gain returns the original body.
+    // Trim metadata (preset, config, stages) rides on the requests DB row —
+    // no separate TRIM event needed.
     let mut trim_applied = false;
     let mut trim_tokens_before = 0u64;
     let mut trim_tokens_after = 0u64;
+    let mut trim_preset_str = String::new();
+    let mut trim_config_json = String::new();
+    let mut trim_stages_json = String::new();
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
         // Claude Code is always an agent — use the agent preset for cache safety.
         let out = crate::trim::trim_anthropic(payload, "agent");
@@ -244,6 +229,24 @@ pub async fn post_messages(
                 0.0
             };
 
+            trim_preset_str = out.preset.clone();
+            trim_config_json = out.config_json.clone();
+            trim_stages_json = serde_json::to_string(
+                &out.stages
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "applied": s.applied,
+                            "before": s.tokens_before,
+                            "after": s.tokens_after,
+                            "note": s.note,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default();
+
             if state
                 .log_level
                 .read()
@@ -255,45 +258,6 @@ pub async fn post_messages(
                     saved, pct,
                 );
             }
-
-            // Emit a TRIM event when detailed logging is on.
-            if state
-                .log_level
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .log_detailed()
-            {
-                let stages_json = serde_json::to_string(
-                    &out.stages
-                        .iter()
-                        .map(|s| {
-                            serde_json::json!({
-                                "name": s.name,
-                                "applied": s.applied,
-                                "before": s.tokens_before,
-                                "after": s.tokens_after,
-                                "note": s.note,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default();
-                state.log_event(crate::db_log::LogEvent {
-                    seq: req_id,
-                    event_type: "TRIM".to_string(),
-                    tier: Some(format!("{tier:?}")),
-                    effective_tier: None,
-                    target: None,
-                    model: Some(model.clone()),
-                    target_model: None,
-                    reason: Some(format!(
-                        "before={} after={} preset=agent",
-                        trim_tokens_before, trim_tokens_after
-                    )),
-                    detail: Some(stages_json),
-                    ..Default::default()
-                });
-            }
         }
 
         out.body
@@ -301,7 +265,7 @@ pub async fn post_messages(
         payload
     };
 
-    // Record routing decision in the trace ring buffer.
+    // Record routing decision in the trace ring buffer (and proxy.db requests row).
     let downgraded = effective_tier != tier;
     state.push_trace(TraceEntry {
         seq: req_id,
@@ -317,10 +281,14 @@ pub async fn post_messages(
         },
         input_tokens: 0,
         output_tokens: 0,
-        cached_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         trim_applied,
         trim_tokens_before,
         trim_tokens_after,
+        trim_preset: trim_preset_str,
+        trim_config_json,
+        trim_stages_json,
     });
 
     if stream {
@@ -377,9 +345,13 @@ pub async fn post_chat_completions(
 
     // ── Trim hook ───────────────────────────────────────────────────
     // Same single flag as the /v1/messages path.
+    // Trim metadata rides on the requests DB row — no separate TRIM event needed.
     let mut trim_applied = false;
     let mut trim_tokens_before = 0u64;
     let mut trim_tokens_after = 0u64;
+    let mut trim_preset_str = String::new();
+    let mut trim_config_json = String::new();
+    let mut trim_stages_json = String::new();
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
         // OpenAI clients (Zed etc.) get the auto preset for shape-routing.
         let out = crate::trim::trim_openai(payload, "auto");
@@ -395,6 +367,24 @@ pub async fn post_chat_completions(
                 0.0
             };
 
+            trim_preset_str = out.preset.clone();
+            trim_config_json = out.config_json.clone();
+            trim_stages_json = serde_json::to_string(
+                &out.stages
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "applied": s.applied,
+                            "before": s.tokens_before,
+                            "after": s.tokens_after,
+                            "note": s.note,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default();
+
             if state
                 .log_level
                 .read()
@@ -406,45 +396,6 @@ pub async fn post_chat_completions(
                     saved, pct,
                 );
             }
-
-            // Emit a TRIM event when detailed logging is on (mirrors /v1/messages).
-            if state
-                .log_level
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .log_detailed()
-            {
-                let stages_json = serde_json::to_string(
-                    &out.stages
-                        .iter()
-                        .map(|s| {
-                            serde_json::json!({
-                                "name": s.name,
-                                "applied": s.applied,
-                                "before": s.tokens_before,
-                                "after": s.tokens_after,
-                                "note": s.note,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default();
-                state.log_event(crate::db_log::LogEvent {
-                    seq: req_id,
-                    event_type: "TRIM".to_string(),
-                    tier: Some(format!("{:?}", Tier::OpenAi)),
-                    effective_tier: None,
-                    target: None,
-                    model: Some(model.clone()),
-                    target_model: None,
-                    reason: Some(format!(
-                        "before={} after={} preset=auto",
-                        trim_tokens_before, trim_tokens_after
-                    )),
-                    detail: Some(stages_json),
-                    ..Default::default()
-                });
-            }
         }
 
         out.body
@@ -452,8 +403,8 @@ pub async fn post_chat_completions(
         payload
     };
 
-    // Record this passthrough in the trace ring buffer. Tokens are 0 here and
-    // get filled from the upstream response usage (see `*_raw_openai`).
+    // Record this passthrough in the trace ring buffer (and proxy.db requests row).
+    // Tokens are 0 here and get filled from the upstream response usage (see `*_raw_openai`).
     state.push_trace(TraceEntry {
         seq: req_id,
         tier: Tier::OpenAi,
@@ -464,10 +415,14 @@ pub async fn post_chat_completions(
         reason: String::new(),
         input_tokens: 0,
         output_tokens: 0,
-        cached_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         trim_applied,
         trim_tokens_before,
         trim_tokens_after,
+        trim_preset: trim_preset_str,
+        trim_config_json,
+        trim_stages_json,
     });
 
     if stream {

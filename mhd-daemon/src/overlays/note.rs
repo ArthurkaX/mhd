@@ -25,6 +25,17 @@ use crate::config::path::home_dir;
 use crate::core::native_theme::Argb;
 use crate::win32::text_host::{TextHost, TextHostKind};
 
+// ── Sink ───────────────────────────────────────────────────────────────
+
+/// Where a Quick Note is persisted on save.
+#[derive(Debug, Clone)]
+pub enum NoteSink {
+    /// Append to a daily Markdown file under the given directory.
+    File(PathBuf),
+    /// Write to the `notes` table in the embedded proxy's SQLite database.
+    ProxyDb,
+}
+
 // ── Config ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -82,12 +93,8 @@ pub fn is_active() -> bool {
     CTRL.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
-    qn_log(format!(
-        "show() theme={} notes_dir={}",
-        theme.name,
-        notes_dir.display()
-    ));
+pub fn show(theme: crate::core::native_theme::NativeTheme, sink: NoteSink, bb: bool) {
+    qn_log(format!("show() theme={}", theme.name));
     let Ok(mut guard) = CTRL.lock() else {
         qn_log("show(): CTRL lock poisoned");
         return;
@@ -112,7 +119,7 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
         .spawn(move || {
             qn_log("thread start");
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(theme, notes_dir, bb)
+                run(theme, sink, bb)
             }));
             if r.is_err() {
                 qn_log("thread panic caught");
@@ -125,14 +132,14 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, b
 // ─── Window thread ─────────────────────────────────────────────────────
 
 struct WndState {
-    notes_dir: PathBuf,
+    sink: NoteSink,
     bb: bool,
     text_host: TextHost,
     edit_font: HFONT,
     theme: crate::core::native_theme::NativeTheme,
 }
 
-fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bool) {
+fn run(theme: crate::core::native_theme::NativeTheme, sink: NoteSink, bb: bool) {
     qn_log("run(): registering class");
     let cls = crate::renderer::to_utf16_z(CLS);
     let hi: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap_or_default() }.into();
@@ -225,7 +232,7 @@ fn run(theme: crate::core::native_theme::NativeTheme, notes_dir: PathBuf, bb: bo
 
     // ── State ──────────────────────────────────────────────────────
     let mut st = WndState {
-        notes_dir,
+        sink,
         bb,
         text_host,
         edit_font,
@@ -323,7 +330,7 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             qn_log("wndproc: WM_APP_SAVE");
             if let Some(st) = s() {
                 let text = st.text_host.get_text();
-                save(&st.notes_dir, &text, st.bb);
+                save(&st.sink, &text, st.bb);
             }
             unsafe {
                 let _ = DestroyWindow(hwnd);
@@ -539,36 +546,42 @@ fn draw_text(hdc: HDC, text: &str, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
 
 // ─── Save ─────────────────────────────────────────────────────────────
 
-fn save(notes_dir: &PathBuf, text: &str, bb: bool) {
+fn save(sink: &NoteSink, text: &str, bb: bool) {
     let text = text.trim();
     if text.is_empty() {
         return;
     }
     #[cfg(not(feature = "blackbox"))]
     let _ = bb;
-    if let Err(e) = std::fs::create_dir_all(notes_dir) {
-        eprintln!("mhd: quicknote — cannot create notes dir: {e}");
-        return;
-    }
-    let today = date_str();
-    let path = notes_dir.join(format!("{today}.md"));
-    let (h, m, s) = time_hms();
-    let entry = format!("## {today} {h:02}:{m:02}:{s:02}\n{text}\n\n");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        use std::io::Write;
-        let _ = f.write_all(entry.as_bytes());
-    }
-
-    #[cfg(feature = "blackbox")]
-    if bb {
-        crate::blackbox::send_event(crate::blackbox::BlackboxEvent::QuickNote {
-            ts: epoch_secs(),
-            text: text.to_string(),
-        });
+    match sink {
+        NoteSink::File(notes_dir) => {
+            if let Err(e) = std::fs::create_dir_all(notes_dir) {
+                eprintln!("mhd: quicknote — cannot create notes dir: {e}");
+                return;
+            }
+            let today = date_str();
+            let path = notes_dir.join(format!("{today}.md"));
+            let (h, m, s) = time_hms();
+            let entry = format!("## {today} {h:02}:{m:02}:{s:02}\n{text}\n\n");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                use std::io::Write;
+                let _ = f.write_all(entry.as_bytes());
+            }
+            #[cfg(feature = "blackbox")]
+            if bb {
+                crate::blackbox::send_event(crate::blackbox::BlackboxEvent::QuickNote {
+                    ts: epoch_secs(),
+                    text: text.to_string(),
+                });
+            }
+        }
+        NoteSink::ProxyDb => {
+            crate::core::llm_proxy::log_note(text);
+        }
     }
 }
 
