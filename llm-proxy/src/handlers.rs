@@ -239,6 +239,10 @@ pub async fn post_messages(
                 .trim_ws_enabled
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+            strip_thinking: *state
+                .trim_strip_thinking
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
         // Claude Code is always an agent — use the agent preset for cache safety.

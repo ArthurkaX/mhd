@@ -45,6 +45,12 @@ pub struct NativeKnobs {
     /// single space. Leading indentation (spaces + tabs) is preserved. Tabs
     /// elsewhere are never touched. Default: true.
     pub ws_collapse_inner: bool,
+    /// Strip `thinking` / `redacted_thinking` content blocks from every
+    /// assistant message **except** the last assistant message.
+    /// Anthropic accepts omitting whole thinking blocks from prior turns, but
+    /// the latest assistant message must be sent byte-identical.
+    /// Default: **false**.
+    pub strip_thinking: bool,
 }
 
 impl Default for NativeKnobs {
@@ -58,6 +64,7 @@ impl Default for NativeKnobs {
             ws_strip_trailing: true,
             ws_blank_run_max: 5,
             ws_collapse_inner: true,
+            strip_thinking: false,
         }
     }
 }
@@ -449,6 +456,28 @@ fn truncate_descriptions(node: &mut Value, max_chars: usize) {
         _ => {}
     }
 }
+// ── strip old thinking blocks ─────────────────────────────────────────────────
+
+/// Remove `thinking` / `redacted_thinking` blocks from every assistant message
+/// EXCEPT the last assistant message (which Anthropic requires unmodified when
+/// it is part of an active tool-use turn). Whole-block omission only — never
+/// modifies a block. Deterministic, fail-open.
+fn strip_old_thinking(messages: &mut [Value]) {
+    // index of the last assistant message
+    let last_assistant = messages.iter().rposition(|m|
+        m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
+    let Some(last_idx) = last_assistant else { return };
+    for (i, msg) in messages.iter_mut().enumerate() {
+        if i == last_idx { continue; } // leave latest assistant untouched
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
+        let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else { continue };
+        content.retain(|b| {
+            let t = b.get("type").and_then(|t| t.as_str());
+            t != Some("thinking") && t != Some("redacted_thinking")
+        });
+    }
+}
+
 
 // ── public entry point ────────────────────────────────────────────────────────
 
@@ -484,6 +513,12 @@ pub fn trim_native(mut body: Value, knobs: &NativeKnobs) -> Value {
     if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for msg in messages.iter_mut() {
             compress_tool_results(msg, knobs, &id_to_ext);
+        }
+    }
+    // 4) Strip thinking/redacted_thinking from old assistant turns (optional).
+    if knobs.strip_thinking {
+        if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            strip_old_thinking(messages);
         }
     }
     body
@@ -1328,5 +1363,209 @@ mod tests {
         let result = trim_native(body, &knobs);
         let out = result["messages"][0]["content"][0]["content"].as_str().unwrap();
         assert_eq!(out, fenced, "fenced block must be left byte-identical");
+    }
+    // ── strip_thinking tests ──────────────────────────────────────────────────
+
+    /// Prior assistant turns lose their thinking blocks; the last assistant keeps them.
+    /// Layout: assistant[thinking, tool_use] / user[tool_result] / assistant[thinking, tool_use]
+    ///         / user[tool_result] — last assistant is the SECOND assistant.
+    #[test]
+    fn strip_thinking_removes_from_old_assistant_keeps_last() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "old thoughts" },
+                        { "type": "tool_use", "id": "tu1", "name": "bash", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{ "type": "tool_result", "tool_use_id": "tu1", "content": "r1" }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "latest thoughts" },
+                        { "type": "tool_use", "id": "tu2", "name": "bash", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{ "type": "tool_result", "tool_use_id": "tu2", "content": "r2" }]
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let result = trim_native(body, &knobs);
+
+        // First assistant: thinking removed, tool_use kept.
+        let first = &result["messages"][0]["content"];
+        let types0: Vec<&str> = first.as_array().unwrap()
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        assert_eq!(types0, vec!["tool_use"], "first assistant must lose thinking, keep tool_use");
+
+        // Last (second) assistant: content unchanged — both thinking and tool_use present.
+        let last = &result["messages"][2]["content"];
+        let types2: Vec<&str> = last.as_array().unwrap()
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        assert_eq!(types2, vec!["thinking", "tool_use"], "last assistant must keep thinking untouched");
+        assert_eq!(last[0]["thinking"], "latest thoughts", "thinking content must be byte-identical");
+    }
+
+    /// redacted_thinking in an old assistant is removed; in the last assistant it is preserved.
+    #[test]
+    fn strip_redacted_thinking_old_removed_last_kept() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "redacted_thinking", "data": "redacted" },
+                        { "type": "text", "text": "hello" }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{ "type": "tool_result", "tool_use_id": "tu1", "content": "r" }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "redacted_thinking", "data": "redacted latest" },
+                        { "type": "text", "text": "world" }
+                    ]
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let result = trim_native(body, &knobs);
+
+        // First assistant: redacted_thinking stripped, text kept.
+        let first = &result["messages"][0]["content"];
+        let types: Vec<&str> = first.as_array().unwrap()
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        assert_eq!(types, vec!["text"], "old redacted_thinking must be removed");
+
+        // Last assistant: both blocks preserved.
+        let last = &result["messages"][2]["content"];
+        let last_types: Vec<&str> = last.as_array().unwrap()
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        assert_eq!(last_types, vec!["redacted_thinking", "text"], "last assistant must be byte-identical");
+        assert_eq!(last[0]["data"], "redacted latest");
+    }
+
+    /// When the last message is a user message, the last ASSISTANT (which comes
+    /// before it) still keeps its thinking; assistants before it are stripped.
+    #[test]
+    fn strip_thinking_last_user_message_assistant_before_kept() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "early" },
+                        { "type": "tool_use", "id": "tu1", "name": "bash", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{ "type": "tool_result", "tool_use_id": "tu1", "content": "r" }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "middle" },
+                        { "type": "tool_use", "id": "tu2", "name": "bash", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": "final user message"
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let result = trim_native(body, &knobs);
+
+        // First assistant: stripped.
+        let first_types: Vec<&str> = result["messages"][0]["content"].as_array().unwrap()
+            .iter().filter_map(|b| b["type"].as_str()).collect();
+        assert_eq!(first_types, vec!["tool_use"], "early assistant thinking must be stripped");
+
+        // Second (last) assistant (index 2): thinking kept.
+        let second_types: Vec<&str> = result["messages"][2]["content"].as_array().unwrap()
+            .iter().filter_map(|b| b["type"].as_str()).collect();
+        assert_eq!(second_types, vec!["thinking", "tool_use"], "last assistant must keep thinking");
+        assert_eq!(result["messages"][2]["content"][0]["thinking"], "middle");
+    }
+
+    /// strip_thinking=false leaves messages byte-identical.
+    #[test]
+    fn strip_thinking_false_messages_unchanged() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "some thoughts" },
+                        { "type": "tool_use", "id": "tu1", "name": "bash", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{ "type": "tool_result", "tool_use_id": "tu1", "content": "r" }]
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs { strip_thinking: false, ..NativeKnobs::default() };
+        let result = trim_native(body.clone(), &knobs);
+        assert_eq!(result["messages"], body["messages"], "strip_thinking=false must not change messages");
+    }
+
+    /// Determinism: running strip_thinking twice produces identical results.
+    #[test]
+    fn strip_thinking_deterministic() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "t1" },
+                        { "type": "redacted_thinking", "data": "rd1" },
+                        { "type": "tool_use", "id": "tu1", "name": "bash", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{ "type": "tool_result", "tool_use_id": "tu1", "content": "r" }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "t2" },
+                        { "type": "text", "text": "done" }
+                    ]
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let a = trim_native(body.clone(), &knobs);
+        let b = trim_native(body, &knobs);
+        assert_eq!(a, b, "strip_thinking must be deterministic");
     }
 }

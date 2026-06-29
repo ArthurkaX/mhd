@@ -235,6 +235,9 @@ pub struct AppState {
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: RwLock<bool>,
 
+    /// Strip thinking/redacted_thinking from old assistant turns (native engine).
+    pub trim_strip_thinking: RwLock<bool>,
+
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
@@ -304,6 +307,7 @@ impl AppState {
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
+            trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             last_quota: RwLock::new(None),
             run_id,
@@ -749,6 +753,10 @@ impl AppState {
                 .trim_ws_enabled
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+        trim_strip_thinking: *self
+            .trim_strip_thinking
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
         }
     }
 }

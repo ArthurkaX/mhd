@@ -101,6 +101,8 @@ pub struct LlmProxyConfig {
     pub trim_toolresult_tail: usize,
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: bool,
+    /// Strip thinking/redacted_thinking from old assistant turns (native engine).
+    pub trim_strip_thinking: bool,
 }
 
 impl Default for LlmProxyConfig {
@@ -128,6 +130,7 @@ impl Default for LlmProxyConfig {
             trim_toolresult_head: 3000,
             trim_toolresult_tail: 1000,
             trim_ws_enabled: false,
+            trim_strip_thinking: false,
         }
     }
 }
@@ -424,6 +427,10 @@ impl AppConfig {
             trim_ws_enabled: settings
                 .as_ref()
                 .map(|s| s.trim_ws_enabled)
+                .unwrap_or(false),
+            trim_strip_thinking: settings
+                .as_ref()
+                .map(|s| s.trim_strip_thinking)
                 .unwrap_or(false),
         }
     }

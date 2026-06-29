@@ -122,6 +122,11 @@ pub struct Settings {
     /// Default: off — validate offline first.
     #[serde(default = "default_trim_ws_enabled")]
     pub trim_ws_enabled: bool,
+
+    /// Strip thinking/redacted_thinking blocks from old assistant turns (native engine).
+    /// Default: off.
+    #[serde(default = "default_trim_strip_thinking")]
+    pub trim_strip_thinking: bool,
 }
 
 impl Default for Settings {
@@ -148,6 +153,7 @@ impl Default for Settings {
             trim_toolresult_head: default_trim_toolresult_head(),
             trim_toolresult_tail: default_trim_toolresult_tail(),
             trim_ws_enabled: default_trim_ws_enabled(),
+            trim_strip_thinking: default_trim_strip_thinking(),
         }
     }
 }
@@ -221,6 +227,8 @@ pub struct Config {
     pub trim_toolresult_tail: usize,
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: bool,
+    /// Strip thinking/redacted_thinking from old assistant turns (native engine).
+    pub trim_strip_thinking: bool,
 }
 
 impl Config {
@@ -245,6 +253,7 @@ impl Config {
             trim_toolresult_head: settings.trim_toolresult_head,
             trim_toolresult_tail: settings.trim_toolresult_tail,
             trim_ws_enabled: settings.trim_ws_enabled,
+            trim_strip_thinking: settings.trim_strip_thinking,
         }
     }
 
@@ -272,6 +281,7 @@ impl Config {
             trim_toolresult_head: self.trim_toolresult_head,
             trim_toolresult_tail: self.trim_toolresult_tail,
             trim_ws_enabled: self.trim_ws_enabled,
+            trim_strip_thinking: self.trim_strip_thinking,
         }
     }
 
@@ -358,6 +368,10 @@ fn default_trim_toolresult_tail() -> usize {
 }
 
 fn default_trim_ws_enabled() -> bool {
+    false
+}
+
+fn default_trim_strip_thinking() -> bool {
     false
 }
 

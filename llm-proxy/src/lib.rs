@@ -192,6 +192,15 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = enabled;
     }
 
+    /// Enable or disable stripping of thinking blocks from old assistant turns.
+    pub fn set_trim_strip_thinking(&self, enabled: bool) {
+        *self
+            .state
+            .trim_strip_thinking
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state

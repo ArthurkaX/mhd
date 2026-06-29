@@ -52,6 +52,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         trim_toolresult_head: cfg.trim_toolresult_head,
         trim_toolresult_tail: cfg.trim_toolresult_tail,
         trim_ws_enabled: cfg.trim_ws_enabled,
+        trim_strip_thinking: cfg.trim_strip_thinking,
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -106,6 +107,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_trim_toolresult_head(cfg.trim_toolresult_head);
         control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
         control.set_trim_ws_enabled(cfg.trim_ws_enabled);
+        control.set_trim_strip_thinking(cfg.trim_strip_thinking);
         control.set_corpus_capture_enabled(cfg.corpus_capture);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
