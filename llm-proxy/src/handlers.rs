@@ -489,11 +489,32 @@ pub async fn set_model(
     Json(body): Json<SetModelBody>,
 ) -> Result<Json<Value>, AppError> {
     let target = Target::parse(&body.id);
+
+    // Capture the previous target for this slot so the switch is auditable.
+    let cfg_before = state.to_config();
+    let old_target = match slot.as_str() {
+        "opus" => cfg_before.opus_target,
+        "sonnet" => cfg_before.sonnet_target,
+        "haiku" => cfg_before.haiku_target,
+        "fable" => cfg_before.fable_target,
+        _ => String::new(),
+    };
+
     if !state.set_target(&slot, target.clone()) {
         return Err(AppError::bad_request(format!(
             "Unknown slot '{slot}'. Use: opus, sonnet, haiku, fable"
         )));
     }
+
+    // Record the model/provider switch so cache misses after it are explainable.
+    state.log_event(crate::db_log::LogEvent {
+        seq: 0,
+        event_type: "MODEL_SWITCH".to_string(),
+        target: Some(target.as_str().to_string()),
+        model: Some(slot.clone()),
+        reason: Some(format!("slot={} {} -> {}", slot, old_target, target.as_str())),
+        ..Default::default()
+    });
 
     // Persist the change so it survives restarts.
     if let Err(e) = crate::config::save(&state.to_config()) {
