@@ -1,4 +1,4 @@
-//! Lossless/lossy request compression via [`llmtrim_core`].
+﻿//! Lossless/lossy request compression via [`llmtrim_core`].
 //!
 //! Runs the outgoing Anthropic Messages body through
 //! [`llmtrim_core::rewrite_request`] to trim tool outputs, logs, diffs,
@@ -299,6 +299,83 @@ pub fn trim_openai(payload: Value, preset: &str) -> TrimOutcome {
     trim_with_provider(payload, Some(ProviderKind::OpenAi), preset, None, config_json)
 }
 
+/// Run an OpenAI chat-completions body through the selected trim engine.
+///
+/// - `"native"` → clean-room [`crate::native_trim::trim_native_openai`] with the
+///   caller-supplied knobs.
+/// - anything else (default `"llmtrim"`) → delegates to [`trim_openai`].
+///
+/// Same fail-open guarantees as [`trim_anthropic_with_engine`]: tiny bodies,
+/// no-gain results, and serialization errors all return the original body
+/// unchanged.
+pub fn trim_openai_with_engine(
+    payload: Value,
+    engine: &str,
+    preset: &str,
+    native_knobs: crate::native_trim::NativeKnobs,
+) -> TrimOutcome {
+    if engine == "native" {
+        // Cheap guard: skip tiny bodies — nothing to gain.
+        let before_str = match serde_json::to_string(&payload) {
+            Ok(s) if s.len() >= TRIM_MIN_BYTES => s,
+            _ => {
+                return TrimOutcome {
+                    body: payload,
+                    applied: false,
+                    tokens_before: 0,
+                    tokens_after: 0,
+                    preset: "native".to_string(),
+                    stages: Vec::new(),
+                    config_json: String::new(),
+                };
+            }
+        };
+        let tokens_before = (before_str.len() / 4) as u64;
+        let knobs = native_knobs;
+        let config_json = serde_json::json!({
+            "engine": "native",
+            "shape": "openai",
+            "tool_max_desc_chars": knobs.tool_max_desc_chars,
+            "tool_result_head": knobs.tool_result_head,
+            "tool_result_tail": knobs.tool_result_tail,
+            "ws_enabled": knobs.ws_enabled,
+            "min_elide": knobs.tool_result_min_elide,
+        })
+        .to_string();
+        // Clone so we can fall back to the original on no-gain.
+        let original = payload.clone();
+        let trimmed = crate::native_trim::trim_native_openai(payload, &knobs);
+        let tokens_after = serde_json::to_string(&trimmed)
+            .map(|s| (s.len() / 4) as u64)
+            .unwrap_or(tokens_before);
+        if tokens_after < tokens_before {
+            TrimOutcome {
+                body: trimmed,
+                applied: true,
+                tokens_before,
+                tokens_after,
+                preset: "native".to_string(),
+                stages: Vec::new(),
+                config_json,
+            }
+        } else {
+            // No gain — forward the original unchanged.
+            TrimOutcome {
+                body: original,
+                applied: false,
+                tokens_before: 0,
+                tokens_after: 0,
+                preset: "native".to_string(),
+                stages: Vec::new(),
+                config_json: String::new(),
+            }
+        }
+    } else {
+        // Default: llmtrim engine.
+        trim_openai(payload, preset)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +428,83 @@ mod tests {
         let out = trim_openai(body, "auto");
         // Must not panic; outcome is best-effort
         let _ = out;
+    }
+
+    // ── trim_openai_with_engine tests ─────────────────────────────────────────
+
+    /// engine="native" on a body with a long tool/function description:
+    /// applied==true, body is smaller, config_json contains "shape":"openai".
+    #[test]
+    fn openai_with_engine_native_long_desc_applied() {
+        use crate::native_trim::NativeKnobs;
+        let long_desc = "D".repeat(500);
+        // Pad the body to exceed TRIM_MIN_BYTES (4096 bytes).
+        let filler = "X".repeat(4000);
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "do_thing",
+                    "description": long_desc,
+                    "parameters": { "type": "object", "properties": {} }
+                }
+            }],
+            "messages": [{ "role": "user", "content": filler }]
+        });
+        let knobs = NativeKnobs {
+            tool_max_desc_chars: 50,
+            ..Default::default()
+        };
+        let out = trim_openai_with_engine(body, "native", "auto", knobs);
+        assert!(out.applied, "native engine should apply on a long description");
+        let body_str = serde_json::to_string(&out.body).unwrap();
+        assert!(
+            body_str.len() < serde_json::to_string(&serde_json::json!({
+                "model": "gpt-4o",
+                "tools": [{"type":"function","function":{"name":"do_thing","description":"D".repeat(500),"parameters":{"type":"object","properties":{}}}}],
+                "messages":[{"role":"user","content":"X".repeat(4000)}]
+            })).unwrap().len(),
+            "trimmed body must be smaller"
+        );
+        assert!(
+            out.config_json.contains("\"shape\":\"openai\""),
+            "config_json must contain shape:openai, got: {}",
+            out.config_json
+        );
+    }
+
+    /// engine="llmtrim" (or any non-native value) delegates to trim_openai:
+    /// must not panic and must return a valid TrimOutcome.
+    #[test]
+    fn openai_with_engine_llmtrim_delegates_no_panic() {
+        use crate::native_trim::NativeKnobs;
+        let msgs = vec![serde_json::json!({"role": "user", "content": "X".repeat(5000)})];
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": msgs
+        });
+        // "llmtrim" is the default — must delegate without panic
+        let out = trim_openai_with_engine(body.clone(), "llmtrim", "auto", NativeKnobs::default());
+        // Applied may be true or false depending on llmtrim; just assert no panic
+        let _ = out.applied;
+        // Any non-native string also delegates
+        let out2 = trim_openai_with_engine(body, "anything_else", "auto", NativeKnobs::default());
+        let _ = out2.applied;
+    }
+
+    /// engine="native" on a tiny body (< TRIM_MIN_BYTES): applied==false,
+    /// body is returned unchanged.
+    #[test]
+    fn openai_with_engine_native_tiny_body_passthrough() {
+        use crate::native_trim::NativeKnobs;
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        let body_clone = body.clone();
+        let out = trim_openai_with_engine(body, "native", "auto", NativeKnobs::default());
+        assert!(!out.applied, "tiny body must not be applied");
+        assert_eq!(out.body, body_clone, "tiny body must be returned unchanged");
     }
 }

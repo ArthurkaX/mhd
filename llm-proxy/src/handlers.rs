@@ -1,4 +1,4 @@
-//! Axum route handlers for the LLM proxy.
+﻿//! Axum route handlers for the LLM proxy.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -412,8 +412,32 @@ pub async fn post_chat_completions(
     let mut trim_config_json = String::new();
     let mut trim_stages_json = String::new();
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+        // Read the active engine: "native" or default "llmtrim".
+        let engine = state.trim_engine.read().unwrap_or_else(|e| e.into_inner()).clone();
+        // Read live-tunable native engine knobs (same reads as post_messages;
+        // strip_thinking is irrelevant for OpenAI shape — set false).
+        let native_knobs = crate::native_trim::NativeKnobs {
+            tool_max_desc_chars: *state
+                .trim_tool_desc_chars
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_head: *state
+                .trim_toolresult_head
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_tail: *state
+                .trim_toolresult_tail
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            ws_enabled: *state
+                .trim_ws_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            strip_thinking: false,
+            ..Default::default()
+        };
         // OpenAI clients (Zed etc.) get the auto preset for shape-routing.
-        let out = crate::trim::trim_openai(payload, "auto");
+        let out = crate::trim::trim_openai_with_engine(payload, &engine, "auto", native_knobs);
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;
@@ -451,8 +475,8 @@ pub async fn post_chat_completions(
                 .dump_bodies()
             {
                 eprintln!(
-                    "[llm-proxy] trim(openai): −{} tok ({:.1}%) — preset=auto",
-                    saved, pct,
+                    "[llm-proxy] trim(openai): −{} tok ({:.1}%) — preset=auto engine={}",
+                    saved, pct, engine,
                 );
             }
         }
