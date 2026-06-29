@@ -250,6 +250,8 @@ pub fn trim_anthropic_with_engine(
             "tool_max_desc_chars": knobs.tool_max_desc_chars,
             "tool_result_head": knobs.tool_result_head,
             "tool_result_tail": knobs.tool_result_tail,
+            "ws_enabled": knobs.ws_enabled,
+            "min_elide": knobs.tool_result_min_elide,
         })
         .to_string();
         // Clone so we can fall back to the original on no-gain.

@@ -29,6 +29,10 @@ pub struct NativeKnobs {
     /// by more than this margin are compressed to head + marker + tail.
     pub tool_result_head: usize,
     pub tool_result_tail: usize,
+    /// Minimum number of chars that must be dropped before compression is applied.
+    /// Avoids spending overhead on trivially small elisions. Default: **4000**.
+    /// With defaults head=3000/tail=1000, compression only triggers at total ≥ 8000.
+    pub tool_result_min_elide: usize,
     /// Master switch for whitespace compression.
     /// Default: **false** — validate offline first, then enable via live toggle.
     pub ws_enabled: bool,
@@ -49,6 +53,7 @@ impl Default for NativeKnobs {
             tool_max_desc_chars: 150,
             tool_result_head: 3000,
             tool_result_tail: 1000,
+            tool_result_min_elide: 4000,
             ws_enabled: false,
             ws_strip_trailing: true,
             ws_blank_run_max: 5,
@@ -333,23 +338,77 @@ fn transform_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
     }
 }
 
+/// FNV-1a 64-bit hash over `data`. No new crates — inline implementation.
+/// Same input always produces the same output (content-addressable).
+fn fnv1a_64(data: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 /// Return `Some(compressed)` when `s` is long enough to compress, else `None`.
-/// Keeps the first `head` and last `tail` chars (char boundaries) with a marker
-/// `\n…[elided N chars]…\n` between. Only compresses when it actually shrinks the
-/// text (i.e. total chars > head + tail + marker overhead), so it never enlarges.
+///
+/// - Applies a `min_elide` gate: the chars dropped must be ≥ `tool_result_min_elide`.
+/// - Cuts on line boundaries (head ends at a `\n`; tail starts after a `\n`) so
+///   no half-line fragments are emitted. Falls back to raw char cut when no `\n`
+///   exists in the respective window.
+/// - Embeds a deterministic recovery marker containing a FNV-1a id of the elided
+///   middle so the same content always gets the same id (content-addressable seam
+///   for a future expand-by-id feature).
+/// - Never enlarges (`candidate.chars().count() < total` is guaranteed before returning).
 fn compress_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
     let total = s.chars().count();
     let head = knobs.tool_result_head;
     let tail = knobs.tool_result_tail;
-    // Only worth it if there is a meaningful middle to drop.
-    if total <= head + tail {
+
+    // Gate 1: enough chars to drop (checked on raw budget before line-snapping).
+    let elided_raw = total.saturating_sub(head + tail);
+    if elided_raw < knobs.tool_result_min_elide {
         return None;
     }
-    let elided = total - head - tail;
-    let head_str: String = s.chars().take(head).collect();
-    let tail_str: String = s.chars().skip(total - tail).collect();
-    let candidate = format!("{head_str}\n…[elided {elided} chars]…\n{tail_str}");
-    // Guard: never enlarge.
+
+    // Line-aware head cut: take up to `head` chars, back off to last \n so
+    // head_str ends with a complete line (inclusive of the \n).
+    let head_chars: Vec<char> = s.chars().take(head).collect();
+    let head_str: String = match head_chars.iter().rposition(|&c| c == '\n') {
+        Some(last_nl) => head_chars[..=last_nl].iter().collect(),
+        None => head_chars.into_iter().collect(), // no \n in window — raw char cut
+    };
+
+    // Line-aware tail cut: take last `tail` chars, advance past first \n so
+    // tail_str starts at a line boundary.
+    let tail_start_char = total.saturating_sub(tail);
+    let tail_chars: Vec<char> = s.chars().skip(tail_start_char).collect();
+    let tail_str: String = match tail_chars.iter().position(|&c| c == '\n') {
+        Some(first_nl) => tail_chars[first_nl + 1..].iter().collect(),
+        None => tail_chars.into_iter().collect(), // no \n in window — raw char cut
+    };
+
+    // Recompute elided after line-snapping (line-aware cuts only reduce head/tail,
+    // so elided ≥ elided_raw ≥ min_elide — but re-check for safety).
+    let head_len = head_str.chars().count();
+    let tail_len = tail_str.chars().count();
+    let elided = total.saturating_sub(head_len + tail_len);
+    if elided < knobs.tool_result_min_elide {
+        return None;
+    }
+
+    // Deterministic 6-hex-char id of the elided middle content (low 24 bits of FNV-1a).
+    let elided_middle: String = s.chars().skip(head_len).take(elided).collect();
+    let hash = fnv1a_64(elided_middle.as_bytes());
+    let id_hex = format!("{:06x}", hash & 0x00FF_FFFF);
+
+    let marker = format!(
+        "\n...[elided {elided} chars \u{00B7} id {id_hex} \u{00B7} re-read source to view]...\n"
+    );
+    let candidate = format!("{head_str}{marker}{tail_str}");
+
+    // Guard: never enlarge (should always hold when elided >> marker_len, but kept for safety).
     if candidate.chars().count() >= total {
         return None;
     }
@@ -677,7 +736,7 @@ mod tests {
             "compressed should be shorter than original"
         );
         // Must contain the elision marker.
-        assert!(compressed.contains("…[elided"), "must contain elision marker");
+        assert!(compressed.contains("...[elided"), "must contain elision marker");
         // Must start with the head and end with the tail.
         let head: String = big_text.chars().take(100).collect();
         let tail: String = big_text.chars().skip(big_text.chars().count() - 50).collect();
@@ -730,7 +789,7 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(text.len() < big_text.len(), "array-form text should be compressed");
-        assert!(text.contains("…[elided"), "should contain elision marker");
+        assert!(text.contains("...[elided"), "should contain elision marker");
     }
 
     /// (l) tool_use blocks inside messages are not touched.
@@ -1022,9 +1081,7 @@ mod tests {
             tool_result_head: 10_000, // large enough that head/tail won't trigger
             tool_result_tail: 10_000,
             ws_enabled: true,
-            ws_strip_trailing: true,
-            ws_blank_run_max: 5,
-            ws_collapse_inner: true,
+            ..Default::default()
         };
         let result = trim_native(body, &knobs);
         let out = result["messages"][0]["content"][0]["content"].as_str().unwrap();
@@ -1112,6 +1169,138 @@ mod tests {
         let a = trim_native(body.clone(), &knobs);
         let b = trim_native(body, &knobs);
         assert_eq!(a, b, "ws-on trim must be deterministic");
+    }
+
+    // ── fenced code block protected ───────────────────────────────────────────
+
+    // ── min_elide gate ────────────────────────────────────────────────────────
+
+    /// middle=5000 >= default min_elide=4000 → compresses;
+    /// middle=2000 < default min_elide=4000 → left whole.
+    #[test]
+    fn min_elide_gate() {
+        let knobs = NativeKnobs {
+            tool_result_head: 3000,
+            tool_result_tail: 1000,
+            // tool_result_min_elide = 4000 from Default
+            tool_max_desc_chars: usize::MAX,
+            ..Default::default()
+        };
+
+        // total=9000, middle=5000 >= 4000 → should compress
+        let big_text = "A".repeat(9000);
+        assert!(
+            compress_text(&big_text, &knobs).is_some(),
+            "middle 5000 >= min_elide 4000 must compress"
+        );
+
+        // total=6000, middle=2000 < 4000 → must NOT compress
+        let medium_text = "A".repeat(6000);
+        assert!(
+            compress_text(&medium_text, &knobs).is_none(),
+            "middle 2000 < min_elide 4000 must NOT compress"
+        );
+    }
+
+    // ── line-aware cuts ───────────────────────────────────────────────────────
+
+    /// When the head char-budget lands mid-line, the cut backs off to the last
+    /// preceding \n; when the tail char-budget starts mid-line, it advances to
+    /// the start of the next complete line.
+    #[test]
+    fn line_aware_cuts_on_newline_boundary() {
+        // total = 9 + 9 + 8000 + 1 + 9 + 1 = 8029 chars
+        // head=14 lands mid "line two"; tail=14 lands inside the "AAA\n" run.
+        let text = "line one\n".to_string()   // positions  0-8  (9 chars)
+            + "line two\n"                    // positions  9-17 (9 chars)
+            + &"A".repeat(8000)               // positions 18-8017
+            + "\nline last\n";                // positions 8018-8028 (11 chars)
+
+        let knobs = NativeKnobs {
+            tool_result_head: 14,
+            tool_result_tail: 14,
+            tool_max_desc_chars: usize::MAX,
+            ..Default::default() // min_elide=4000; elided_raw=8029-28=8001 ≥ 4000
+        };
+        let result = compress_text(&text, &knobs).expect("should compress");
+
+        // Head must end at the last \n within the 14-char window → "line one\n"
+        assert!(
+            result.starts_with("line one\n"),
+            "head should end at \\n boundary, not mid-line; got: {:?}",
+            result.get(..20).unwrap_or(&result)
+        );
+        // Tail must start after the first \n in the tail window → "line last\n"
+        assert!(
+            result.ends_with("line last\n"),
+            "tail should start at line boundary"
+        );
+        // No partial fragment from the discarded second line
+        assert!(
+            !result.contains("line tw"),
+            "partial 'line two' fragment must not appear in output"
+        );
+        // Result is shorter than original
+        assert!(result.chars().count() < text.chars().count());
+    }
+
+    // ── marker: id field and determinism ─────────────────────────────────────
+
+    /// Output contains "elided" and "id " followed by 6 lowercase hex chars;
+    /// calling twice on the same input produces identical output.
+    #[test]
+    fn marker_contains_id_and_is_deterministic() {
+        let text = "first line\n".to_string() + &"A".repeat(9000) + "\nlast line\n";
+        let knobs = NativeKnobs {
+            tool_result_head: 11,
+            tool_result_tail: 11,
+            tool_max_desc_chars: usize::MAX,
+            ..Default::default()
+        };
+        let r1 = compress_text(&text, &knobs).expect("should compress");
+        let r2 = compress_text(&text, &knobs).expect("should compress");
+
+        // Determinism
+        assert_eq!(r1, r2, "same input must produce identical output");
+
+        // Marker contains "elided"
+        assert!(r1.contains("elided"), "marker must contain 'elided'");
+
+        // Marker contains "id " followed by exactly 6 hex chars
+        let id_byte_pos = r1.find("id ").expect("marker must contain 'id '");
+        let after = &r1[id_byte_pos + "id ".len()..];
+        let hex_part: String = after.chars().take(6).collect();
+        assert_eq!(hex_part.len(), 6, "id must be 6 chars");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "id must be lowercase hex, got: {hex_part:?}"
+        );
+    }
+
+    /// Two inputs that differ only in their elided middle produce different ids.
+    #[test]
+    fn different_elided_content_yields_different_id() {
+        fn extract_id(s: &str) -> String {
+            let pos = s.find("id ").expect("must have 'id ' in marker");
+            s[pos + "id ".len()..pos + "id ".len() + 6].to_string()
+        }
+
+        let knobs = NativeKnobs {
+            tool_result_head: 100,
+            tool_result_tail: 100,
+            tool_max_desc_chars: usize::MAX,
+            ..Default::default()
+        };
+
+        let text_a = "head\n".to_string() + &"A".repeat(8000) + "\ntail";
+        let text_b = "head\n".to_string() + &"B".repeat(8000) + "\ntail";
+
+        let r_a = compress_text(&text_a, &knobs).expect("A should compress");
+        let r_b = compress_text(&text_b, &knobs).expect("B should compress");
+
+        let id_a = extract_id(&r_a);
+        let id_b = extract_id(&r_b);
+        assert_ne!(id_a, id_b, "different elided content must yield different id");
     }
 
     // ── fenced code block protected ───────────────────────────────────────────
