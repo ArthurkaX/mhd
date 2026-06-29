@@ -8,6 +8,7 @@
 pub mod config;
 pub mod db_log;
 pub mod handlers;
+pub mod native_trim;
 pub mod providers;
 pub mod state;
 pub mod transform;

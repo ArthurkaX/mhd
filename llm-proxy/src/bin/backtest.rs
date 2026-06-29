@@ -1,7 +1,7 @@
 //! backtest — re-apply candidate trim configurations to the replay corpus.
 //!
 //! Usage:
-//!   backtest [--db <path>] [--desc-chars <comma-list>]
+//!   backtest [--db <path>] [--desc-chars <comma-list>] [--engine <llmtrim|native>]
 //!
 //! Reads all rows from `request_bodies` in proxy.db, sweeps the
 //! `tool_max_desc_chars` lever across the specified values, and prints a table
@@ -13,6 +13,7 @@
 //! but skipped (future work).
 
 use llm_proxy::config::config_dir;
+use llm_proxy::native_trim::NativeKnobs;
 use llm_proxy::trim::{TrimKnobs, TrimProvider, trim_with_knobs};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -83,6 +84,30 @@ fn fmt_tok(n: u64) -> String {
     }
 }
 
+// ── unified token estimator ───────────────────────────────────────────────────
+
+/// Unified token estimator (~4 chars/token over the serialized body).
+/// Same metric for both engines → fair A/B. NOT llmtrim's internal counter.
+fn est_tokens(v: &serde_json::Value) -> u64 {
+    (serde_json::to_string(v).map(|s| s.len()).unwrap_or(0) as u64) / 4
+}
+
+// ── engine dispatch ───────────────────────────────────────────────────────────
+
+/// Produce a trimmed body for a given engine and desc_chars sweep value.
+fn apply_engine(engine: &str, body: Value, v: usize) -> Value {
+    match engine {
+        "native" => {
+            let knobs = NativeKnobs { tool_max_desc_chars: v, ..NativeKnobs::default() };
+            llm_proxy::native_trim::trim_native(body, &knobs)
+        }
+        _ /* "llmtrim" */ => {
+            let knobs = TrimKnobs { tool_max_desc_chars: v, ..TrimKnobs::default() };
+            trim_with_knobs(body, TrimProvider::Anthropic, &knobs).body
+        }
+    }
+}
+
 // ── corpus reader ─────────────────────────────────────────────────────────────
 
 fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
@@ -140,12 +165,14 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 
 // ── arg parsing ───────────────────────────────────────────────────────────────
 
-fn parse_args() -> (PathBuf, Vec<usize>) {
+fn parse_args() -> (PathBuf, Vec<usize>, String) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
+    let default_engine = "llmtrim".to_string();
 
     let mut db_path = default_db;
     let mut sweep = default_sweep;
+    let mut engine = default_engine;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -173,6 +200,20 @@ fn parse_args() -> (PathBuf, Vec<usize>) {
                     }
                 }
             }
+            "--engine" => {
+                i += 1;
+                if i < args.len() {
+                    let val = args[i].as_str();
+                    match val {
+                        "llmtrim" | "native" => engine = val.to_string(),
+                        other => {
+                            eprintln!(
+                                "Warning: unknown --engine value '{other}'; using default 'llmtrim'."
+                            );
+                        }
+                    }
+                }
+            }
             other => {
                 eprintln!("Unknown argument: {other}  (ignored)");
             }
@@ -180,13 +221,13 @@ fn parse_args() -> (PathBuf, Vec<usize>) {
         i += 1;
     }
 
-    (db_path, sweep)
+    (db_path, sweep, engine)
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let (db_path, sweep_values) = parse_args();
+    let (db_path, sweep_values, engine) = parse_args();
 
     eprintln!("DB: {}", db_path.display());
 
@@ -232,12 +273,12 @@ fn main() {
         return;
     }
 
-    // ── determinism sanity check ──────────────────────────────────────────────
-    let det_knobs = TrimKnobs { tool_max_desc_chars: 150, ..TrimKnobs::default() };
+    // ── determinism sanity check (uses the selected engine) ──────────────────
+    let det_v: usize = 150;
     let first_body = eligible[0].body.clone();
-    let det_a = trim_with_knobs(first_body.clone(), TrimProvider::Anthropic, &det_knobs);
-    let det_b = trim_with_knobs(first_body, TrimProvider::Anthropic, &det_knobs);
-    if det_a.body == det_b.body {
+    let det_a = apply_engine(&engine, first_body.clone(), det_v);
+    let det_b = apply_engine(&engine, first_body, det_v);
+    if det_a == det_b {
         println!("determinism: OK");
     } else {
         println!("determinism: MISMATCH — two identical runs produced different output");
@@ -247,24 +288,19 @@ fn main() {
     let mut results: Vec<SweepResult> = Vec::new();
 
     for &v in &sweep_values {
-        let knobs = TrimKnobs { tool_max_desc_chars: v, ..TrimKnobs::default() };
-
         let mut ratios: Vec<f64> = Vec::new();
-        let mut total_before: u64 = 0;
-        let mut total_after: u64 = 0;
+        let mut tokens_saved: u64 = 0;
         let mut dollars: f64 = 0.0;
 
         for row in &eligible {
-            let out = trim_with_knobs(row.body.clone(), TrimProvider::Anthropic, &knobs);
-            if out.applied && out.tokens_before > 0 {
-                let ratio = (out.tokens_before - out.tokens_after) as f64
-                    / out.tokens_before as f64
-                    * 100.0;
+            let trimmed_body = apply_engine(&engine, row.body.clone(), v);
+            let before = est_tokens(&row.body);
+            let after = est_tokens(&trimmed_body);
+            if after < before {
+                let ratio = (before - after) as f64 / before as f64 * 100.0;
                 ratios.push(ratio);
-                total_before += out.tokens_before;
-                total_after += out.tokens_after;
-                let saved = out.tokens_before - out.tokens_after;
-                dollars += saved as f64 * input_rate_per_1m(&row.model) / 1_000_000.0;
+                tokens_saved += before - after;
+                dollars += (before - after) as f64 * input_rate_per_1m(&row.model) / 1_000_000.0;
             }
         }
 
@@ -277,7 +313,6 @@ fn main() {
         ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let median_pct = percentile_sorted(&ratios, 50.0);
         let p90_pct = percentile_sorted(&ratios, 90.0);
-        let tokens_saved = total_before.saturating_sub(total_after);
 
         results.push(SweepResult {
             desc_chars: v,
@@ -296,6 +331,7 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════════════");
     println!("  Trim Backtest — tool_max_desc_chars sweep");
     println!("═══════════════════════════════════════════════════════════════════════");
+    println!("  engine: {engine}   estimator: ~chars/4 (unified)");
     println!();
     println!(
         "{:<10}  {:>16}  {:>6}  {:>7}  {:>5}  {:>9}  {:>8}",
