@@ -81,9 +81,19 @@ impl Default for NativeKnobs {
 ///    `tool_use` block). Doc/art-prone extensions are always protected:
 ///    `md`, `markdown`, `txt`, `rst`, `adoc`, `org`.
 /// 2. **Fenced code block** — `text.contains("```")` → protected.
-/// 3. **Box-drawing / diagram glyphs** — count chars in the Unicode ranges
-///    U+2500..=U+257F (box drawing) and U+2190..=U+21FF (arrows). If count
-///    ≥ 6 → protected.
+/// 3. **Diagram detection — density + structural glyphs.**
+///    An absolute glyph count ≥ 6 misfires on large files where a few unicode
+///    frame chars appear incidentally (stray `│` in comments, git/cargo output).
+///    A density + structural check separates genuine diagrams (small, glyph-dense,
+///    structured) from large text that merely contains a handful of drawing chars.
+///    Three routes to protection (any one suffices):
+///    - **Arrow-driven diagram:** `arrow_count ≥ 3` — arrows are rarely
+///      incidental in flow/control diagrams.
+///    - **Dense box diagram:** `box_count + arrow_count ≥ 6` AND glyph density
+///      `(count / total_chars) ≥ 2%` — a real grid is dense; a 50KB file with
+///      stray frames is well under this threshold.
+///    - **Cornered boxes:** `corner_count ≥ 4` (a closed box needs 4 corners)
+///      AND `box_count ≥ 8` (guards against coincidental corner chars in prose).
 pub fn tool_result_protected(text: &str, src_ext: Option<&str>) -> bool {
     // Layer 1: provenance
     if let Some(ext) = src_ext {
@@ -95,14 +105,38 @@ pub fn tool_result_protected(text: &str, src_ext: Option<&str>) -> bool {
     if text.contains("```") {
         return true;
     }
-    // Layer 3: box-drawing / diagram glyphs
-    let glyph_count = text
-        .chars()
-        .filter(|&c| {
-            ('\u{2500}'..='\u{257F}').contains(&c) || ('\u{2190}'..='\u{21FF}').contains(&c)
-        })
-        .count();
-    glyph_count >= 6
+    // Layer 3: diagram detection — density + structural glyphs.
+    let mut box_count: usize = 0;
+    let mut arrow_count: usize = 0;
+    let mut corner_count: usize = 0;
+    let mut total_chars: usize = 0;
+    for c in text.chars() {
+        total_chars += 1;
+        if ('\u{2500}'..='\u{257F}').contains(&c) {
+            box_count += 1;
+            // Corners: ┌ ┐ └ ┘ ╔ ╗ ╚ ╝
+            if matches!(c,
+                '\u{250C}' | '\u{2510}' | '\u{2514}' | '\u{2518}'
+                | '\u{2554}' | '\u{2557}' | '\u{255A}' | '\u{255D}'
+            ) {
+                corner_count += 1;
+            }
+        } else if ('\u{2190}'..='\u{21FF}').contains(&c) {
+            arrow_count += 1;
+        }
+    }
+    let combined = box_count + arrow_count;
+    let density = combined as f64 / total_chars.max(1) as f64;
+    // Route a: arrow-driven diagram
+    if arrow_count >= 3 {
+        return true;
+    }
+    // Route b: dense box diagram
+    if combined >= 6 && density >= 0.02 {
+        return true;
+    }
+    // Route c: cornered boxes
+    corner_count >= 4 && box_count >= 8
 }
 
 // ── whitespace ops ────────────────────────────────────────────────────────────
@@ -996,6 +1030,136 @@ mod tests {
         assert!(
             tool_result_protected(text, None),
             "6 glyphs should be protected"
+        );
+    }
+
+    // ── new layer-3 density / structural tests ────────────────────────────────
+
+    /// A large (~3000-char) source-like text that contains only 6 stray box-drawing
+    /// chars has density = 6/3000 ≈ 0.2% (well below the 2% threshold), no arrows,
+    /// and no corners → NOT protected. This is the overshoot the new rule fixes.
+    #[test]
+    fn layer3_density_large_source_with_stray_glyphs_not_protected() {
+        // 2994 plain ASCII chars + 6 stray │ (U+2502, box-drawing vertical bar).
+        let base: String = "a".repeat(2994);
+        let text = format!("{base}││││││");
+        assert_eq!(text.chars().count(), 3000);
+        let box_count = text
+            .chars()
+            .filter(|&c| ('\u{2500}'..='\u{257F}').contains(&c))
+            .count();
+        assert_eq!(box_count, 6, "should have exactly 6 box glyphs");
+        assert!(
+            !tool_result_protected(&text, None),
+            "large source with 6 stray glyphs (density 0.2%) must NOT be protected"
+        );
+    }
+
+    /// A small dense box diagram (glyphs > 2% of chars) IS protected via the
+    /// dense-box route (b) and the cornered-boxes route (c).
+    #[test]
+    fn layer3_density_small_dense_diagram_protected() {
+        // A 5-row grid; glyph density is >> 2%.
+        let diagram = "┌──┬──┐\n│  │  │\n├──┼──┤\n│  │  │\n└──┴──┘\n";
+        let total = diagram.chars().count();
+        let glyph_count = diagram
+            .chars()
+            .filter(|&c| {
+                ('\u{2500}'..='\u{257F}').contains(&c) || ('\u{2190}'..='\u{21FF}').contains(&c)
+            })
+            .count();
+        let density = glyph_count as f64 / total as f64;
+        assert!(
+            density >= 0.02,
+            "test data must have >= 2% density; actual {density:.3}"
+        );
+        assert!(
+            tool_result_protected(diagram, None),
+            "small dense box diagram must be protected"
+        );
+    }
+
+    /// An arrow-only flow diagram with ≥ 3 arrow chars IS protected (route a).
+    #[test]
+    fn layer3_arrow_flow_protected() {
+        // Three → (U+2192) chars — meets the arrow_count ≥ 3 threshold.
+        let flow = "A → B → C → D";
+        let arrow_count = flow
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        assert!(
+            arrow_count >= 3,
+            "test data must have >= 3 arrows; got {arrow_count}"
+        );
+        assert!(
+            tool_result_protected(flow, None),
+            "flow diagram with >= 3 arrows must be protected"
+        );
+    }
+
+    /// Cargo/git-style multiline output with one stray unicode char is well under
+    /// all three layer-3 thresholds → NOT protected.
+    #[test]
+    fn layer3_cargo_style_output_not_protected() {
+        // The | chars in compiler output are ASCII U+007C, not box drawing.
+        // One stray U+2502 (│) is added to keep the test realistic; density << 2%.
+        let output = concat!(
+            "Compiling myapp v0.1.0 (/workspace)\n",
+            "warning: unused import: `std::io`\n",
+            "  --> src/main.rs:1:5\n",
+            "   |\n",
+            "1  | use std::io;\n",
+            "   | ^^^^^^^^^^^\n",
+            "   |\n",
+            "   = note: `#[warn(unused_imports)]` on by default\n",
+            "warning: 1 warning emitted │\n", // one stray box-drawing char
+        );
+        let total = output.chars().count();
+        let box_count = output
+            .chars()
+            .filter(|&c| ('\u{2500}'..='\u{257F}').contains(&c))
+            .count();
+        let arrow_count = output
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        let corner_count = output
+            .chars()
+            .filter(|&c| {
+                matches!(
+                    c,
+                    '\u{250C}' | '\u{2510}' | '\u{2514}' | '\u{2518}'
+                        | '\u{2554}' | '\u{2557}' | '\u{255A}' | '\u{255D}'
+                )
+            })
+            .count();
+        let density = (box_count + arrow_count) as f64 / total.max(1) as f64;
+        // Sanity-check that our test data really is below all three routes.
+        assert!(arrow_count < 3, "test data must have < 3 arrows; got {arrow_count}");
+        assert!(corner_count < 4, "test data must have < 4 corners; got {corner_count}");
+        assert!(density < 0.02, "test data density must be < 2%; got {density:.4}");
+        assert!(
+            !tool_result_protected(output, None),
+            "cargo output with one stray unicode char must NOT be protected"
+        );
+    }
+
+    /// Layer 1 (provenance) and Layer 2 (fence) override the density check: they
+    /// protect text that has zero drawing chars.
+    #[test]
+    fn layer1_and_layer2_override_density() {
+        let plain = "hello world ".repeat(100); // no glyphs, no fences
+        // Layer 1: .md extension forces protection.
+        assert!(
+            tool_result_protected(&plain, Some("md")),
+            ".md provenance must protect glyph-free text"
+        );
+        // Layer 2: triple-backtick forces protection regardless of density.
+        let with_fence = format!("{plain}```");
+        assert!(
+            tool_result_protected(&with_fence, None),
+            "fence must protect glyph-free text regardless of density"
         );
     }
 
