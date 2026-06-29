@@ -22,9 +22,9 @@ use super::{InflightGuard, now_ms};
 
 /// Build a request to Anthropic with auth/version/beta headers forwarded from
 /// the incoming Claude Code request.
-async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap) -> reqwest::RequestBuilder {
-    let mut req = state
-        .http
+async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap, streaming: bool) -> reqwest::RequestBuilder {
+    let client = if streaming { &state.http_stream } else { &state.http };
+    let mut req = client
         .post("https://api.anthropic.com/v1/messages")
         .header("content-type", "application/json");
 
@@ -81,7 +81,7 @@ pub async fn send_request(
         ));
     }
 
-    let resp = match build_request(state, incoming)
+    let resp = match build_request(state, incoming, false)
         .await
         .json(&payload)
         .send()
@@ -257,7 +257,7 @@ pub async fn stream_request(
         ));
     }
 
-    let resp = match build_request(state, incoming)
+    let resp = match build_request(state, incoming, true)
         .await
         .json(&payload)
         .send()

@@ -24,12 +24,13 @@ use super::{InflightGuard, now_ms};
 async fn post_chat_completions(
     state: &Arc<AppState>,
     payload: &Value,
+    streaming: bool,
 ) -> Result<(reqwest::Response, String)> {
     let base_url = state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone();
     let api_key = state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).clone();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let req_builder = state
-        .http
+    let client = if streaming { &state.http_stream } else { &state.http };
+    let req_builder = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
@@ -105,7 +106,7 @@ pub async fn send_request(
         ));
     }
 
-    let (resp, _url) = match post_chat_completions(state, &openai_payload).await {
+    let (resp, _url) = match post_chat_completions(state, &openai_payload, false).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -563,7 +564,7 @@ pub async fn stream_request(
         ));
     }
 
-    let (resp, _url) = match post_chat_completions(state, &openai_payload).await {
+    let (resp, _url) = match post_chat_completions(state, &openai_payload, true).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -736,7 +737,7 @@ fn sse(event: &str, data: &Value) -> Bytes {
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
 pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value) -> Result<Value> {
     let started = std::time::Instant::now();
-    let (resp, _url) = match post_chat_completions(state, &payload).await {
+    let (resp, _url) = match post_chat_completions(state, &payload, false).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -817,7 +818,7 @@ pub async fn stream_raw_openai(
         ));
     }
 
-    let (resp, _url) = match post_chat_completions(state, &payload).await {
+    let (resp, _url) = match post_chat_completions(state, &payload, true).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(

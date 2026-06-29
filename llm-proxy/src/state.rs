@@ -194,6 +194,12 @@ pub struct AppState {
     /// sessions) are pooled. Creating a fresh `reqwest::Client` per request
     /// defeats keep-alive and serializes parallel load behind new handshakes.
     pub http: reqwest::Client,
+    /// Dedicated client for STREAMING responses. Unlike [`Self::http`], it sets
+    /// NO total-request timeout — a total deadline would guillotine long
+    /// generations mid-stream. Instead it bounds only connect time and idle time
+    /// between chunks (`read_timeout`), so a genuinely dead/hung upstream is still
+    /// caught while a long-but-healthy stream runs to completion.
+    pub http_stream: reqwest::Client,
     /// Monotonic request id, for correlating log lines.
     pub req_seq: AtomicU64,
     /// Number of upstream requests currently in flight (observability only).
@@ -241,6 +247,11 @@ impl AppState {
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("Failed to build HTTP client"),
+            http_stream: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .read_timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("Failed to build streaming HTTP client"),
             req_seq: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
             db_log: Mutex::new(None),
