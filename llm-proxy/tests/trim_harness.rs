@@ -1129,7 +1129,7 @@ fn phase2_bench(
 
         if ok && bl_ok {
             let saved = before.saturating_sub(after);
-            let pct = before as f64 / before as f64 * 100.0;
+            let _pct = before as f64 / before as f64 * 100.0;
             let saved_pct = if before > 0 {
                 saved as f64 / before as f64 * 100.0
             } else {
@@ -1174,8 +1174,8 @@ fn phase2_bench(
                 .abs_diff(total_before)
                 .max(baseline_total_before.abs_diff(total_before)),
             if baseline_total_before > total_before {
-                ((baseline_total_before - total_before) as f64 / baseline_total_before as f64
-                    * 100.0)
+                (baseline_total_before - total_before) as f64 / baseline_total_before as f64
+                    * 100.0
             } else {
                 -((total_before - baseline_total_before) as f64 / baseline_total_before as f64
                     * 100.0)
