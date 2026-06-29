@@ -89,12 +89,15 @@ pub struct QuotaSnapshot {
 /// Wraps a SQLite connection.
 pub struct DbLog {
     conn: Mutex<Connection>,
+    /// Maximum number of rows to keep in `request_bodies`. 0 = unlimited.
+    pub corpus_max_rows: usize,
 }
 
 impl DbLog {
     /// Open (or create) the SQLite database at `db_path` and create the schema
-    /// if it doesn't exist.
-    pub fn open(db_path: &Path) -> Result<Self, rusqlite::Error> {
+    /// if it doesn't exist. `corpus_max_rows` caps the `request_bodies` table
+    /// (0 = unlimited).
+    pub fn open(db_path: &Path, corpus_max_rows: usize) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
         conn.execute_batch(
             "PRAGMA user_version = 1;
@@ -186,6 +189,7 @@ impl DbLog {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            corpus_max_rows,
         })
     }
 
@@ -309,16 +313,26 @@ impl DbLog {
 
     /// Insert a captured pre-trim request body. Best-effort: errors are swallowed.
     /// The body is zstd-compressed (level 9) before storage.
+    /// After a successful insert, prunes the oldest rows so at most
+    /// `corpus_max_rows` rows remain (0 = unlimited).
     pub fn insert_request_body(&self, run_id: u64, seq: u64, ts: &str, model: Option<&str>, provider: &str, body: &str) {
         let compressed = compress_body(body);
         if compressed.is_empty() {
             return; // compression produced nothing (only on encode error); skip row
         }
         if let Ok(conn) = self.conn.lock() {
-            let _ = conn.execute(
+            let inserted = conn.execute(
                 "INSERT INTO request_bodies (run_id, seq, ts, model, provider, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![run_id as i64, seq as i64, ts, model, provider, compressed],
             );
+            if inserted.is_ok() && self.corpus_max_rows > 0 {
+                let max = self.corpus_max_rows as i64;
+                let _ = conn.execute(
+                    "DELETE FROM request_bodies WHERE id NOT IN \
+                     (SELECT id FROM request_bodies ORDER BY id DESC LIMIT ?1)",
+                    rusqlite::params![max],
+                );
+            }
         }
     }
 
@@ -402,5 +416,54 @@ mod tests {
     fn decompress_garbage_returns_none() {
         let garbage: &[u8] = b"\xDE\xAD\xBE\xEF\xFF\xFE garbage that is not zstd";
         assert!(decompress_body(garbage).is_none(), "expected None for garbage bytes");
+    }
+
+    // ── corpus_max_rows prune tests ───────────────────────────────────────────
+
+    /// Build a DbLog backed by a named temp file that SQLite can open.
+    /// rusqlite supports ":memory:" but we need a file path for `DbLog::open`.
+    fn open_temp_db(corpus_max_rows: usize) -> (DbLog, tempfile::TempPath) {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.into_temp_path();
+        let db = DbLog::open(path.as_ref(), corpus_max_rows).expect("open");
+        (db, path)
+    }
+
+    fn insert_n_bodies(db: &DbLog, n: u64) {
+        for i in 0..n {
+            let body = format!(r#"{{"seq":{}}}"#, i);
+            db.insert_request_body(1, i, "2024-01-01T00:00:00Z", None, "test", &body);
+        }
+    }
+
+    fn count_bodies(db: &DbLog) -> i64 {
+        let guard = db.conn.lock().unwrap();
+        guard
+            .query_row("SELECT COUNT(*) FROM request_bodies", [], |row| row.get(0))
+            .unwrap_or(0)
+    }
+
+    fn min_id_bodies(db: &DbLog) -> i64 {
+        let guard = db.conn.lock().unwrap();
+        guard
+            .query_row("SELECT MIN(id) FROM request_bodies", [], |row| row.get(0))
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn corpus_prune_keeps_newest_n_rows() {
+        let (db, _tmp) = open_temp_db(10);
+        // Insert 12; only the newest 10 should survive.
+        insert_n_bodies(&db, 12);
+        assert_eq!(count_bodies(&db), 10, "expected 10 rows after pruning");
+        // The oldest 2 (id=1, id=2) should be gone; MIN(id) must be 3.
+        assert_eq!(min_id_bodies(&db), 3, "expected ids 3..12 to remain");
+    }
+
+    #[test]
+    fn corpus_unlimited_keeps_all_rows() {
+        let (db, _tmp) = open_temp_db(0); // 0 = unlimited
+        insert_n_bodies(&db, 5);
+        assert_eq!(count_bodies(&db), 5, "expected all 5 rows to remain");
     }
 }

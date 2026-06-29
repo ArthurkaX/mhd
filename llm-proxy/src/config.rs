@@ -127,6 +127,12 @@ pub struct Settings {
     /// Default: off.
     #[serde(default = "default_trim_strip_thinking")]
     pub trim_strip_thinking: bool,
+
+    /// Maximum number of rows to keep in the `request_bodies` corpus table.
+    /// Oldest rows are pruned after each insert. 0 = unlimited.
+    /// Default: 5000.
+    #[serde(default = "default_corpus_max_rows")]
+    pub corpus_max_rows: usize,
 }
 
 impl Default for Settings {
@@ -154,6 +160,7 @@ impl Default for Settings {
             trim_toolresult_tail: default_trim_toolresult_tail(),
             trim_ws_enabled: default_trim_ws_enabled(),
             trim_strip_thinking: default_trim_strip_thinking(),
+            corpus_max_rows: default_corpus_max_rows(),
         }
     }
 }
@@ -229,6 +236,8 @@ pub struct Config {
     pub trim_ws_enabled: bool,
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
     pub trim_strip_thinking: bool,
+    /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
+    pub corpus_max_rows: usize,
 }
 
 impl Config {
@@ -254,6 +263,7 @@ impl Config {
             trim_toolresult_tail: settings.trim_toolresult_tail,
             trim_ws_enabled: settings.trim_ws_enabled,
             trim_strip_thinking: settings.trim_strip_thinking,
+            corpus_max_rows: settings.corpus_max_rows,
         }
     }
 
@@ -282,6 +292,7 @@ impl Config {
             trim_toolresult_tail: self.trim_toolresult_tail,
             trim_ws_enabled: self.trim_ws_enabled,
             trim_strip_thinking: self.trim_strip_thinking,
+            corpus_max_rows: self.corpus_max_rows,
         }
     }
 
@@ -373,6 +384,10 @@ fn default_trim_ws_enabled() -> bool {
 
 fn default_trim_strip_thinking() -> bool {
     false
+}
+
+fn default_corpus_max_rows() -> usize {
+    5000
 }
 
 fn default_vision_prompt() -> String {

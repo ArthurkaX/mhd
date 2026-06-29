@@ -245,6 +245,10 @@ pub struct AppState {
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
+    /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
+    /// Fixed at proxy construction time; set from config.
+    pub corpus_max_rows: usize,
+
     /// Last quota snapshot WRITTEN to the DB, with the instant it was written.
     /// Used to dedup: we only persist a new row on material change or after a
     /// minimum interval, keeping the quota table a sparse time-series.
@@ -313,6 +317,7 @@ impl AppState {
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
+            corpus_max_rows: cfg.corpus_max_rows,
             last_quota: RwLock::new(None),
             run_id,
         })
@@ -354,7 +359,7 @@ impl AppState {
             let mut guard = self.db_log.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {
                 let db_path = crate::config::config_dir().join("proxy.db");
-                match crate::db_log::DbLog::open(&db_path) {
+                match crate::db_log::DbLog::open(&db_path, self.corpus_max_rows) {
                     Ok(db) => {
                         *guard = Some(db);
                     }
@@ -761,6 +766,7 @@ impl AppState {
             .trim_strip_thinking
             .read()
             .unwrap_or_else(|e| e.into_inner()),
+        corpus_max_rows: self.corpus_max_rows,
         }
     }
 }

@@ -53,6 +53,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         trim_toolresult_tail: cfg.trim_toolresult_tail,
         trim_ws_enabled: cfg.trim_ws_enabled,
         trim_strip_thinking: cfg.trim_strip_thinking,
+        corpus_max_rows: cfg.corpus_max_rows,
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
