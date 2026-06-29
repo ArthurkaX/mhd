@@ -221,8 +221,23 @@ pub async fn post_messages(
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
         // Read the active engine: "native" or default "llmtrim".
         let engine = state.trim_engine.read().unwrap_or_else(|e| e.into_inner()).clone();
+        // Read live-tunable native engine knobs (also used as a fallback on the llmtrim path).
+        let native_knobs = crate::native_trim::NativeKnobs {
+            tool_max_desc_chars: *state
+                .trim_tool_desc_chars
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_head: *state
+                .trim_toolresult_head
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_tail: *state
+                .trim_toolresult_tail
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+        };
         // Claude Code is always an agent — use the agent preset for cache safety.
-        let out = crate::trim::trim_anthropic_with_engine(payload, &engine, "agent");
+        let out = crate::trim::trim_anthropic_with_engine(payload, &engine, "agent", native_knobs);
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;

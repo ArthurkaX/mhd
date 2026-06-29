@@ -294,6 +294,92 @@ fn main() -> ExitCode {
         }
     }
 
+    // Watch settings.json for edits and reload live knobs on change.
+    // Uses a background thread so the watcher never blocks the hook loop.
+    {
+        use std::sync::atomic::{AtomicI64, Ordering as AO};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Use leading `::` to reach the external crate; `llm_proxy` in this
+        // file is shadowed by the re-export of crate::core::llm_proxy.
+        let settings_path = ::llm_proxy::config::config_dir().join("settings.json");
+        let watch_handle = handle.clone();
+        let watch_quiet = quiet;
+
+        std::thread::spawn(move || {
+            use notify::{Config as WatchConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+            let last_handled = AtomicI64::new(0);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let tx2 = tx.clone();
+
+            let mut watcher = match RecommendedWatcher::new(
+                move |res| { let _ = tx2.send(res); },
+                WatchConfig::default(),
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("mhd: settings watcher failed to create: {e}");
+                    return;
+                }
+            };
+
+            // Watch the directory so atomic-rename saves (editor, PowerShell
+            // Set-Content) still generate an event for settings.json.
+            let watch_dir = settings_path
+                .parent()
+                .map(|p: &std::path::Path| p.to_path_buf())
+                .unwrap_or_else(|| settings_path.clone());
+
+            if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+                eprintln!("mhd: settings watcher failed to start: {e}");
+                return;
+            }
+
+            for event in rx {
+                let ev = match event {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("mhd: settings watcher error: {e}");
+                        continue;
+                    }
+                };
+
+                // Only react to modify/create events whose path is settings.json.
+                let is_settings = ev.paths.iter().any(|p| {
+                    p.file_name().and_then(|n| n.to_str()) == Some("settings.json")
+                });
+                let is_write = matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_));
+                if !is_settings || !is_write {
+                    continue;
+                }
+
+                // Debounce: skip events within 500 ms of the last handled one.
+                // Editors (VS Code, Zed, etc.) emit multiple events per save.
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let prev = last_handled.load(AO::Relaxed);
+                if now - prev < 500 {
+                    continue;
+                }
+                last_handled.store(now, AO::Relaxed);
+
+                match watch_handle.reload_config() {
+                    Ok(()) => {
+                        if !watch_quiet {
+                            println!("mhd: settings.json changed \u{2014} reloaded");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("mhd: settings.json reload error: {e}");
+                    }
+                }
+            }
+        });
+    }
+
     if no_tray {
         // Headless / daemon mode: block on the hook message loop.
         if !quiet {

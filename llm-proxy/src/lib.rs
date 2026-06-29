@@ -156,6 +156,33 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = engine.to_string();
     }
 
+    /// Set the max chars per tool description for the native trim engine.
+    pub fn set_trim_tool_desc_chars(&self, v: usize) {
+        *self
+            .state
+            .trim_tool_desc_chars
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    /// Set the head budget for tool_result blocks in the native trim engine.
+    pub fn set_trim_toolresult_head(&self, v: usize) {
+        *self
+            .state
+            .trim_toolresult_head
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    /// Set the tail budget for tool_result blocks in the native trim engine.
+    pub fn set_trim_toolresult_tail(&self, v: usize) {
+        *self
+            .state
+            .trim_toolresult_tail
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state

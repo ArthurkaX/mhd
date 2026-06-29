@@ -48,6 +48,9 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         corpus_capture: cfg.corpus_capture,
         db_log_enabled: true, // DB log is always on; verbosity is a separate knob
         trim_engine: cfg.trim_engine.clone(),
+        trim_tool_desc_chars: cfg.trim_tool_desc_chars,
+        trim_toolresult_head: cfg.trim_toolresult_head,
+        trim_toolresult_tail: cfg.trim_toolresult_tail,
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -98,6 +101,9 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_log_level(&cfg.log_level);
         control.set_trim_enabled(cfg.trim_enabled);
         control.set_trim_engine(&cfg.trim_engine);
+        control.set_trim_tool_desc_chars(cfg.trim_tool_desc_chars);
+        control.set_trim_toolresult_head(cfg.trim_toolresult_head);
+        control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
         control.set_corpus_capture_enabled(cfg.corpus_capture);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {

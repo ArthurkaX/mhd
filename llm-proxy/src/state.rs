@@ -220,6 +220,15 @@ pub struct AppState {
     /// Active trim engine: "llmtrim" (default) or "native".
     pub trim_engine: RwLock<String>,
 
+    /// Max Unicode chars per tool description (native engine knob).
+    pub trim_tool_desc_chars: RwLock<usize>,
+
+    /// Max chars for the head of a tool_result block (native engine knob).
+    pub trim_toolresult_head: RwLock<usize>,
+
+    /// Max chars for the tail of a tool_result block (native engine knob).
+    pub trim_toolresult_tail: RwLock<usize>,
+
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
@@ -285,6 +294,9 @@ impl AppState {
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
             trim_engine: RwLock::new(cfg.trim_engine.clone()),
+            trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
+            trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
+            trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             last_quota: RwLock::new(None),
             run_id,
@@ -714,6 +726,18 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            trim_tool_desc_chars: *self
+                .trim_tool_desc_chars
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_toolresult_head: *self
+                .trim_toolresult_head
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_toolresult_tail: *self
+                .trim_toolresult_tail
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
         }
     }
 }

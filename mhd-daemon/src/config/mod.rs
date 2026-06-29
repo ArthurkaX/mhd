@@ -93,6 +93,12 @@ pub struct LlmProxyConfig {
     pub corpus_capture: bool,
     /// Trim engine: "llmtrim" (default) or "native".
     pub trim_engine: String,
+    /// Max Unicode chars per tool description (native engine).
+    pub trim_tool_desc_chars: usize,
+    /// Max chars for the head of a tool_result block (native engine).
+    pub trim_toolresult_head: usize,
+    /// Max chars for the tail of a tool_result block (native engine).
+    pub trim_toolresult_tail: usize,
 }
 
 impl Default for LlmProxyConfig {
@@ -116,6 +122,9 @@ impl Default for LlmProxyConfig {
             trim_enabled: false,
             corpus_capture: false,
             trim_engine: "llmtrim".to_string(),
+            trim_tool_desc_chars: 150,
+            trim_toolresult_head: 3000,
+            trim_toolresult_tail: 1000,
         }
     }
 }
@@ -397,6 +406,18 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.trim_engine.clone())
                 .unwrap_or_else(|| "llmtrim".to_string()),
+            trim_tool_desc_chars: settings
+                .as_ref()
+                .map(|s| s.trim_tool_desc_chars)
+                .unwrap_or(150),
+            trim_toolresult_head: settings
+                .as_ref()
+                .map(|s| s.trim_toolresult_head)
+                .unwrap_or(3000),
+            trim_toolresult_tail: settings
+                .as_ref()
+                .map(|s| s.trim_toolresult_tail)
+                .unwrap_or(1000),
         }
     }
 

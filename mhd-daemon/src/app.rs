@@ -104,6 +104,11 @@ impl DaemonControl for AppHandle {
 
         self.osd.set_theme(self.theme());
 
+        // Push runtime changes to the embedded proxy so they take effect on
+        // the next request without a restart.
+        let proxy_cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).llm_proxy().clone();
+        crate::llm_proxy::reload(&proxy_cfg);
+
         if !self.quiet {
             println!("mhd: config reloaded ({bindings_count} bindings)");
         }

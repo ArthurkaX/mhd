@@ -210,11 +210,10 @@ pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
 
 /// Run the Anthropic request body through the selected trim engine.
 ///
-/// - `"native"` → uses the clean-room [`crate::native_trim::trim_native`] engine.
-/// - anything else (default `"llmtrim"`) → delegates to [`trim_anthropic`].
-///
-/// `TrimKnobs::default().tool_max_desc_chars` (150) is used for both engines so
-/// the tool-description budget is consistent regardless of which path is active.
+/// - `"native"` → uses the clean-room [`crate::native_trim::trim_native`] engine
+///   with the caller-supplied `native_knobs`.
+/// - anything else (default `"llmtrim"`) → delegates to [`trim_anthropic`];
+///   `native_knobs` is ignored on that branch.
 ///
 /// # Fail-open
 ///
@@ -222,7 +221,12 @@ pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
 /// - Body is below [`TRIM_MIN_BYTES`].
 /// - The trimmed result is not smaller (`after ≥ before`).
 /// - Any serialization error occurs.
-pub fn trim_anthropic_with_engine(payload: Value, engine: &str, preset: &str) -> TrimOutcome {
+pub fn trim_anthropic_with_engine(
+    payload: Value,
+    engine: &str,
+    preset: &str,
+    native_knobs: crate::native_trim::NativeKnobs,
+) -> TrimOutcome {
     if engine == "native" {
         // Cheap guard: skip tiny bodies — nothing to gain.
         let before_str = match serde_json::to_string(&payload) {
@@ -240,11 +244,7 @@ pub fn trim_anthropic_with_engine(payload: Value, engine: &str, preset: &str) ->
             }
         };
         let tokens_before = (before_str.len() / 4) as u64;
-        let knobs = crate::native_trim::NativeKnobs {
-            // Match the same tool_max_desc_chars the llmtrim path uses.
-            tool_max_desc_chars: TrimKnobs::default().tool_max_desc_chars,
-            ..crate::native_trim::NativeKnobs::default()
-        };
+        let knobs = native_knobs;
         let config_json = serde_json::json!({
             "engine": "native",
             "tool_max_desc_chars": knobs.tool_max_desc_chars,
