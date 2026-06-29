@@ -91,6 +91,8 @@ pub struct LlmProxyConfig {
     /// Enable replay-corpus capture: store full pre-trim request bodies in
     /// proxy.db so a candidate trim preset can be backtested against real traffic.
     pub corpus_capture: bool,
+    /// Trim engine: "llmtrim" (default) or "native".
+    pub trim_engine: String,
 }
 
 impl Default for LlmProxyConfig {
@@ -113,6 +115,7 @@ impl Default for LlmProxyConfig {
             vision_model: None,
             trim_enabled: false,
             corpus_capture: false,
+            trim_engine: "llmtrim".to_string(),
         }
     }
 }
@@ -390,6 +393,10 @@ impl AppConfig {
             vision_model: settings.as_ref().and_then(|s| s.vision_model.clone()),
             trim_enabled: settings.as_ref().map(|s| s.trim_enabled).unwrap_or(false),
             corpus_capture: settings.as_ref().map(|s| s.corpus_capture).unwrap_or(false),
+            trim_engine: settings
+                .as_ref()
+                .map(|s| s.trim_engine.clone())
+                .unwrap_or_else(|| "llmtrim".to_string()),
         }
     }
 

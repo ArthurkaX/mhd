@@ -100,6 +100,11 @@ pub struct Settings {
     /// Default: on — the DB log is opened at proxy startup when true.
     #[serde(default = "default_db_log_enabled")]
     pub db_log_enabled: bool,
+
+    /// Trim engine to use on the Anthropic request path: "llmtrim" (default)
+    /// or "native". Missing key in settings.json is treated as "llmtrim".
+    #[serde(default = "default_trim_engine")]
+    pub trim_engine: String,
 }
 
 impl Default for Settings {
@@ -121,6 +126,7 @@ impl Default for Settings {
             trim_enabled: false,
             corpus_capture: false,
             db_log_enabled: default_db_log_enabled(),
+            trim_engine: default_trim_engine(),
         }
     }
 }
@@ -184,6 +190,8 @@ pub struct Config {
     pub corpus_capture: bool,
     /// Whether to write structured events to `proxy.db`.
     pub db_log_enabled: bool,
+    /// Trim engine: "llmtrim" (default) or "native".
+    pub trim_engine: String,
 }
 
 impl Config {
@@ -203,6 +211,7 @@ impl Config {
             trim_enabled: settings.trim_enabled,
             corpus_capture: settings.corpus_capture,
             db_log_enabled: settings.db_log_enabled,
+            trim_engine: settings.trim_engine.clone(),
         }
     }
 
@@ -225,6 +234,7 @@ impl Config {
             trim_enabled: self.trim_enabled,
             corpus_capture: self.corpus_capture,
             db_log_enabled: self.db_log_enabled,
+            trim_engine: self.trim_engine.clone(),
         }
     }
 
@@ -292,6 +302,10 @@ fn default_log_level() -> String {
 
 fn default_db_log_enabled() -> bool {
     true
+}
+
+fn default_trim_engine() -> String {
+    "llmtrim".to_string()
 }
 
 fn default_vision_prompt() -> String {

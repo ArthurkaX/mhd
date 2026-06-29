@@ -147,6 +147,24 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Set the active trim engine ("llmtrim" or "native").
+    pub fn set_trim_engine(&self, engine: &str) {
+        *self
+            .state
+            .trim_engine
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = engine.to_string();
+    }
+
+    /// Current trim engine.
+    pub fn trim_engine(&self) -> String {
+        self.state
+            .trim_engine
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Enable or disable replay-corpus capture (stores full pre-trim request bodies in proxy.db).
     pub fn set_corpus_capture_enabled(&self, enabled: bool) {
         *self

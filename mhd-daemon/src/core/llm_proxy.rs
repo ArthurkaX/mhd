@@ -47,6 +47,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         trim_enabled: cfg.trim_enabled,
         corpus_capture: cfg.corpus_capture,
         db_log_enabled: true, // DB log is always on; verbosity is a separate knob
+        trim_engine: cfg.trim_engine.clone(),
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -96,6 +97,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_target("fable", &cfg.fable);
         control.set_log_level(&cfg.log_level);
         control.set_trim_enabled(cfg.trim_enabled);
+        control.set_trim_engine(&cfg.trim_engine);
         control.set_corpus_capture_enabled(cfg.corpus_capture);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {

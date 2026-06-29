@@ -217,6 +217,9 @@ pub struct AppState {
     /// Master switch for llmtrim request compression.
     pub trim_enabled: RwLock<bool>,
 
+    /// Active trim engine: "llmtrim" (default) or "native".
+    pub trim_engine: RwLock<String>,
+
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
@@ -281,6 +284,7 @@ impl AppState {
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
+            trim_engine: RwLock::new(cfg.trim_engine.clone()),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             last_quota: RwLock::new(None),
             run_id,
@@ -705,6 +709,11 @@ impl AppState {
             trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
             corpus_capture: *self.corpus_capture_enabled.read().unwrap_or_else(|e| e.into_inner()),
             db_log_enabled: self.is_db_log_enabled(),
+            trim_engine: self
+                .trim_engine
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 }

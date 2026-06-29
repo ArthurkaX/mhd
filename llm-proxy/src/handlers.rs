@@ -219,8 +219,10 @@ pub async fn post_messages(
     let mut trim_config_json = String::new();
     let mut trim_stages_json = String::new();
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+        // Read the active engine: "native" or default "llmtrim".
+        let engine = state.trim_engine.read().unwrap_or_else(|e| e.into_inner()).clone();
         // Claude Code is always an agent — use the agent preset for cache safety.
-        let out = crate::trim::trim_anthropic(payload, "agent");
+        let out = crate::trim::trim_anthropic_with_engine(payload, &engine, "agent");
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;
@@ -258,8 +260,8 @@ pub async fn post_messages(
                 .dump_bodies()
             {
                 eprintln!(
-                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset=agent",
-                    saved, pct,
+                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset={} engine={}",
+                    saved, pct, out.preset, engine,
                 );
             }
         }

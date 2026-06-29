@@ -208,6 +208,84 @@ pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
     )
 }
 
+/// Run the Anthropic request body through the selected trim engine.
+///
+/// - `"native"` → uses the clean-room [`crate::native_trim::trim_native`] engine.
+/// - anything else (default `"llmtrim"`) → delegates to [`trim_anthropic`].
+///
+/// `TrimKnobs::default().tool_max_desc_chars` (150) is used for both engines so
+/// the tool-description budget is consistent regardless of which path is active.
+///
+/// # Fail-open
+///
+/// Returns the original body when:
+/// - Body is below [`TRIM_MIN_BYTES`].
+/// - The trimmed result is not smaller (`after ≥ before`).
+/// - Any serialization error occurs.
+pub fn trim_anthropic_with_engine(payload: Value, engine: &str, preset: &str) -> TrimOutcome {
+    if engine == "native" {
+        // Cheap guard: skip tiny bodies — nothing to gain.
+        let before_str = match serde_json::to_string(&payload) {
+            Ok(s) if s.len() >= TRIM_MIN_BYTES => s,
+            _ => {
+                return TrimOutcome {
+                    body: payload,
+                    applied: false,
+                    tokens_before: 0,
+                    tokens_after: 0,
+                    preset: "native".to_string(),
+                    stages: Vec::new(),
+                    config_json: String::new(),
+                };
+            }
+        };
+        let tokens_before = (before_str.len() / 4) as u64;
+        let knobs = crate::native_trim::NativeKnobs {
+            // Match the same tool_max_desc_chars the llmtrim path uses.
+            tool_max_desc_chars: TrimKnobs::default().tool_max_desc_chars,
+            ..crate::native_trim::NativeKnobs::default()
+        };
+        let config_json = serde_json::json!({
+            "engine": "native",
+            "tool_max_desc_chars": knobs.tool_max_desc_chars,
+            "tool_result_head": knobs.tool_result_head,
+            "tool_result_tail": knobs.tool_result_tail,
+        })
+        .to_string();
+        // Clone so we can fall back to the original on no-gain.
+        let original = payload.clone();
+        let trimmed = crate::native_trim::trim_native(payload, &knobs);
+        let tokens_after = serde_json::to_string(&trimmed)
+            .map(|s| (s.len() / 4) as u64)
+            .unwrap_or(tokens_before);
+        if tokens_after < tokens_before {
+            TrimOutcome {
+                body: trimmed,
+                applied: true,
+                tokens_before,
+                tokens_after,
+                preset: "native".to_string(),
+                stages: Vec::new(),
+                config_json,
+            }
+        } else {
+            // No gain — forward the original unchanged.
+            TrimOutcome {
+                body: original,
+                applied: false,
+                tokens_before: 0,
+                tokens_after: 0,
+                preset: "native".to_string(),
+                stages: Vec::new(),
+                config_json: String::new(),
+            }
+        }
+    } else {
+        // Default: llmtrim engine.
+        trim_anthropic(payload, preset)
+    }
+}
+
 /// Run an OpenAI-format request body through `llmtrim-core`'s `rewrite_request`.
 ///
 /// # Fail-open
