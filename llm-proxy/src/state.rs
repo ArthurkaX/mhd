@@ -136,6 +136,10 @@ pub struct TraceEntry {
     /// Unix milliseconds when this entry was first pushed (set at push_trace time).
     /// Zero for entries created before this field was added; treat zero as unknown.
     pub started_ms: u64,
+    /// FNV-1a 64-bit hash of the cacheable prefix (system + tools). Zero means
+    /// unknown (old entries or OpenAI passthrough). Used in the Proxy Trace
+    /// overlay to distinguish COLD (first fill) from MISS (warm but missed).
+    pub prefix_hash: u64,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;

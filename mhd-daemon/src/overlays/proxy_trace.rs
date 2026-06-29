@@ -619,6 +619,29 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
 
     // Collect newest-first so we can index [i+1] for the gap-to-previous calc.
     let display_entries: Vec<_> = trace.iter().rev().take(max_rows as usize).collect();
+
+    // Pre-compute whether each entry's prefix_hash was seen in an OLDER entry
+    // (i.e. appeared earlier in time = later in the newest-first vector).
+    // Strategy: iterate oldest→newest (reverse of display order), maintaining a
+    // HashSet of hashes seen so far. An entry has "prefix_seen_before" = true iff
+    // its non-zero hash is already in the set when we reach it.
+    // We exclude hash==0 (unknown) from matching to avoid false COLD suppression.
+    let prefix_seen_before: Vec<bool> = {
+        let n = display_entries.len();
+        let mut seen_before = vec![false; n];
+        let mut seen_set = std::collections::HashSet::<u64>::new();
+        // Iterate oldest first (reverse of display_entries which is newest-first)
+        for idx in (0..n).rev() {
+            let h = display_entries[idx].prefix_hash;
+            if h != 0 {
+                seen_before[idx] = seen_set.contains(&h);
+                seen_set.insert(h);
+            }
+            // hash==0: seen_before stays false (unknown, handled in classification)
+        }
+        seen_before
+    };
+
     for (i, entry) in display_entries.iter().enumerate() {
         let ry = list_top + i as i32 * row_h;
         if ry + row_h > win_h - pad {
@@ -698,11 +721,36 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 }
             })
         };
-        // A miss whose preceding idle gap exceeds the Anthropic cache TTL is
-        // COLD (expected) rather than a real, investigate-worthy miss.
+        // Four-state cache classification when cache_read == 0:
+        //   COLD    — prefix hash never seen before (first fill, new project/session)
+        //   EXPIRED — prefix was seen before but gap > TTL (cache aged out)
+        //   MISS    — prefix was seen before and gap <= TTL (warm but missed → investigate)
+        // HIT is handled separately (cache_read_tokens > 0).
+        // hash==0 (unknown): never treated as COLD; falls to gap logic instead.
         let cache_miss_candidate = entry.cache_read_tokens == 0 && total_prompt >= 1024;
-        let is_cold = cache_miss_candidate && gap_secs_opt.map_or(true, |g| g > CACHE_TTL_SECS);
-        let is_miss = cache_miss_candidate && !is_cold;
+        let seen_before = prefix_seen_before[i];
+        let h = entry.prefix_hash;
+        #[derive(PartialEq)]
+        enum CacheState { Cold, Expired, Miss }
+        let cache_state: Option<CacheState> = if cache_miss_candidate {
+            if h != 0 && !seen_before {
+                // Genuine first fill: this prefix has never appeared in an older entry.
+                Some(CacheState::Cold)
+            } else {
+                // Prefix was seen before (or hash is unknown): classify by gap.
+                let expired = gap_secs_opt.map_or(true, |g| g > CACHE_TTL_SECS);
+                if expired {
+                    Some(CacheState::Expired)
+                } else {
+                    Some(CacheState::Miss)
+                }
+            }
+        } else {
+            None
+        };
+        let is_cold = cache_state.as_ref().map_or(false, |s| *s == CacheState::Cold);
+        let is_expired = cache_state.as_ref().map_or(false, |s| *s == CacheState::Expired);
+        let is_miss = cache_state.as_ref().map_or(false, |s| *s == CacheState::Miss);
 
         // ── Route column (col 1) ─────────────────────────────────
         // Downgraded: "{tier}→{eff}" in accent; otherwise "{tier}" in muted.
@@ -728,9 +776,11 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 format!("{:.0}%", ratio_pct)
             }
         } else if is_cold {
+            "cold".to_string()
+        } else if is_expired {
             match gap_secs_opt {
-                Some(g) => format!("idle {}m", g / 60),
-                None => "cold".to_string(),
+                Some(g) => format!("expired {}m", g / 60),
+                None => "expired".to_string(),
             }
         } else if is_miss {
             "miss".to_string()
@@ -741,8 +791,13 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             let t = cache_ratio.clamp(0.0, 1.0);
             hsv_to_argb(120.0 * t, 0.7, 0.9)
         } else if is_cold {
+            // COLD: neutral cyan — first fill for a new prefix, not an error.
+            Argb::new(255, 80, 200, 210)
+        } else if is_expired {
+            // EXPIRED: muted — cache aged out, expected after idle.
             theme.text_muted
         } else if is_miss {
+            // MISS: red — warm prefix that still missed → investigate.
             let severity = (total_prompt as f64 / 100_000.0).clamp(0.0, 1.0);
             hsv_to_argb(0.0, 0.3 + severity * 0.5, 0.6 + severity * 0.4)
         } else {

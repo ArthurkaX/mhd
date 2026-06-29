@@ -39,6 +39,29 @@ fn session_hash(payload: &Value) -> u64 {
     hasher.finish()
 }
 
+/// Compute the FNV-1a 64-bit hash of the cacheable prefix: system + tools.
+/// These two fields are what Anthropic treats as the stable cache prefix.
+/// Returns 0 if neither field is present (unknown prefix).
+fn prefix_hash(payload: &Value) -> u64 {
+    let system = payload.get("system").unwrap_or(&Value::Null);
+    let tools = payload.get("tools").unwrap_or(&Value::Null);
+    if matches!(system, Value::Null) && matches!(tools, Value::Null) {
+        return 0;
+    }
+    let bytes = serde_json::to_vec(&[system, tools]).unwrap_or_default();
+    if bytes.is_empty() {
+        return 0;
+    }
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &byte in &bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 /// Decide whether a request on an expensive tier (Opus/Sonnet) should keep
 /// its tier or can be safely downgraded to the cheaper fallback.
 ///
@@ -320,6 +343,7 @@ pub async fn post_messages(
         trim_config_json,
         trim_stages_json,
         started_ms: crate::providers::now_unix_ms(),
+        prefix_hash: prefix_hash(&payload),
     });
 
     if stream {
@@ -440,6 +464,7 @@ pub async fn post_chat_completions(
 
     // Record this passthrough in the trace ring buffer (and proxy.db requests row).
     // Tokens are 0 here and get filled from the upstream response usage (see `*_raw_openai`).
+    // prefix_hash is 0 for OpenAI passthrough (no Anthropic-style system/tools prefix).
     state.push_trace(TraceEntry {
         seq: req_id,
         tier: Tier::OpenAi,
@@ -459,6 +484,7 @@ pub async fn post_chat_completions(
         trim_config_json,
         trim_stages_json,
         started_ms: crate::providers::now_unix_ms(),
+        prefix_hash: 0,
     });
 
     if stream {
