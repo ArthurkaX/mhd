@@ -585,6 +585,15 @@ impl AppState {
             .collect()
     }
 
+    /// Latest quota snapshot recorded from Anthropic rate-limit headers, if any.
+    pub fn get_quota(&self) -> Option<crate::db_log::QuotaSnapshot> {
+        self.last_quota
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(snap, _)| snap.clone())
+    }
+
     /// Allocate the next request id.
     pub fn next_req_id(&self) -> u64 {
         self.req_seq.fetch_add(1, Ordering::Relaxed)

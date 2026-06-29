@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use llm_proxy::ProxyControl;
+use llm_proxy::QuotaSnapshot;
 use llm_proxy::state::{TraceEntry, VisionTraceEntry};
 
 use crate::config::LlmProxyConfig;
@@ -132,6 +133,15 @@ pub fn get_vision_trace() -> Vec<VisionTraceEntry> {
         .as_ref()
         .map(|c| c.vision_trace())
         .unwrap_or_default()
+}
+
+/// Latest Anthropic quota snapshot from the running proxy, if any.
+pub fn get_quota() -> Option<QuotaSnapshot> {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|c| c.quota())
 }
 
 /// Record a vision screenshot request in the proxy's trace buffer and SQLite log.

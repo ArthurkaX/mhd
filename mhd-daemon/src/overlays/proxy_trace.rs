@@ -491,9 +491,76 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         }
     }
 
+    // ── Quota line ───────────────────────────────────────────────
+    let quota_y = summary_y + row_h;
+    {
+        let q = llm_proxy::get_quota();
+        let (text, color) = match q {
+            Some(q) => {
+                fn pct(u: Option<f64>) -> String {
+                    match u {
+                        Some(v) => format!("{}%", (v * 100.0).round() as i64),
+                        None => "\u{2014}".to_string(),
+                    }
+                }
+                fn countdown(reset: Option<i64>) -> String {
+                    let reset = match reset { Some(r) => r, None => return "\u{2014}".to_string() };
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let rem = reset - now;
+                    if rem <= 0 { return "now".to_string(); }
+                    let h = rem / 3600;
+                    let m = (rem % 3600) / 60;
+                    if h > 0 { format!("{h}h{m:02}m") } else { format!("{m}m") }
+                }
+                let status = q.h5_status.clone().unwrap_or_else(|| "?".to_string());
+                let util = q.h5_utilization.unwrap_or(0.0);
+                // Color by 5h pressure: red >=0.9 or warning/reject status, amber >=0.7, else accent.
+                let warn = status.contains("warning") || status.contains("reject") || status.contains("exceed");
+                let color = if util >= 0.9 || warn {
+                    Argb::new(255, 235, 100, 100)
+                } else if util >= 0.7 {
+                    Argb::new(255, 235, 185, 90)
+                } else {
+                    theme.accent
+                };
+                let text = format!(
+                    "quota \u{00B7} 5h {} {} \u{00B7} 7d {} \u{00B7} resets {}",
+                    pct(q.h5_utilization),
+                    status,
+                    pct(q.d7_utilization),
+                    countdown(q.h5_reset),
+                );
+                (text, color)
+            }
+            None => ("quota \u{00B7} \u{2014}".to_string(), theme.text_muted),
+        };
+        unsafe {
+            let _ = SelectObject(dib_dc, hfont_small);
+            let _ = SetTextColor(dib_dc, color.to_colorref());
+        }
+        let mut qw = crate::osd::to_utf16_z(&text);
+        let mut qrc = RECT {
+            left: pad,
+            top: quota_y,
+            right: win_w - pad,
+            bottom: quota_y + row_h,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut qw,
+                &mut qrc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
+    }
+
     // ── Column headers ───────────────────────────────────────────
     // Shift down one row to make room for the summary line.
-    let col_y = summary_y + row_h;
+    let col_y = quota_y + row_h;
     unsafe {
         let _ = SelectObject(dib_dc, hfont_small);
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());

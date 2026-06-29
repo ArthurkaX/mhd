@@ -26,7 +26,7 @@ pub use config::{
     Config, ModelRef, Provider, ResolvedModelEndpoint, Secrets, Settings, normalize_endpoint,
     normalize_vision_endpoint, resolve_model_endpoint,
 };
-pub use db_log::LogEvent;
+pub use db_log::{LogEvent, QuotaSnapshot};
 pub use state::{AppState, Target, Tier, TraceEntry, VisionTraceEntry};
 
 /// Build the Axum router for a given shared state.
@@ -167,6 +167,11 @@ impl ProxyControl {
     /// Snapshot of recent routing decisions.
     pub fn trace(&self) -> Vec<TraceEntry> {
         self.state.trace_snapshot()
+    }
+
+    /// Latest Anthropic quota snapshot, if any has been recorded.
+    pub fn quota(&self) -> Option<crate::db_log::QuotaSnapshot> {
+        self.state.get_quota()
     }
 
     /// Record a vision screenshot request in the live trace buffer.
