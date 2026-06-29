@@ -1,4 +1,4 @@
-﻿//! Axum route handlers for the LLM proxy.
+//! Axum route handlers for the LLM proxy.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -266,6 +266,10 @@ pub async fn post_messages(
                 .trim_strip_thinking
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+            tool_result_fence_requires_code: *state
+                .trim_fence_requires_code
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
         // Claude Code is always an agent — use the agent preset for cache safety.
@@ -434,6 +438,10 @@ pub async fn post_chat_completions(
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             strip_thinking: false,
+            tool_result_fence_requires_code: *state
+                .trim_fence_requires_code
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
         // OpenAI clients (Zed etc.) get the auto preset for shape-routing.

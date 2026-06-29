@@ -242,6 +242,10 @@ pub struct AppState {
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
     pub trim_strip_thinking: RwLock<bool>,
 
+    /// When true, Layer 2 fence protection requires the fenced content to also
+    /// look code-like. Live-tunable.
+    pub trim_fence_requires_code: RwLock<bool>,
+
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
@@ -316,6 +320,7 @@ impl AppState {
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
+            trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             corpus_max_rows: cfg.corpus_max_rows,
             last_quota: RwLock::new(None),
@@ -764,6 +769,10 @@ impl AppState {
                 .unwrap_or_else(|e| e.into_inner()),
         trim_strip_thinking: *self
             .trim_strip_thinking
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        trim_fence_requires_code: *self
+            .trim_fence_requires_code
             .read()
             .unwrap_or_else(|e| e.into_inner()),
         corpus_max_rows: self.corpus_max_rows,

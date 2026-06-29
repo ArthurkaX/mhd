@@ -201,6 +201,17 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = enabled;
     }
 
+    /// Set whether Layer 2 fence protection requires fenced content to look
+    /// code-like. Default: true (new behavior). Set false to revert to the
+    /// legacy behavior where a fence alone protects.
+    pub fn set_trim_fence_requires_code(&self, requires_code: bool) {
+        *self
+            .state
+            .trim_fence_requires_code
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = requires_code;
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state

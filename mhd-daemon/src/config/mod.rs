@@ -103,6 +103,10 @@ pub struct LlmProxyConfig {
     pub trim_ws_enabled: bool,
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
     pub trim_strip_thinking: bool,
+    /// Require fenced tool_result content to look code-like before protecting it
+    /// (native engine). Default true: prevents fence-wrapped JSON/log dumps
+    /// (common on OpenAI clients) from being falsely protected from head/tail trim.
+    pub trim_fence_requires_code: bool,
     /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
     pub corpus_max_rows: usize,
 }
@@ -133,6 +137,7 @@ impl Default for LlmProxyConfig {
             trim_toolresult_tail: 1000,
             trim_ws_enabled: false,
             trim_strip_thinking: false,
+            trim_fence_requires_code: true,
             corpus_max_rows: 5000,
         }
     }
@@ -435,6 +440,10 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.trim_strip_thinking)
                 .unwrap_or(false),
+            trim_fence_requires_code: settings
+                .as_ref()
+                .map(|s| s.trim_fence_requires_code)
+                .unwrap_or(true),
             corpus_max_rows: settings
                 .as_ref()
                 .map(|s| s.corpus_max_rows)

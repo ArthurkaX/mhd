@@ -128,6 +128,12 @@ pub struct Settings {
     #[serde(default = "default_trim_strip_thinking")]
     pub trim_strip_thinking: bool,
 
+    /// When true (default), Layer 2 fence protection in the native trim engine
+    /// only fires when the fenced content also looks code-like. Set false to
+    /// revert to the old behavior (fence alone protects).
+    #[serde(default = "default_trim_fence_requires_code")]
+    pub trim_fence_requires_code: bool,
+
     /// Maximum number of rows to keep in the `request_bodies` corpus table.
     /// Oldest rows are pruned after each insert. 0 = unlimited.
     /// Default: 5000.
@@ -160,6 +166,7 @@ impl Default for Settings {
             trim_toolresult_tail: default_trim_toolresult_tail(),
             trim_ws_enabled: default_trim_ws_enabled(),
             trim_strip_thinking: default_trim_strip_thinking(),
+            trim_fence_requires_code: default_trim_fence_requires_code(),
             corpus_max_rows: default_corpus_max_rows(),
         }
     }
@@ -236,6 +243,8 @@ pub struct Config {
     pub trim_ws_enabled: bool,
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
     pub trim_strip_thinking: bool,
+    /// When true, Layer 2 fence protection only fires when fenced content looks code-like.
+    pub trim_fence_requires_code: bool,
     /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
     pub corpus_max_rows: usize,
 }
@@ -263,6 +272,7 @@ impl Config {
             trim_toolresult_tail: settings.trim_toolresult_tail,
             trim_ws_enabled: settings.trim_ws_enabled,
             trim_strip_thinking: settings.trim_strip_thinking,
+            trim_fence_requires_code: settings.trim_fence_requires_code,
             corpus_max_rows: settings.corpus_max_rows,
         }
     }
@@ -292,6 +302,7 @@ impl Config {
             trim_toolresult_tail: self.trim_toolresult_tail,
             trim_ws_enabled: self.trim_ws_enabled,
             trim_strip_thinking: self.trim_strip_thinking,
+            trim_fence_requires_code: self.trim_fence_requires_code,
             corpus_max_rows: self.corpus_max_rows,
         }
     }
@@ -384,6 +395,10 @@ fn default_trim_ws_enabled() -> bool {
 
 fn default_trim_strip_thinking() -> bool {
     false
+}
+
+fn default_trim_fence_requires_code() -> bool {
+    true
 }
 
 fn default_corpus_max_rows() -> usize {
