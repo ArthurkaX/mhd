@@ -558,6 +558,68 @@ pub fn trim_native(mut body: Value, knobs: &NativeKnobs) -> Value {
     body
 }
 
+// ── OpenAI entry point ────────────────────────────────────────────────────────
+
+/// Trim an OpenAI chat-completions request body (Zed/opencode/pi shape) using
+/// the same primitives as the Anthropic engine. Truncates tool/function
+/// descriptions (top-level + nested in `parameters`) and compresses the string
+/// content of `role:"tool"` messages (protected-gate + ws + head/tail). Does NOT
+/// strip thinking (OpenAI has no signed thinking blocks) and does NOT touch
+/// tool_calls arguments. Deterministic, fail-open, never enlarges.
+///
+/// Levers applied:
+/// 1. `tools[i].function.description` and any `"description"` keys nested inside
+///    `tools[i].function.parameters` (JSON schema) → `truncate_descriptions`.
+///    (Same helper as Anthropic; it recurses over any JSON subtree.)
+/// 2. `messages[]` where `role == "tool"` and `content` is a string →
+///    protected-gate check (`tool_result_protected(s, None)`) then
+///    `transform_text` (ws + head/tail).  `src_ext` is `None` because OpenAI
+///    `role:tool` messages carry no file-path provenance field; content-based
+///    protection (fences, diagrams) still applies.
+///
+/// Deliberately skipped:
+/// - `strip_thinking`: Anthropic-specific; OpenAI bodies carry no signed
+///   thinking blocks.  `reasoning_content` on assistant turns is also left
+///   untouched — it belongs to the upstream gateway, not to us.
+/// - `tool_calls[].function.arguments`: the model's generated JSON args; we
+///   never trim those (same policy as Anthropic `tool_use.input`).
+pub fn trim_native_openai(mut body: Value, knobs: &NativeKnobs) -> Value {
+    let Some(obj) = body.as_object_mut() else {
+        return body;
+    };
+    // 1) Tool/function descriptions: top-level + nested in parameters schema.
+    //    `truncate_descriptions` recurses over any JSON subtree, so calling it
+    //    on the whole `tools[i]` element covers both `function.description` AND
+    //    every `description` key buried inside `function.parameters`.
+    if let Some(tools) = obj.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for tool in tools.iter_mut() {
+            truncate_descriptions(tool, knobs.tool_max_desc_chars);
+        }
+    }
+    // 2) role:"tool" message string content → protected-gate + ws + head/tail.
+    if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages.iter_mut() {
+            let is_tool = msg.get("role").and_then(|r| r.as_str()) == Some("tool");
+            if !is_tool {
+                continue;
+            }
+            let Some(content) = msg.get_mut("content") else {
+                continue;
+            };
+            if let Value::String(s) = content {
+                // Pass src_ext=None: no file-path provenance on OpenAI tool msgs;
+                // content-based protection (fences / diagram glyphs) still fires.
+                if !tool_result_protected(s, None) {
+                    if let Some(new) = transform_text(s, knobs) {
+                        *s = new;
+                    }
+                }
+            }
+        }
+    }
+    body
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1731,5 +1793,189 @@ mod tests {
         let a = trim_native(body.clone(), &knobs);
         let b = trim_native(body, &knobs);
         assert_eq!(a, b, "strip_thinking must be deterministic");
+    }
+
+    // ── trim_native_openai tests ──────────────────────────────────────────────
+
+    /// (oa) Both the top-level function.description and a nested description
+    /// inside function.parameters.properties are truncated.
+    #[test]
+    fn openai_tool_descriptions_truncated_top_and_nested() {
+        let long_top = "T".repeat(300);
+        let long_nested = "N".repeat(300);
+        let body = json!({
+            "model": "gpt-4o",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": long_top,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": long_nested
+                            }
+                        }
+                    }
+                }
+            }],
+            "messages": []
+        });
+
+        let knobs = NativeKnobs {
+            tool_max_desc_chars: 50,
+            ..Default::default()
+        };
+        let result = trim_native_openai(body, &knobs);
+
+        // Top-level description truncated.
+        let top_desc = result["tools"][0]["function"]["description"].as_str().unwrap();
+        assert_eq!(top_desc.chars().count(), 51, "top-level description must be truncated to 50+ellipsis");
+        assert!(top_desc.ends_with('…'));
+
+        // Nested parameter description truncated.
+        let nested_desc = result["tools"][0]["function"]["parameters"]["properties"]["path"]
+            ["description"]
+            .as_str()
+            .unwrap();
+        assert_eq!(nested_desc.chars().count(), 51, "nested description must be truncated to 50+ellipsis");
+        assert!(nested_desc.ends_with('…'));
+    }
+
+    /// (ob) A large plain-text role:tool message is compressed (contains the
+    /// elision marker); a small one is left unchanged.
+    #[test]
+    fn openai_tool_message_large_compressed_small_unchanged() {
+        let big_text = "A".repeat(9000);
+        let small_text = "X".repeat(50);
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": big_text.clone()
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_2",
+                    "content": small_text.clone()
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs {
+            tool_result_head: 100,
+            tool_result_tail: 50,
+            ..Default::default()
+        };
+        let result = trim_native_openai(body, &knobs);
+
+        // Large message: compressed with elision marker.
+        let big_out = result["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            big_out.chars().count() < big_text.chars().count(),
+            "large tool message must be compressed"
+        );
+        assert!(big_out.contains("...[elided"), "must contain elision marker");
+
+        // Small message: unchanged.
+        let small_out = result["messages"][1]["content"].as_str().unwrap();
+        assert_eq!(small_out, small_text, "small tool message must be unchanged");
+    }
+
+    /// (oc) A role:tool message whose content is a fenced/diagram block is
+    /// PROTECTED — left byte-identical even with an aggressive budget.
+    #[test]
+    fn openai_tool_message_fenced_protected() {
+        let fenced = "```json\n{\"key\": \"value\"}\n```\n".repeat(200);
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "tool",
+                "tool_call_id": "call_fence",
+                "content": fenced.clone()
+            }]
+        });
+
+        let knobs = NativeKnobs {
+            tool_result_head: 10,
+            tool_result_tail: 10,
+            ws_enabled: true,
+            ..Default::default()
+        };
+        let result = trim_native_openai(body, &knobs);
+        let out = result["messages"][0]["content"].as_str().unwrap();
+        assert_eq!(out, fenced, "fenced tool message must be left byte-identical");
+    }
+
+    /// (od) tool_calls[].function.arguments on an assistant message is NOT modified.
+    #[test]
+    fn openai_tool_calls_arguments_not_touched() {
+        let big_args = "Z".repeat(9000);
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "do_thing",
+                        "arguments": big_args.clone()
+                    }
+                }]
+            }]
+        });
+
+        let knobs = NativeKnobs {
+            tool_result_head: 10,
+            tool_result_tail: 10,
+            ..Default::default()
+        };
+        let result = trim_native_openai(body, &knobs);
+        let args = result["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(args, big_args, "tool_calls arguments must not be touched");
+    }
+
+    /// (oe) Determinism: two identical calls produce identical output.
+    #[test]
+    fn openai_trim_deterministic() {
+        let long_desc = "D".repeat(400);
+        let big_content = "R".repeat(9000);
+        let body = json!({
+            "model": "gpt-4o",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "tool",
+                    "description": long_desc,
+                    "parameters": { "type": "object", "properties": {} }
+                }
+            }],
+            "messages": [
+                { "role": "user", "content": "hello" },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": big_content
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs {
+            tool_max_desc_chars: 80,
+            tool_result_head: 500,
+            tool_result_tail: 200,
+            ..Default::default()
+        };
+        let a = trim_native_openai(body.clone(), &knobs);
+        let b = trim_native_openai(body, &knobs);
+        assert_eq!(a, b, "trim_native_openai must be deterministic");
     }
 }

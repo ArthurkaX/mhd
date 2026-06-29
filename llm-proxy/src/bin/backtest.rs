@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   backtest [--db <path>] [--desc-chars <comma-list>] [--engine <llmtrim|native>]
+//!            [--provider <anthropic|openai>]
 //!
 //! Reads all rows from `request_bodies` in proxy.db, sweeps the
 //! `tool_max_desc_chars` lever across the specified values, and prints a table
@@ -9,12 +10,13 @@
 //! calling the real LLM.
 //!
 //! The corpus is populated when `corpus_capture = true` in llm-proxy settings.
-//! Only `provider = "anthropic"` rows are swept in v1; openai rows are counted
-//! but skipped (future work).
+//! --provider selects which corpus rows to measure (default: anthropic).
+//! When --provider openai is given, the native engine calls trim_native_openai
+//! instead of trim_native; llmtrim does not support openai bodies (skipped).
 
 use llm_proxy::config::config_dir;
 use llm_proxy::db_log::decompress_body;
-use llm_proxy::native_trim::NativeKnobs;
+use llm_proxy::native_trim::{NativeKnobs, trim_native_openai};
 use llm_proxy::trim::{TrimKnobs, TrimProvider, trim_with_knobs};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -95,12 +97,31 @@ fn est_tokens(v: &serde_json::Value) -> u64 {
 
 // ── engine dispatch ───────────────────────────────────────────────────────────
 
-/// Produce a trimmed body for a given engine and desc_chars sweep value.
-fn apply_engine(engine: &str, body: Value, v: usize, ws_on: bool, strip_thinking_on: bool) -> Value {
+/// Produce a trimmed body for a given engine, provider, and desc_chars sweep value.
+/// - engine="native" + provider="openai"  → trim_native_openai
+/// - engine="native" + provider="anthropic" → trim_native
+/// - engine="llmtrim"                      → llmtrim (Anthropic shape only)
+fn apply_engine(
+    engine: &str,
+    provider: &str,
+    body: Value,
+    v: usize,
+    ws_on: bool,
+    strip_thinking_on: bool,
+) -> Value {
     match engine {
         "native" => {
-            let knobs = NativeKnobs { tool_max_desc_chars: v, ws_enabled: ws_on, strip_thinking: strip_thinking_on, ..NativeKnobs::default() };
-            llm_proxy::native_trim::trim_native(body, &knobs)
+            let knobs = NativeKnobs {
+                tool_max_desc_chars: v,
+                ws_enabled: ws_on,
+                strip_thinking: strip_thinking_on,
+                ..NativeKnobs::default()
+            };
+            if provider == "openai" {
+                trim_native_openai(body, &knobs)
+            } else {
+                llm_proxy::native_trim::trim_native(body, &knobs)
+            }
         }
         _ /* "llmtrim" */ => {
             let knobs = TrimKnobs { tool_max_desc_chars: v, ..TrimKnobs::default() };
@@ -170,16 +191,18 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 
 // ── arg parsing ───────────────────────────────────────────────────────────────
 
-fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool) {
+fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
     let default_engine = "llmtrim".to_string();
+    let default_provider = "anthropic".to_string();
 
     let mut db_path = default_db;
     let mut sweep = default_sweep;
     let mut engine = default_engine;
     let mut ws_on = false;
     let mut strip_thinking_on = false;
+    let mut provider = default_provider;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -221,6 +244,20 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool) {
                     }
                 }
             }
+            "--provider" => {
+                i += 1;
+                if i < args.len() {
+                    let val = args[i].as_str();
+                    match val {
+                        "anthropic" | "openai" => provider = val.to_string(),
+                        other => {
+                            eprintln!(
+                                "Warning: unknown --provider value '{other}'; expected 'anthropic' or 'openai'. Using 'anthropic'."
+                            );
+                        }
+                    }
+                }
+            }
             "--ws" => {
                 i += 1;
                 if i < args.len() {
@@ -256,13 +293,13 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool) {
         i += 1;
     }
 
-    (db_path, sweep, engine, ws_on, strip_thinking_on)
+    (db_path, sweep, engine, ws_on, strip_thinking_on, provider)
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let (db_path, sweep_values, engine, ws_on, strip_thinking_on) = parse_args();
+    let (db_path, sweep_values, engine, ws_on, strip_thinking_on, provider) = parse_args();
 
     eprintln!("DB: {}", db_path.display());
 
@@ -290,29 +327,40 @@ fn main() {
         return;
     }
 
-    // Eligible = anthropic rows with parseable body (already filtered by read_corpus).
-    let eligible: Vec<&BodyRow> = rows.iter().filter(|r| r.provider == "anthropic").collect();
-    let n_openai = rows.iter().filter(|r| r.provider != "anthropic").count();
+    // Eligible = rows matching the selected provider with parseable body.
+    let eligible: Vec<&BodyRow> = rows.iter().filter(|r| r.provider == provider).collect();
+    let n_other = rows.iter().filter(|r| r.provider != provider).count();
 
     eprintln!(
-        "Corpus: {} total rows  ({} anthropic eligible, {} non-anthropic skipped)",
+        "Corpus: {} total rows  ({} {provider} eligible, {} other skipped)",
         rows.len(),
         eligible.len(),
-        n_openai,
+        n_other,
     );
 
     if eligible.is_empty() {
         println!();
-        println!("No anthropic rows in corpus (non-anthropic rows are skipped in v1).");
-        println!("Generate some Claude Code traffic via the Anthropic path, then re-run.");
+        println!("No {provider} rows in corpus.");
+        if provider == "openai" {
+            println!("Generate some OpenAI-path traffic (Zed, opencode, pi) via the proxy,");
+            println!("then re-run with --provider openai.");
+        } else {
+            println!("Generate some Claude Code traffic via the Anthropic path, then re-run.");
+        }
         return;
     }
 
-    // ── determinism sanity check (uses the selected engine) ──────────────────
+    // llmtrim only supports the Anthropic body shape — warn if mismatched.
+    if engine == "llmtrim" && provider == "openai" {
+        eprintln!("Warning: llmtrim does not understand OpenAI bodies; results will be 0% savings.");
+        eprintln!("Use --engine native for OpenAI corpus measurement.");
+    }
+
+    // ── determinism sanity check (uses the selected engine + provider) ────────
     let det_v: usize = 150;
     let first_body = eligible[0].body.clone();
-    let det_a = apply_engine(&engine, first_body.clone(), det_v, ws_on, strip_thinking_on);
-    let det_b = apply_engine(&engine, first_body, det_v, ws_on, strip_thinking_on);
+    let det_a = apply_engine(&engine, &provider, first_body.clone(), det_v, ws_on, strip_thinking_on);
+    let det_b = apply_engine(&engine, &provider, first_body, det_v, ws_on, strip_thinking_on);
     if det_a == det_b {
         println!("determinism: OK");
     } else {
@@ -328,7 +376,7 @@ fn main() {
         let mut dollars: f64 = 0.0;
 
         for row in &eligible {
-            let trimmed_body = apply_engine(&engine, row.body.clone(), v, ws_on, strip_thinking_on);
+            let trimmed_body = apply_engine(&engine, &provider, row.body.clone(), v, ws_on, strip_thinking_on);
             let before = est_tokens(&row.body);
             let after = est_tokens(&trimmed_body);
             if after < before {
@@ -366,7 +414,7 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════════════");
     println!("  Trim Backtest — tool_max_desc_chars sweep");
     println!("═══════════════════════════════════════════════════════════════════════");
-    println!("  engine: {engine}   ws: {}   strip_thinking: {}   estimator: ~chars/4 (unified)", if ws_on { "on" } else { "off" }, if strip_thinking_on { "on" } else { "off" });
+    println!("  engine: {engine}   provider: {provider}   ws: {}   strip_thinking: {}   estimator: ~chars/4 (unified)", if ws_on { "on" } else { "off" }, if strip_thinking_on { "on" } else { "off" });
     println!();
     println!(
         "{:<10}  {:>16}  {:>6}  {:>7}  {:>5}  {:>9}  {:>8}",
