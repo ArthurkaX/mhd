@@ -99,6 +99,8 @@ pub struct LlmProxyConfig {
     pub trim_toolresult_head: usize,
     /// Max chars for the tail of a tool_result block (native engine).
     pub trim_toolresult_tail: usize,
+    /// Master switch for whitespace compression in the native trim engine.
+    pub trim_ws_enabled: bool,
 }
 
 impl Default for LlmProxyConfig {
@@ -125,6 +127,7 @@ impl Default for LlmProxyConfig {
             trim_tool_desc_chars: 150,
             trim_toolresult_head: 3000,
             trim_toolresult_tail: 1000,
+            trim_ws_enabled: false,
         }
     }
 }
@@ -418,6 +421,10 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.trim_toolresult_tail)
                 .unwrap_or(1000),
+            trim_ws_enabled: settings
+                .as_ref()
+                .map(|s| s.trim_ws_enabled)
+                .unwrap_or(false),
         }
     }
 

@@ -183,6 +183,15 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = v;
     }
 
+    /// Enable or disable whitespace compression in the native trim engine.
+    pub fn set_trim_ws_enabled(&self, enabled: bool) {
+        *self
+            .state
+            .trim_ws_enabled
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state

@@ -235,6 +235,11 @@ pub async fn post_messages(
                 .trim_toolresult_tail
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+            ws_enabled: *state
+                .trim_ws_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            ..Default::default()
         };
         // Claude Code is always an agent — use the agent preset for cache safety.
         let out = crate::trim::trim_anthropic_with_engine(payload, &engine, "agent", native_knobs);

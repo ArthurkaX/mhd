@@ -117,6 +117,11 @@ pub struct Settings {
     /// Max chars kept as the tail of a `tool_result` block (native engine).
     #[serde(default = "default_trim_toolresult_tail")]
     pub trim_toolresult_tail: usize,
+
+    /// Master switch for whitespace compression in the native trim engine.
+    /// Default: off — validate offline first.
+    #[serde(default = "default_trim_ws_enabled")]
+    pub trim_ws_enabled: bool,
 }
 
 impl Default for Settings {
@@ -142,6 +147,7 @@ impl Default for Settings {
             trim_tool_desc_chars: default_trim_tool_desc_chars(),
             trim_toolresult_head: default_trim_toolresult_head(),
             trim_toolresult_tail: default_trim_toolresult_tail(),
+            trim_ws_enabled: default_trim_ws_enabled(),
         }
     }
 }
@@ -213,6 +219,8 @@ pub struct Config {
     pub trim_toolresult_head: usize,
     /// Max chars for the tail of a tool_result block (native engine).
     pub trim_toolresult_tail: usize,
+    /// Master switch for whitespace compression in the native trim engine.
+    pub trim_ws_enabled: bool,
 }
 
 impl Config {
@@ -236,6 +244,7 @@ impl Config {
             trim_tool_desc_chars: settings.trim_tool_desc_chars,
             trim_toolresult_head: settings.trim_toolresult_head,
             trim_toolresult_tail: settings.trim_toolresult_tail,
+            trim_ws_enabled: settings.trim_ws_enabled,
         }
     }
 
@@ -262,6 +271,7 @@ impl Config {
             trim_tool_desc_chars: self.trim_tool_desc_chars,
             trim_toolresult_head: self.trim_toolresult_head,
             trim_toolresult_tail: self.trim_toolresult_tail,
+            trim_ws_enabled: self.trim_ws_enabled,
         }
     }
 
@@ -345,6 +355,10 @@ fn default_trim_toolresult_head() -> usize {
 
 fn default_trim_toolresult_tail() -> usize {
     1000
+}
+
+fn default_trim_ws_enabled() -> bool {
+    false
 }
 
 fn default_vision_prompt() -> String {

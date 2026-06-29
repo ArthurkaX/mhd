@@ -229,6 +229,9 @@ pub struct AppState {
     /// Max chars for the tail of a tool_result block (native engine knob).
     pub trim_toolresult_tail: RwLock<usize>,
 
+    /// Master switch for whitespace compression in the native trim engine.
+    pub trim_ws_enabled: RwLock<bool>,
+
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
@@ -297,6 +300,7 @@ impl AppState {
             trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
+            trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             last_quota: RwLock::new(None),
             run_id,
@@ -736,6 +740,10 @@ impl AppState {
                 .unwrap_or_else(|e| e.into_inner()),
             trim_toolresult_tail: *self
                 .trim_toolresult_tail
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_ws_enabled: *self
+                .trim_ws_enabled
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
         }

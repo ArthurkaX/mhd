@@ -95,10 +95,10 @@ fn est_tokens(v: &serde_json::Value) -> u64 {
 // ── engine dispatch ───────────────────────────────────────────────────────────
 
 /// Produce a trimmed body for a given engine and desc_chars sweep value.
-fn apply_engine(engine: &str, body: Value, v: usize) -> Value {
+fn apply_engine(engine: &str, body: Value, v: usize, ws_on: bool) -> Value {
     match engine {
         "native" => {
-            let knobs = NativeKnobs { tool_max_desc_chars: v, ..NativeKnobs::default() };
+            let knobs = NativeKnobs { tool_max_desc_chars: v, ws_enabled: ws_on, ..NativeKnobs::default() };
             llm_proxy::native_trim::trim_native(body, &knobs)
         }
         _ /* "llmtrim" */ => {
@@ -165,7 +165,7 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 
 // ── arg parsing ───────────────────────────────────────────────────────────────
 
-fn parse_args() -> (PathBuf, Vec<usize>, String) {
+fn parse_args() -> (PathBuf, Vec<usize>, String, bool) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
     let default_engine = "llmtrim".to_string();
@@ -173,6 +173,7 @@ fn parse_args() -> (PathBuf, Vec<usize>, String) {
     let mut db_path = default_db;
     let mut sweep = default_sweep;
     let mut engine = default_engine;
+    let mut ws_on = false;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -214,6 +215,20 @@ fn parse_args() -> (PathBuf, Vec<usize>, String) {
                     }
                 }
             }
+            "--ws" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].as_str() {
+                        "on" => ws_on = true,
+                        "off" => ws_on = false,
+                        other => {
+                            eprintln!(
+                                "Warning: unknown --ws value '{other}'; expected 'on' or 'off'. Using 'off'."
+                            );
+                        }
+                    }
+                }
+            }
             other => {
                 eprintln!("Unknown argument: {other}  (ignored)");
             }
@@ -221,13 +236,13 @@ fn parse_args() -> (PathBuf, Vec<usize>, String) {
         i += 1;
     }
 
-    (db_path, sweep, engine)
+    (db_path, sweep, engine, ws_on)
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let (db_path, sweep_values, engine) = parse_args();
+    let (db_path, sweep_values, engine, ws_on) = parse_args();
 
     eprintln!("DB: {}", db_path.display());
 
@@ -276,8 +291,8 @@ fn main() {
     // ── determinism sanity check (uses the selected engine) ──────────────────
     let det_v: usize = 150;
     let first_body = eligible[0].body.clone();
-    let det_a = apply_engine(&engine, first_body.clone(), det_v);
-    let det_b = apply_engine(&engine, first_body, det_v);
+    let det_a = apply_engine(&engine, first_body.clone(), det_v, ws_on);
+    let det_b = apply_engine(&engine, first_body, det_v, ws_on);
     if det_a == det_b {
         println!("determinism: OK");
     } else {
@@ -293,7 +308,7 @@ fn main() {
         let mut dollars: f64 = 0.0;
 
         for row in &eligible {
-            let trimmed_body = apply_engine(&engine, row.body.clone(), v);
+            let trimmed_body = apply_engine(&engine, row.body.clone(), v, ws_on);
             let before = est_tokens(&row.body);
             let after = est_tokens(&trimmed_body);
             if after < before {
@@ -331,7 +346,7 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════════════");
     println!("  Trim Backtest — tool_max_desc_chars sweep");
     println!("═══════════════════════════════════════════════════════════════════════");
-    println!("  engine: {engine}   estimator: ~chars/4 (unified)");
+    println!("  engine: {engine}   ws: {}   estimator: ~chars/4 (unified)", if ws_on { "on" } else { "off" });
     println!();
     println!(
         "{:<10}  {:>16}  {:>6}  {:>7}  {:>5}  {:>9}  {:>8}",
