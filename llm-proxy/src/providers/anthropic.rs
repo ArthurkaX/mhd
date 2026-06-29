@@ -55,6 +55,27 @@ async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap, streaming: b
     req
 }
 
+/// Parse `anthropic-ratelimit-unified-*` response headers into a typed
+/// [`QuotaSnapshot`] and hand it to [`AppState::record_quota`] (which dedups).
+/// Best-effort: never errors, never touches the body.
+fn record_quota_headers(state: &Arc<AppState>, headers: &reqwest::header::HeaderMap) {
+    let get = |name: &str| -> Option<String> {
+        headers.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    };
+    let snap = crate::db_log::QuotaSnapshot {
+        h5_utilization: get("anthropic-ratelimit-unified-5h-utilization").and_then(|s| s.parse().ok()),
+        h5_status:      get("anthropic-ratelimit-unified-5h-status"),
+        h5_reset:       get("anthropic-ratelimit-unified-5h-reset").and_then(|s| s.parse().ok()),
+        d7_utilization: get("anthropic-ratelimit-unified-7d-utilization").and_then(|s| s.parse().ok()),
+        d7_status:      get("anthropic-ratelimit-unified-7d-status"),
+        d7_reset:       get("anthropic-ratelimit-unified-7d-reset").and_then(|s| s.parse().ok()),
+        representative_claim: get("anthropic-ratelimit-unified-representative-claim"),
+        fallback_status:      get("anthropic-ratelimit-unified-fallback"),
+        overage_status:       get("anthropic-ratelimit-unified-overage-status"),
+    };
+    state.record_quota(snap);
+}
+
 /// Non-streaming request — returns the parsed JSON body.
 pub async fn send_request(
     state: &Arc<AppState>,
@@ -114,40 +135,8 @@ pub async fn send_request(
         }
     };
 
-    // ── RESP_HEADERS: capture Anthropic rate-limit headers for diagnostics ──
-    // Gated on log_detailed() (Detailed | Maximal) so it is silent at None/Minimal.
-    // Best-effort: this block never propagates errors and never touches the body.
-    if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
-        let mut rl: Vec<String> = Vec::new();
-        let mut all_names: Vec<String> = Vec::new();
-        for (name, value) in resp.headers() {
-            let k = name.as_str().to_lowercase();
-            all_names.push(k.clone());
-            if k.starts_with("anthropic-ratelimit")
-                || k.starts_with("x-ratelimit")
-                || k == "retry-after"
-                || k == "request-id"
-                || k == "anthropic-request-id"
-            {
-                rl.push(format!("{}={}", k, value.to_str().unwrap_or("?")));
-            }
-        }
-        let (reason, detail) = if rl.is_empty() {
-            (
-                Some("no ratelimit headers".to_string()),
-                format!("all={}", all_names.join(",")),
-            )
-        } else {
-            (None, rl.join("; "))
-        };
-        state.log_event(crate::db_log::LogEvent {
-            seq: req_id,
-            event_type: "RESP_HEADERS".to_string(),
-            reason,
-            detail: Some(detail),
-            ..Default::default()
-        });
-    }
+    // Record Anthropic quota snapshot from unified rate-limit headers.
+    record_quota_headers(state, resp.headers());
 
     let status = resp.status();
     if !status.is_success() {
@@ -298,40 +287,8 @@ pub async fn stream_request(
         ));
     }
 
-    // ── RESP_HEADERS: capture Anthropic rate-limit headers for diagnostics ──
-    // Gated on log_detailed() (Detailed | Maximal) so it is silent at None/Minimal.
-    // Best-effort: this block never propagates errors and never touches the body.
-    if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
-        let mut rl: Vec<String> = Vec::new();
-        let mut all_names: Vec<String> = Vec::new();
-        for (name, value) in resp.headers() {
-            let k = name.as_str().to_lowercase();
-            all_names.push(k.clone());
-            if k.starts_with("anthropic-ratelimit")
-                || k.starts_with("x-ratelimit")
-                || k == "retry-after"
-                || k == "request-id"
-                || k == "anthropic-request-id"
-            {
-                rl.push(format!("{}={}", k, value.to_str().unwrap_or("?")));
-            }
-        }
-        let (reason, detail) = if rl.is_empty() {
-            (
-                Some("no ratelimit headers".to_string()),
-                format!("all={}", all_names.join(",")),
-            )
-        } else {
-            (None, rl.join("; "))
-        };
-        state.log_event(crate::db_log::LogEvent {
-            seq: req_id,
-            event_type: "RESP_HEADERS".to_string(),
-            reason,
-            detail: Some(detail),
-            ..Default::default()
-        });
-    }
+    // Record Anthropic quota snapshot from unified rate-limit headers.
+    record_quota_headers(state, resp.headers());
 
     let status = resp.status();
     if !status.is_success() {

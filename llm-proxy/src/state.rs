@@ -220,9 +220,31 @@ pub struct AppState {
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
+    /// Last quota snapshot WRITTEN to the DB, with the instant it was written.
+    /// Used to dedup: we only persist a new row on material change or after a
+    /// minimum interval, keeping the quota table a sparse time-series.
+    pub last_quota: RwLock<Option<(crate::db_log::QuotaSnapshot, std::time::Instant)>>,
+
     /// Stable id for this daemon run (epoch-millis at construction). Used to
     /// group all requests from one process lifetime in the `requests` table.
     pub run_id: u64,
+}
+
+/// Material change = utilization moved >=0.01 on either window, OR any status /
+/// representative_claim string changed.
+fn quota_material_change(prev: &crate::db_log::QuotaSnapshot, next: &crate::db_log::QuotaSnapshot) -> bool {
+    fn util_jumped(a: Option<f64>, b: Option<f64>) -> bool {
+        match (a, b) {
+            (Some(x), Some(y)) => (x - y).abs() >= 0.01,
+            (None, None) => false,
+            _ => true,
+        }
+    }
+    util_jumped(prev.h5_utilization, next.h5_utilization)
+        || util_jumped(prev.d7_utilization, next.d7_utilization)
+        || prev.h5_status != next.h5_status
+        || prev.d7_status != next.d7_status
+        || prev.representative_claim != next.representative_claim
 }
 
 impl AppState {
@@ -260,6 +282,7 @@ impl AppState {
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
+            last_quota: RwLock::new(None),
             run_id,
         })
     }
@@ -501,6 +524,36 @@ impl AppState {
                 db.insert_request_body(self.run_id, seq, &ts, model, provider, &body_str);
             }
         }
+    }
+
+    /// Persist a quota snapshot to the `quota` table, but only when it materially
+    /// changed since the last write or >=60s elapsed (keeps writes sparse). No-op
+    /// if the snapshot has no quota fields, or db logging is off.
+    pub fn record_quota(&self, snap: crate::db_log::QuotaSnapshot) {
+        // 1. skip empty snapshots (no 5h AND no 7d utilization present)
+        if snap.h5_utilization.is_none() && snap.d7_utilization.is_none() {
+            return;
+        }
+        // 2. gate on db logging
+        if !self.is_db_log_enabled() { return; }
+
+        let now = std::time::Instant::now();
+        let mut guard = self.last_quota.write().unwrap_or_else(|e| e.into_inner());
+        let should_write = match guard.as_ref() {
+            None => true,
+            Some((prev, at)) => {
+                quota_material_change(prev, &snap)
+                    || now.duration_since(*at) >= std::time::Duration::from_secs(60)
+            }
+        };
+        if !should_write { return; }
+
+        if let Ok(db_guard) = self.db_log.lock() {
+            if let Some(ref db) = *db_guard {
+                db.insert_quota(self.run_id, &crate::providers::now_ms(), &snap);
+            }
+        }
+        *guard = Some((snap, now));
     }
 
     /// Record a vision screenshot request into the ring buffer.

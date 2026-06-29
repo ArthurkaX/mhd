@@ -72,6 +72,20 @@ pub struct RequestRow {
     pub trim_stages: Option<String>,
 }
 
+/// One typed snapshot of Anthropic `anthropic-ratelimit-unified-*` quota state.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuotaSnapshot {
+    pub h5_utilization: Option<f64>,
+    pub h5_status: Option<String>,
+    pub h5_reset: Option<i64>,
+    pub d7_utilization: Option<f64>,
+    pub d7_status: Option<String>,
+    pub d7_reset: Option<i64>,
+    pub representative_claim: Option<String>,
+    pub fallback_status: Option<String>,
+    pub overage_status: Option<String>,
+}
+
 /// Wraps a SQLite connection.
 pub struct DbLog {
     conn: Mutex<Connection>,
@@ -153,7 +167,22 @@ impl DbLog {
                 provider  TEXT,
                 body      TEXT    NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_request_bodies_run_seq ON request_bodies(run_id, seq);",
+            CREATE INDEX IF NOT EXISTS idx_request_bodies_run_seq ON request_bodies(run_id, seq);
+            CREATE TABLE IF NOT EXISTS quota (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts                   TEXT    NOT NULL,
+                run_id               INTEGER NOT NULL,
+                h5_utilization       REAL,
+                h5_status            TEXT,
+                h5_reset             INTEGER,
+                d7_utilization       REAL,
+                d7_status            TEXT,
+                d7_reset             INTEGER,
+                representative_claim TEXT,
+                fallback_status      TEXT,
+                overage_status       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_quota_run ON quota(run_id, id);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -284,6 +313,31 @@ impl DbLog {
             let _ = conn.execute(
                 "INSERT INTO request_bodies (run_id, seq, ts, model, provider, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![run_id as i64, seq as i64, ts, model, provider, body],
+            );
+        }
+    }
+
+    /// Insert a quota snapshot row. Best-effort: errors are swallowed.
+    pub fn insert_quota(&self, run_id: u64, ts: &str, q: &QuotaSnapshot) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "INSERT INTO quota (ts, run_id, h5_utilization, h5_status, h5_reset,
+                                    d7_utilization, d7_status, d7_reset, representative_claim,
+                                    fallback_status, overage_status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    ts,
+                    run_id as i64,
+                    q.h5_utilization,
+                    q.h5_status,
+                    q.h5_reset,
+                    q.d7_utilization,
+                    q.d7_status,
+                    q.d7_reset,
+                    q.representative_claim,
+                    q.fallback_status,
+                    q.overage_status,
+                ],
             );
         }
     }
