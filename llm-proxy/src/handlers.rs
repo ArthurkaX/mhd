@@ -315,6 +315,7 @@ pub async fn post_messages(
         trim_preset: trim_preset_str,
         trim_config_json,
         trim_stages_json,
+        started_ms: crate::providers::now_unix_ms(),
     });
 
     if stream {
@@ -453,6 +454,7 @@ pub async fn post_chat_completions(
         trim_preset: trim_preset_str,
         trim_config_json,
         trim_stages_json,
+        started_ms: crate::providers::now_unix_ms(),
     });
 
     if stream {

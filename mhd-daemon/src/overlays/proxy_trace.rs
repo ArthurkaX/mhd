@@ -29,6 +29,9 @@ const RADIUS_BASE: f32 = 10.0;
 const HEADER_H_BASE: i32 = 28;
 const ROW_H_BASE: i32 = 22;
 const REFRESH_TIMER_ID: usize = 1;
+/// Anthropic prompt-cache TTL in seconds. A cache miss with a longer preceding
+/// idle gap is classified as COLD (expected) rather than a real MISS.
+const CACHE_TTL_SECS: u64 = 360;
 
 // ── Safe wrapper for the event handle ────────────────────────────────
 
@@ -614,7 +617,9 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let _ = SelectObject(dib_dc, hfont_small);
     }
 
-    for (i, entry) in trace.iter().rev().take(max_rows as usize).enumerate() {
+    // Collect newest-first so we can index [i+1] for the gap-to-previous calc.
+    let display_entries: Vec<_> = trace.iter().rev().take(max_rows as usize).collect();
+    for (i, entry) in display_entries.iter().enumerate() {
         let ry = list_top + i as i32 * row_h;
         if ry + row_h > win_h - pad {
             break;
@@ -675,12 +680,29 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let total_prompt =
             entry.input_tokens + entry.cache_read_tokens + entry.cache_creation_tokens;
         let cache_hit = entry.cache_read_tokens > 0;
-        let cache_miss = entry.cache_read_tokens == 0 && total_prompt >= 1024;
         let cache_ratio = if total_prompt > 0 {
             entry.cache_read_tokens as f64 / total_prompt as f64
         } else {
             0.0
         };
+        // Compute elapsed time (secs) between this entry and the chronologically-
+        // previous one. display_entries is newest-first, so the predecessor is [i+1].
+        let gap_secs_opt: Option<u64> = if entry.started_ms == 0 {
+            None
+        } else {
+            display_entries.get(i + 1).and_then(|prev| {
+                if prev.started_ms == 0 || prev.started_ms > entry.started_ms {
+                    None
+                } else {
+                    Some((entry.started_ms - prev.started_ms) / 1000)
+                }
+            })
+        };
+        // A miss whose preceding idle gap exceeds the Anthropic cache TTL is
+        // COLD (expected) rather than a real, investigate-worthy miss.
+        let cache_miss_candidate = entry.cache_read_tokens == 0 && total_prompt >= 1024;
+        let is_cold = cache_miss_candidate && gap_secs_opt.map_or(true, |g| g > CACHE_TTL_SECS);
+        let is_miss = cache_miss_candidate && !is_cold;
 
         // ── Route column (col 1) ─────────────────────────────────
         // Downgraded: "{tier}→{eff}" in accent; otherwise "{tier}" in muted.
@@ -705,7 +727,12 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             } else {
                 format!("{:.0}%", ratio_pct)
             }
-        } else if cache_miss {
+        } else if is_cold {
+            match gap_secs_opt {
+                Some(g) => format!("idle {}m", g / 60),
+                None => "cold".to_string(),
+            }
+        } else if is_miss {
             "miss".to_string()
         } else {
             String::new()
@@ -713,7 +740,9 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let cache_color = if cache_hit {
             let t = cache_ratio.clamp(0.0, 1.0);
             hsv_to_argb(120.0 * t, 0.7, 0.9)
-        } else if cache_miss {
+        } else if is_cold {
+            theme.text_muted
+        } else if is_miss {
             let severity = (total_prompt as f64 / 100_000.0).clamp(0.0, 1.0);
             hsv_to_argb(0.0, 0.3 + severity * 0.5, 0.6 + severity * 0.4)
         } else {

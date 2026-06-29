@@ -133,6 +133,9 @@ pub struct TraceEntry {
     pub trim_config_json: String,
     /// JSON array of per-stage trim reports. Empty when not applied.
     pub trim_stages_json: String,
+    /// Unix milliseconds when this entry was first pushed (set at push_trace time).
+    /// Zero for entries created before this field was added; treat zero as unknown.
+    pub started_ms: u64,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;

@@ -131,6 +131,14 @@ pub fn summarize_payload(payload: &Value) -> String {
     parts.join(" | ")
 }
 
+/// Unix epoch time in milliseconds — for inter-request gap measurements.
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// Wall-clock timestamp (`YYYY-MM-DD HH:MM:SS.mmm` UTC) for log line correlation.
 pub fn now_ms() -> String {
     let d = std::time::SystemTime::now()
