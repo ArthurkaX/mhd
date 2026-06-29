@@ -497,11 +497,14 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let q = llm_proxy::get_quota();
         let (text, color) = match q {
             Some(q) => {
-                fn pct(u: Option<f64>) -> String {
-                    match u {
-                        Some(v) => format!("{}%", (v * 100.0).round() as i64),
-                        None => "\u{2014}".to_string(),
-                    }
+                fn bar(util: f64) -> String {
+                    let mut f = (util * 5.0).floor() as i32;
+                    if util > 0.0 && f == 0 { f = 1; }
+                    let f = f.clamp(0, 5);
+                    let mut s = String::with_capacity(5);
+                    for _ in 0..f { s.push('\u{25B0}'); }
+                    for _ in f..5 { s.push('\u{25B1}'); }
+                    s
                 }
                 fn countdown(reset: Option<i64>) -> String {
                     let reset = match reset { Some(r) => r, None => return "\u{2014}".to_string() };
@@ -527,15 +530,19 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                     theme.accent
                 };
                 let text = format!(
-                    "quota \u{00B7} 5h {} {} \u{00B7} 7d {} \u{00B7} resets {}",
-                    pct(q.h5_utilization),
-                    status,
-                    pct(q.d7_utilization),
+                    "5h {} {}%    7d {} {}%    \u{27F3} {}",
+                    bar(q.h5_utilization.unwrap_or(0.0)),
+                    (q.h5_utilization.unwrap_or(0.0) * 100.0).round() as i64,
+                    bar(q.d7_utilization.unwrap_or(0.0)),
+                    (q.d7_utilization.unwrap_or(0.0) * 100.0).round() as i64,
                     countdown(q.h5_reset),
                 );
                 (text, color)
             }
-            None => ("quota \u{00B7} \u{2014}".to_string(), theme.text_muted),
+            None => (
+                "5h \u{25B1}\u{25B1}\u{25B1}\u{25B1}\u{25B1} \u{2014}    7d \u{25B1}\u{25B1}\u{25B1}\u{25B1}\u{25B1} \u{2014}    \u{27F3} \u{2014}".to_string(),
+                theme.text_muted,
+            ),
         };
         unsafe {
             let _ = SelectObject(dib_dc, hfont_small);
