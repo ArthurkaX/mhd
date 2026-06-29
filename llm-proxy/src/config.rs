@@ -378,7 +378,7 @@ fn default_trim_engine() -> String {
 }
 
 fn default_trim_tool_desc_chars() -> usize {
-    150
+    100
 }
 
 fn default_trim_toolresult_head() -> usize {
