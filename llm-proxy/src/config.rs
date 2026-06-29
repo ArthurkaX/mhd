@@ -92,6 +92,10 @@ pub struct Settings {
     #[serde(default)]
     pub trim_enabled: bool,
 
+    /// Master switch for replay-corpus capture (stores full pre-trim request bodies in proxy.db). Default: off.
+    #[serde(default)]
+    pub corpus_capture: bool,
+
     /// Whether to write structured events to `proxy.db`.
     /// Default: on — the DB log is opened at proxy startup when true.
     #[serde(default = "default_db_log_enabled")]
@@ -115,6 +119,7 @@ impl Default for Settings {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: false,
+            corpus_capture: false,
             db_log_enabled: default_db_log_enabled(),
         }
     }
@@ -176,6 +181,7 @@ pub struct Config {
     /// Sonnet downgrade when no thinking.
     pub sonnet_downgrade_enabled: bool,
     pub trim_enabled: bool,
+    pub corpus_capture: bool,
     /// Whether to write structured events to `proxy.db`.
     pub db_log_enabled: bool,
 }
@@ -195,6 +201,7 @@ impl Config {
             opus_downgrade_enabled: settings.opus_downgrade_enabled,
             sonnet_downgrade_enabled: settings.sonnet_downgrade_enabled,
             trim_enabled: settings.trim_enabled,
+            corpus_capture: settings.corpus_capture,
             db_log_enabled: settings.db_log_enabled,
         }
     }
@@ -216,6 +223,7 @@ impl Config {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: self.trim_enabled,
+            corpus_capture: self.corpus_capture,
             db_log_enabled: self.db_log_enabled,
         }
     }

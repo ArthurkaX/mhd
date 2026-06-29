@@ -146,6 +146,24 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Enable or disable replay-corpus capture (stores full pre-trim request bodies in proxy.db).
+    pub fn set_corpus_capture_enabled(&self, enabled: bool) {
+        *self
+            .state
+            .corpus_capture_enabled
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
+    /// Whether replay-corpus capture is currently enabled.
+    pub fn is_corpus_capture_enabled(&self) -> bool {
+        *self
+            .state
+            .corpus_capture_enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Snapshot of recent routing decisions.
     pub fn trace(&self) -> Vec<TraceEntry> {
         self.state.trace_snapshot()

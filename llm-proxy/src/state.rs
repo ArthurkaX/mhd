@@ -211,6 +211,9 @@ pub struct AppState {
     /// Master switch for llmtrim request compression.
     pub trim_enabled: RwLock<bool>,
 
+    /// Master switch for replay-corpus capture.
+    pub corpus_capture_enabled: RwLock<bool>,
+
     /// Stable id for this daemon run (epoch-millis at construction). Used to
     /// group all requests from one process lifetime in the `requests` table.
     pub run_id: u64,
@@ -245,6 +248,7 @@ impl AppState {
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
+            corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             run_id,
         })
     }
@@ -470,6 +474,24 @@ impl AppState {
         }
     }
 
+    /// Capture the full pre-trim request body into the replay corpus, if enabled.
+    /// Best-effort: silent when the flag is off, when the DB log is closed, or on error.
+    pub fn capture_request_body(&self, seq: u64, model: Option<&str>, provider: &str, body: &serde_json::Value) {
+        if !*self.corpus_capture_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+            return;
+        }
+        let body_str = match serde_json::to_string(body) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                let ts = crate::providers::now_ms();
+                db.insert_request_body(self.run_id, seq, &ts, model, provider, &body_str);
+            }
+        }
+    }
+
     /// Record a vision screenshot request into the ring buffer.
     pub fn push_vision_trace(&self, entry: VisionTraceEntry) {
         let mut trace = self.vision_trace.write().unwrap_or_else(|e| e.into_inner());
@@ -608,6 +630,7 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            corpus_capture: *self.corpus_capture_enabled.read().unwrap_or_else(|e| e.into_inner()),
             db_log_enabled: self.is_db_log_enabled(),
         }
     }

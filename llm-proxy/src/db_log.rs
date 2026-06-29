@@ -142,7 +142,18 @@ impl DbLog {
                 id   INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts   TEXT NOT NULL,
                 text TEXT NOT NULL
-            );",
+            );
+
+            CREATE TABLE IF NOT EXISTS request_bodies (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id    INTEGER NOT NULL,
+                seq       INTEGER NOT NULL,
+                ts        TEXT    NOT NULL,
+                model     TEXT,
+                provider  TEXT,
+                body      TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_request_bodies_run_seq ON request_bodies(run_id, seq);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -263,6 +274,16 @@ impl DbLog {
             let _ = conn.execute(
                 "INSERT INTO notes (ts, text) VALUES (?1, ?2)",
                 rusqlite::params![ts, text],
+            );
+        }
+    }
+
+    /// Insert a captured pre-trim request body. Best-effort: errors are swallowed.
+    pub fn insert_request_body(&self, run_id: u64, seq: u64, ts: &str, model: Option<&str>, provider: &str, body: &str) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "INSERT INTO request_bodies (run_id, seq, ts, model, provider, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![run_id as i64, seq as i64, ts, model, provider, body],
             );
         }
     }

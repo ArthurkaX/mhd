@@ -48,6 +48,41 @@ pub struct TrimOutcome {
     pub config_json: String,
 }
 
+/// Which provider's request shape we're trimming. mhd-owned so the public
+/// backtest API doesn't depend on llmtrim internals (eases the future
+/// clean-room replacement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimProvider {
+    Anthropic,
+    OpenAi,
+}
+
+/// The tunable trim levers — the mhd-owned, provider-agnostic knob set that a
+/// candidate preset configures. This is what a backtest sweeps and what a TOML
+/// preset's `[rules]` section will map onto.
+#[derive(Debug, Clone)]
+pub struct TrimKnobs {
+    /// Base llmtrim preset to seed defaults for fields not exposed here.
+    pub base_preset: String,
+    /// Max characters kept per tool description (the dominant savings lever).
+    pub tool_max_desc_chars: usize,
+    /// Max lines kept per tool-result output block.
+    pub toolout_max_lines: usize,
+    /// Normalize unicode in text.
+    pub normalize_unicode: bool,
+}
+
+impl Default for TrimKnobs {
+    fn default() -> Self {
+        Self {
+            base_preset: "agent".to_string(),
+            tool_max_desc_chars: 150,
+            toolout_max_lines: 25,
+            normalize_unicode: true,
+        }
+    }
+}
+
 /// Run a provider-agnostic request body through `llmtrim-core`'s `rewrite_request`.
 ///
 /// # Fail-open
@@ -133,6 +168,29 @@ fn trim_with_provider(
     }
 }
 
+/// Run a request body through trim using an explicit knob set. Public entry
+/// point for backtesting candidate configurations. Fail-open like the rest.
+pub fn trim_with_knobs(payload: Value, provider: TrimProvider, knobs: &TrimKnobs) -> TrimOutcome {
+    let pk = match provider {
+        TrimProvider::Anthropic => ProviderKind::Anthropic,
+        TrimProvider::OpenAi => ProviderKind::OpenAi,
+    };
+    let cfg = DenseConfig::preset(&knobs.base_preset).map(|mut cfg| {
+        cfg.normalize_unicode = knobs.normalize_unicode;
+        cfg.toolout_max_lines = knobs.toolout_max_lines;
+        cfg.tool_max_desc_chars = knobs.tool_max_desc_chars;
+        cfg
+    });
+    let config_json = serde_json::json!({
+        "preset": knobs.base_preset,
+        "normalize_unicode": knobs.normalize_unicode,
+        "toolout_max_lines": knobs.toolout_max_lines,
+        "tool_max_desc_chars": knobs.tool_max_desc_chars,
+    })
+    .to_string();
+    trim_with_provider(payload, Some(pk), &knobs.base_preset, cfg.as_ref(), config_json)
+}
+
 /// Run the Anthropic request body through `llmtrim-core`'s `rewrite_request`.
 ///
 /// # Fail-open
@@ -143,23 +201,11 @@ fn trim_with_provider(
 /// - Result JSON fails to re-parse.
 /// - Result is not smaller (`after ≥ before`).
 pub fn trim_anthropic(payload: Value, preset: &str) -> TrimOutcome {
-    // Build combined config from the accepted Phase 2 tunings.
-    // Falls back to preset-based rewrite_request if the preset is unknown.
-    let cfg = DenseConfig::preset(preset).map(|mut cfg| {
-        cfg.normalize_unicode = true;
-        cfg.toolout_max_lines = 25;
-        cfg.tool_max_desc_chars = 150;
-        cfg
-    });
-    // Snapshot the active knobs so the DB row knows exactly what ran.
-    let config_json = serde_json::json!({
-        "preset": preset,
-        "normalize_unicode": true,
-        "toolout_max_lines": 25,
-        "tool_max_desc_chars": 150,
-    })
-    .to_string();
-    trim_with_provider(payload, Some(ProviderKind::Anthropic), preset, cfg.as_ref(), config_json)
+    trim_with_knobs(
+        payload,
+        TrimProvider::Anthropic,
+        &TrimKnobs { base_preset: preset.to_string(), ..TrimKnobs::default() },
+    )
 }
 
 /// Run an OpenAI-format request body through `llmtrim-core`'s `rewrite_request`.

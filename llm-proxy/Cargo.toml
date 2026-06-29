@@ -9,6 +9,14 @@ description = "Dynamic LLM proxy — intercepts Claude Code requests and routes 
 name = "llm_proxy"
 path = "src/lib.rs"
 
+[[bin]]
+name = "spend_report"
+path = "src/bin/spend_report.rs"
+
+[[bin]]
+name = "backtest"
+path = "src/bin/backtest.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }

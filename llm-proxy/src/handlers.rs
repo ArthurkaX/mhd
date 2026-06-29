@@ -203,6 +203,10 @@ pub async fn post_messages(
     // Resolve where this tier routes: Anthropic native, or an upstream model.
     let target = state.target_for(effective_tier);
 
+    // ── Corpus capture ──────────────────────────────────────────────
+    // Capture the full pre-trim body for the replay corpus (no-op when disabled).
+    state.capture_request_body(req_id, Some(&model), "anthropic", &payload);
+
     // ── Trim hook ───────────────────────────────────────────────────
     // Run llmtrim-powered request compression before forwarding.
     // Fail-open: any error or no-gain returns the original body.
@@ -342,6 +346,10 @@ pub async fn post_chat_completions(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    // ── Corpus capture ──────────────────────────────────────────────
+    // Capture the full pre-trim body for the replay corpus (no-op when disabled).
+    state.capture_request_body(req_id, Some(&model), "openai", &payload);
 
     // ── Trim hook ───────────────────────────────────────────────────
     // Same single flag as the /v1/messages path.

@@ -114,6 +114,41 @@ pub async fn send_request(
         }
     };
 
+    // ── RESP_HEADERS: capture Anthropic rate-limit headers for diagnostics ──
+    // Gated on log_detailed() (Detailed | Maximal) so it is silent at None/Minimal.
+    // Best-effort: this block never propagates errors and never touches the body.
+    if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
+        let mut rl: Vec<String> = Vec::new();
+        let mut all_names: Vec<String> = Vec::new();
+        for (name, value) in resp.headers() {
+            let k = name.as_str().to_lowercase();
+            all_names.push(k.clone());
+            if k.starts_with("anthropic-ratelimit")
+                || k.starts_with("x-ratelimit")
+                || k == "retry-after"
+                || k == "request-id"
+                || k == "anthropic-request-id"
+            {
+                rl.push(format!("{}={}", k, value.to_str().unwrap_or("?")));
+            }
+        }
+        let (reason, detail) = if rl.is_empty() {
+            (
+                Some("no ratelimit headers".to_string()),
+                format!("all={}", all_names.join(",")),
+            )
+        } else {
+            (None, rl.join("; "))
+        };
+        state.log_event(crate::db_log::LogEvent {
+            seq: req_id,
+            event_type: "RESP_HEADERS".to_string(),
+            reason,
+            detail: Some(detail),
+            ..Default::default()
+        });
+    }
+
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -261,6 +296,41 @@ pub async fn stream_request(
             now_ms(),
             started.elapsed().as_millis()
         ));
+    }
+
+    // ── RESP_HEADERS: capture Anthropic rate-limit headers for diagnostics ──
+    // Gated on log_detailed() (Detailed | Maximal) so it is silent at None/Minimal.
+    // Best-effort: this block never propagates errors and never touches the body.
+    if state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed() {
+        let mut rl: Vec<String> = Vec::new();
+        let mut all_names: Vec<String> = Vec::new();
+        for (name, value) in resp.headers() {
+            let k = name.as_str().to_lowercase();
+            all_names.push(k.clone());
+            if k.starts_with("anthropic-ratelimit")
+                || k.starts_with("x-ratelimit")
+                || k == "retry-after"
+                || k == "request-id"
+                || k == "anthropic-request-id"
+            {
+                rl.push(format!("{}={}", k, value.to_str().unwrap_or("?")));
+            }
+        }
+        let (reason, detail) = if rl.is_empty() {
+            (
+                Some("no ratelimit headers".to_string()),
+                format!("all={}", all_names.join(",")),
+            )
+        } else {
+            (None, rl.join("; "))
+        };
+        state.log_event(crate::db_log::LogEvent {
+            seq: req_id,
+            event_type: "RESP_HEADERS".to_string(),
+            reason,
+            detail: Some(detail),
+            ..Default::default()
+        });
     }
 
     let status = resp.status();

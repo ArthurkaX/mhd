@@ -44,6 +44,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
         sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,
         trim_enabled: cfg.trim_enabled,
+        corpus_capture: cfg.corpus_capture,
         db_log_enabled: true, // DB log is always on; verbosity is a separate knob
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
@@ -94,6 +95,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_target("fable", &cfg.fable);
         control.set_log_level(&cfg.log_level);
         control.set_trim_enabled(cfg.trim_enabled);
+        control.set_corpus_capture_enabled(cfg.corpus_capture);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
             drop(guard);

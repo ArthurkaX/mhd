@@ -88,6 +88,9 @@ pub struct LlmProxyConfig {
     pub vision_model: Option<llm_proxy::config::ModelRef>,
     /// Enable llmtrim-powered request compression.
     pub trim_enabled: bool,
+    /// Enable replay-corpus capture: store full pre-trim request bodies in
+    /// proxy.db so a candidate trim preset can be backtested against real traffic.
+    pub corpus_capture: bool,
 }
 
 impl Default for LlmProxyConfig {
@@ -109,6 +112,7 @@ impl Default for LlmProxyConfig {
             sonnet_downgrade_enabled: false,
             vision_model: None,
             trim_enabled: false,
+            corpus_capture: false,
         }
     }
 }
@@ -385,6 +389,7 @@ impl AppConfig {
                 .unwrap_or(false),
             vision_model: settings.as_ref().and_then(|s| s.vision_model.clone()),
             trim_enabled: settings.as_ref().map(|s| s.trim_enabled).unwrap_or(false),
+            corpus_capture: settings.as_ref().map(|s| s.corpus_capture).unwrap_or(false),
         }
     }
 
