@@ -105,7 +105,20 @@ pub async fn send_request(
         ));
     }
 
-    let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
+    let (resp, _url) = match post_chat_completions(state, &openai_payload).await {
+        Ok(v) => v,
+        Err(e) => {
+            state.mark_request_failed(
+                req_id,
+                Some(started.elapsed().as_millis() as u64),
+                None,
+                &e.to_string(),
+                "UPSTREAM_ERR",
+            );
+            return Err(e);
+        }
+    };
+    let status_opt = Some(resp.status().as_u16());
 
     // Hang detection: if the upstream was slow to respond with headers,
     // log a structured HANG event.
@@ -152,7 +165,15 @@ pub async fn send_request(
             .unwrap_or(0);
         if prompt_total > 0 || output_tokens > 0 {
             let fresh_input = prompt_total.saturating_sub(cached_tokens);
-            state.update_trace_tokens(req_id, fresh_input, output_tokens, cached_tokens, 0);
+            state.update_trace_tokens(
+                req_id,
+                fresh_input,
+                output_tokens,
+                cached_tokens,
+                0,
+                Some(started.elapsed().as_millis() as u64),
+                status_opt,
+            );
         }
     }
 
@@ -542,7 +563,20 @@ pub async fn stream_request(
         ));
     }
 
-    let (resp, _url) = post_chat_completions(state, &openai_payload).await?;
+    let (resp, _url) = match post_chat_completions(state, &openai_payload).await {
+        Ok(v) => v,
+        Err(e) => {
+            state.mark_request_failed(
+                req_id,
+                Some(started.elapsed().as_millis() as u64),
+                None,
+                &e.to_string(),
+                "UPSTREAM_ERR",
+            );
+            return Err(e);
+        }
+    };
+    let status_opt = Some(resp.status().as_u16());
 
     // ── Hang detection ───────────────────────────────────────────
     // If headers took longer than HANG_THRESHOLD to come back, log a
@@ -645,7 +679,26 @@ pub async fn stream_request(
         let out_tok = translator.output_tokens;
         let cache_read = translator.cached_tokens;
         let fresh_in = prompt_total.saturating_sub(cache_read);
-        state_for_log.update_trace_tokens(req_id, fresh_in, out_tok, cache_read, 0);
+        let elapsed = started.elapsed().as_millis() as u64;
+        if had_error {
+            state_for_log.mark_request_failed(
+                req_id,
+                Some(elapsed),
+                status_opt,
+                "stream transport error",
+                "STREAM_ERR",
+            );
+        } else {
+            state_for_log.update_trace_tokens(
+                req_id,
+                fresh_in,
+                out_tok,
+                cache_read,
+                0,
+                Some(elapsed),
+                status_opt,
+            );
+        }
 
         if log {
             if had_error {
@@ -682,7 +735,21 @@ fn sse(event: &str, data: &Value) -> Bytes {
 /// Forward a raw OpenAI-format request straight to the upstream (no transform).
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
 pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value) -> Result<Value> {
-    let (resp, _url) = post_chat_completions(state, &payload).await?;
+    let started = std::time::Instant::now();
+    let (resp, _url) = match post_chat_completions(state, &payload).await {
+        Ok(v) => v,
+        Err(e) => {
+            state.mark_request_failed(
+                req_id,
+                Some(started.elapsed().as_millis() as u64),
+                None,
+                &e.to_string(),
+                "UPSTREAM_ERR",
+            );
+            return Err(e);
+        }
+    };
+    let status_opt = Some(resp.status().as_u16());
     let body: Value = resp.json().await?;
 
     // Fill the trace entry's token counts from the OpenAI usage block
@@ -706,7 +773,15 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
             .unwrap_or(0);
         if prompt_total > 0 || out > 0 || cache_read > 0 {
             let fresh_in = prompt_total.saturating_sub(cache_read);
-            state.update_trace_tokens(req_id, fresh_in, out, cache_read, 0);
+            state.update_trace_tokens(
+                req_id,
+                fresh_in,
+                out,
+                cache_read,
+                0,
+                Some(started.elapsed().as_millis() as u64),
+                status_opt,
+            );
         }
     }
 
@@ -742,7 +817,20 @@ pub async fn stream_raw_openai(
         ));
     }
 
-    let (resp, _url) = post_chat_completions(state, &payload).await?;
+    let (resp, _url) = match post_chat_completions(state, &payload).await {
+        Ok(v) => v,
+        Err(e) => {
+            state.mark_request_failed(
+                req_id,
+                Some(started.elapsed().as_millis() as u64),
+                None,
+                &e.to_string(),
+                "UPSTREAM_ERR",
+            );
+            return Err(e);
+        }
+    };
+    let status_opt = Some(resp.status().as_u16());
 
     if log {
         state.log_line(&format!(
@@ -810,9 +898,26 @@ pub async fn stream_raw_openai(
 
         // Push final token counts into the trace entry with correctly separated
         // counts. OpenAI prompt_tokens = fresh + cached, so we subtract.
-        if in_tok > 0 || out_tok > 0 || cached_tok > 0 {
+        let elapsed = started.elapsed().as_millis() as u64;
+        if had_error {
+            state_for_log.mark_request_failed(
+                req_id,
+                Some(elapsed),
+                status_opt,
+                "stream transport error",
+                "STREAM_ERR",
+            );
+        } else if in_tok > 0 || out_tok > 0 || cached_tok > 0 {
             let fresh_in = in_tok.saturating_sub(cached_tok);
-            state_for_log.update_trace_tokens(req_id, fresh_in, out_tok, cached_tok, 0);
+            state_for_log.update_trace_tokens(
+                req_id,
+                fresh_in,
+                out_tok,
+                cached_tok,
+                0,
+                Some(elapsed),
+                status_opt,
+            );
         }
 
         if log {

@@ -395,6 +395,8 @@ impl AppState {
         output_tokens: u64,
         cache_read_tokens: u64,
         cache_creation_tokens: u64,
+        duration_ms: Option<u64>,
+        status: Option<u16>,
     ) {
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         // Search from the back — the matching entry is almost certainly recent.
@@ -414,14 +416,45 @@ impl AppState {
                     self.run_id,
                     req_id,
                     &crate::providers::now_ms(),
-                    None,
+                    duration_ms,
                     input_tokens,
                     output_tokens,
                     cache_read_tokens,
                     cache_creation_tokens,
+                    status,
                     None,
                     None,
-                    None,
+                );
+            }
+        }
+    }
+
+    /// Write a completion UPDATE for a request that terminated with an error,
+    /// so the row never stays dangling (ts_end NULL). Tokens are recorded as 0
+    /// on a failed request. Best-effort: errors are swallowed and the write is
+    /// gated on the db being enabled — mirrors [`update_trace_tokens`].
+    pub fn mark_request_failed(
+        &self,
+        req_id: u64,
+        duration_ms: Option<u64>,
+        status: Option<u16>,
+        error: &str,
+        error_kind: &str,
+    ) {
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                db.update_request_completion(
+                    self.run_id,
+                    req_id,
+                    &crate::providers::now_ms(),
+                    duration_ms,
+                    0,
+                    0,
+                    0,
+                    0,
+                    status,
+                    Some(error),
+                    Some(error_kind),
                 );
             }
         }

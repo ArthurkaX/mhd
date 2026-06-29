@@ -103,6 +103,13 @@ pub async fn send_request(
                     started.elapsed().as_millis()
                 ));
             }
+            state.mark_request_failed(
+                req_id,
+                Some(started.elapsed().as_millis() as u64),
+                None,
+                &e.to_string(),
+                kind,
+            );
             return Err(e.into());
         }
     };
@@ -118,6 +125,13 @@ pub async fn send_request(
                 started.elapsed().as_millis()
             ));
         }
+        state.mark_request_failed(
+            req_id,
+            Some(started.elapsed().as_millis() as u64),
+            Some(status.as_u16()),
+            &format!("Anthropic API error (HTTP {}): {}", status, body),
+            "HTTP_ERROR",
+        );
         anyhow::bail!("Anthropic API error (HTTP {}): {}", status, body);
     }
 
@@ -144,7 +158,15 @@ pub async fn send_request(
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if inp > 0 || out > 0 {
-            state.update_trace_tokens(req_id, inp, out, cache_read, cache_creation);
+            state.update_trace_tokens(
+                req_id,
+                inp,
+                out,
+                cache_read,
+                cache_creation,
+                Some(started.elapsed().as_millis() as u64),
+                Some(status.as_u16()),
+            );
         }
     }
 
@@ -222,6 +244,13 @@ pub async fn stream_request(
                     started.elapsed().as_millis()
                 ));
             }
+            state.mark_request_failed(
+                req_id,
+                Some(started.elapsed().as_millis() as u64),
+                None,
+                &e.to_string(),
+                kind,
+            );
             return Err(e.into());
         }
     };
@@ -237,9 +266,17 @@ pub async fn stream_request(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        state.mark_request_failed(
+            req_id,
+            Some(started.elapsed().as_millis() as u64),
+            Some(status.as_u16()),
+            &format!("Anthropic API error (HTTP {}): {}", status, body),
+            "HTTP_ERROR",
+        );
         anyhow::bail!("Anthropic API error (HTTP {}): {}", status, body);
     }
 
+    let status_opt = Some(status.as_u16());
     let mut byte_stream = resp.bytes_stream();
     let state_for_log = state.clone();
     let s = async_stream::stream! {
@@ -312,8 +349,25 @@ pub async fn stream_request(
         //   input_tokens        = fresh (uncached) prompt tokens billed at 1×
         //   cache_read          = tokens served from the prompt cache
         //   cache_creation      = tokens written to the cache this turn
-        if base_input > 0 || output_tokens > 0 {
-            state_for_log.update_trace_tokens(req_id, base_input, output_tokens, cache_read, cache_creation);
+        let elapsed = started.elapsed().as_millis() as u64;
+        if had_error {
+            state_for_log.mark_request_failed(
+                req_id,
+                Some(elapsed),
+                status_opt,
+                "stream transport error",
+                "STREAM_ERR",
+            );
+        } else if base_input > 0 || output_tokens > 0 {
+            state_for_log.update_trace_tokens(
+                req_id,
+                base_input,
+                output_tokens,
+                cache_read,
+                cache_creation,
+                Some(elapsed),
+                status_opt,
+            );
         }
         if log {
             if had_error {
