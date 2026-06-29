@@ -165,7 +165,7 @@ impl DbLog {
                 ts        TEXT    NOT NULL,
                 model     TEXT,
                 provider  TEXT,
-                body      TEXT    NOT NULL
+                body      BLOB    NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_request_bodies_run_seq ON request_bodies(run_id, seq);
             CREATE TABLE IF NOT EXISTS quota (
@@ -308,11 +308,16 @@ impl DbLog {
     }
 
     /// Insert a captured pre-trim request body. Best-effort: errors are swallowed.
+    /// The body is zstd-compressed (level 9) before storage.
     pub fn insert_request_body(&self, run_id: u64, seq: u64, ts: &str, model: Option<&str>, provider: &str, body: &str) {
+        let compressed = compress_body(body);
+        if compressed.is_empty() {
+            return; // compression produced nothing (only on encode error); skip row
+        }
         if let Ok(conn) = self.conn.lock() {
             let _ = conn.execute(
                 "INSERT INTO request_bodies (run_id, seq, ts, model, provider, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![run_id as i64, seq as i64, ts, model, provider, body],
+                rusqlite::params![run_id as i64, seq as i64, ts, model, provider, compressed],
             );
         }
     }
@@ -340,5 +345,62 @@ impl DbLog {
                 ],
             );
         }
+    }
+}
+
+// ── body compression helpers ──────────────────────────────────────────────────
+
+const ZSTD_LEVEL: i32 = 9;
+
+/// Compress a request body string with zstd (level 9).
+/// Returns an empty Vec only if encoding itself fails (effectively never).
+pub fn compress_body(s: &str) -> Vec<u8> {
+    zstd::encode_all(s.as_bytes(), ZSTD_LEVEL).unwrap_or_default()
+}
+
+/// Decompress a zstd-compressed body blob back to a UTF-8 string.
+/// Returns None if decompression or UTF-8 conversion fails (fail-open).
+pub fn decompress_body(b: &[u8]) -> Option<String> {
+    let decompressed = zstd::decode_all(b).ok()?;
+    String::from_utf8(decompressed).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_json_with_unicode() {
+        let input = r#"{"model":"claude-opus-4-5","messages":[{"role":"user","content":"Hello 🌍 — привет — 你好"}]}"#;
+        let compressed = compress_body(input);
+        let restored = decompress_body(&compressed).expect("decompress failed");
+        assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn round_trip_empty_string() {
+        let input = "";
+        let compressed = compress_body(input);
+        let restored = decompress_body(&compressed).expect("decompress of empty failed");
+        assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn round_trip_large_body() {
+        // ~100 KB of repeating JSON-like content.
+        let chunk = r#"{"role":"user","content":"AAAA BBBB CCCC DDDD EEEE FFFF GGGG HHHH IIII JJJJ "}"#;
+        let input: String = chunk.repeat(1100); // ~86 KB (78 bytes * 1100 = 85,800)
+        assert!(input.len() >= 80_000);
+        let compressed = compress_body(&input);
+        // Sanity: compressed should be much smaller than the original.
+        assert!(compressed.len() < input.len() / 4, "compression ratio unexpectedly poor");
+        let restored = decompress_body(&compressed).expect("decompress of large body failed");
+        assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn decompress_garbage_returns_none() {
+        let garbage: &[u8] = b"\xDE\xAD\xBE\xEF\xFF\xFE garbage that is not zstd";
+        assert!(decompress_body(garbage).is_none(), "expected None for garbage bytes");
     }
 }

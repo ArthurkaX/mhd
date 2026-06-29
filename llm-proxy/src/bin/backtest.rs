@@ -13,6 +13,7 @@
 //! but skipped (future work).
 
 use llm_proxy::config::config_dir;
+use llm_proxy::db_log::decompress_body;
 use llm_proxy::native_trim::NativeKnobs;
 use llm_proxy::trim::{TrimKnobs, TrimProvider, trim_with_knobs};
 use rusqlite::{Connection, OpenFlags};
@@ -138,14 +139,18 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
     let iter = stmt.query_map([], |row| {
         let model: String = row.get(0)?;
         let provider: String = row.get(1)?;
-        let body_str: String = row.get(2)?;
-        Ok((model, provider, body_str))
+        let body_blob: Vec<u8> = row.get(2)?;
+        Ok((model, provider, body_blob))
     });
 
     if let Ok(iter) = iter {
         for item in iter {
             match item {
-                Ok((model, provider, body_str)) => {
+                Ok((model, provider, body_blob)) => {
+                    let body_str = match decompress_body(&body_blob) {
+                        Some(s) => s,
+                        None => { parse_errors += 1; continue; }
+                    };
                     match serde_json::from_str::<Value>(&body_str) {
                         Ok(body) => rows.push(BodyRow { model, provider, body }),
                         Err(_) => parse_errors += 1,
