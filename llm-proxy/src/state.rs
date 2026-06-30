@@ -246,6 +246,9 @@ pub struct AppState {
     /// look code-like. Live-tunable.
     pub trim_fence_requires_code: RwLock<bool>,
 
+    /// Minimum glyph density for the arrow-driven diagram detector. Live-tunable.
+    pub trim_arrow_density_min: RwLock<f64>,
+
     /// Master switch for replay-corpus capture.
     pub corpus_capture_enabled: RwLock<bool>,
 
@@ -321,6 +324,7 @@ impl AppState {
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
+            trim_arrow_density_min: RwLock::new(cfg.trim_arrow_density_min),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             corpus_max_rows: cfg.corpus_max_rows,
             last_quota: RwLock::new(None),
@@ -773,6 +777,10 @@ impl AppState {
             .unwrap_or_else(|e| e.into_inner()),
         trim_fence_requires_code: *self
             .trim_fence_requires_code
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        trim_arrow_density_min: *self
+            .trim_arrow_density_min
             .read()
             .unwrap_or_else(|e| e.into_inner()),
         corpus_max_rows: self.corpus_max_rows,

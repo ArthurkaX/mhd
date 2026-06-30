@@ -109,6 +109,7 @@ fn apply_engine(
     ws_on: bool,
     strip_thinking_on: bool,
     fence_requires_code: bool,
+    arrow_density_min: f64,
 ) -> Value {
     match engine {
         "native" => {
@@ -117,6 +118,7 @@ fn apply_engine(
                 ws_enabled: ws_on,
                 strip_thinking: strip_thinking_on,
                 tool_result_fence_requires_code: fence_requires_code,
+                tool_result_arrow_density_min: arrow_density_min,
                 ..NativeKnobs::default()
             };
             if provider == "openai" {
@@ -193,7 +195,7 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 
 // ── arg parsing ───────────────────────────────────────────────────────────────
 
-fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool) {
+fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
     let default_engine = "llmtrim".to_string();
@@ -207,6 +209,7 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool) {
     let mut provider = default_provider;
     // Mirror NativeKnobs::default() so backtest matches live behavior unless overridden.
     let mut fence_requires_code = true;
+    let mut arrow_density_min = 0.01;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -304,6 +307,17 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool) {
                     }
                 }
             }
+            "--arrow-density-min" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].parse::<f64>() {
+                        Ok(v) if v >= 0.0 => arrow_density_min = v,
+                        _ => eprintln!(
+                            "Warning: --arrow-density-min requires a non-negative f64; using default 0.01."
+                        ),
+                    }
+                }
+            }
             other => {
                 eprintln!("Unknown argument: {other}  (ignored)");
             }
@@ -311,13 +325,13 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool) {
         i += 1;
     }
 
-    (db_path, sweep, engine, ws_on, strip_thinking_on, provider, fence_requires_code)
+    (db_path, sweep, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min)
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let (db_path, sweep_values, engine, ws_on, strip_thinking_on, provider, fence_requires_code) = parse_args();
+    let (db_path, sweep_values, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min) = parse_args();
 
     eprintln!("DB: {}", db_path.display());
 
@@ -377,8 +391,8 @@ fn main() {
     // ── determinism sanity check (uses the selected engine + provider) ────────
     let det_v: usize = 150;
     let first_body = eligible[0].body.clone();
-    let det_a = apply_engine(&engine, &provider, first_body.clone(), det_v, ws_on, strip_thinking_on, fence_requires_code);
-    let det_b = apply_engine(&engine, &provider, first_body, det_v, ws_on, strip_thinking_on, fence_requires_code);
+    let det_a = apply_engine(&engine, &provider, first_body.clone(), det_v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
+    let det_b = apply_engine(&engine, &provider, first_body, det_v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
     if det_a == det_b {
         println!("determinism: OK");
     } else {
@@ -394,7 +408,7 @@ fn main() {
         let mut dollars: f64 = 0.0;
 
         for row in &eligible {
-            let trimmed_body = apply_engine(&engine, &provider, row.body.clone(), v, ws_on, strip_thinking_on, fence_requires_code);
+            let trimmed_body = apply_engine(&engine, &provider, row.body.clone(), v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
             let before = est_tokens(&row.body);
             let after = est_tokens(&trimmed_body);
             if after < before {
@@ -432,7 +446,7 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════════════");
     println!("  Trim Backtest — tool_max_desc_chars sweep");
     println!("═══════════════════════════════════════════════════════════════════════");
-    println!("  engine: {engine}   provider: {provider}   ws: {}   strip_thinking: {}   fence_requires_code: {}   estimator: ~chars/4 (unified)", if ws_on { "on" } else { "off" }, if strip_thinking_on { "on" } else { "off" }, if fence_requires_code { "on" } else { "off" });
+    println!("  engine: {engine}   provider: {provider}   ws: {}   strip_thinking: {}   fence_requires_code: {}   arrow_density_min: {arrow_density_min}   estimator: ~chars/4 (unified)", if ws_on { "on" } else { "off" }, if strip_thinking_on { "on" } else { "off" }, if fence_requires_code { "on" } else { "off" });
     println!();
     println!(
         "{:<10}  {:>16}  {:>6}  {:>7}  {:>5}  {:>9}  {:>8}",

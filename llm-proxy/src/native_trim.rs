@@ -56,6 +56,12 @@ pub struct NativeKnobs {
     /// keywords). When `false`, a triple-backtick alone protects (old
     /// behavior). Set `false` to revert without a rebuild.
     pub tool_result_fence_requires_code: bool,
+    /// Minimum glyph density (arrow_count + box_count relative to total chars)
+    /// for the arrow-driven diagram route (Route a) to protect the block.
+    /// Default: **0.01** (1%). Measured: on opencode corpus median arrow glyph
+    /// density is ~0.0004 (noise); on anthropic corpus real diagrams have
+    /// median density ~0.0217. 0.01 cleanly separates them.
+    pub tool_result_arrow_density_min: f64,
 }
 
 impl Default for NativeKnobs {
@@ -71,6 +77,7 @@ impl Default for NativeKnobs {
             ws_collapse_inner: true,
             strip_thinking: false,
             tool_result_fence_requires_code: true,
+            tool_result_arrow_density_min: 0.01,
         }
     }
 }
@@ -148,7 +155,7 @@ fn looks_like_code(text: &str) -> bool {
     false
 }
 
-pub fn tool_result_protected(text: &str, src_ext: Option<&str>, fence_requires_code: bool) -> bool {
+pub fn tool_result_protected(text: &str, src_ext: Option<&str>, fence_requires_code: bool, arrow_density_min: f64) -> bool {
     // Layer 1: provenance
     if let Some(ext) = src_ext {
         if matches!(ext, "md" | "markdown" | "txt" | "rst" | "adoc" | "org") {
@@ -186,8 +193,11 @@ pub fn tool_result_protected(text: &str, src_ext: Option<&str>, fence_requires_c
     }
     let combined = box_count + arrow_count;
     let density = combined as f64 / total_chars.max(1) as f64;
-    // Route a: arrow-driven diagram
-    if arrow_count >= 3 {
+    // Route a: arrow-driven diagram — needs both ≥3 arrow glyphs AND density
+    // above threshold (prevents false protection of large texts with stray
+    // arrows; measured median density on opencode noise is 0.0004 vs real
+    // diagrams 0.0217, so the default 0.01 cleanly separates them).
+    if arrow_count >= 3 && density >= arrow_density_min {
         return true;
     }
     // Route b: dense box diagram
@@ -366,8 +376,9 @@ fn compress_tool_results(
 
         // Determine whether the block is protected.
         let fence_requires_code = knobs.tool_result_fence_requires_code;
+        let arrow_density_min = knobs.tool_result_arrow_density_min;
         let protected = match b.get("content") {
-            Some(Value::String(s)) => tool_result_protected(s, src_ext, fence_requires_code),
+            Some(Value::String(s)) => tool_result_protected(s, src_ext, fence_requires_code, arrow_density_min),
             Some(Value::Array(arr)) => {
                 // Concatenate all inner text blocks for the detector.
                 let combined: String = arr
@@ -381,7 +392,7 @@ fn compress_tool_results(
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                tool_result_protected(&combined, src_ext, fence_requires_code)
+                tool_result_protected(&combined, src_ext, fence_requires_code, arrow_density_min)
             }
             _ => false,
         };
@@ -669,7 +680,7 @@ pub fn trim_native_openai(mut body: Value, knobs: &NativeKnobs) -> Value {
             if let Value::String(s) = content {
                 // Pass src_ext=None: no file-path provenance on OpenAI tool msgs;
                 // content-based protection (fences / diagram glyphs) still fires.
-                if !tool_result_protected(s, None, knobs.tool_result_fence_requires_code) {
+                if !tool_result_protected(s, None, knobs.tool_result_fence_requires_code, knobs.tool_result_arrow_density_min) {
                     if let Some(new) = transform_text(s, knobs) {
                         *s = new;
                     }
@@ -1041,7 +1052,7 @@ mod tests {
     #[test]
     fn protected_layer1_md_ext() {
         assert!(
-            tool_result_protected("plain text, nothing special", Some("md"), true),
+            tool_result_protected("plain text, nothing special", Some("md"), true, 0.01),
             "md extension should be protected"
         );
     }
@@ -1051,7 +1062,7 @@ mod tests {
     fn protected_layer1_all_doc_exts() {
         for ext in &["md", "markdown", "txt", "rst", "adoc", "org"] {
             assert!(
-                tool_result_protected("hello world", Some(ext), true),
+                tool_result_protected("hello world", Some(ext), true, 0.01),
                 "extension {ext} should be protected"
             );
         }
@@ -1062,7 +1073,7 @@ mod tests {
     fn protected_layer1_non_doc_ext_not_protected() {
         for ext in &["log", "rs", "py", "json", "toml", "sh"] {
             assert!(
-                !tool_result_protected("hello world no fences no glyphs", Some(ext), true),
+                !tool_result_protected("hello world no fences no glyphs", Some(ext), true, 0.01),
                 "extension {ext} should NOT be protected by layer 1"
             );
         }
@@ -1072,7 +1083,7 @@ mod tests {
     #[test]
     fn protected_layer1_none_ext() {
         assert!(
-            !tool_result_protected("hello world", None, true),
+            !tool_result_protected("hello world", None, true, 0.01),
             "None extension should not trigger layer 1"
         );
     }
@@ -1083,16 +1094,16 @@ mod tests {
         // Text contains 2+ code keywords (`fn ` and `pub `) → looks_like_code=true → protected.
         let text = "here is some code:\n```rust\npub fn main() {}\npub fn helper() {}\n```\n";
         assert!(
-            tool_result_protected(text, None, true),
+            tool_result_protected(text, None, true, 0.01),
             "fenced code (2+ keywords) should be protected when fence_requires_code=true"
         );
         assert!(
-            tool_result_protected(text, None, false),
+            tool_result_protected(text, None, false, 0.01),
             "fenced code should be protected when fence_requires_code=false"
         );
         // Also protected even with a non-doc ext.
         assert!(
-            tool_result_protected(text, Some("log"), true),
+            tool_result_protected(text, Some("log"), true, 0.01),
             "fenced code + log ext should still be protected"
         );
     }
@@ -1101,7 +1112,7 @@ mod tests {
     #[test]
     fn protected_layer2_no_fence_not_triggered() {
         assert!(
-            !tool_result_protected("no backticks here at all", None, true),
+            !tool_result_protected("no backticks here at all", None, true, 0.01),
             "no backtick should not trigger layer 2"
         );
     }
@@ -1118,7 +1129,7 @@ mod tests {
 │     Actuators     │                               │      Sensors      │\n\
 └──────┬───┬───┬────┘                               └───┬───┬───┬───────┘";
         assert!(
-            tool_result_protected(diagram, None, true),
+            tool_result_protected(diagram, None, true, 0.01),
             "diagram with box-drawing + arrows should be protected"
         );
     }
@@ -1137,7 +1148,7 @@ mod tests {
         // Sanity-check our test data has exactly 5.
         assert_eq!(glyph_count, 5, "test data should have exactly 5 glyphs");
         assert!(
-            !tool_result_protected(text, None, true),
+            !tool_result_protected(text, None, true, 0.01),
             "5 glyphs should NOT be protected (need ≥ 6)"
         );
     }
@@ -1155,7 +1166,7 @@ mod tests {
             .count();
         assert_eq!(glyph_count, 6, "test data should have exactly 6 glyphs");
         assert!(
-            tool_result_protected(text, None, true),
+            tool_result_protected(text, None, true, 0.01),
             "6 glyphs should be protected"
         );
     }
@@ -1177,7 +1188,7 @@ mod tests {
             .count();
         assert_eq!(box_count, 6, "should have exactly 6 box glyphs");
         assert!(
-            !tool_result_protected(&text, None, true),
+            !tool_result_protected(&text, None, true, 0.01),
             "large source with 6 stray glyphs (density 0.2%) must NOT be protected"
         );
     }
@@ -1201,7 +1212,7 @@ mod tests {
             "test data must have >= 2% density; actual {density:.3}"
         );
         assert!(
-            tool_result_protected(diagram, None, true),
+            tool_result_protected(diagram, None, true, 0.01),
             "small dense box diagram must be protected"
         );
     }
@@ -1220,7 +1231,7 @@ mod tests {
             "test data must have >= 3 arrows; got {arrow_count}"
         );
         assert!(
-            tool_result_protected(flow, None, true),
+            tool_result_protected(flow, None, true, 0.01),
             "flow diagram with >= 3 arrows must be protected"
         );
     }
@@ -1267,7 +1278,7 @@ mod tests {
         assert!(corner_count < 4, "test data must have < 4 corners; got {corner_count}");
         assert!(density < 0.02, "test data density must be < 2%; got {density:.4}");
         assert!(
-            !tool_result_protected(output, None, true),
+            !tool_result_protected(output, None, true, 0.01),
             "cargo output with one stray unicode char must NOT be protected"
         );
     }
@@ -1279,19 +1290,19 @@ mod tests {
         let plain = "hello world ".repeat(100); // no glyphs, no fences
         // Layer 1: .md extension forces protection.
         assert!(
-            tool_result_protected(&plain, Some("md"), true),
+            tool_result_protected(&plain, Some("md"), true, 0.01),
             ".md provenance must protect glyph-free text"
         );
         // Layer 2: when fence_requires_code=false (legacy mode), a bare fence
         // protects even glyph-free, non-code text.
         let with_fence = format!("{plain}```");
         assert!(
-            tool_result_protected(&with_fence, None, false),
+            tool_result_protected(&with_fence, None, false, 0.01),
             "fence must protect glyph-free text when fence_requires_code=false (legacy)"
         );
         // When fence_requires_code=true (default), a fence around non-code is NOT protected.
         assert!(
-            !tool_result_protected(&with_fence, None, true),
+            !tool_result_protected(&with_fence, None, true, 0.01),
             "fence around non-code text must NOT be protected when fence_requires_code=true"
         );
     }
@@ -2149,12 +2160,12 @@ mod tests {
 
         // With knob=true (new default): not protected → compression applies.
         assert!(
-            !tool_result_protected(&json_blob, None, true),
+            !tool_result_protected(&json_blob, None, true, 0.01),
             "fenced JSON blob must NOT be protected when fence_requires_code=true"
         );
         // With knob=false (legacy): fence alone protects.
         assert!(
-            tool_result_protected(&json_blob, None, false),
+            tool_result_protected(&json_blob, None, false, 0.01),
             "fenced JSON blob must BE protected when fence_requires_code=false (legacy)"
         );
     }
@@ -2181,7 +2192,7 @@ mod tests {
         );
         // Has ≥ 3 lines matching \d+\t → looks_like_code=true → protected.
         assert!(
-            tool_result_protected(source, None, true),
+            tool_result_protected(source, None, true, 0.01),
             "line-numbered source listing must be protected even with fence_requires_code=true"
         );
     }
@@ -2193,7 +2204,7 @@ mod tests {
         let source = "```python\ndef greet(name):\n    class Greeter:\n        pass\n```\n";
         // Has `def ` and `class ` → kw_total ≥ 2 → looks_like_code=true.
         assert!(
-            tool_result_protected(source, None, true),
+            tool_result_protected(source, None, true, 0.01),
             "fenced source with code keywords must be protected when fence_requires_code=true"
         );
     }
@@ -2204,11 +2215,11 @@ mod tests {
         // Three → arrows → Layer 3 route (a): arrow_count ≥ 3.
         let diagram = "A → B → C → D (flow)";
         assert!(
-            tool_result_protected(diagram, None, true),
+            tool_result_protected(diagram, None, true, 0.01),
             "diagram (arrow route) must be protected when fence_requires_code=true"
         );
         assert!(
-            tool_result_protected(diagram, None, false),
+            tool_result_protected(diagram, None, false, 0.01),
             "diagram (arrow route) must be protected when fence_requires_code=false"
         );
     }
@@ -2219,11 +2230,11 @@ mod tests {
     fn fence_requires_code_md_provenance_always_protected() {
         let plain_md = "# Heading\n\nJust some plain markdown text with no fences.\n".repeat(20);
         assert!(
-            tool_result_protected(&plain_md, Some("md"), true),
+            tool_result_protected(&plain_md, Some("md"), true, 0.01),
             "md provenance must be protected when fence_requires_code=true"
         );
         assert!(
-            tool_result_protected(&plain_md, Some("md"), false),
+            tool_result_protected(&plain_md, Some("md"), false, 0.01),
             "md provenance must be protected when fence_requires_code=false"
         );
     }

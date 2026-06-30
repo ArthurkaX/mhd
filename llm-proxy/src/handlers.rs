@@ -270,6 +270,10 @@ pub async fn post_messages(
                 .trim_fence_requires_code
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+            tool_result_arrow_density_min: *state
+                .trim_arrow_density_min
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
         // Claude Code is always an agent — use the agent preset for cache safety.
@@ -440,6 +444,10 @@ pub async fn post_chat_completions(
             strip_thinking: false,
             tool_result_fence_requires_code: *state
                 .trim_fence_requires_code
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_arrow_density_min: *state
+                .trim_arrow_density_min
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()

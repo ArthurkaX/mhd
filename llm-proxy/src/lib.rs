@@ -212,6 +212,16 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = requires_code;
     }
 
+    /// Set the minimum glyph density threshold for the arrow-driven diagram
+    /// detector. Default: 0.01 (1%). Live-tunable via settings.json watcher.
+    pub fn set_trim_arrow_density_min(&self, val: f64) {
+        *self
+            .state
+            .trim_arrow_density_min
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = val;
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state

@@ -107,6 +107,8 @@ pub struct LlmProxyConfig {
     /// (native engine). Default true: prevents fence-wrapped JSON/log dumps
     /// (common on OpenAI clients) from being falsely protected from head/tail trim.
     pub trim_fence_requires_code: bool,
+    /// Minimum glyph density for the arrow-driven diagram detector (default 0.01).
+    pub trim_arrow_density_min: f64,
     /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
     pub corpus_max_rows: usize,
 }
@@ -138,6 +140,7 @@ impl Default for LlmProxyConfig {
             trim_ws_enabled: false,
             trim_strip_thinking: false,
             trim_fence_requires_code: true,
+            trim_arrow_density_min: 0.01,
             corpus_max_rows: 5000,
         }
     }
@@ -444,6 +447,10 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.trim_fence_requires_code)
                 .unwrap_or(true),
+            trim_arrow_density_min: settings
+                .as_ref()
+                .map(|s| s.trim_arrow_density_min)
+                .unwrap_or(0.01),
             corpus_max_rows: settings
                 .as_ref()
                 .map(|s| s.corpus_max_rows)

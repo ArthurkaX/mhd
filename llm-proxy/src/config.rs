@@ -134,6 +134,12 @@ pub struct Settings {
     #[serde(default = "default_trim_fence_requires_code")]
     pub trim_fence_requires_code: bool,
 
+    /// Minimum glyph density for the arrow-driven diagram detector in the native
+    /// trim engine. Default: 0.01 (1%). Real diagrams have median density ~0.022;
+    /// stray arrows in noisy text have density ~0.0004.
+    #[serde(default = "default_trim_arrow_density_min")]
+    pub trim_arrow_density_min: f64,
+
     /// Maximum number of rows to keep in the `request_bodies` corpus table.
     /// Oldest rows are pruned after each insert. 0 = unlimited.
     /// Default: 5000.
@@ -167,6 +173,7 @@ impl Default for Settings {
             trim_ws_enabled: default_trim_ws_enabled(),
             trim_strip_thinking: default_trim_strip_thinking(),
             trim_fence_requires_code: default_trim_fence_requires_code(),
+            trim_arrow_density_min: default_trim_arrow_density_min(),
             corpus_max_rows: default_corpus_max_rows(),
         }
     }
@@ -245,6 +252,8 @@ pub struct Config {
     pub trim_strip_thinking: bool,
     /// When true, Layer 2 fence protection only fires when fenced content looks code-like.
     pub trim_fence_requires_code: bool,
+    /// Minimum glyph density for the arrow-driven diagram detector (default 0.01).
+    pub trim_arrow_density_min: f64,
     /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
     pub corpus_max_rows: usize,
 }
@@ -273,6 +282,7 @@ impl Config {
             trim_ws_enabled: settings.trim_ws_enabled,
             trim_strip_thinking: settings.trim_strip_thinking,
             trim_fence_requires_code: settings.trim_fence_requires_code,
+            trim_arrow_density_min: settings.trim_arrow_density_min,
             corpus_max_rows: settings.corpus_max_rows,
         }
     }
@@ -303,6 +313,7 @@ impl Config {
             trim_ws_enabled: self.trim_ws_enabled,
             trim_strip_thinking: self.trim_strip_thinking,
             trim_fence_requires_code: self.trim_fence_requires_code,
+            trim_arrow_density_min: self.trim_arrow_density_min,
             corpus_max_rows: self.corpus_max_rows,
         }
     }
@@ -399,6 +410,10 @@ fn default_trim_strip_thinking() -> bool {
 
 fn default_trim_fence_requires_code() -> bool {
     true
+}
+
+fn default_trim_arrow_density_min() -> f64 {
+    0.01
 }
 
 fn default_corpus_max_rows() -> usize {
