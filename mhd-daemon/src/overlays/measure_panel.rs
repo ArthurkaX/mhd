@@ -14,6 +14,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::HiDpi::*;
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
@@ -720,10 +721,26 @@ fn render_done(
         let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     }
 
-    // Close button
+    // Open OFF / Open ON buttons (side by side above Close)
     let btn_w = (80.0 * scale) as i32;
     let btn_h = (24.0 * scale) as i32;
-    let btn_y = note_y + row_h + (4.0 * scale) as i32;
+    let open_y = note_y + row_h + (4.0 * scale) as i32;
+    let off_x = win_w / 2 - btn_w - (4.0 * scale) as i32;
+    let on_x  = win_w / 2 + (4.0 * scale) as i32;
+
+    draw_button(
+        dib_dc, bits, win_w, win_h,
+        off_x, open_y, btn_w, btn_h,
+        "Open OFF", theme, hfont_small, false, ButtonStyle::Secondary,
+    );
+    draw_button(
+        dib_dc, bits, win_w, win_h,
+        on_x,  open_y, btn_w, btn_h,
+        "Open ON",  theme, hfont_small, false, ButtonStyle::Secondary,
+    );
+
+    // Close button (pushed down below the open buttons)
+    let btn_y = open_y + btn_h + (6.0 * scale) as i32;
     let close_x = win_w / 2 - btn_w / 2;
 
     draw_button(
@@ -809,6 +826,21 @@ fn fmt_tokens(n: u64) -> String {
         format!("{:.1}k", n as f64 / 1_000.0)
     } else {
         n.to_string()
+    }
+}
+
+/// Open a file in the OS default handler via ShellExecuteW (opens Notepad for .txt).
+fn open_path(path: &std::path::Path) {
+    let file = crate::osd::to_utf16_z(&path.to_string_lossy());
+    unsafe {
+        let _ = ShellExecuteW(
+            None,
+            None,
+            PCWSTR::from_raw(file.as_ptr()),
+            None,
+            None,
+            SW_SHOW,
+        );
     }
 }
 
@@ -915,11 +947,13 @@ unsafe extern "system" fn panel_wndproc(
                 let sep_y = pad + (14.0 * scale) as i32 + 8;
                 let content_y = sep_y + (4.0 * scale) as i32;
 
-                let phase = {
+                let (phase, on_transcript, off_transcript) = {
                     let guard = MEASURE_PROGRESS.lock().unwrap();
-                    guard.as_ref().map(|a| a.lock().unwrap().phase.clone())
+                    guard.as_ref().map(|a| {
+                        let p = a.lock().unwrap();
+                        (p.phase.clone(), p.on_transcript.clone(), p.off_transcript.clone())
+                    }).unwrap_or((llm_proxy::measure::MeasurePhase::Idle, None, None))
                 };
-                let phase = phase.unwrap_or(llm_proxy::measure::MeasurePhase::Idle);
 
                 match phase {
                     llm_proxy::measure::MeasurePhase::Idle | llm_proxy::measure::MeasurePhase::AwaitConfirm => {
@@ -960,13 +994,32 @@ unsafe extern "system" fn panel_wndproc(
                         }
                     }
                     llm_proxy::measure::MeasurePhase::Done => {
-                        // Mirror render_done layout exactly: table_y = content_y + row_h;
-                        // 8 table rows -> verdict at +9*row_h, note at +10*row_h, btn below.
+                        // Mirror render_done layout exactly.
                         let table_y = content_y + row_h;
                         let note_y = table_y + 10 * row_h;
-                        let btn_y = note_y + row_h + (4.0 * scale) as i32;
+                        let open_y = note_y + row_h + (4.0 * scale) as i32;
                         let btn_w = (80.0 * scale) as i32;
                         let btn_h = (24.0 * scale) as i32;
+                        let off_x = win_w / 2 - btn_w - (4.0 * scale) as i32;
+                        let on_x  = win_w / 2 + (4.0 * scale) as i32;
+
+                        // Open OFF
+                        if x >= off_x && x < off_x + btn_w
+                            && y >= open_y && y < open_y + btn_h
+                        {
+                            if let Some(p) = &off_transcript { open_path(p); }
+                            return LRESULT(0);
+                        }
+                        // Open ON
+                        if x >= on_x && x < on_x + btn_w
+                            && y >= open_y && y < open_y + btn_h
+                        {
+                            if let Some(p) = &on_transcript { open_path(p); }
+                            return LRESULT(0);
+                        }
+
+                        // Close (pushed down below open buttons)
+                        let btn_y = open_y + btn_h + (6.0 * scale) as i32;
                         let close_x = win_w / 2 - btn_w / 2;
                         if x >= close_x && x < close_x + btn_w
                             && y >= btn_y && y < btn_y + btn_h
