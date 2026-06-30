@@ -1307,6 +1307,161 @@ mod tests {
         );
     }
 
+    // ── arrow-density gate tests ──────────────────────────────────────────────
+
+    /// (1) Large text (~5000 chars) with exactly 3 stray arrow glyphs scattered
+    /// in it → density ≈ 3/5000 = 0.0006 << 0.01 → NOT protected despite
+    /// arrow_count >= 3. This is the false-positive the gate kills.
+    #[test]
+    fn arrow_low_density_not_protected() {
+        let mut text = String::with_capacity(5500);
+        for i in 0..120 {
+            text.push_str(&format!(
+                "[worker {}] task completed in {}ms\n",
+                i % 10,
+                (i * 7) % 100
+            ));
+        }
+        // Inject 3 arrow chars (stray, in bulk log output):
+        text.push_str("  →  →  →  (stray arrows in bulk log output)\n");
+        // Sanity: arrow_count >= 3, total >> 300 → density << 0.01.
+        let arrow_count: usize = text
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        assert!(arrow_count >= 3, "test data must have >= 3 arrows; got {arrow_count}");
+        let total = text.chars().count();
+        let density = arrow_count as f64 / total as f64;
+        assert!(density < 0.01, "test data density must be < 0.01; got {density:.6}");
+        assert!(
+            !tool_result_protected(&text, None, true, 0.01),
+            "large text with 3 stray arrows must NOT be protected at default density gate"
+        );
+    }
+
+    /// (2) A small dense multi-line arrow flow: 6 arrows in ~28 chars
+    /// → density ≈ 0.21 >> 0.01 → protected. This is the real diagram the
+    /// gate must preserve. (Existing `layer3_arrow_flow_protected` covers the
+    /// single-line "A → B → C → D" case; this adds a distinct multi-line variant.)
+    #[test]
+    fn arrow_high_density_protected() {
+        // 6 arrow chars (3 per line) in a compact two-line diagram, ~28 chars total.
+        let flow = "A → B → C → D\nE → F → G → H\n";
+        let arrow_count: usize = flow
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        let total = flow.chars().count();
+        let density = arrow_count as f64 / total as f64;
+        assert_eq!(arrow_count, 6, "test data must have exactly 6 arrows");
+        assert!(
+            density >= 0.01,
+            "test data density must be >= 0.01; got {density:.4}"
+        );
+        assert!(
+            tool_result_protected(flow, None, true, 0.01),
+            "small dense arrow flow must be protected at default density gate"
+        );
+    }
+
+    /// (3) A text with 3 arrows at density just below 0.01 (3/301 ≈ 0.00997) is
+    /// NOT protected when the gate is active (min=0.01) but IS protected when
+    /// the gate is off (min=0.0, old absolute behavior). Proves the knob
+    /// actually gates.
+    #[test]
+    fn arrow_density_threshold_boundary() {
+        // 3 arrows in 301 total Unicode chars → density = 3/301 ≈ 0.00997.
+        let text = format!("{}→ → →", "x".repeat(296));
+        let arrow_count: usize = text
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        let total = text.chars().count();
+        let density = arrow_count as f64 / total as f64;
+        assert_eq!(arrow_count, 3, "test data must have exactly 3 arrows");
+        assert!(
+            density < 0.01,
+            "test data density must be < 0.01 (got {density:.6}) to exercise gate"
+        );
+        // Gate off (min=0.0): old absolute behavior → protected (arrow_count >= 3 alone).
+        assert!(
+            tool_result_protected(&text, None, true, 0.0),
+            "arrow_density_min=0.0 must protect (old absolute behavior)"
+        );
+        // Gate active (min=0.01): density below threshold → NOT protected.
+        assert!(
+            !tool_result_protected(&text, None, true, 0.01),
+            "arrow_density_min=0.01 must block same text below threshold"
+        );
+    }
+
+    /// (4) With arrow_density_min = 0.0 (gate fully off), any text with >= 3
+    /// arrows is protected regardless of density — back-compat / A/B-off path.
+    /// Also confirms that a text with < 3 arrows is NOT protected even when
+    /// the gate is off.
+    #[test]
+    fn arrow_density_gate_off_restores_absolute() {
+        // Build a large text (~5000 chars) with 3 arrows, density << 0.01.
+        let mut text = String::with_capacity(5500);
+        for i in 0..120 {
+            text.push_str(&format!(
+                "[worker {}] task completed in {}ms\n",
+                i % 10,
+                (i * 7) % 100
+            ));
+        }
+        text.push_str("  →  →  →  (stray arrows)\n");
+        let arrow_count: usize = text
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        assert!(arrow_count >= 3, "test data must have >= 3 arrows; got {arrow_count}");
+        // Gate off (min=0.0): >= 3 arrows alone suffices → protected.
+        assert!(
+            tool_result_protected(&text, None, true, 0.0),
+            "arrow_density_min=0.0 must protect any text with >=3 arrows (back-compat)"
+        );
+        // A text with < 3 arrows is NOT protected even with gate off.
+        let no_arrows = "plain text with no arrow glyphs at all";
+        assert_eq!(
+            no_arrows
+                .chars()
+                .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+                .count(),
+            0,
+            "control text must have zero arrows"
+        );
+        assert!(
+            !tool_result_protected(no_arrows, None, true, 0.0),
+            "arrow_density_min=0.0 must still require >= 3 arrows"
+        );
+    }
+
+    /// (5) Regression guard: a clearly-real multi-line arrow diagram stays
+    /// protected at the 0.01 default, proving the density gate did not break
+    /// genuine diagram protection. (Existing `layer3_arrow_flow_protected`
+    /// covers the canonical single-line "A → B → C → D" case.)
+    #[test]
+    fn arrow_regression_diagram_preserved() {
+        // A realistic request/response flow: 6 arrows (3 per direction) in ~53 chars.
+        let diagram = "Request → Auth → API → DB\nResponse ← Auth ← API ← DB\n";
+        let arrow_count: usize = diagram
+            .chars()
+            .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
+            .count();
+        let total = diagram.chars().count();
+        let density = arrow_count as f64 / total as f64;
+        assert_eq!(arrow_count, 6, "test data must have exactly 6 arrows");
+        assert!(
+            density >= 0.01,
+            "test data density must be >= 0.01; got {density:.4}"
+        );
+        assert!(
+            tool_result_protected(diagram, None, true, 0.01),
+            "realistic multi-line arrow diagram must be protected at 0.01 default"
+        );
+    }
+
     // ── integration: diagram block left byte-identical ────────────────────────
 
     /// The canonical diagram as a tool_result — even with ws_enabled=true and

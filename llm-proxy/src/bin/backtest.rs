@@ -195,7 +195,7 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 
 // ── arg parsing ───────────────────────────────────────────────────────────────
 
-fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64) {
+fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64, usize) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
     let default_engine = "llmtrim".to_string();
@@ -210,6 +210,10 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64) 
     // Mirror NativeKnobs::default() so backtest matches live behavior unless overridden.
     let mut fence_requires_code = true;
     let mut arrow_density_min = 0.01;
+    // 0 = use all eligible bodies. >0 = deterministic uniform subsample for a
+    // fast confirmatory run (avg-of-ratios is sample-stable; trades CI width for
+    // speed on cumulative-history corpora where full sweeps are O(turns^2)).
+    let mut max_bodies: usize = 0;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -318,6 +322,17 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64) 
                     }
                 }
             }
+            "--max-bodies" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].parse::<usize>() {
+                        Ok(v) => max_bodies = v,
+                        _ => eprintln!(
+                            "Warning: --max-bodies requires a non-negative integer; using 0 (all bodies)."
+                        ),
+                    }
+                }
+            }
             other => {
                 eprintln!("Unknown argument: {other}  (ignored)");
             }
@@ -325,13 +340,13 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64) 
         i += 1;
     }
 
-    (db_path, sweep, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min)
+    (db_path, sweep, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min, max_bodies)
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let (db_path, sweep_values, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min) = parse_args();
+    let (db_path, sweep_values, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min, max_bodies) = parse_args();
 
     eprintln!("DB: {}", db_path.display());
 
@@ -360,13 +375,29 @@ fn main() {
     }
 
     // Eligible = rows matching the selected provider with parseable body.
-    let eligible: Vec<&BodyRow> = rows.iter().filter(|r| r.provider == provider).collect();
+    let mut eligible: Vec<&BodyRow> = rows.iter().filter(|r| r.provider == provider).collect();
     let n_other = rows.iter().filter(|r| r.provider != provider).count();
+    let n_eligible_full = eligible.len();
+
+    // Optional deterministic uniform subsample (--max-bodies N). Picks every
+    // k-th body so the sample spans all sessions/sizes rather than one prefix,
+    // keeping avg-of-ratios representative. No RNG → reproducible.
+    if max_bodies > 0 && eligible.len() > max_bodies {
+        let step = eligible.len() as f64 / max_bodies as f64;
+        eligible = (0..max_bodies)
+            .map(|i| eligible[(i as f64 * step) as usize])
+            .collect();
+    }
 
     eprintln!(
-        "Corpus: {} total rows  ({} {provider} eligible, {} other skipped)",
+        "Corpus: {} total rows  ({} {provider} eligible{}, {} other skipped)",
         rows.len(),
-        eligible.len(),
+        n_eligible_full,
+        if eligible.len() != n_eligible_full {
+            format!(" → sampled {}", eligible.len())
+        } else {
+            String::new()
+        },
         n_other,
     );
 
@@ -401,13 +432,20 @@ fn main() {
 
     // ── sweep ─────────────────────────────────────────────────────────────────
     let mut results: Vec<SweepResult> = Vec::new();
+    let sweep_start = std::time::Instant::now();
 
     for &v in &sweep_values {
         let mut ratios: Vec<f64> = Vec::new();
         let mut tokens_saved: u64 = 0;
         let mut dollars: f64 = 0.0;
+        let val_start = std::time::Instant::now();
+        eprint!("  [sweep] desc_chars={v} ");
 
-        for row in &eligible {
+        for (i, row) in eligible.iter().enumerate() {
+            // Coarse heartbeat so a single slow value still visibly progresses.
+            if i % 200 == 0 && i > 0 {
+                eprint!(".");
+            }
             let trimmed_body = apply_engine(&engine, &provider, row.body.clone(), v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
             let before = est_tokens(&row.body);
             let after = est_tokens(&trimmed_body);
@@ -418,6 +456,7 @@ fn main() {
                 dollars += (before - after) as f64 * input_rate_per_1m(&row.model) / 1_000_000.0;
             }
         }
+        eprintln!(" done in {:.1}s ({} bodies)", val_start.elapsed().as_secs_f64(), eligible.len());
 
         let n_trimmed = ratios.len();
         let avg_pct = if ratios.is_empty() {
@@ -440,6 +479,7 @@ fn main() {
             dollars_saved: dollars,
         });
     }
+    eprintln!("  [sweep] total {:.1}s", sweep_start.elapsed().as_secs_f64());
 
     // ── table ─────────────────────────────────────────────────────────────────
     println!();
@@ -470,4 +510,5 @@ fn main() {
     println!("Pricing (input only — trim doesn't affect output):  opus=$5/MTok  sonnet=$3/MTok  haiku=$1/MTok  fable=$10/MTok  unknown=$5/MTok");
     println!("avg% = per-request mean of (before-after)/before*100, over trimmed rows only");
     println!();
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
