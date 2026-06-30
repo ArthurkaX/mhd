@@ -553,6 +553,15 @@ impl AppState {
         }
     }
 
+    /// Record a finished Bench run into proxy.db (best-effort, uses the live writer conn).
+    pub fn record_bench_run(&self, result: &crate::bench::BenchResult, headroom_pct: f64, knobs_json: &str) {
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                db.insert_bench_run(&crate::providers::now_ms(), "anthropic", result, headroom_pct, knobs_json);
+            }
+        }
+    }
+
     /// Capture the full pre-trim request body into the replay corpus, if enabled.
     /// Best-effort: silent when the flag is off, when the DB log is closed, or on error.
     pub fn capture_request_body(&self, seq: u64, model: Option<&str>, provider: &str, body: &serde_json::Value) {

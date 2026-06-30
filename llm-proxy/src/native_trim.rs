@@ -21,7 +21,7 @@ use serde_json::Value;
 // ── knobs ─────────────────────────────────────────────────────────────────────
 
 /// Tuning for the native trim engine.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct NativeKnobs {
     /// Truncate any tool `description` longer than this many chars.
     pub tool_max_desc_chars: usize,

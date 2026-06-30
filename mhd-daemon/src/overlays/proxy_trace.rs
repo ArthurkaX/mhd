@@ -33,6 +33,20 @@ const REFRESH_TIMER_ID: usize = 1;
 /// idle gap is classified as COLD (expected) rather than a real MISS.
 const CACHE_TTL_SECS: u64 = 360;
 
+fn fmt_tokens(n: u64) -> String {
+    if n == 0 {
+        "\u{2014}".to_string() // em dash
+    } else if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 // ── Safe wrapper for the event handle ────────────────────────────────
 
 struct SafeHandle(HANDLE);
@@ -336,6 +350,27 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         note_btn_w,
         note_btn_h,
         "Note",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Secondary,
+    );
+
+    // Bench button (left of Note)
+    let bench_btn_w = (48.0 * scale) as i32;
+    let bench_btn_h = (20.0 * scale) as i32;
+    let bench_btn_x = note_btn_x - (4.0 * scale) as i32 - bench_btn_w;
+    let bench_btn_y = debug_btn_y;
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        bench_btn_x,
+        bench_btn_y,
+        bench_btn_w,
+        bench_btn_h,
+        "Bench",
         theme,
         hfont_small,
         false,
@@ -664,16 +699,6 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                     brush,
                 );
                 let _ = DeleteObject(brush);
-            }
-        }
-
-        fn fmt_tokens(n: u64) -> String {
-            if n == 0 {
-                "\u{2014}".to_string() // em dash
-            } else if n >= 1000 {
-                format!("{:.1}k", n as f64 / 1000.0)
-            } else {
-                n.to_string()
             }
         }
 
@@ -1083,6 +1108,18 @@ unsafe extern "system" fn panel_wndproc(
                 {
                     return LRESULT(HTCLIENT as isize);
                 }
+                // Check bench button
+                let bench_btn_w = (48.0 * scale) as i32;
+                let bench_btn_h = (20.0 * scale) as i32;
+                let bench_btn_x = note_btn_x - (4.0 * scale) as i32 - bench_btn_w;
+                let bench_btn_y = debug_btn_y;
+                if pt.x >= bench_btn_x
+                    && pt.x < bench_btn_x + bench_btn_w
+                    && pt.y >= bench_btn_y
+                    && pt.y < bench_btn_y + bench_btn_h
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
                 let font_h = -(14.0 * scale) as i32;
                 let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
                 if pt.y < header_bottom {
@@ -1154,6 +1191,24 @@ unsafe extern "system" fn panel_wndproc(
                             crate::overlays::note::NoteSink::ProxyDb,
                             false,
                         );
+                    }
+                    return LRESULT(0);
+                }
+                // Check bench button — opens measure panel overlay
+                let bench_btn_w = (48.0 * scale) as i32;
+                let bench_btn_h = (20.0 * scale) as i32;
+                let bench_btn_x = note_btn_x - (4.0 * scale) as i32 - bench_btn_w;
+                let bench_btn_y = debug_btn_y;
+                if x >= bench_btn_x
+                    && x < bench_btn_x + bench_btn_w
+                    && y >= bench_btn_y
+                    && y < bench_btn_y + bench_btn_h
+                {
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme;
+                    if !state_ptr.is_null() {
+                        let theme = (*state_ptr).clone();
+                        crate::overlays::measure_panel::show(&theme);
                     }
                     return LRESULT(0);
                 }

@@ -203,7 +203,29 @@ impl DbLog {
                 fallback_status      TEXT,
                 overage_status       TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_quota_run ON quota(run_id, id);",
+            CREATE INDEX IF NOT EXISTS idx_quota_run ON quota(run_id, id);
+
+            -- bench_runs: history of Bench A/B backtest runs (manual [Bench] button in
+            -- Proxy Trace). Each row = one deterministic replay of the anthropic corpus
+            -- through the native trim engine with the knobs that were live at run time.
+            -- Anthropic-only. tokens_* are estimated (chars/4), same estimator as backtest.
+            CREATE TABLE IF NOT EXISTS bench_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'anthropic',
+                n_bodies INTEGER NOT NULL,
+                n_trimmed INTEGER NOT NULL,
+                tokens_off INTEGER NOT NULL,
+                tokens_on INTEGER NOT NULL,
+                avg_trim_pct REAL NOT NULL,
+                median_trim_pct REAL NOT NULL,
+                headroom_pct REAL NOT NULL,
+                fail_open_ok INTEGER NOT NULL,
+                deterministic INTEGER NOT NULL,
+                elapsed_ms INTEGER NOT NULL,
+                knobs_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_bench_runs_ts ON bench_runs(id);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -397,6 +419,36 @@ impl DbLog {
                     q.representative_claim,
                     q.fallback_status,
                     q.overage_status,
+                ],
+            );
+        }
+    }
+
+    /// Insert one Bench A/B run into the history table. Best-effort: errors swallowed.
+    /// `headroom_pct` is the precomputed analytic projection 1/(1-avg/100)-1 in percent.
+    /// `knobs_json` is the serialized NativeKnobs snapshot used for the run.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_bench_run(
+        &self,
+        ts: &str,
+        provider: &str,
+        result: &crate::bench::BenchResult,
+        headroom_pct: f64,
+        knobs_json: &str,
+    ) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "INSERT INTO bench_runs (ts, provider, n_bodies, n_trimmed, tokens_off, tokens_on,
+                     avg_trim_pct, median_trim_pct, headroom_pct, fail_open_ok, deterministic,
+                     elapsed_ms, knobs_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                rusqlite::params![
+                    ts, provider,
+                    result.n_bodies as i64, result.n_trimmed as i64,
+                    result.tokens_off as i64, result.tokens_on as i64,
+                    result.avg_trim_pct, result.median_trim_pct, headroom_pct,
+                    result.fail_open_ok as i64, result.deterministic as i64,
+                    result.elapsed_ms as i64, knobs_json,
                 ],
             );
         }

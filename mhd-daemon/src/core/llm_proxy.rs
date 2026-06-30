@@ -161,6 +161,38 @@ pub fn get_quota() -> Option<QuotaSnapshot> {
         .and_then(|c| c.quota())
 }
 
+/// Run the Anthropic trim A/B bench with the currently-live native knobs.
+/// Returns Ok(None) when the corpus has no anthropic rows. Blocking (caller
+/// should run it off the UI thread).
+pub fn run_bench() -> Result<Option<llm_proxy::bench::BenchResult>, String> {
+    let knobs = {
+        let guard = CONTROL.lock().unwrap();
+        match guard.as_ref() {
+            Some(c) => c.native_knobs(),
+            None => return Err("proxy not running".into()),
+        }
+    };
+    let db = llm_proxy::config::config_dir().join("proxy.db");
+    let out = llm_proxy::bench::run_anthropic_bench(&db, &knobs)?;
+    if let Some(ref result) = out {
+        // analytic headroom: how much more work fits under the same cap.
+        let headroom_pct = if result.avg_trim_pct >= 99.0 {
+            f64::INFINITY
+        } else {
+            (1.0 / (1.0 - result.avg_trim_pct / 100.0) - 1.0) * 100.0
+        };
+        let headroom_pct = if headroom_pct.is_finite() { headroom_pct } else { 9999.0 };
+        let knobs_json = serde_json::to_string(&knobs).unwrap_or_else(|_| "{}".to_string());
+        // Re-acquire the control handle to record (don't hold the lock across the bench run).
+        if let Ok(guard) = CONTROL.lock() {
+            if let Some(c) = guard.as_ref() {
+                c.record_bench_run(result, headroom_pct, &knobs_json);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Record a vision screenshot request in the proxy's trace buffer and SQLite log.
 /// Silently no-ops if the proxy is not running.
 pub fn log_vision(entry: VisionTraceEntry, db_event: Option<llm_proxy::LogEvent>) {

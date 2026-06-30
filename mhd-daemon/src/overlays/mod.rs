@@ -7,6 +7,7 @@ pub mod cpu_plan;
 pub mod draw;
 pub mod keycast;
 pub mod llm_models;
+pub mod measure_panel;
 pub mod monitor;
 pub mod note;
 pub mod pomodoro;

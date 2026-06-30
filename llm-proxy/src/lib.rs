@@ -5,9 +5,11 @@
 //! mhd daemon) via [`start_embedded`]. When embedded, model switching is done
 //! directly on the shared [`AppState`] — no self-HTTP needed.
 
+pub mod bench;
 pub mod config;
 pub mod db_log;
 pub mod handlers;
+pub mod measure;
 pub mod native_trim;
 pub mod providers;
 pub mod state;
@@ -231,6 +233,20 @@ impl ProxyControl {
             .clone()
     }
 
+    /// Snapshot the live native-trim knobs (same reads the request path uses).
+    pub fn native_knobs(&self) -> crate::native_trim::NativeKnobs {
+        crate::native_trim::NativeKnobs {
+            tool_max_desc_chars: *self.state.trim_tool_desc_chars.read().unwrap_or_else(|e| e.into_inner()),
+            tool_result_head: *self.state.trim_toolresult_head.read().unwrap_or_else(|e| e.into_inner()),
+            tool_result_tail: *self.state.trim_toolresult_tail.read().unwrap_or_else(|e| e.into_inner()),
+            ws_enabled: *self.state.trim_ws_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            strip_thinking: *self.state.trim_strip_thinking.read().unwrap_or_else(|e| e.into_inner()),
+            tool_result_fence_requires_code: *self.state.trim_fence_requires_code.read().unwrap_or_else(|e| e.into_inner()),
+            tool_result_arrow_density_min: *self.state.trim_arrow_density_min.read().unwrap_or_else(|e| e.into_inner()),
+            ..Default::default()
+        }
+    }
+
     /// Enable or disable replay-corpus capture (stores full pre-trim request bodies in proxy.db).
     pub fn set_corpus_capture_enabled(&self, enabled: bool) {
         *self
@@ -288,6 +304,11 @@ impl ProxyControl {
     /// Best-effort: no-ops if the log is disabled or the write fails.
     pub fn log_note(&self, text: &str) {
         self.state.log_note(text);
+    }
+
+    /// Record a finished Bench run to proxy.db history.
+    pub fn record_bench_run(&self, result: &crate::bench::BenchResult, headroom_pct: f64, knobs_json: &str) {
+        self.state.record_bench_run(result, headroom_pct, knobs_json);
     }
 
     /// Shut the server down gracefully and join its thread.
