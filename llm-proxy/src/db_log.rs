@@ -102,6 +102,14 @@ impl DbLog {
         conn.execute_batch(
             "PRAGMA user_version = 1;
 
+            -- events: append-only log stream.
+            -- Hot-path lines (REQ/RESP/START/DONE/STREAM_*) arrive via
+            -- State::log_line() as one text blob in `detail`; insert() now
+            -- parses that blob (classify_raw_detail) to backfill the typed
+            -- columns (event_type/seq/target/model). Rows written before
+            -- 2026-06-30 have those columns NULL (text only in `detail`) --
+            -- do NOT trust pre-2026-06-30 events for column queries.
+            -- For trim/token analytics use the `requests` table instead.
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts          TEXT    NOT NULL,
@@ -124,6 +132,11 @@ impl DbLog {
             CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
             CREATE INDEX IF NOT EXISTS idx_events_tier ON events(tier);
 
+            -- requests: SOURCE OF TRUTH for analytics. One fully-typed row
+            -- per request: trim_applied, trim_config (json: engine/desc/
+            -- head/tail), trim_tokens_before/after, input/output/cache_read/
+            -- cache_creation_tokens, downgraded, effective_tier. All trim%
+            -- and token-savings numbers should be computed from here.
             CREATE TABLE IF NOT EXISTS requests (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id        INTEGER NOT NULL,
@@ -161,6 +174,11 @@ impl DbLog {
                 text TEXT NOT NULL
             );
 
+            -- request_bodies: corpus for offline backtest. `body` is a
+            -- zstd-compressed BLOB (decompress_body). Capped at
+            -- corpus_max_rows (default 5000), shared across anthropic+openai
+            -- providers -- heavy deepseek/openai traffic evicts old anthropic
+            -- bodies, so keep an eye on provider balance before backtesting.
             CREATE TABLE IF NOT EXISTS request_bodies (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id    INTEGER NOT NULL,
@@ -194,8 +212,31 @@ impl DbLog {
     }
 
     /// Insert one structured event. Best-effort: errors are swallowed.
+    /// When the event is a "RAW" line with unset typed columns, attempts to parse
+    /// the detail string into typed columns (see [`classify_raw_detail`]).
     pub fn insert(&self, ts: &str, event: &LogEvent) {
         if let Ok(conn) = self.conn.lock() {
+            // Classify RAW detail lines with no pre-populated typed columns.
+            let needs_classification = event.event_type == "RAW"
+                && event.reason.is_none()
+                && event.target.is_none()
+                && event.detail.is_some();
+
+            let (event_type, seq, target, model) = if needs_classification {
+                classify_raw_detail(
+                    event.detail.as_ref().unwrap(),
+                    &event.event_type,
+                    event.seq as i64,
+                )
+            } else {
+                (
+                    event.event_type.clone(),
+                    event.seq as i64,
+                    event.target.clone(),
+                    event.model.clone(),
+                )
+            };
+
             let _ = conn.execute(
                 "INSERT INTO events (ts, seq, event_type, tier, effective_tier, target,
                                      model, target_model, reason, detail, inflight,
@@ -203,12 +244,12 @@ impl DbLog {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 rusqlite::params![
                     ts,
-                    event.seq as i64,
-                    &event.event_type,
+                    seq,
+                    &event_type,
                     event.tier,
                     event.effective_tier,
-                    event.target,
-                    event.model,
+                    target,
+                    model,
                     event.target_model,
                     event.reason,
                     event.detail,
@@ -360,6 +401,127 @@ impl DbLog {
             );
         }
     }
+}
+
+// ── raw-detail classifier ─────────────────────────────────────────────────────
+
+/// Attempt to parse a "RAW"-type detail line into typed columns.
+///
+/// Expected format (after the timestamp prefix):
+/// ```text
+/// #<id> <target> <EVENTWORD> <rest...>
+/// ```
+///
+/// Extracts:
+/// - `event_type` — classified from EVENTWORD (REQ, RESP, START, DONE,
+///   STREAM_START, STREAM_DONE, ERROR, or RAW fallback)
+/// - `seq` — the integer after `#`
+/// - `target` — the token after the id (e.g. "native")
+/// - `model` — from `model=<x>` if present
+///
+/// On any parse failure, returns the supplied fallback values unchanged
+/// (fail-open — never panic, never lose data).
+fn classify_raw_detail(
+    detail: &str,
+    fallback_event_type: &str,
+    fallback_seq: i64,
+) -> (String, i64, Option<String>, Option<String>) {
+    let default = (
+        fallback_event_type.to_string(),
+        fallback_seq,
+        None,
+        None,
+    );
+
+    let hash_pos = match detail.find('#') {
+        Some(p) => p,
+        None => return default,
+    };
+
+    let after_hash = &detail[hash_pos + 1..];
+
+    // Extract the numeric id after #.
+    let id_end = after_hash
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_hash.len());
+    if id_end == 0 {
+        return default;
+    }
+    let seq: i64 = match after_hash[..id_end].parse() {
+        Ok(n) => n,
+        Err(_) => return default,
+    };
+
+    // The next token after #<id> is the target (e.g. "native").
+    let after_id = after_hash[id_end..].trim_start();
+    if after_id.is_empty() {
+        return (default.0, seq, default.2, default.3);
+    }
+    let target_end = after_id
+        .find(char::is_whitespace)
+        .unwrap_or(after_id.len());
+    let target = after_id[..target_end].to_string();
+
+    // Classify event type and extract model from the remainder.
+    let after_target = after_id[target_end..].trim_start();
+    let event_type = classify_event_word(after_target);
+    let model = extract_model_param(after_target);
+
+    (event_type, seq, Some(target), model)
+}
+
+/// Classify the event word(s) after the target token into a canonical
+/// event_type string.
+fn classify_event_word(s: &str) -> String {
+    let trimmed = s.trim_start();
+    if trimmed.is_empty() {
+        return "RAW".to_string();
+    }
+
+    // Two-word patterns (stream DONE, stream START).
+    if let Some(rest) = trimmed.strip_prefix("stream ") {
+        let rest = rest.trim_start();
+        if rest.starts_with("START") {
+            return "STREAM_START".to_string();
+        }
+        if rest.starts_with("DONE") {
+            return "STREAM_DONE".to_string();
+        }
+    }
+
+    // Single-word event types.
+    let word_end = trimmed
+        .find(char::is_whitespace)
+        .unwrap_or(trimmed.len());
+    let word = &trimmed[..word_end];
+    match word {
+        "REQ" => return "REQ".to_string(),
+        "RESP" => return "RESP".to_string(),
+        "START" => return "START".to_string(),
+        "DONE" => return "DONE".to_string(),
+        _ => {}
+    }
+
+    // Lines containing _ERROR (e.g. SEND_ERROR, UPSTREAM_ERROR).
+    if trimmed.contains("_ERROR") {
+        return "ERROR".to_string();
+    }
+
+    "RAW".to_string()
+}
+
+/// Extract the model name from a `model=<value>` substring found in `s`.
+fn extract_model_param(s: &str) -> Option<String> {
+    let marker = "model=";
+    let pos = s.find(marker)?;
+    let after = &s[pos + marker.len()..];
+    let end = after
+        .find(|c: char| c == '|' || c.is_whitespace())
+        .unwrap_or(after.len());
+    if end == 0 {
+        return None;
+    }
+    Some(after[..end].to_string())
 }
 
 // ── body compression helpers ──────────────────────────────────────────────────
