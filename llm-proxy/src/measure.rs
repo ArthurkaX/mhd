@@ -1,15 +1,18 @@
-//! Live trim measurement engine — two warm-session runs + requests-table usage comparison.
+//! Live trim measurement engine — three warm-session runs + requests-table usage comparison.
 //!
-//! Drives real `claude -p` workloads through the running proxy (trim OFF arm, then trim ON arm),
-//! measures REAL per-request usage from the proxy's own `requests` table (exact tokens), and
-//! reports the delta. Designed to run on a background thread; callers poll [`MeasureProgress`].
+//! Drives real `claude -p` workloads through the running proxy (ECO arm with optional
+//! side-model offload, then NATIVE_ON (trim on, all native), then NATIVE_OFF (trim off,
+//! all native)), measures REAL per-request usage from the proxy's own `requests` table
+//! (exact tokens), and reports the delta. Designed to run on a background thread;
+//! callers poll [`MeasureProgress`].
 //!
 //! ## Library constraints
 //!
 //! - NEVER calls `std::process::exit`. All errors are returned as `Err(String)`.
 //! - NEVER reads stdin. The `confirm` closure is the only I/O gate.
 //! - NEVER prints to stdout/stderr. The caller does all I/O by watching [`MeasureProgress`].
-//! - ALWAYS restores `trim_enabled` to its original value before returning, via a Drop guard.
+//! - ALWAYS restores `trim_enabled`, `opus_target`, `sonnet_target`, `haiku_target` to
+//!   their original values before returning, via a Drop guard.
 
 use crate::config::config_dir;
 use rusqlite::{Connection, OpenFlags};
@@ -60,8 +63,9 @@ const SETTINGS_WAIT_MS: u64 = 1200;
 const CORPUS_DIR_NAME: &str = "mhd-bench-corpus";
 
 /// Temp run directories for each measurement arm.
-const OFF_RUN_DIR: &str = "mhd-bench-run-off";
+const ECO_RUN_DIR: &str = "mhd-bench-run-eco";
 const ON_RUN_DIR: &str = "mhd-bench-run-on";
+const OFF_RUN_DIR: &str = "mhd-bench-run-off";
 
 /// How long to sleep after the claude session exits before aggregating, so that
 /// the final request's completion UPDATE lands.
@@ -74,6 +78,11 @@ const POST_SESSION_SLEEP_MS: u64 = 700;
 const W_INPUT: f64 = 1.0;
 const W_CACHE_CREATION: f64 = 1.25;
 const W_CACHE_READ: f64 = 0.10;
+
+/// If the native ON/OFF arms diverge in request count by more than this percent,
+/// the run is flagged INVALID (the sessions took different paths, so token totals
+/// reflect turn count rather than trim).
+const NATIVE_DIVERGENCE_PCT: f64 = 25.0;
 
 /// Quota-equivalent cost of one arm, in fresh-input-token units.
 fn weighted_billed(a: &ArmAggregate) -> f64 {
@@ -101,24 +110,25 @@ pub struct ArmAggregate {
     pub trim_before: u64,
     /// Sum of trim_tokens_after (NULL -> 0).
     pub trim_after: u64,
+    /// Wall-clock elapsed for this arm's claude session, in milliseconds.
+    pub elapsed_ms: u64,
 }
 
-/// Result of a completed two-run measurement.
+/// Result of a completed three-run measurement.
 #[derive(Clone, Debug)]
 pub struct MeasureResult {
-    pub off: ArmAggregate,
-    pub on: ArmAggregate,
-    /// Quota-weighted cost of the OFF arm (input + 1.25*cache_creation + 0.1*cache_read),
-    /// rounded to whole tokens. This is the REAL quota cost, not a raw token sum.
-    pub billed_input_off: u64,
-    /// Quota-weighted cost of the ON arm.
-    pub billed_input_on: u64,
-    /// (billed_off - billed_on) / billed_off * 100, 0 if billed_off == 0.
-    /// Positive => trim saved real quota; negative => trim cost more (cache thrash).
-    pub input_saved_pct: f64,
-    /// (on.trim_before - on.trim_after) / on.trim_before * 100 (ON arm only).
-    pub trim_raw_pct: f64,
-    pub verdict: String,
+    pub eco: ArmAggregate,
+    pub native_on: ArmAggregate,
+    pub native_off: ArmAggregate,
+    // Weighted Anthropic quota cost (weighted_billed) per arm:
+    pub cost_eco: u64,
+    pub cost_native_on: u64,
+    pub cost_native_off: u64,
+    // Savings vs. the NATIVE_OFF baseline (the no-trim, all-Anthropic reference):
+    pub native_saved_pct: f64, // (cost_native_off - cost_native_on)/cost_native_off*100
+    pub eco_saved_pct: f64,    // (cost_native_off - cost_eco)/cost_native_off*100
+    pub native_verdict: String,
+    pub eco_verdict: String,
 }
 
 /// Configuration for one measurement run.
@@ -126,6 +136,11 @@ pub struct MeasureResult {
 pub struct MeasureConfig {
     pub db_path: PathBuf,
     pub dry_run: bool,
+    /// ECO arm offloads subagents to side_model when true.
+    pub side_substitution: bool,
+    /// Routing target for sonnet+haiku in ECO arm (e.g. "sva-opencode/deepseek-v4-flash");
+    /// ignored if !side_substitution.
+    pub side_model: String,
 }
 
 /// Which phase the FSM is in (for GUI rendering + CLI logging).
@@ -135,10 +150,9 @@ pub enum MeasurePhase {
     Preflight,
     Snapshot,
     AwaitConfirm,
-    RunOff,
-    AggregateOff,
-    RunOn,
-    AggregateOn,
+    RunEco,
+    RunNativeOn,
+    RunNativeOff,
     Compare,
     Done,
     Aborted,
@@ -153,14 +167,14 @@ pub struct MeasureProgress {
     pub trim_engine: Option<String>,
     pub corpus_dir: Option<PathBuf>,
     pub corpus_files: Vec<(String, usize)>,
-    pub off: Option<ArmAggregate>,
-    pub on: Option<ArmAggregate>,
+    pub eco: Option<ArmAggregate>,
+    pub native_on: Option<ArmAggregate>,
+    pub native_off: Option<ArmAggregate>,
+    pub eco_transcript: Option<PathBuf>,
+    pub native_on_transcript: Option<PathBuf>,
+    pub native_off_transcript: Option<PathBuf>,
     pub result: Option<MeasureResult>,
     pub error: Option<String>,
-    /// Path to the ON-arm session transcript (transcript.txt in the run dir).
-    pub on_transcript: Option<PathBuf>,
-    /// Path to the OFF-arm session transcript (transcript.txt in the run dir).
-    pub off_transcript: Option<PathBuf>,
 }
 
 impl MeasureProgress {
@@ -171,12 +185,14 @@ impl MeasureProgress {
             trim_engine: None,
             corpus_dir: None,
             corpus_files: Vec::new(),
-            off: None,
-            on: None,
+            eco: None,
+            native_on: None,
+            native_off: None,
+            eco_transcript: None,
+            native_on_transcript: None,
+            native_off_transcript: None,
             result: None,
             error: None,
-            on_transcript: None,
-            off_transcript: None,
         }
     }
 }
@@ -218,6 +234,18 @@ pub fn write_settings_value(v: &Value) -> anyhow::Result<()> {
 pub fn set_trim_enabled(enabled: bool) -> anyhow::Result<()> {
     let mut v = read_settings_value().unwrap_or(Value::Object(serde_json::Map::new()));
     v["trim_enabled"] = Value::Bool(enabled);
+    write_settings_value(&v)?;
+    std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
+    Ok(())
+}
+
+/// Set `opus_target`, `sonnet_target`, `haiku_target` in settings.json, preserving
+/// every other field. Sleeps `SETTINGS_WAIT_MS` for the file watcher.
+pub fn set_targets(opus: &str, sonnet: &str, haiku: &str) -> anyhow::Result<()> {
+    let mut v = read_settings_value().unwrap_or(Value::Object(serde_json::Map::new()));
+    v["opus_target"] = Value::String(opus.to_string());
+    v["sonnet_target"] = Value::String(sonnet.to_string());
+    v["haiku_target"] = Value::String(haiku.to_string());
     write_settings_value(&v)?;
     std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
     Ok(())
@@ -435,8 +463,6 @@ pub fn now_iso8601() -> String {
         .unwrap_or_default();
     let secs = now.as_secs();
     let subsec = now.subsec_millis();
-    // Howard Hinnant's civil_from_days expects DAYS since the Unix epoch, shifted
-    // so the internal era starts at 0000-03-01. Convert seconds -> days first.
     let days = (secs / 86400) as i64;
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -470,15 +496,16 @@ fn max_id(conn: &Connection) -> rusqlite::Result<i64> {
 /// Each token column may be NULL (row inserted at request start, token fields
 /// updated at completion); NULLs are treated as 0. The caller should have waited
 /// long enough for all completion UPDATEs to land before calling this.
-fn aggregate_arm(conn: &Connection, id0: i64) -> anyhow::Result<ArmAggregate> {
+///
+/// Only counts rows whose `model` starts with `claude` (Anthropic-billed).
+/// Side-model (offloaded) rows are excluded -- the tool measures Anthropic quota only.
+fn aggregate_arm_native(conn: &Connection, id0: i64) -> anyhow::Result<ArmAggregate> {
     let mut stmt = conn.prepare(
         "SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
          trim_tokens_before, trim_tokens_after \
-         FROM requests WHERE id > ?1"
+         FROM requests WHERE id > ?1 AND model LIKE 'claude%'"
     )?;
 
-    // Use row-by-row iteration with Option<i64> extraction per column
-    // so NULL token fields are safely treated as 0.
     let rows = stmt.query_map(rusqlite::params![id0], |row| {
         Ok((
             row.get::<_, Option<i64>>(0)?.unwrap_or(0) as u64,
@@ -506,28 +533,30 @@ fn aggregate_arm(conn: &Connection, id0: i64) -> anyhow::Result<ArmAggregate> {
 
 // ── Trim-restore guard ──────────────────────────────────────────────────────────────────
 
-/// Restores `trim_enabled` to the original value on drop if we ever toggled it.
+/// Restores `trim_enabled`, `opus_target`, `sonnet_target`, `haiku_target` to their
+/// original values on drop if we ever toggled them.
 ///
-/// A **hard invariant**: the original value MUST be restored on every exit path
+/// A **hard invariant**: the original settings MUST be restored on every exit path
 /// (success, abort, error). This guard ensures that even if a new early return
 /// is added later, restore runs.
 ///
 /// After performing a manual restore at the normal end of the measurement,
 /// call [`disarm`](TrimRestoreGuard::disarm) to prevent a double-restore.
 struct TrimRestoreGuard {
-    original: Option<bool>,
+    /// Full settings.json snapshot at construction time. Restored verbatim.
+    snapshot: Option<Value>,
     dirty: bool,
 }
 
 impl TrimRestoreGuard {
-    fn new(original: Option<bool>) -> Self {
+    fn new(settings: Option<Value>) -> Self {
         Self {
-            original,
+            snapshot: settings,
             dirty: false,
         }
     }
 
-    /// Signal that we toggled trim_enabled -- the guard will restore on drop.
+    /// Signal that we toggled settings -- the guard will restore on drop.
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
@@ -541,47 +570,36 @@ impl TrimRestoreGuard {
 impl Drop for TrimRestoreGuard {
     fn drop(&mut self) {
         if self.dirty {
-            if let Some(val) = self.original {
-                let _ = set_trim_enabled(val);
+            if let Some(v) = &self.snapshot {
+                let _ = write_settings_value(v);
+                std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
             }
-            // If original was None (field absent), leave it be.
         }
     }
 }
 
-// ── Counterbalanced-measurement helpers ─────────────────────────────────
+// ── Counterbalanced-measurement helpers ─────────────────────────────────────────────────
 
-/// Run a single measurement arm: flip trim, snapshot the requests high-water
-/// mark, run one claude session, wait for the final completion UPDATE, and
-/// aggregate the new rows. `label` is a short tag like "OFF#1" used in
-/// progress messages.
+/// Run a single measurement arm: snapshot the requests high-water mark, run one
+/// claude session, wait for the final completion UPDATE, and aggregate the new
+/// rows (Anthropic-billed only). The caller is responsible for setting the
+/// environment (trim_enabled + targets) before calling this.
+///
+/// `label` is a short tag like "ECO" used in progress messages.
 fn run_one_arm(
     progress: &Arc<Mutex<MeasureProgress>>,
     ro_conn: &Connection,
-    guard: &mut TrimRestoreGuard,
-    trim_on: bool,
     corpus_dir: &Path,
     run_dir: &Path,
     run_phase: MeasurePhase,
-    agg_phase: MeasurePhase,
     label: &str,
 ) -> Result<ArmAggregate, String> {
-    set_phase(progress, run_phase, &format!("{label}: running claude session..."));
-    set_msg(progress, &format!("  {label}: setting trim_enabled = {trim_on}..."));
-    if let Err(e) = set_trim_enabled(trim_on) {
-        let msg = format!("FATAL: Could not write settings.json: {e}");
-        let mut p = progress.lock().unwrap();
-        p.phase = MeasurePhase::Error;
-        p.message.clone_from(&msg);
-        p.error = Some(msg.clone());
-        return Err(msg);
-    }
-    guard.mark_dirty();
+    set_phase(progress, run_phase.clone(), &format!("{label}: running claude session..."));
 
     let id0 = max_id(ro_conn).unwrap_or(0);
     set_msg(progress, &format!("  {label}: requests id0 = {id0}"));
 
-    match run_claude(corpus_dir, run_dir) {
+    let outcome = match run_claude(corpus_dir, run_dir) {
         Err(e) => {
             let msg = format!("FATAL: {label} session spawn failed: {e}");
             let mut p = progress.lock().unwrap();
@@ -595,8 +613,9 @@ fn run_one_arm(
                 progress,
                 &format!("  {label} session done in {:.1}s", outcome.elapsed.as_secs_f64()),
             );
+            outcome
         }
-    }
+    };
 
     // Sleep so the final request's completion UPDATE lands.
     set_msg(
@@ -605,9 +624,9 @@ fn run_one_arm(
     );
     std::thread::sleep(std::time::Duration::from_millis(POST_SESSION_SLEEP_MS));
 
-    // Aggregate.
-    set_phase(progress, agg_phase, &format!("{label}: aggregating from requests table..."));
-    let agg = match aggregate_arm(ro_conn, id0) {
+    // Aggregate (Anthropic-billed rows only).
+    set_phase(progress, run_phase, &format!("{label}: aggregating from requests table..."));
+    let mut agg = match aggregate_arm_native(ro_conn, id0) {
         Ok(a) => a,
         Err(e) => {
             let msg = format!("FATAL: Could not aggregate {label} arm: {e}");
@@ -618,6 +637,8 @@ fn run_one_arm(
             return Err(msg);
         }
     };
+    agg.elapsed_ms = outcome.elapsed.as_millis() as u64;
+
     set_msg(
         progress,
         &format!(
@@ -636,8 +657,9 @@ fn run_one_arm(
 /// (unless dry_run). On success returns `Ok(Some(result))`; on user-abort
 /// `Ok(None)`; on fatal error `Err(msg)` and sets `progress.phase = Error`.
 ///
-/// ALWAYS restores the original `trim_enabled` before returning (success,
-/// abort, or error) -- a Drop guard enforces this invariant.
+/// ALWAYS restores the original settings (`trim_enabled`, `opus_target`,
+/// `sonnet_target`, `haiku_target`) before returning (success, abort, or error) --
+/// a Drop guard enforces this invariant.
 pub fn run_measurement(
     cfg: &MeasureConfig,
     progress: &Arc<Mutex<MeasureProgress>>,
@@ -647,10 +669,14 @@ pub fn run_measurement(
 
     // ── S0 PREFLIGHT ────────────────────────────────────────────────────────
 
-    set_phase(progress, MeasurePhase::Preflight, "=== Two-run trim measurement (requests-log based) ===");
+    set_phase(progress, MeasurePhase::Preflight, "=== Three-run trim measurement (requests-log based) ===");
     set_msg(progress, &format!("  DB: {}", cfg.db_path.display()));
     if cfg.dry_run {
         set_msg(progress, "  [DRY-RUN] No claude processes will be spawned.");
+    }
+    set_msg(progress, &format!("  side_substitution: {}", cfg.side_substitution));
+    if cfg.side_substitution {
+        set_msg(progress, &format!("  side_model: {}", cfg.side_model));
     }
 
     // Open a read-only connection for querying the requests table.
@@ -681,8 +707,13 @@ pub fn run_measurement(
     }
     set_msg(progress, "  requests table: OK");
 
-    // Read current trim state from settings.json.
-    let original_trim_enabled = read_trim_enabled();
+    // Snapshot current settings for the guard (full restore on any exit).
+    let settings_snapshot = read_settings_value();
+    let original_trim_enabled = settings_snapshot
+        .as_ref()
+        .and_then(|v| v.get("trim_enabled"))
+        .and_then(|v| v.as_bool());
+
     let trim_engine = read_trim_engine();
     match original_trim_enabled {
         Some(v) => set_msg(progress, &format!("  Current trim_enabled: {v}")),
@@ -708,7 +739,7 @@ pub fn run_measurement(
         p.trim_engine = trim_engine;
     }
 
-    let mut guard = TrimRestoreGuard::new(original_trim_enabled);
+    let mut guard = TrimRestoreGuard::new(settings_snapshot);
 
     // ── S1 SNAPSHOT corpus ─────────────────────────────────────────────────
 
@@ -736,7 +767,6 @@ pub fn run_measurement(
     if !names.contains(&"gpu-devices.txt".to_string()) {
         set_msg(progress, "    gpu-devices.txt  FAILED (pnputil not available or errored)");
     }
-    // solidworks-sysreq.txt is static and always written successfully.
 
     {
         let mut p = progress.lock().unwrap();
@@ -762,41 +792,71 @@ pub fn run_measurement(
     }
 
     // ── S3 MEASURE ARMS ────────────────────────────────────────────────────
-    // Two runs, ON first (cold) then OFF. We accept that cross-run cache
-    // contamination is minor relative to the in-session cache_creation effect
-    // (validated: in-session cache writes dominate the delta — OFF ~80k vs ON ~12k).
-    // Running ON cold first — before anything warms its trimmed prefix — is the
-    // trim-HOSTILE order: OFF (run 2) may read ON's warmed SHARED prefix, giving
-    // the no-trim arm a small edge. If trim still wins under this handicap, the
-    // real-world saving is at least this much (a lower bound, not a point estimate).
+    // Three runs in order: ECO (economy), NATIVE_ON (trim on, all native),
+    // NATIVE_OFF (trim off, all native). ECO is first so the NATIVE A/B pair
+    // runs back-to-back, minimising cache-state drift between them.
 
     set_msg(progress, "");
-    set_phase(progress, MeasurePhase::RunOn, "S3: Measuring arms (2 runs, ON cold first)");
+    set_phase(progress, MeasurePhase::RunEco, "S3: Measuring arms (3 runs, ECO first)");
 
-    // Distinct run dirs avoid file-lock contention (cwd does not affect the cache).
+    let eco_run = std::env::temp_dir().join(ECO_RUN_DIR);
     let on_run = std::env::temp_dir().join(ON_RUN_DIR);
     let off_run = std::env::temp_dir().join(OFF_RUN_DIR);
 
-    // Run 1: ON (trim enabled), cold — its trimmed prefix is not pre-warmed.
-    let on = run_one_arm(
-        progress, &ro_conn, &mut guard, true, &corpus_dir, &on_run,
-        MeasurePhase::RunOn, MeasurePhase::AggregateOn, "ON",
-    )?;
-    {
-        let mut p = progress.lock().unwrap();
-        p.on = Some(on.clone());
-        p.on_transcript = Some(on_run.join("transcript.txt"));
+    guard.mark_dirty();
+
+    // ─ Arm 1: ECO ──────────────────────────────────────────────────────────
+    set_trim_enabled(true).map_err(|e| {
+        cfg_err(progress, format!("FATAL: Could not set trim_enabled for ECO: {e}"))
+    })?;
+    if cfg.side_substitution {
+        set_targets("native", &cfg.side_model, &cfg.side_model).map_err(|e| {
+            cfg_err(progress, format!("FATAL: Could not set targets for ECO: {e}"))
+        })?;
+    } else {
+        set_targets("native", "native", "native").map_err(|e| {
+            cfg_err(progress, format!("FATAL: Could not set targets for ECO: {e}"))
+        })?;
     }
 
-    // Run 2: OFF (trim disabled). May benefit from ON's warmed shared prefix.
-    let off = run_one_arm(
-        progress, &ro_conn, &mut guard, false, &corpus_dir, &off_run,
-        MeasurePhase::RunOff, MeasurePhase::AggregateOff, "OFF",
-    )?;
+    let eco = run_one_arm(progress, &ro_conn, &corpus_dir, &eco_run, MeasurePhase::RunEco, "ECO")?;
+    let eco_transcript = eco_run.join("transcript.txt");
     {
         let mut p = progress.lock().unwrap();
-        p.off = Some(off.clone());
-        p.off_transcript = Some(off_run.join("transcript.txt"));
+        p.eco = Some(eco.clone());
+        p.eco_transcript = Some(eco_transcript);
+    }
+
+    // ─ Arm 2: NATIVE_ON ────────────────────────────────────────────────────
+    set_trim_enabled(true).map_err(|e| {
+        cfg_err(progress, format!("FATAL: Could not set trim_enabled for NATIVE_ON: {e}"))
+    })?;
+    set_targets("native", "native", "native").map_err(|e| {
+        cfg_err(progress, format!("FATAL: Could not set targets for NATIVE_ON: {e}"))
+    })?;
+
+    let native_on = run_one_arm(progress, &ro_conn, &corpus_dir, &on_run, MeasurePhase::RunNativeOn, "NATIVE_ON")?;
+    let on_transcript = on_run.join("transcript.txt");
+    {
+        let mut p = progress.lock().unwrap();
+        p.native_on = Some(native_on.clone());
+        p.native_on_transcript = Some(on_transcript);
+    }
+
+    // ─ Arm 3: NATIVE_OFF ───────────────────────────────────────────────────
+    set_trim_enabled(false).map_err(|e| {
+        cfg_err(progress, format!("FATAL: Could not set trim_enabled for NATIVE_OFF: {e}"))
+    })?;
+    set_targets("native", "native", "native").map_err(|e| {
+        cfg_err(progress, format!("FATAL: Could not set targets for NATIVE_OFF: {e}"))
+    })?;
+
+    let native_off = run_one_arm(progress, &ro_conn, &corpus_dir, &off_run, MeasurePhase::RunNativeOff, "NATIVE_OFF")?;
+    let off_transcript = off_run.join("transcript.txt");
+    {
+        let mut p = progress.lock().unwrap();
+        p.native_off = Some(native_off.clone());
+        p.native_off_transcript = Some(off_transcript);
     }
 
     // ── S5 COMPARE ─────────────────────────────────────────────────────────
@@ -804,67 +864,102 @@ pub fn run_measurement(
     set_msg(progress, "");
     set_phase(progress, MeasurePhase::Compare, "S5: Comparing arms...");
 
-    // Quota-weighted cost: cache_read is cheap (0.1x) but NOT free, and trim moves
-    // huge amounts of it in a warm cache. Weighting reflects real quota consumption.
-    let billed_off_f = weighted_billed(&off);
-    let billed_on_f = weighted_billed(&on);
-    let billed_input_off = billed_off_f.round() as u64;
-    let billed_input_on = billed_on_f.round() as u64;
-    let input_saved_pct = if billed_off_f > 0.0 {
-        (billed_off_f - billed_on_f) / billed_off_f * 100.0
+    let cost_eco = weighted_billed(&eco).round() as u64;
+    let cost_native_on = weighted_billed(&native_on).round() as u64;
+    let cost_native_off = weighted_billed(&native_off).round() as u64;
+
+    let native_saved_pct = if cost_native_off > 0 {
+        (cost_native_off as f64 - cost_native_on as f64) / cost_native_off as f64 * 100.0
     } else {
         0.0
     };
-    let trim_raw_pct = if on.trim_before > 0 {
-        (on.trim_before as f64 - on.trim_after as f64) / on.trim_before as f64 * 100.0
+
+    let eco_saved_pct = if cost_native_off > 0 {
+        (cost_native_off as f64 - cost_eco as f64) / cost_native_off as f64 * 100.0
     } else {
         0.0
     };
-    let verdict = if input_saved_pct >= 5.0 {
-        "PROVEN".to_string()
-    } else if input_saved_pct >= 0.0 {
-        "INCONCLUSIVE".to_string()
+
+    let trim_raw_pct = if native_on.trim_before > 0 {
+        (native_on.trim_before as f64 - native_on.trim_after as f64) / native_on.trim_before as f64 * 100.0
     } else {
-        "BACKWARDS (trim cost more -- cache effect)".to_string()
+        0.0
     };
+
+    // Session-divergence gate: two LLM sessions are not byte-identical, and if the
+    // arms take a very different number of turns (e.g. 10 vs 15 requests) their token
+    // totals scale with turn count, not trim, making the comparison meaningless. When
+    // the native ON/OFF request counts diverge beyond the threshold, the verdict is
+    // INVALID rather than a misleading PROVEN/BACKWARDS. (This caught a bogus -9.4%
+    // BACKWARDS run where OFF=10 reqs vs ON=15.)
+    let div_max = native_on.n_requests.max(native_off.n_requests) as f64;
+    let div_pct = if div_max > 0.0 {
+        (native_on.n_requests as i64 - native_off.n_requests as i64).unsigned_abs() as f64
+            / div_max
+            * 100.0
+    } else {
+        0.0
+    };
+    let diverged = div_pct > NATIVE_DIVERGENCE_PCT;
+
+    let verdict_of = |saved: f64, backwards_msg: &str| -> String {
+        if diverged {
+            format!("INVALID (session divergence {div_pct:.0}%)")
+        } else if saved >= 5.0 {
+            "PROVEN".to_string()
+        } else if saved >= 0.0 {
+            "INCONCLUSIVE".to_string()
+        } else {
+            backwards_msg.to_string()
+        }
+    };
+
+    let native_verdict = verdict_of(native_saved_pct, "BACKWARDS (trim cost more -- cache effect)");
+    let eco_verdict = verdict_of(eco_saved_pct, "BACKWARDS");
 
     let result = MeasureResult {
-        off: off.clone(),
-        on: on.clone(),
-        billed_input_off,
-        billed_input_on,
-        input_saved_pct,
-        trim_raw_pct,
-        verdict: verdict.clone(),
+        eco: eco.clone(),
+        native_on: native_on.clone(),
+        native_off: native_off.clone(),
+        cost_eco,
+        cost_native_on,
+        cost_native_off,
+        native_saved_pct,
+        eco_saved_pct,
+        native_verdict: native_verdict.clone(),
+        eco_verdict: eco_verdict.clone(),
     };
 
-    set_msg(progress, &format!("  Billed input: OFF {billed_input_off}  ON {billed_input_on}  saved {input_saved_pct:.1}%"));
-    set_msg(progress, &format!("  Trim raw (ON): before {} after {}  {trim_raw_pct:.1}%", on.trim_before, on.trim_after));
-    set_msg(progress, &format!("  Verdict: {verdict}"));
+    set_msg(progress, &format!(
+        "  ECO cost: {}  NATIVE_ON cost: {}  NATIVE_OFF cost: {}",
+        cost_eco, cost_native_on, cost_native_off
+    ));
+    set_msg(progress, &format!(
+        "  NATIVE saved: {native_saved_pct:.1}%  (verdict: {native_verdict})"
+    ));
+    set_msg(progress, &format!(
+        "  ECO saved: {eco_saved_pct:.1}%  (verdict: {eco_verdict})"
+    ));
+    set_msg(progress, &format!(
+        "  Trim raw (NATIVE_ON): before {} after {}  {trim_raw_pct:.1}%",
+        native_on.trim_before, native_on.trim_after
+    ));
 
     {
         let mut p = progress.lock().unwrap();
         p.result = Some(result.clone());
     }
 
-    // ── S6 RESTORE trim ────────────────────────────────────────────────────
+    // ── S6 RESTORE settings ────────────────────────────────────────────────
 
     set_msg(progress, "");
-    match original_trim_enabled {
-        Some(v) => {
-            set_msg(progress, &format!("  Restoring trim_enabled to {v}..."));
-            if let Err(e) = set_trim_enabled(v) {
-                set_msg(progress, &format!("Warning: could not restore trim_enabled: {e}"));
-            }
+    if let Some(v) = &guard.snapshot {
+        set_msg(progress, "  Restoring original settings...");
+        if let Err(e) = write_settings_value(v) {
+            set_msg(progress, &format!("Warning: could not restore settings: {e}"));
         }
-        None => {
-            set_msg(
-                progress,
-                "  trim_enabled was absent at S0; leaving at current value.",
-            );
-        }
+        std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
     }
-    // The guard is now disarmed -- we handled restore explicitly.
     guard.disarm();
 
     // ── S7 PERSIST to bench_runs ───────────────────────────────────────────
@@ -874,7 +969,6 @@ pub fn run_measurement(
     set_msg(progress, "");
     set_msg(progress, "S7: Persisting result to bench_runs...");
 
-    // Open a short write connection with busy_timeout for the migration + insert.
     let rw_conn = match Connection::open(&cfg.db_path) {
         Ok(c) => {
             if let Err(e) = c.execute_batch("PRAGMA busy_timeout = 5000") {
@@ -888,12 +982,12 @@ pub fn run_measurement(
                 &format!("Warning: could not open DB for write: {e}. Result not persisted."),
             );
             set_msg(progress, "");
-            set_phase(progress, MeasurePhase::Done, "═══ Measure complete (not persisted) ═══");
+            set_phase(progress, MeasurePhase::Done, "=== Measure complete (not persisted) ===");
             return Ok(Some(result));
         }
     };
 
-    // Add live-measure columns if they don't exist.
+    // Add live-measure columns if they don't exist (existing + new).
     for &(col, decl) in &[
         ("kind", "TEXT"),
         ("off_input", "INTEGER"),
@@ -909,6 +1003,20 @@ pub fn run_measurement(
         ("input_saved_pct", "REAL"),
         ("trim_raw_pct", "REAL"),
         ("verdict", "TEXT"),
+        // New 3-arm columns:
+        ("cost_eco", "INTEGER"),
+        ("cost_native_on", "INTEGER"),
+        ("cost_native_off", "INTEGER"),
+        ("eco_saved_pct", "REAL"),
+        ("eco_verdict", "TEXT"),
+        ("eco_elapsed_ms", "INTEGER"),
+        ("native_on_elapsed_ms", "INTEGER"),
+        ("native_off_elapsed_ms", "INTEGER"),
+        ("side_model", "TEXT"),
+        ("side_substitution", "INTEGER"),
+        ("n_eco_reqs", "INTEGER"),
+        ("n_native_on_reqs", "INTEGER"),
+        ("n_native_off_reqs", "INTEGER"),
     ] {
         if let Some(warning) = ensure_column(&rw_conn, "bench_runs", col, decl) {
             set_msg(progress, &warning);
@@ -942,39 +1050,56 @@ pub fn run_measurement(
          elapsed_ms, knobs_json, \
          kind, off_input, on_input, off_cache_read, on_cache_read, \
          off_cache_creation, on_cache_creation, on_trim_before, on_trim_after, \
-         n_off_reqs, n_on_reqs, input_saved_pct, trim_raw_pct, verdict\
+         n_off_reqs, n_on_reqs, input_saved_pct, trim_raw_pct, verdict, \
+         cost_eco, cost_native_on, cost_native_off, eco_saved_pct, eco_verdict, \
+         eco_elapsed_ms, native_on_elapsed_ms, native_off_elapsed_ms, \
+         side_model, side_substitution, n_eco_reqs, n_native_on_reqs, n_native_off_reqs\
          ) VALUES (\
          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
-         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27\
+         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, \
+         ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40\
          )",
         rusqlite::params![
             ts,
             "anthropic",
-            0_i64,                                        // n_bodies
-            on.n_requests as i64,                         // n_trimmed
-            billed_input_off as i64,                      // tokens_off
-            billed_input_on as i64,                       // tokens_on
-            trim_raw_pct,                                 // avg_trim_pct
-            0.0_f64,                                      // median_trim_pct
-            0.0_f64,                                      // headroom_pct
-            1_i64,                                        // fail_open_ok
-            0_i64,                                        // deterministic
-            elapsed_ms,                                   // elapsed_ms
-            knobs_json,                                   // knobs_json
-            "live2",                                      // kind
-            off.input_tokens as i64,                      // off_input
-            on.input_tokens as i64,                       // on_input
-            off.cache_read_tokens as i64,                 // off_cache_read
-            on.cache_read_tokens as i64,                  // on_cache_read
-            off.cache_creation_tokens as i64,             // off_cache_creation
-            on.cache_creation_tokens as i64,              // on_cache_creation
-            on.trim_before as i64,                        // on_trim_before
-            on.trim_after as i64,                         // on_trim_after
-            off.n_requests as i64,                        // n_off_reqs
-            on.n_requests as i64,                         // n_on_reqs
-            input_saved_pct,                              // input_saved_pct
-            trim_raw_pct,                                 // trim_raw_pct
-            verdict,                                      // verdict
+            0_i64,                                         // n_bodies
+            native_on.n_requests as i64,                   // n_trimmed
+            cost_native_off as i64,                        // tokens_off
+            cost_native_on as i64,                         // tokens_on
+            trim_raw_pct,                                  // avg_trim_pct
+            0.0_f64,                                       // median_trim_pct
+            0.0_f64,                                       // headroom_pct
+            1_i64,                                         // fail_open_ok
+            0_i64,                                         // deterministic
+            elapsed_ms,                                    // elapsed_ms
+            knobs_json,                                    // knobs_json
+            "live3",                                       // kind
+            native_off.input_tokens as i64,                // off_input
+            native_on.input_tokens as i64,                 // on_input
+            native_off.cache_read_tokens as i64,           // off_cache_read
+            native_on.cache_read_tokens as i64,            // on_cache_read
+            native_off.cache_creation_tokens as i64,       // off_cache_creation
+            native_on.cache_creation_tokens as i64,        // on_cache_creation
+            native_on.trim_before as i64,                  // on_trim_before
+            native_on.trim_after as i64,                   // on_trim_after
+            native_off.n_requests as i64,                  // n_off_reqs
+            native_on.n_requests as i64,                   // n_on_reqs
+            native_saved_pct,                              // input_saved_pct
+            trim_raw_pct,                                  // trim_raw_pct
+            native_verdict,                                // verdict
+            cost_eco as i64,                               // cost_eco
+            cost_native_on as i64,                         // cost_native_on
+            cost_native_off as i64,                        // cost_native_off
+            eco_saved_pct,                                 // eco_saved_pct
+            eco_verdict,                                   // eco_verdict
+            eco.elapsed_ms as i64,                         // eco_elapsed_ms
+            native_on.elapsed_ms as i64,                   // native_on_elapsed_ms
+            native_off.elapsed_ms as i64,                  // native_off_elapsed_ms
+            cfg.side_model,                                // side_model
+            cfg.side_substitution as i64,                  // side_substitution
+            eco.n_requests as i64,                         // n_eco_reqs
+            native_on.n_requests as i64,                   // n_native_on_reqs
+            native_off.n_requests as i64,                  // n_native_off_reqs
         ],
     );
 
@@ -984,7 +1109,7 @@ pub fn run_measurement(
     }
 
     set_msg(progress, "");
-    set_phase(progress, MeasurePhase::Done, "═══ Measure complete ═══");
+    set_phase(progress, MeasurePhase::Done, "=== Measure complete ===");
 
     Ok(Some(result))
 }
@@ -1013,4 +1138,14 @@ fn fatal<E: Into<String>>(progress: &Arc<Mutex<MeasureProgress>>, msg: E) -> Res
     p.message.clone_from(&s);
     p.error = Some(s.clone());
     Err(s)
+}
+
+/// Set progress to Error and return the error string. Like [`fatal`] but returns
+/// a plain String (for use inside map_err closures).
+fn cfg_err(progress: &Arc<Mutex<MeasureProgress>>, msg: String) -> String {
+    let mut p = progress.lock().unwrap();
+    p.phase = MeasurePhase::Error;
+    p.message.clone_from(&msg);
+    p.error = Some(msg.clone());
+    msg
 }

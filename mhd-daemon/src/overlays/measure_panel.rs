@@ -1,4 +1,4 @@
-//! Live trim-vs-quota measurement overlay.
+﻿//! Live trim-vs-quota measurement overlay.
 //!
 //! Opens a layered WS_POPUP window that drives
 //! `llm_proxy::measure::run_measurement` on a background thread,
@@ -25,7 +25,7 @@ use crate::core::native_theme::{Argb, NativeTheme};
 // ── Constants ────────────────────────────────────────────────────────
 
 const WIN_W_BASE: i32 = 520;
-const WIN_H_BASE: i32 = 420;
+const WIN_H_BASE: i32 = 470;
 const PAD_BASE: i32 = 12;
 const RADIUS_BASE: f32 = 10.0;
 const HEADER_H_BASE: i32 = 28;
@@ -40,6 +40,10 @@ static MEASURE_THREAD_RUNNING: AtomicBool = AtomicBool::new(false);
 static CONFIRM_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CONFIRM_DECIDED: AtomicBool = AtomicBool::new(false);
 static CONFIRM_PROCEED: AtomicBool = AtomicBool::new(false);
+
+// Side-substitution toggle for the ECO arm (confirm screen)
+static SIDE_SUBSTITUTION: AtomicBool = AtomicBool::new(false);
+static SIDE_MODEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 // ── Safe handle wrapper ─────────────────────────────────────────────
 
@@ -384,17 +388,16 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         }
         llm_proxy::measure::MeasurePhase::Preflight
         | llm_proxy::measure::MeasurePhase::Snapshot
-        | llm_proxy::measure::MeasurePhase::RunOff
-        | llm_proxy::measure::MeasurePhase::AggregateOff
-        | llm_proxy::measure::MeasurePhase::RunOn
-        | llm_proxy::measure::MeasurePhase::AggregateOn
+        | llm_proxy::measure::MeasurePhase::RunEco
+        | llm_proxy::measure::MeasurePhase::RunNativeOn
+        | llm_proxy::measure::MeasurePhase::RunNativeOff
         | llm_proxy::measure::MeasurePhase::Compare => {
             render_running(
                 dib_dc, bits, hfont_small, theme, scale,
                 win_w, win_h, pad, content_y, row_h, &prog,
             );
         }
-        llm_proxy::measure::MeasurePhase::Done => {
+    llm_proxy::measure::MeasurePhase::Done => {
             render_done(
                 dib_dc, bits, hfont_small, theme, scale,
                 win_w, win_h, pad, content_y, row_h, &prog,
@@ -436,8 +439,8 @@ fn render_idle_confirm(
 
     // Description
     let desc_lines = [
-        "Measures how much real 5h quota trim saves, by running the",
-        "same workload twice — once with trim OFF, once ON.",
+        "Measures quota saved by running the same workload 3 ways:",
+        "ECO (trim + offload), NATIVE ON (trim), NATIVE OFF (baseline).",
     ];
     unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
     for (i, line) in desc_lines.iter().enumerate() {
@@ -458,8 +461,8 @@ fn render_idle_confirm(
     let trim_engine_str = prog.trim_engine.as_deref().unwrap_or("unknown");
     let info_lines = [
         format!("  Trim engine:   {}", trim_engine_str),
-        "  Method:        two warm-cache sessions, proxy-log usage".to_string(),
-        "  Spends:        real quota (two agent sessions)".to_string(),
+        "  Method:        three warm-cache sessions, proxy-log usage".to_string(),
+        "  Spends:        real quota (three agent sessions)".to_string(),
     ];
     unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
     for (i, line) in info_lines.iter().enumerate() {
@@ -475,8 +478,47 @@ fn render_idle_confirm(
         }
     }
 
+    // Side-substitution checkbox
+    let side_model_str = {
+        let m = SIDE_MODEL.lock().unwrap();
+        if m.is_empty() { "sva-opencode/deepseek-v4-flash".to_string() } else { m.clone() }
+    };
+    let checked = SIDE_SUBSTITUTION.load(Ordering::Relaxed);
+    let checkbox_y = info_y + 4 * row_h;
+    let cb_text = if checked {
+        format!("\u{2611} Offload subagents to side model (ECO arm)")
+    } else {
+        format!("\u{2610} Offload subagents to side model (ECO arm)")
+    };
+    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+    let mut cb_wz = crate::osd::to_utf16_z(&cb_text);
+    let mut cb_rc = RECT {
+        left: indent,
+        top: checkbox_y,
+        right: win_w - pad,
+        bottom: checkbox_y + row_h,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut cb_wz, &mut cb_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // Side model display
+    let model_y = checkbox_y + row_h;
+    let model_text = format!("  Side model: {}", side_model_str);
+    unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+    let mut ml_wz = crate::osd::to_utf16_z(&model_text);
+    let mut ml_rc = RECT {
+        left: indent,
+        top: model_y,
+        right: win_w - pad,
+        bottom: model_y + row_h,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut ml_wz, &mut ml_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+
     // Warning
-    let warn_y = info_y + 5 * row_h + (4.0 * scale) as i32;
+    let warn_y = info_y + 7 * row_h + (4.0 * scale) as i32;
     unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 235, 185, 90).to_colorref()); }
     let warn_lines = [
         "\u{26A0} This SPENDS real quota. Do not use this account for",
@@ -569,10 +611,11 @@ fn render_running(
     fn arm_summary(a: &Option<llm_proxy::measure::ArmAggregate>) -> String {
         match a {
             Some(a) => format!(
-                "{} reqs \u{00B7} input {} \u{00B7} cache_read {}",
+                "{} reqs \u{00B7} input {} \u{00B7} cache_read {} \u{00B7} {:.0}s",
                 a.n_requests,
                 fmt_tokens(a.input_tokens),
                 fmt_tokens(a.cache_read_tokens),
+                a.elapsed_ms as f64 / 1000.0,
             ),
             None => "\u{2014}".to_string(),
         }
@@ -580,18 +623,18 @@ fn render_running(
 
     unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
 
-    let off_label = format!("OFF session   {}", arm_summary(&prog.off));
-    let mut ow = crate::osd::to_utf16_z(&off_label);
-    let mut or = RECT {
+    let eco_label = format!("ECO {}", arm_summary(&prog.eco));
+    let mut ew = crate::osd::to_utf16_z(&eco_label);
+    let mut er = RECT {
         left: indent, top: arms_y, right: win_w - pad,
         bottom: arms_y + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut ow, &mut or, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let _ = DrawTextW(dib_dc, &mut ew, &mut er, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
 
-    let on_label = format!("ON  session   {}", arm_summary(&prog.on));
-    let mut nw = crate::osd::to_utf16_z(&on_label);
+    let native_on_label = format!("NATIVE ON {}", arm_summary(&prog.native_on));
+    let mut nw = crate::osd::to_utf16_z(&native_on_label);
     let mut nr = RECT {
         left: indent, top: arms_y + row_h, right: win_w - pad,
         bottom: arms_y + 2 * row_h,
@@ -600,8 +643,18 @@ fn render_running(
         let _ = DrawTextW(dib_dc, &mut nw, &mut nr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
 
+    let native_off_label = format!("NATIVE OFF {}", arm_summary(&prog.native_off));
+    let mut ow = crate::osd::to_utf16_z(&native_off_label);
+    let mut or = RECT {
+        left: indent, top: arms_y + 2 * row_h, right: win_w - pad,
+        bottom: arms_y + 3 * row_h,
+    };
+    unsafe {
+        let _ = DrawTextW(dib_dc, &mut ow, &mut or, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+
     // Method note
-    let spent_y = arms_y + 3 * row_h;
+    let spent_y = arms_y + 4 * row_h;
     unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
     let mut sw = crate::osd::to_utf16_z("Measuring real per-request usage from the proxy log.");
     let mut sr = RECT {
@@ -636,7 +689,6 @@ fn render_running(
         "Close", theme, hfont_small, false, ButtonStyle::Secondary,
     );
 }
-
 fn render_done(
     dib_dc: HDC, bits: *mut core::ffi::c_void,
     hfont_small: HFONT, theme: &NativeTheme, scale: f32,
@@ -656,19 +708,20 @@ fn render_done(
         let _ = DrawTextW(dib_dc, &mut sub_wz, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     }
 
-    // Result body — two-run usage comparison from the proxy log.
+    // Result body — three-arm usage comparison from the proxy log.
     let r = prog.result.as_ref();
-    let col_off = indent + (180.0 * scale) as i32;
-    let col_on  = indent + (300.0 * scale) as i32;
+    let col1 = indent + (130.0 * scale) as i32;
+    let col2 = indent + (240.0 * scale) as i32;
+    let col3 = indent + (350.0 * scale) as i32;
 
-    // Helper to draw one "label  off  on" row.
+    // Helper to draw one "label col1 col2 col3" row.
     let mut row_i = 0i32;
     let table_y = y0 + row_h;
-    let mut draw_row = |label: &str, off: String, on: String, color: Argb| {
+    let mut draw_row = |label: &str, v1: String, v2: String, v3: String, color: Argb| {
         let ry = table_y + row_i * row_h;
         row_i += 1;
         unsafe { let _ = SetTextColor(dib_dc, color.to_colorref()); }
-        for (text, x) in [(label, indent), (off.as_str(), col_off), (on.as_str(), col_on)] {
+        for (text, x) in [(label, indent), (v1.as_str(), col1), (v2.as_str(), col2), (v3.as_str(), col3)] {
             let mut wz = crate::osd::to_utf16_z(text);
             let mut rc = RECT { left: x, top: ry, right: win_w - pad, bottom: ry + row_h };
             unsafe {
@@ -677,77 +730,119 @@ fn render_done(
         }
     };
 
-    draw_row("", "OFF".to_string(), "ON".to_string(), theme.text_muted);
+    draw_row("", "ECO".to_string(), "NAT ON".to_string(), "NAT OFF".to_string(), theme.text_muted);
     match r {
         Some(r) => {
-            draw_row("requests", r.off.n_requests.to_string(), r.on.n_requests.to_string(), theme.text);
-            draw_row("input tok", fmt_tokens(r.off.input_tokens), fmt_tokens(r.on.input_tokens), theme.text);
-            draw_row("cache create", fmt_tokens(r.off.cache_creation_tokens), fmt_tokens(r.on.cache_creation_tokens), theme.text);
-            draw_row("cache read", fmt_tokens(r.off.cache_read_tokens), fmt_tokens(r.on.cache_read_tokens), theme.text);
-            draw_row("quota cost*", fmt_tokens(r.billed_input_off), fmt_tokens(r.billed_input_on), theme.text);
-            draw_row("quota saved", format!("{:.1}%", r.input_saved_pct), String::new(), theme.accent);
-            draw_row("trim raw (ON)", format!("{:.1}%", r.trim_raw_pct), String::new(), theme.accent);
+            draw_row("requests", r.eco.n_requests.to_string(), r.native_on.n_requests.to_string(), r.native_off.n_requests.to_string(), theme.text);
+            draw_row("input tok", fmt_tokens(r.eco.input_tokens), fmt_tokens(r.native_on.input_tokens), fmt_tokens(r.native_off.input_tokens), theme.text);
+            draw_row("cache create", fmt_tokens(r.eco.cache_creation_tokens), fmt_tokens(r.native_on.cache_creation_tokens), fmt_tokens(r.native_off.cache_creation_tokens), theme.text);
+            draw_row("cache read", fmt_tokens(r.eco.cache_read_tokens), fmt_tokens(r.native_on.cache_read_tokens), fmt_tokens(r.native_off.cache_read_tokens), theme.text);
+            draw_row("quota cost*", fmt_tokens(r.cost_eco), fmt_tokens(r.cost_native_on), fmt_tokens(r.cost_native_off), theme.text);
+            draw_row("time", format!("{:.0}s", r.eco.elapsed_ms as f64 / 1000.0), format!("{:.0}s", r.native_on.elapsed_ms as f64 / 1000.0), format!("{:.0}s", r.native_off.elapsed_ms as f64 / 1000.0), theme.text);
         }
         None => {
-            draw_row("requests", "\u{2014}".to_string(), "\u{2014}".to_string(), theme.text_muted);
+            draw_row("requests", "\u{2014}".to_string(), "\u{2014}".to_string(), "\u{2014}".to_string(), theme.text_muted);
         }
     }
 
-    // Verdict
-    let verdict_text = r.map(|r| r.verdict.as_str()).unwrap_or("n/a");
-    let verdict_color = if verdict_text.starts_with("PROVEN") {
-        theme.accent
-    } else if verdict_text.starts_with("BACKWARDS") {
-        Argb::new(255, 235, 100, 100)
-    } else {
-        theme.text_muted
+    // Two verdict lines: native + eco
+    let verdict_color = |verdict: &str| -> Argb {
+        if verdict.starts_with("PROVEN") {
+            theme.accent
+        } else if verdict.starts_with("BACKWARDS") {
+            Argb::new(255, 235, 100, 100)
+        } else if verdict.starts_with("INVALID") {
+            Argb::new(255, 235, 185, 90)
+        } else {
+            theme.text_muted
+        }
     };
-    let v_y = table_y + (row_i + 1) * row_h;
-    unsafe { let _ = SetTextColor(dib_dc, verdict_color.to_colorref()); }
-    let mut vw_wz = crate::osd::to_utf16_z(&format!("Verdict: {}", verdict_text));
-    let mut vw_rc = RECT { left: indent, top: v_y, right: win_w - pad, bottom: v_y + row_h };
-    unsafe {
-        let _ = DrawTextW(dib_dc, &mut vw_wz, &mut vw_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    if let Some(r) = r {
+        let v1_y = table_y + (row_i + 1) * row_h;
+        let native_text = format!("NATIVE trim saved: {:.1}%   {}", r.native_saved_pct, r.native_verdict);
+        unsafe { let _ = SetTextColor(dib_dc, verdict_color(&r.native_verdict).to_colorref()); }
+        let mut vw1_wz = crate::osd::to_utf16_z(&native_text);
+        let mut vw1_rc = RECT { left: indent, top: v1_y, right: win_w - pad, bottom: v1_y + row_h };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut vw1_wz, &mut vw1_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        let v2_y = v1_y + row_h;
+        let eco_text = format!("ECO saved (subscription): {:.1}%   {}", r.eco_saved_pct, r.eco_verdict);
+        unsafe { let _ = SetTextColor(dib_dc, verdict_color(&r.eco_verdict).to_colorref()); }
+        let mut vw2_wz = crate::osd::to_utf16_z(&eco_text);
+        let mut vw2_rc = RECT { left: indent, top: v2_y, right: win_w - pad, bottom: v2_y + row_h };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut vw2_wz, &mut vw2_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        // Info note
+        let note_y = v2_y + row_h;
+        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+        let mut note_wz = crate::osd::to_utf16_z(
+            "* Anthropic quota only (input + 1.25x cc + 0.1x cr); side model excluded. ECO trades time for subscription.",
+        );
+        let mut note_rc = RECT { left: indent, top: note_y, right: win_w - pad, bottom: note_y + row_h };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        // Open ECO / Open NAT ON / Open NAT OFF buttons (three side by side above Close)
+        let btn_w = (90.0 * scale) as i32;
+        let btn_h = (24.0 * scale) as i32;
+        let btn_gap = (8.0 * scale) as i32;
+        let three_btn_w = 3 * btn_w + 2 * btn_gap;
+        let three_start_x = (win_w - three_btn_w) / 2;
+
+        let open_y = note_y + row_h + (4.0 * scale) as i32;
+
+        draw_button(
+            dib_dc, bits, win_w, win_h,
+            three_start_x, open_y, btn_w, btn_h,
+            "Open ECO", theme, hfont_small, false, ButtonStyle::Secondary,
+        );
+        draw_button(
+            dib_dc, bits, win_w, win_h,
+            three_start_x + btn_w + btn_gap, open_y, btn_w, btn_h,
+            "Open NAT ON", theme, hfont_small, false, ButtonStyle::Secondary,
+        );
+        draw_button(
+            dib_dc, bits, win_w, win_h,
+            three_start_x + 2 * (btn_w + btn_gap), open_y, btn_w, btn_h,
+            "Open NAT OFF", theme, hfont_small, false, ButtonStyle::Secondary,
+        );
+
+        // Close button (pushed down below the open buttons)
+        let btn_y = open_y + btn_h + (6.0 * scale) as i32;
+        let close_x = win_w / 2 - btn_w / 2;
+
+        draw_button(
+            dib_dc, bits, win_w, win_h,
+            close_x, btn_y, btn_w, btn_h,
+            "Close", theme, hfont_small, false, ButtonStyle::Secondary,
+        );
+    } else {
+        // No result yet — show placeholder, just a Close button
+        let note_y = table_y + (row_i + 2) * row_h;
+        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+        let mut note_wz = crate::osd::to_utf16_z("Waiting for result...");
+        let mut note_rc = RECT { left: indent, top: note_y, right: win_w - pad, bottom: note_y + row_h };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        let btn_w = (80.0 * scale) as i32;
+        let btn_h = (24.0 * scale) as i32;
+        let btn_y = note_y + row_h + (4.0 * scale) as i32;
+        let close_x = win_w / 2 - btn_w / 2;
+
+        draw_button(
+            dib_dc, bits, win_w, win_h,
+            close_x, btn_y, btn_w, btn_h,
+            "Close", theme, hfont_small, false, ButtonStyle::Secondary,
+        );
     }
-
-    // Info note
-    let note_y = v_y + row_h;
-    unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
-    let mut note_wz = crate::osd::to_utf16_z(
-        "\u{2139} quota cost = input + 1.25\u{00d7}cache_creation + 0.1\u{00d7}cache_read. Saved to history.",
-    );
-    let mut note_rc = RECT { left: indent, top: note_y, right: win_w - pad, bottom: note_y + row_h };
-    unsafe {
-        let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    }
-
-    // Open OFF / Open ON buttons (side by side above Close)
-    let btn_w = (80.0 * scale) as i32;
-    let btn_h = (24.0 * scale) as i32;
-    let open_y = note_y + row_h + (4.0 * scale) as i32;
-    let off_x = win_w / 2 - btn_w - (4.0 * scale) as i32;
-    let on_x  = win_w / 2 + (4.0 * scale) as i32;
-
-    draw_button(
-        dib_dc, bits, win_w, win_h,
-        off_x, open_y, btn_w, btn_h,
-        "Open OFF", theme, hfont_small, false, ButtonStyle::Secondary,
-    );
-    draw_button(
-        dib_dc, bits, win_w, win_h,
-        on_x,  open_y, btn_w, btn_h,
-        "Open ON",  theme, hfont_small, false, ButtonStyle::Secondary,
-    );
-
-    // Close button (pushed down below the open buttons)
-    let btn_y = open_y + btn_h + (6.0 * scale) as i32;
-    let close_x = win_w / 2 - btn_w / 2;
-
-    draw_button(
-        dib_dc, bits, win_w, win_h,
-        close_x, btn_y, btn_w, btn_h,
-        "Close", theme, hfont_small, false, ButtonStyle::Secondary,
-    );
 }
 
 fn render_error(
@@ -807,10 +902,9 @@ fn phase_label_text(phase: &llm_proxy::measure::MeasurePhase) -> String {
     match phase {
         llm_proxy::measure::MeasurePhase::Preflight => "Preflight".to_string(),
         llm_proxy::measure::MeasurePhase::Snapshot => "Freezing system corpus".to_string(),
-        llm_proxy::measure::MeasurePhase::RunOff => "Running OFF session (trim disabled)".to_string(),
-        llm_proxy::measure::MeasurePhase::AggregateOff => "Reading OFF usage".to_string(),
-        llm_proxy::measure::MeasurePhase::RunOn => "Running ON session (trim enabled)".to_string(),
-        llm_proxy::measure::MeasurePhase::AggregateOn => "Reading ON usage".to_string(),
+        llm_proxy::measure::MeasurePhase::RunEco => "Running ECO (trim + offloaded subagents)".to_string(),
+        llm_proxy::measure::MeasurePhase::RunNativeOn => "Running NATIVE trim ON".to_string(),
+        llm_proxy::measure::MeasurePhase::RunNativeOff => "Running NATIVE baseline (trim OFF)".to_string(),
         llm_proxy::measure::MeasurePhase::Compare => "Comparing arms".to_string(),
         _ => format!("{:?}", phase),
     }
@@ -947,20 +1041,30 @@ unsafe extern "system" fn panel_wndproc(
                 let sep_y = pad + (14.0 * scale) as i32 + 8;
                 let content_y = sep_y + (4.0 * scale) as i32;
 
-                let (phase, on_transcript, off_transcript) = {
+        let (phase, eco_transcript, native_on_transcript, native_off_transcript) = {
                     let guard = MEASURE_PROGRESS.lock().unwrap();
                     guard.as_ref().map(|a| {
                         let p = a.lock().unwrap();
-                        (p.phase.clone(), p.on_transcript.clone(), p.off_transcript.clone())
-                    }).unwrap_or((llm_proxy::measure::MeasurePhase::Idle, None, None))
+            (p.phase.clone(), p.eco_transcript.clone(), p.native_on_transcript.clone(), p.native_off_transcript.clone())
+        }).unwrap_or((llm_proxy::measure::MeasurePhase::Idle, None, None, None))
                 };
 
                 match phase {
                     llm_proxy::measure::MeasurePhase::Idle | llm_proxy::measure::MeasurePhase::AwaitConfirm => {
-                        // Cancel / Start — match render_idle_confirm layout.
-                        let info_y = content_y + 2 * row_h + (4.0 * scale) as i32;
-                        let warn_y = info_y + 5 * row_h + (4.0 * scale) as i32;
-                        let btn_y = warn_y + 6 * row_h + (4.0 * scale) as i32;
+        // Checkbox for side-substitution toggle — match render_idle_confirm layout.
+        let info_y = content_y + 2 * row_h + (4.0 * scale) as i32;
+        let checkbox_y = info_y + 4 * row_h;
+        let indent = pad + (8.0 * scale) as i32;
+        if x >= indent && x < win_w - pad
+            && y >= checkbox_y && y < checkbox_y + row_h
+        {
+            SIDE_SUBSTITUTION.fetch_xor(true, Ordering::Relaxed);
+            let _ = InvalidateRect(hwnd, None, false);
+            return LRESULT(0);
+        }
+        // Cancel / Start — match render_idle_confirm layout.
+        let warn_y = info_y + 7 * row_h + (4.0 * scale) as i32;
+        let btn_y = warn_y + 6 * row_h + (4.0 * scale) as i32;
                         let btn_w = (80.0 * scale) as i32;
                         let btn_h = (24.0 * scale) as i32;
                         let cancel_x = win_w / 2 - btn_w - (4.0 * scale) as i32;
@@ -993,46 +1097,54 @@ unsafe extern "system" fn panel_wndproc(
                             return LRESULT(0);
                         }
                     }
-                    llm_proxy::measure::MeasurePhase::Done => {
-                        // Mirror render_done layout exactly.
-                        let table_y = content_y + row_h;
-                        let note_y = table_y + 10 * row_h;
-                        let open_y = note_y + row_h + (4.0 * scale) as i32;
-                        let btn_w = (80.0 * scale) as i32;
-                        let btn_h = (24.0 * scale) as i32;
-                        let off_x = win_w / 2 - btn_w - (4.0 * scale) as i32;
-                        let on_x  = win_w / 2 + (4.0 * scale) as i32;
+    llm_proxy::measure::MeasurePhase::Done => {
+        // Mirror render_done layout exactly.
+        let table_y = content_y + row_h;
+        let note_y = table_y + 10 * row_h;
+        let open_y = note_y + row_h + (4.0 * scale) as i32;
+        let btn_w = (90.0 * scale) as i32;
+        let btn_h = (24.0 * scale) as i32;
+        let btn_gap = (8.0 * scale) as i32;
+        let three_btn_w = 3 * btn_w + 2 * btn_gap;
+        let three_start_x = (win_w - three_btn_w) / 2;
 
-                        // Open OFF
-                        if x >= off_x && x < off_x + btn_w
-                            && y >= open_y && y < open_y + btn_h
-                        {
-                            if let Some(p) = &off_transcript { open_path(p); }
-                            return LRESULT(0);
-                        }
-                        // Open ON
-                        if x >= on_x && x < on_x + btn_w
-                            && y >= open_y && y < open_y + btn_h
-                        {
-                            if let Some(p) = &on_transcript { open_path(p); }
-                            return LRESULT(0);
-                        }
+        // Open ECO
+        if x >= three_start_x && x < three_start_x + btn_w
+            && y >= open_y && y < open_y + btn_h
+        {
+            if let Some(p) = &eco_transcript { open_path(p); }
+            return LRESULT(0);
+        }
+        // Open NAT ON
+        if x >= three_start_x + btn_w + btn_gap && x < three_start_x + btn_w + btn_gap + btn_w
+            && y >= open_y && y < open_y + btn_h
+        {
+            if let Some(p) = &native_on_transcript { open_path(p); }
+            return LRESULT(0);
+        }
+        // Open NAT OFF
+        if x >= three_start_x + 2 * (btn_w + btn_gap) && x < three_start_x + 2 * (btn_w + btn_gap) + btn_w
+            && y >= open_y && y < open_y + btn_h
+        {
+            if let Some(p) = &native_off_transcript { open_path(p); }
+            return LRESULT(0);
+        }
 
-                        // Close (pushed down below open buttons)
-                        let btn_y = open_y + btn_h + (6.0 * scale) as i32;
-                        let close_x = win_w / 2 - btn_w / 2;
-                        if x >= close_x && x < close_x + btn_w
-                            && y >= btn_y && y < btn_y + btn_h
-                        {
-                            let _ = DestroyWindow(hwnd);
-                            return LRESULT(0);
-                        }
-                    }
+        // Close (pushed down below open buttons)
+        let btn_y = open_y + btn_h + (6.0 * scale) as i32;
+        let close_x = win_w / 2 - btn_w / 2;
+        if x >= close_x && x < close_x + btn_w
+            && y >= btn_y && y < btn_y + btn_h
+        {
+            let _ = DestroyWindow(hwnd);
+            return LRESULT(0);
+        }
+    }
                     _ => {
                         // Running phases
                         let msg_y = content_y + row_h;
                         let bars_y = msg_y + 2 * row_h + (4.0 * scale) as i32;
-                        let spent_y = bars_y + 3 * row_h;
+                        let spent_y = bars_y + 4 * row_h;
                         let caution_y = spent_y + row_h;
                         let btn_y = caution_y + row_h + (4.0 * scale) as i32;
                         let btn_w = (80.0 * scale) as i32;
@@ -1098,10 +1210,18 @@ fn start_measurement() {
     CONFIRM_DECIDED.store(false, Ordering::SeqCst);
     CONFIRM_PROCEED.store(true, Ordering::SeqCst); // GUI Start means "proceed"
 
+    let side_substitution = SIDE_SUBSTITUTION.load(Ordering::Relaxed);
+    let side_model = {
+        let m = SIDE_MODEL.lock().unwrap();
+        if m.is_empty() { "sva-opencode/deepseek-v4-flash".to_string() } else { m.clone() }
+    };
+
     std::thread::Builder::new().name("mhd-measure-run".into()).spawn(move || {
         let cfg = llm_proxy::measure::MeasureConfig {
             db_path: llm_proxy::config::config_dir().join("proxy.db"),
             dry_run: false,
+            side_substitution,
+            side_model,
         };
         // Confirm closure: GUI already confirmed by pressing Start -> return true once.
         let confirm: llm_proxy::measure::ConfirmFn = Box::new(|| true);
