@@ -253,6 +253,8 @@ pub fn trim_anthropic_with_engine(
             "ws_enabled": knobs.ws_enabled,
             "min_elide": knobs.tool_result_min_elide,
             "strip_thinking": knobs.strip_thinking,
+            "fence_requires_code": knobs.tool_result_fence_requires_code,
+            "arrow_density_min": knobs.tool_result_arrow_density_min,
         })
         .to_string();
         // Clone so we can fall back to the original on no-gain.
@@ -340,6 +342,8 @@ pub fn trim_openai_with_engine(
             "tool_result_tail": knobs.tool_result_tail,
             "ws_enabled": knobs.ws_enabled,
             "min_elide": knobs.tool_result_min_elide,
+            "fence_requires_code": knobs.tool_result_fence_requires_code,
+            "arrow_density_min": knobs.tool_result_arrow_density_min,
         })
         .to_string();
         // Clone so we can fall back to the original on no-gain.
