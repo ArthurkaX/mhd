@@ -14,7 +14,7 @@ mHD started as a personal always-on key daemon: one small native tray process fo
 
 The second major part is the LLM proxy. It lets Claude Code keep running while `opus`, `sonnet`, and `haiku` routes are switched or delegated to cheaper models across Anthropic and any OpenAI-compatible provider. The main point is saving paid limits and context-budget pressure by moving mechanical work, sub-agents, and lightweight turns away from the expensive provider when they do not need the top model.
 
-mHD also embeds request compression powered by [`llmtrim-core`](https://github.com/fkiene/llmtrim). Trim can shrink verbose tool output, logs, diffs, repeated lines, and bulky JSON before a request is sent, without making an extra LLM call.
+mHD also embeds request compression powered by a clean-room native trim engine. Trim can shrink verbose tool output, logs, diffs, repeated lines, and bulky JSON before a request is sent, without making an extra LLM call. The legacy [`llmtrim`](https://github.com/fkiene/llmtrim)-based engine remains available behind a toggle as a fallback.
 
 **mHD** is a free, open-source Windows utility. Its core job is keyboard/mouse control: remap awkward inputs, turn hotkeys into actions, switch schemes, and keep small native tools one shortcut away.
 
@@ -115,7 +115,7 @@ See [LLM Proxy documentation](llm-proxy/README.md) for provider setup, routing b
 | Key daemon | Keyboard remaps, mouse bindings, global shortcuts, scheme switching |
 | Shortcut actions | PowerShell commands, program launch, hotkey-driven desktop control |
 | LLM Proxy | Live per-tier routing for Claude Code across Anthropic and OpenAI-compatible providers |
-| Request Compression | Built-in llmtrim-powered trimming for Claude Code and OpenAI-compatible proxy traffic |
+| Request Compression | Built-in native trim engine for Claude Code and OpenAI-compatible proxy traffic (legacy llmtrim behind a toggle) |
 | Display | DDC/CI brightness, VCP control, monitor panel, brightness OSD |
 | Audio | Master volume, per-app mixer, media key actions |
 | Desktop tools | Quick Note, Quick Draw, Pomodoro, Breathe, power panel, CPU plan panel, screenshot vision tools |
@@ -330,7 +330,7 @@ Routing targets can be:
 
 Two optional features build on this:
 
-- **Request Compression (Trim)** - a built-in integration of the [`llmtrim`](https://github.com/fkiene/llmtrim) project. A single toggle deterministically shrinks outgoing requests (verbose tool output, logs, diffs, duplicate lines, bulky JSON) without busting the Anthropic prompt cache, with no extra model calls. It applies to both Claude Code and OpenAI-compatible traffic.
+- **Request Compression (Trim)** - a built-in, clean-room native trim engine. A single toggle deterministically shrinks outgoing requests (verbose tool output, logs, diffs, duplicate lines, bulky JSON) without busting the Anthropic prompt cache, with no extra model calls. It applies to both Claude Code and OpenAI-compatible traffic. The legacy [`llmtrim`](https://github.com/fkiene/llmtrim)-based engine remains selectable as a fallback via the `trim_engine` toggle.
 - **OpenAI-compatible clients** - editors like Zed can point at the same proxy (`http://127.0.0.1:3456/v1`) for streaming, a `/v1/models` list, and the same compression, and they show up in the Proxy Trace too.
 
 ```mermaid
