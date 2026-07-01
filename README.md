@@ -347,6 +347,10 @@ flowchart LR
     Proxy -->|"side provider"| Provider
 ```
 
+The built-in **Trim Quota Bench** measures the real quota impact of compression by running the same workload three ways (ECO / native trim ON / native trim OFF) and comparing the weighted quota cost, per-arm time, and the share of the live 5-hour quota window each run consumes.
+
+![Trim Quota Bench results](img/bench-results.png)
+
 See [llm-proxy/README.md](llm-proxy/README.md) for setup details, provider configuration, runtime switching, trace view, and the proxy configuration files.
 
 ### Config editor and tray
