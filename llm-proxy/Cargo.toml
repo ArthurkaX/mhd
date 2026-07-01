@@ -25,6 +25,10 @@ path = "src/bin/prefix_check.rs"
 name = "tune_check"
 path = "src/bin/tune_check.rs"
 
+[[bin]]
+name = "tune3_check"
+path = "src/bin/tune3_check.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }

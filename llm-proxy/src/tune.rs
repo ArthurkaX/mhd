@@ -7,7 +7,7 @@
 use std::path::Path;
 use serde_json::Value;
 use rusqlite::{Connection, OpenFlags};
-use crate::native_trim::{NativeKnobs, trim_native};
+use crate::native_trim::{NativeKnobs, trim_native, trim_native_openai};
 use crate::db_log::decompress_body;
 
 // ── helpers (mirror bench.rs) ────────────────────────────────────────────────
@@ -335,6 +335,215 @@ pub fn run_tune(
     let verdict = classify_verdict(
         &points,
         floor_desc_chars,
+        recommended,
+        recommended_trim_pct,
+        baseline_trim_pct,
+    );
+
+    Ok(Some(TuneResult {
+        points,
+        baseline_desc_chars,
+        baseline_trim_pct,
+        recommended,
+        recommended_trim_pct,
+        verdict,
+        n_bodies,
+        elapsed_ms: t0.elapsed().as_millis() as u64,
+    }))
+}
+
+// ── bucket-aware tune ────────────────────────────────────────────────────────
+
+/// Which corpus subset to tune — the risk/economics bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bucket {
+    /// provider='anthropic' AND requests.target='native' (Opus native — Claude knows the tools).
+    Native,
+    /// provider='anthropic' AND requests.target!='native' (Claude Code routed to a gateway model).
+    CcGateway,
+    /// provider='openai' (other harness: Zed/opencode/pi to a gateway model).
+    OtherOpenai,
+}
+
+/// Which knob the sweep varies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepKnob { DescChars, ToolResultHead }
+
+/// Run a bucket-aware tune sweep over one knob (tool_max_desc_chars or
+/// tool_result_head).  Reuses `pick_knee` / `classify_verdict` from the
+/// standard tune — note that `SweepPoint.desc_chars` holds the *swept value*
+/// regardless of which knob is being varied (it is the x-axis).
+pub fn run_bucket_tune(
+    db_path: &Path,
+    base: &NativeKnobs,
+    sweep: &[usize],
+    floor: usize,
+    max_bodies: usize,
+    bucket: Bucket,
+    knob: SweepKnob,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<Option<TuneResult>, String> {
+    let t0 = std::time::Instant::now();
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
+
+    // Gracefully handle a missing table.
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !exists {
+        return Ok(None);
+    }
+
+    let query = match bucket {
+        Bucket::Native => {
+            "SELECT rb.run_id, rb.body FROM request_bodies rb \
+             JOIN requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
+             WHERE rb.provider='anthropic' AND r.target='native' \
+             ORDER BY rb.run_id, rb.id"
+        }
+        Bucket::CcGateway => {
+            "SELECT rb.run_id, rb.body FROM request_bodies rb \
+             JOIN requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
+             WHERE rb.provider='anthropic' AND r.target!='native' \
+             ORDER BY rb.run_id, rb.id"
+        }
+        Bucket::OtherOpenai => {
+            "SELECT rb.run_id, rb.body FROM request_bodies rb \
+             JOIN requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
+             WHERE rb.provider='openai' \
+             ORDER BY rb.run_id, rb.id"
+        }
+    };
+
+    let mut stmt = conn
+        .prepare(query)
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .map_err(|e| e.to_string())?;
+
+    let mut bodies_with_run_id: Vec<(i64, Value)> = Vec::new();
+    for r in rows.flatten() {
+        let (run_id, body_bytes) = r;
+        if let Some(s) = decompress_body(&body_bytes) {
+            if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                bodies_with_run_id.push((run_id, v));
+            }
+        }
+    }
+    if bodies_with_run_id.is_empty() {
+        return Ok(None);
+    }
+
+    // ── stratified session-aware subsample ──────────────────────────────
+    let mut groups: Vec<(i64, Vec<Value>)> = Vec::new();
+    for (run_id, body) in bodies_with_run_id {
+        match groups.last_mut() {
+            Some(last) if last.0 == run_id => last.1.push(body),
+            _ => groups.push((run_id, vec![body])),
+        }
+    }
+
+    let bodies: Vec<Value> = if max_bodies > 0 {
+        let total: usize = groups.iter().map(|(_, v)| v.len()).sum();
+        if total > max_bodies {
+            let n_sessions = groups.len();
+            let q = std::cmp::max(1, max_bodies / n_sessions);
+            let mut sampled: Vec<Value> = Vec::with_capacity(max_bodies);
+            for (_run_id, session) in &groups {
+                if session.len() <= q {
+                    sampled.extend(session.iter().cloned());
+                } else {
+                    let step = session.len() as f64 / q as f64;
+                    sampled
+                        .extend((0..q).map(|i| session[(i as f64 * step) as usize].clone()));
+                }
+            }
+            if sampled.len() > max_bodies {
+                sampled.truncate(max_bodies);
+            }
+            sampled
+        } else {
+            groups.into_iter().flat_map(|(_, v)| v).collect()
+        }
+    } else {
+        groups.into_iter().flat_map(|(_, v)| v).collect()
+    };
+    let n_bodies = bodies.len();
+
+    // Pick the trim function based on bucket.
+    let trim_fn: fn(Value, &NativeKnobs) -> Value = match bucket {
+        Bucket::OtherOpenai => trim_native_openai,
+        _ => trim_native,
+    };
+
+    // Sweep every value.  Bodies loaded once, reused across sweep values.
+    let mut points: Vec<SweepPoint> = Vec::with_capacity(sweep.len());
+    progress(0, sweep.len());
+    for (idx, &v) in sweep.iter().enumerate() {
+        let mut knobs = *base;
+        match knob {
+            SweepKnob::DescChars => knobs.tool_max_desc_chars = v,
+            SweepKnob::ToolResultHead => knobs.tool_result_head = v,
+        }
+
+        let mut ratios: Vec<f64> = Vec::new();
+        let mut fail_open_ok = true;
+        for body in &bodies {
+            let before = est_tokens(body);
+            let after = est_tokens(&trim_fn(body.clone(), &knobs));
+            if after > before {
+                fail_open_ok = false;
+            }
+            if after < before && before > 0 {
+                ratios.push((before - after) as f64 / before as f64 * 100.0);
+            }
+        }
+        let n_trimmed = ratios.len();
+        let avg_trim_pct = if ratios.is_empty() {
+            0.0
+        } else {
+            ratios.iter().sum::<f64>() / n_trimmed as f64
+        };
+
+        points.push(SweepPoint {
+            desc_chars: v,
+            avg_trim_pct,
+            n_trimmed,
+            fail_open_ok,
+        });
+        progress(idx + 1, sweep.len());
+    }
+
+    // Baseline: the trim% at (or nearest to) the caller's current setting.
+    let baseline_desc_chars = match knob {
+        SweepKnob::DescChars => base.tool_max_desc_chars,
+        SweepKnob::ToolResultHead => base.tool_result_head,
+    };
+    let baseline_trim_pct = points
+        .iter()
+        .find(|p| p.desc_chars == baseline_desc_chars)
+        .map(|p| p.avg_trim_pct)
+        .unwrap_or(0.0);
+
+    // Knee recommendation.
+    let recommended = pick_knee(&points, floor);
+    let recommended_trim_pct = points
+        .iter()
+        .find(|p| p.desc_chars == recommended)
+        .map(|p| p.avg_trim_pct)
+        .unwrap_or(0.0);
+
+    // Verdict classification.
+    let verdict = classify_verdict(
+        &points,
+        floor,
         recommended,
         recommended_trim_pct,
         baseline_trim_pct,
