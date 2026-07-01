@@ -14,8 +14,8 @@ use llm_proxy::native_trim::NativeKnobs;
 use llm_proxy::tune::{run_bucket_tune, Bucket, SweepKnob, TuneVerdict};
 use std::path::{Path, PathBuf};
 
-/// Fixed sweep over tool_result_head.
-const SWEEP: &[usize] = &[500, 1000, 2000, 3000, 5000, 8000];
+/// Fixed sweep over tool_result_head (extended below 500 to expose the knee).
+const SWEEP: &[usize] = &[100, 200, 300, 500, 1000, 2000, 3000, 5000, 8000];
 
 // ── arg parsing ──────────────────────────────────────────────────────────────
 
