@@ -6,7 +6,7 @@
 //! stages.  Launched from the [Bench] button in the Proxy Trace
 //! window.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::*;
@@ -18,8 +18,9 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
+use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::ButtonStyle;
-use crate::config::editor_theme::draw_button;
+use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, draw_rounded_border_in_buffer};
 use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -45,10 +46,18 @@ static CONFIRM_PROCEED: AtomicBool = AtomicBool::new(false);
 static SIDE_SUBSTITUTION: AtomicBool = AtomicBool::new(false);
 static SIDE_MODEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-// Side-model popup dropdown state
-static SIDE_POPUP_HWND: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
-static SIDE_POPUP_ITEMS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-static SIDE_POPUP_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
+// Inline side-model dropdown state (search + scroll), mirrors the Settings vision combo.
+static SIDE_DROPDOWN: LazyLock<std::sync::Mutex<SearchDropdownState>> =
+    LazyLock::new(|| std::sync::Mutex::new(SearchDropdownState::default()));
+// Cached (label, model_id) items, rebuilt when the dropdown opens.
+static SIDE_ITEMS: LazyLock<std::sync::Mutex<Vec<(String, String)>>> =
+    LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+// 5h rolling-quota utilization captured across a measurement run, so the result
+// screen can show how much of the live Anthropic window this bench consumed.
+static H5_BASELINE: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
+static H5_AFTER: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
+static H5_AFTER_FROZEN: AtomicBool = AtomicBool::new(false);
 
 // ── Safe handle wrapper ─────────────────────────────────────────────
 
@@ -117,20 +126,6 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
         ..Default::default()
     };
     unsafe { RegisterClassW(&wc) };
-
-    // Side-model popup class (one-time registration)
-    if !SIDE_POPUP_CLASS_REGISTERED.swap(true, Ordering::SeqCst) {
-        let popup_cls = crate::osd::to_utf16_z("mhd_side_popup_cls");
-        let popup_wc = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(side_popup_wndproc),
-            hInstance: hinstance,
-            lpszClassName: PCWSTR::from_raw(popup_cls.as_ptr()),
-            hbrBackground: HBRUSH::default(),
-            ..Default::default()
-        };
-        unsafe { RegisterClassW(&popup_wc) };
-    }
 
     let dpi = unsafe { GetDpiForWindow(GetDesktopWindow()) as f32 };
     let scale = dpi / 96.0;
@@ -448,19 +443,46 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
 
 // ── Screen renderers ────────────────────────────────────────────────
 
-/// Build the side-model candidate list: "native" first, then the unique
-/// non-empty values of opus_target / sonnet_target / haiku_target / fable_target.
-fn side_model_candidates() -> Vec<String> {
-    let mut v: Vec<String> = vec!["native".to_string()];
-    if let Ok(settings) = llm_proxy::config::load_settings() {
-        for t in [settings.opus_target, settings.sonnet_target, settings.haiku_target, settings.fable_target] {
-            let trimmed = t.trim().to_string();
-            if !trimmed.is_empty() && !v.iter().any(|e| e == &trimmed) {
-                v.push(trimmed);
+/// (label, model_id) for every configured provider/model, mirroring the Screenshot
+/// Model selector. No "native", no "Not configured".
+fn side_model_items() -> Vec<(String, String)> {
+    let mut by_provider: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    if let Ok(models) = llm_proxy::config::load_models() {
+        for m in models {
+            by_provider.entry(m.provider).or_default().push(m.id);
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(providers) = llm_proxy::config::load_providers() {
+        for p in providers {
+            if let Some(ids) = by_provider.get(&p.name) {
+                for id in ids {
+                    let short = if id.contains('/') {
+                        id.rsplit('/').next().unwrap_or(id)
+                    } else {
+                        id.as_str()
+                    };
+                    out.push((format!("{} / {}", p.name, short), id.clone()));
+                }
             }
         }
     }
-    v
+    out
+}
+/// Friendly label for a stored model id (falls back to the raw id).
+fn side_label_for(id: &str) -> String {
+    side_model_items()
+        .into_iter()
+        .find(|(_, mid)| mid == id)
+        .map(|(label, _)| label)
+        .unwrap_or_else(|| id.to_string())
+}
+/// Build SearchDropdownItems from the cached (label,id) list. id index = item.id.
+fn side_dropdown_items(items: &[(String, String)]) -> Vec<SearchDropdownItem> {
+    items.iter().enumerate()
+        .map(|(i, (label, mid))| SearchDropdownItem::new(i, label.clone(), vec![mid.to_lowercase()]))
+        .collect()
 }
 
 fn render_idle_confirm(
@@ -534,51 +556,58 @@ fn render_idle_confirm(
 
     // Side model combo field (only when offload subagents is checked)
     let model_y = checkbox_y + row_h;
+    let field_w = (220.0 * scale) as i32;
+    let field_x = indent;
     if checked {
-        // Initialize SIDE_MODEL to first real candidate if empty.
+        // Initialize SIDE_MODEL to first item if empty (never "native").
         let side_model_str = {
             let mut m = SIDE_MODEL.lock().unwrap();
             if !m.is_empty() {
                 m.clone()
             } else {
-                let candidates = side_model_candidates();
-                if candidates.len() > 1 {
-                    let val = candidates[1].clone();
+                let items = side_model_items();
+                if !items.is_empty() {
+                    let val = items[0].1.clone();
                     *m = val.clone();
                     val
                 } else {
-                    let val = "sva-opencode/deepseek-v4-flash".to_string();
-                    *m = val.clone();
-                    val
+                    String::new()
                 }
             }
         };
-        let field_w = (220.0 * scale) as i32;
-        let field_x = indent;
-        // Border
-        let border_brush = unsafe { CreateSolidBrush(theme.border.to_colorref()) };
+        let radius = (4.0 * scale) as i32;
+        let field_rect = RECT { left: field_x, top: model_y, right: field_x + field_w, bottom: model_y + row_h };
+        draw_rounded_rect_in_buffer(bits, win_w, win_h, field_rect, radius, theme.surface.blend_over(theme.background));
+        draw_rounded_border_in_buffer(bits, win_w, win_h, field_rect, radius, 1, theme.border);
+
+        let label_text = if side_model_str.is_empty() {
+            "Select model\u{2026}".to_string()
+        } else {
+            side_label_for(&side_model_str)
+        };
         unsafe {
-            let _ = FillRect(dib_dc, &RECT { left: field_x, top: model_y, right: field_x + field_w, bottom: model_y + row_h }, border_brush);
-            let _ = DeleteObject(border_brush);
+            let _ = SetTextColor(dib_dc, if side_model_str.is_empty() { theme.text_muted } else { theme.text }.to_colorref());
         }
-        // Inner background
-        let inner_brush = unsafe { CreateSolidBrush(theme.background.to_colorref()) };
+        let mut lbl_wz = crate::osd::to_utf16_z(&label_text);
+        let mut lbl_rc = RECT {
+            left: field_x + 8,
+            top: model_y,
+            right: field_x + field_w - 20,
+            bottom: model_y + row_h,
+        };
         unsafe {
-            let _ = FillRect(dib_dc, &RECT { left: field_x + 1, top: model_y + 1, right: field_x + field_w - 1, bottom: model_y + row_h - 1 }, inner_brush);
-            let _ = DeleteObject(inner_brush);
+            let _ = DrawTextW(dib_dc, &mut lbl_wz, &mut lbl_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
-        // Text label
-        unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
-        let combo_text = format!("Side model: {}  \u{25BE}", side_model_str);
-        let mut ct_wz = crate::osd::to_utf16_z(&combo_text);
-        let mut ct_rc = RECT {
-            left: field_x + 4,
+        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+        let mut chev_wz = crate::osd::to_utf16_z("\u{25BE}");
+        let mut chev_rc = RECT {
+            left: field_x + field_w - 18,
             top: model_y,
             right: field_x + field_w - 4,
             bottom: model_y + row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut ct_wz, &mut ct_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            let _ = DrawTextW(dib_dc, &mut chev_wz, &mut chev_rc, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
         }
     }
 
@@ -622,6 +651,102 @@ fn render_idle_confirm(
         start_x, btn_y, btn_w, btn_h,
         "Start", theme, hfont_small, false, ButtonStyle::Success,
     );
+
+    // Inline side-model dropdown, drawn last so it overlays warning + buttons.
+    let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
+    if checked && dropdown_open {
+        let items = SIDE_ITEMS.lock().unwrap().clone();
+        let dd_items = side_dropdown_items(&items);
+        let search_h = (30.0 * scale) as i32;
+        let item_h = row_h;
+        let visible_rows = 6usize;
+        let (visible_labels, filter): (Vec<(usize, String)>, String) = {
+            let dd = SIDE_DROPDOWN.lock().unwrap();
+            let visible = dd.visible_items(&dd_items, visible_rows);
+            (
+                visible.iter().map(|it| (it.id, it.label.clone())).collect(),
+                dd.filter.clone(),
+            )
+        };
+
+        let dropdown_top = model_y + row_h;
+        let dropdown_h = search_h + (visible_labels.len().max(1) as i32) * item_h + 4;
+        let dropdown_rect = RECT {
+            left: field_x,
+            top: dropdown_top,
+            right: field_x + field_w,
+            bottom: dropdown_top + dropdown_h,
+        };
+        let radius = (4.0 * scale) as i32;
+        draw_rounded_rect_in_buffer(bits, win_w, win_h, dropdown_rect, radius, theme.surface.blend_over(theme.background));
+        draw_rounded_border_in_buffer(bits, win_w, win_h, dropdown_rect, radius, 1, theme.border);
+
+        // Search field
+        let search_rect = RECT {
+            left: field_x + 4,
+            top: dropdown_top + 2,
+            right: field_x + field_w - 4,
+            bottom: dropdown_top + 2 + search_h,
+        };
+        draw_rounded_rect_in_buffer(bits, win_w, win_h, search_rect, radius, theme.background);
+        draw_rounded_border_in_buffer(bits, win_w, win_h, search_rect, radius, 1, theme.border);
+        unsafe {
+            let _ = SelectObject(dib_dc, hfont_small);
+            let search_text = if filter.is_empty() { "Search models\u{2026}".to_string() } else { filter.clone() };
+            let _ = SetTextColor(dib_dc, if filter.is_empty() { theme.text_muted } else { theme.text }.to_colorref());
+            let mut search_wz = crate::osd::to_utf16_z(&search_text);
+            let mut search_text_rc = RECT {
+                left: search_rect.left + 4,
+                top: search_rect.top,
+                right: search_rect.right - 4,
+                bottom: search_rect.bottom,
+            };
+            let _ = DrawTextW(dib_dc, &mut search_wz, &mut search_text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        // Item rows
+        let list_top = dropdown_top + 2 + search_h;
+        let current = SIDE_MODEL.lock().unwrap().clone();
+        if visible_labels.is_empty() {
+            unsafe {
+                let _ = SelectObject(dib_dc, hfont_small);
+                let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                let mut empty_wz = crate::osd::to_utf16_z("No matching models");
+                let mut empty_rc = RECT {
+                    left: field_x + 4,
+                    top: list_top,
+                    right: field_x + field_w - 4,
+                    bottom: list_top + item_h,
+                };
+                let _ = DrawTextW(dib_dc, &mut empty_wz, &mut empty_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
+        } else {
+            for (i, (item_id, label)) in visible_labels.iter().enumerate() {
+                let item_rect = RECT {
+                    left: field_x + 4,
+                    top: list_top + i as i32 * item_h,
+                    right: field_x + field_w - 4,
+                    bottom: list_top + (i as i32 + 1) * item_h,
+                };
+                let is_selected = items.get(*item_id).map(|(_, mid)| *mid == current).unwrap_or(false);
+                if is_selected {
+                    draw_rounded_rect_in_buffer(bits, win_w, win_h, item_rect, (2.0 * scale) as i32, theme.selected);
+                }
+                unsafe {
+                    let _ = SelectObject(dib_dc, hfont_small);
+                    let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+                    let mut label_wz = crate::osd::to_utf16_z(label);
+                    let mut label_rc = RECT {
+                        left: item_rect.left + 4,
+                        top: item_rect.top,
+                        right: item_rect.right - 4,
+                        bottom: item_rect.bottom,
+                    };
+                    let _ = DrawTextW(dib_dc, &mut label_wz, &mut label_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                }
+            }
+        }
+    }
 }
 
 fn render_running(
@@ -853,6 +978,42 @@ fn render_done(
             let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
 
+        // ── 5h quota-spend line ────────────────────────────────────────
+        // Freeze the "after" utilization the first time we paint the Done screen.
+        if !H5_AFTER_FROZEN.swap(true, Ordering::SeqCst) {
+            *H5_AFTER.lock().unwrap() = crate::core::llm_proxy::get_quota().and_then(|q| q.h5_utilization);
+        }
+        let spend_y = note_y + row_h;
+        let base = *H5_BASELINE.lock().unwrap();
+        let after = *H5_AFTER.lock().unwrap();
+        let (spend_text, spend_color) = match (base, after) {
+            (Some(b), Some(a)) => {
+                let delta = (a - b) * 100.0;
+                if delta >= 0.0 {
+                    (
+                        format!(
+                            "5h quota spend: +{:.1}% of window  ({:.0}% \u{2192} {:.0}%)",
+                            delta, b * 100.0, a * 100.0
+                        ),
+                        theme.text,
+                    )
+                } else {
+                    // Negative delta means the 5h window reset mid-run.
+                    (
+                        format!("5h quota spend: window reset mid-run (now {:.0}%)", a * 100.0),
+                        theme.text_muted,
+                    )
+                }
+            }
+            _ => ("5h quota spend: \u{2014} (no live quota headers)".to_string(), theme.text_muted),
+        };
+        unsafe { let _ = SetTextColor(dib_dc, spend_color.to_colorref()); }
+        let mut spend_wz = crate::osd::to_utf16_z(&spend_text);
+        let mut spend_rc = RECT { left: indent, top: spend_y, right: win_w - pad, bottom: spend_y + row_h };
+        unsafe {
+            let _ = DrawTextW(dib_dc, &mut spend_wz, &mut spend_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+
         // Open ECO / Open NAT ON / Open NAT OFF buttons (three side by side above Close)
         let btn_w = (90.0 * scale) as i32;
         let btn_h = (24.0 * scale) as i32;
@@ -860,7 +1021,7 @@ fn render_done(
         let three_btn_w = 3 * btn_w + 2 * btn_gap;
         let three_start_x = (win_w - three_btn_w) / 2;
 
-        let open_y = note_y + row_h + (4.0 * scale) as i32;
+        let open_y = note_y + 2 * row_h + (4.0 * scale) as i32;
 
         draw_button(
             dib_dc, bits, win_w, win_h,
@@ -1120,25 +1281,85 @@ unsafe extern "system" fn panel_wndproc(
         let info_y = content_y + 2 * row_h + (4.0 * scale) as i32;
         let checkbox_y = info_y + 4 * row_h;
         let indent = pad + (8.0 * scale) as i32;
+        let model_y = checkbox_y + row_h;
+        let field_w = (220.0 * scale) as i32;
+        let field_x = indent;
+        let visible_rows = 6usize;
+
+        // ── Inline dropdown hit-test (checked first, mirrors the vision combo) ──
+        let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
+        if SIDE_SUBSTITUTION.load(Ordering::Relaxed) && dropdown_open {
+            let search_h = (30.0 * scale) as i32;
+            let item_h = row_h;
+            let items = SIDE_ITEMS.lock().unwrap().clone();
+            let dd_items = side_dropdown_items(&items);
+            let dropdown_top = model_y + row_h;
+            let visible_count = {
+                let dd = SIDE_DROPDOWN.lock().unwrap();
+                dd.visible_items(&dd_items, visible_rows).len().max(1)
+            };
+            let dropdown_h = search_h + visible_count as i32 * item_h + 4;
+
+            let on_combo = x >= field_x && x < field_x + field_w && y >= model_y && y < model_y + row_h;
+            let on_search = x >= field_x && x < field_x + field_w
+                && y >= dropdown_top + 2 && y < dropdown_top + 2 + search_h;
+            let on_dropdown = x >= field_x && x < field_x + field_w
+                && y >= dropdown_top && y < dropdown_top + dropdown_h;
+
+            if on_combo {
+                // fall through to the combo toggle below (which will close it)
+            } else if on_search {
+                return LRESULT(0); // keep open, typing filters
+            } else if on_dropdown {
+                let list_top = dropdown_top + 2 + search_h;
+                if y >= list_top {
+                    let row = (y - list_top) / item_h;
+                    let mut dd = SIDE_DROPDOWN.lock().unwrap();
+                    let visible = dd.visible_items(&dd_items, visible_rows);
+                    if let Some(item) = visible.get(row as usize) {
+                        if let Some((_, mid)) = items.get(item.id) {
+                            *SIDE_MODEL.lock().unwrap() = mid.clone();
+                        }
+                    }
+                    dd.close();
+                }
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            } else {
+                SIDE_DROPDOWN.lock().unwrap().close();
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            }
+        }
+
+        // Checkbox toggle
         if x >= indent && x < win_w - pad
             && y >= checkbox_y && y < checkbox_y + row_h
         {
             SIDE_SUBSTITUTION.fetch_xor(true, Ordering::Relaxed);
+            SIDE_DROPDOWN.lock().unwrap().close();
             let _ = InvalidateRect(hwnd, None, false);
             return LRESULT(0);
         }
-        // Side model combo hit zone — match render_idle_confirm layout.
-        let model_y = checkbox_y + row_h;
-        let field_w = (220.0 * scale) as i32;
-        let field_x = indent;
+
+        // Combo field click: toggle the dropdown open/closed.
         if SIDE_SUBSTITUTION.load(Ordering::Relaxed)
         && x >= field_x && x < field_x + field_w
         && y >= model_y && y < model_y + row_h
         {
-            close_side_popup();
-            let items = side_model_candidates();
-            *SIDE_POPUP_ITEMS.lock().unwrap() = items;
-            open_side_popup(hwnd, field_x, model_y, field_w);
+            let mut dd = SIDE_DROPDOWN.lock().unwrap();
+            if dd.is_open {
+                dd.close();
+            } else {
+                let items = side_model_items();
+                let dd_items = side_dropdown_items(&items);
+                let current = SIDE_MODEL.lock().unwrap().clone();
+                let selected_idx = items.iter().position(|(_, mid)| *mid == current).unwrap_or(0);
+                *SIDE_ITEMS.lock().unwrap() = items;
+                dd.open(&dd_items, selected_idx, visible_rows);
+            }
+            drop(dd);
+            let _ = InvalidateRect(hwnd, None, false);
             return LRESULT(0);
         }
         // Cancel / Start — match render_idle_confirm layout.
@@ -1180,7 +1401,7 @@ unsafe extern "system" fn panel_wndproc(
         // Mirror render_done layout exactly.
         let table_y = content_y + row_h;
         let note_y = table_y + 10 * row_h;
-        let open_y = note_y + row_h + (4.0 * scale) as i32;
+        let open_y = note_y + 2 * row_h + (4.0 * scale) as i32;
         let btn_w = (90.0 * scale) as i32;
         let btn_h = (24.0 * scale) as i32;
         let btn_gap = (8.0 * scale) as i32;
@@ -1258,9 +1479,51 @@ unsafe extern "system" fn panel_wndproc(
                 paint_panel(hwnd, 0.0, 0, 0);
                 LRESULT(0)
             }
-            WM_KEYDOWN if wparam.0 as u32 == 0x1B => {
-                let _ = DestroyWindow(hwnd);
+            WM_KEYDOWN => {
+                let vk = wparam.0 as u32;
+                let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
+                if dropdown_open {
+                    if vk == 0x1B {
+                        SIDE_DROPDOWN.lock().unwrap().close();
+                        let _ = InvalidateRect(hwnd, None, false);
+                    } else if vk == 0x08 {
+                        let items = SIDE_ITEMS.lock().unwrap().clone();
+                        let dd_items = side_dropdown_items(&items);
+                        SIDE_DROPDOWN.lock().unwrap().backspace(&dd_items, 6);
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    return LRESULT(0);
+                }
+                if vk == 0x1B {
+                    let _ = DestroyWindow(hwnd);
+                }
                 LRESULT(0)
+            }
+            WM_CHAR => {
+                let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
+                if dropdown_open {
+                    let ch = (wparam.0 as u32) as u8 as char;
+                    if ch.is_ascii_graphic() || ch == ' ' {
+                        let items = SIDE_ITEMS.lock().unwrap().clone();
+                        let dd_items = side_dropdown_items(&items);
+                        SIDE_DROPDOWN.lock().unwrap().input_char(ch, &dd_items, 6);
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_MOUSEWHEEL => {
+                let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
+                if dropdown_open {
+                    let delta = ((wparam.0 >> 16) as i16) as i32;
+                    let items = SIDE_ITEMS.lock().unwrap().clone();
+                    let dd_items = side_dropdown_items(&items);
+                    SIDE_DROPDOWN.lock().unwrap().scroll_by(if delta > 0 { -1 } else { 1 }, &dd_items, 6);
+                    let _ = InvalidateRect(hwnd, None, false);
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_DESTROY => {
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme;
@@ -1288,6 +1551,10 @@ fn start_measurement() {
     };
     CONFIRM_DECIDED.store(false, Ordering::SeqCst);
     CONFIRM_PROCEED.store(true, Ordering::SeqCst); // GUI Start means "proceed"
+    // Snapshot the live 5h quota window so the result screen can report real spend.
+    *H5_BASELINE.lock().unwrap() = crate::core::llm_proxy::get_quota().and_then(|q| q.h5_utilization);
+    *H5_AFTER.lock().unwrap() = None;
+    H5_AFTER_FROZEN.store(false, Ordering::SeqCst);
 
     let side_substitution = SIDE_SUBSTITUTION.load(Ordering::Relaxed);
     let side_model = {
@@ -1309,188 +1576,3 @@ fn start_measurement() {
     }).ok();
 }
 
-// ── Side-model popup dropdown ────────────────────────────────────────
-
-fn open_side_popup(parent_hwnd: HWND, field_x: i32, field_y: i32, field_w: i32) {
-    let row_h = {
-        let dpi = unsafe { GetDpiForWindow(parent_hwnd) as f32 };
-        let scale = dpi / 96.0;
-        (ROW_H_BASE as f32 * scale) as i32
-    };
-    let n_items = {
-        let items = SIDE_POPUP_ITEMS.lock().unwrap();
-        items.len().min(8)
-    };
-    // +2 for 1-px top + bottom border frame.
-    let popup_h = n_items as i32 * row_h + 2;
-
-    // Convert client coords of the field bottom-left to screen.
-    let mut pt = POINT { x: field_x, y: field_y + row_h };
-    unsafe { let _ = ClientToScreen(parent_hwnd, &mut pt); }
-
-    let cls_name = crate::osd::to_utf16_z("mhd_side_popup_cls");
-    let hinst = unsafe { GetModuleHandleW(None).unwrap_or_default() };
-    let hinstance: HINSTANCE = hinst.into();
-
-    let popup = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            PCWSTR::from_raw(cls_name.as_ptr()),
-            PCWSTR::null(),
-            WS_POPUP | WS_BORDER,
-            pt.x,
-            pt.y,
-            field_w,
-            popup_h,
-            parent_hwnd,
-            None,
-            hinstance,
-            None,
-        )
-    };
-
-    if let Ok(h) = popup {
-        unsafe {
-            SetWindowLongPtrW(h, GWLP_USERDATA, parent_hwnd.0 as isize);
-            let _ = ShowWindow(h, SW_SHOW);
-            let _ = SetForegroundWindow(h);
-        }
-        *SIDE_POPUP_HWND.lock().unwrap() = Some(h.0 as isize);
-    }
-}
-
-fn close_side_popup() {
-    let hwnd = SIDE_POPUP_HWND.lock().unwrap().take();
-    if let Some(h) = hwnd {
-        unsafe { DestroyWindow(HWND(h as *mut core::ffi::c_void)).ok(); }
-    }
-}
-
-unsafe extern "system" fn side_popup_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    unsafe {
-        match msg {
-            WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let w = rc.right - rc.left;
-
-                // Access theme via parent HWND stored in GWLP_USERDATA.
-                let parent_hwnd = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut _);
-                let theme: &NativeTheme = if !parent_hwnd.is_invalid() {
-                    let tp = GetWindowLongPtrW(parent_hwnd, GWLP_USERDATA) as *mut NativeTheme;
-                    if !tp.is_null() { &*tp } else { &NativeTheme::default() }
-                } else {
-                    &NativeTheme::default()
-                };
-
-                let dpi = GetDpiForWindow(hwnd) as f32;
-                let scale = dpi / 96.0;
-                let item_h = (ROW_H_BASE as f32 * scale) as i32;
-
-                // Background fill
-                let bg = CreateSolidBrush(theme.background.to_colorref());
-                let _ = FillRect(hdc, &rc, bg);
-                let _ = DeleteObject(bg);
-
-                let _ = SetBkMode(hdc, TRANSPARENT);
-                let font_h = -(12.0 * scale) as i32;
-                let font = crate::osd::create_font(font_h, false, "Segoe UI");
-                let old_font = SelectObject(hdc, font);
-
-                let items = SIDE_POPUP_ITEMS.lock().unwrap();
-                let current_model = SIDE_MODEL.lock().unwrap();
-
-                for (i, item) in items.iter().enumerate() {
-                    let item_y = (i as i32) * item_h;
-                    let item_rc = RECT {
-                        left: 2,
-                        top: item_y,
-                        right: w - 2,
-                        bottom: item_y + item_h,
-                    };
-
-                    // Highlight the currently selected item.
-                    if *current_model == *item {
-                        let sel = theme.selected.blend_over(theme.background);
-                        let sel_brush = CreateSolidBrush(sel.to_colorref());
-                        let _ = FillRect(hdc, &item_rc, sel_brush);
-                        let _ = DeleteObject(sel_brush);
-                    }
-
-                    let _ = SetTextColor(hdc, theme.text.to_colorref());
-                    let mut wz = crate::osd::to_utf16_z(item);
-                    let _ = DrawTextW(
-                        hdc,
-                        &mut wz,
-                        &mut RECT {
-                            left: 8,
-                            top: item_y,
-                            right: w - 8,
-                            bottom: item_y + item_h,
-                        },
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                    );
-                }
-
-                drop(items);
-                drop(current_model);
-
-                let _ = SelectObject(hdc, old_font);
-                let _ = DeleteObject(font);
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
-
-            WM_LBUTTONDOWN => {
-                let y = ((lparam.0 >> 16) as i16) as i32;
-                let dpi = GetDpiForWindow(hwnd) as f32;
-                let scale = dpi / 96.0;
-                let item_h = (ROW_H_BASE as f32 * scale) as i32;
-                let inner_y = if y > 0 { y - 1 } else { 0 };
-                let idx = inner_y / item_h;
-                let items = SIDE_POPUP_ITEMS.lock().unwrap();
-                if idx >= 0 && (idx as usize) < items.len() {
-                    let selected = items[idx as usize].clone();
-                    drop(items);
-                    *SIDE_MODEL.lock().unwrap() = selected;
-                } else {
-                    drop(items);
-                }
-
-                // Read parent HWND before closing the popup.
-                let parent_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-                let parent_hwnd = HWND(parent_ptr as *mut _);
-                close_side_popup();
-                let _ = InvalidateRect(parent_hwnd, None, false);
-                LRESULT(0)
-            }
-
-            WM_ACTIVATE => {
-                // WA_INACTIVE (low word of wparam == 0) → close popup.
-                if (wparam.0 as u32) as u16 == 0 {
-                    close_side_popup();
-                }
-                LRESULT(0)
-            }
-
-            WM_KEYDOWN if wparam.0 as u32 == 0x1B => {
-                close_side_popup();
-                LRESULT(0)
-            }
-
-            WM_DESTROY => {
-                *SIDE_POPUP_HWND.lock().unwrap() = None;
-                LRESULT(0)
-            }
-
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
-    }
-}
