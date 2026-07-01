@@ -1,196 +1,250 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>mHD LLM Proxy User Flow</title>
-  <style>
-    :root {
-      --paper: #faf7f2;
-      --paper-2: #f2ede4;
-      --ink: #1c1917;
-      --muted: #57534e;
-      --soft: #78716c;
-      --rule: rgba(28, 25, 23, 0.12);
-      --rule-solid: rgba(120, 113, 108, 0.25);
-      --accent: #b5523a;
-      --accent-tint: rgba(181, 82, 58, 0.08);
-      --link: #2563eb;
-    }
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <title>mHD LLM Proxy User Flow</title>
+ <style>
+ :root {
+ --paper: #faf7f2;
+ --paper-2: #f2ede4;
+ --ink: #1c1917;
+ --muted: #57534e;
+ --soft: #78716c;
+ --rule: rgba(28, 25, 23, 0.12);
+ --rule-solid: rgba(120, 113, 108, 0.25);
+ --accent: #b5523a;
+ --accent-tint: rgba(181, 82, 58, 0.08);
+ --link: #2563eb;
+ --trim: #2f6f4e;
+ --trim-tint: rgba(47, 111, 78, 0.10);
+ }
 
-    * {
-      box-sizing: border-box;
-    }
+ * { box-sizing: border-box; }
 
-    body {
-      margin: 0;
-      background: var(--paper);
-      color: var(--ink);
-      font-family: "Segoe UI", Arial, sans-serif;
-    }
+ body {
+ margin: 0;
+ background: var(--paper);
+ color: var(--ink);
+ font-family: "Segoe UI", Arial, sans-serif;
+ }
 
-    .page {
-      max-width: 1120px;
-      margin: 0 auto;
-      padding: 32px 24px 40px;
-    }
+ .page {
+ max-width: 1180px;
+ margin: 0 auto;
+ padding: 32px 24px 40px;
+ }
 
-    .eyebrow {
-      margin: 0 0 8px;
-      color: var(--soft);
-      font: 600 11px/1.2 Consolas, "Courier New", monospace;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-    }
+ .eyebrow {
+ margin: 0 0 8px;
+ color: var(--soft);
+ font: 600 11px/1.2 Consolas, "Courier New", monospace;
+ letter-spacing: 0.16em;
+ text-transform: uppercase;
+ }
 
-    h1 {
-      margin: 0;
-      font: 400 32px/1.05 Georgia, "Times New Roman", serif;
-    }
+ h1 {
+ margin: 0;
+ font: 400 32px/1.05 Georgia, "Times New Roman", serif;
+ }
 
-    .subtitle {
-      margin: 10px 0 24px;
-      max-width: 780px;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.5;
-    }
+ .subtitle {
+ margin: 10px 0 24px;
+ max-width: 860px;
+ color: var(--muted);
+ font-size: 14px;
+ line-height: 1.5;
+ }
 
-    .diagram-frame {
-      overflow-x: auto;
-      padding: 20px;
-      border: 1px solid var(--rule);
-      border-radius: 8px;
-      background: var(--paper-2);
-    }
+ .diagram-frame {
+ overflow-x: auto;
+ padding: 20px;
+ border: 1px solid var(--rule);
+ border-radius: 8px;
+ background: var(--paper-2);
+ }
 
-    .summary {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
-      margin-top: 20px;
-    }
+ .summary {
+ display: grid;
+ grid-template-columns: repeat(4, 1fr);
+ gap: 16px;
+ margin-top: 20px;
+ }
 
-    .card {
-      min-height: 112px;
-      padding: 20px;
-      border: 1px solid var(--rule);
-      border-radius: 6px;
-      background: #ffffff;
-    }
+ .card {
+ min-height: 112px;
+ padding: 20px;
+ border: 1px solid var(--rule);
+ border-radius: 6px;
+ background: #ffffff;
+ }
 
-    .card-label {
-      margin: 0 0 10px;
-      color: var(--soft);
-      font: 600 10px/1.2 Consolas, "Courier New", monospace;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-    }
+ .card-label {
+ margin: 0 0 10px;
+ color: var(--soft);
+ font: 600 10px/1.2 Consolas, "Courier New", monospace;
+ letter-spacing: 0.14em;
+ text-transform: uppercase;
+ }
 
-    .card h2 {
-      margin: 0 0 8px;
-      font-size: 17px;
-      line-height: 1.2;
-    }
+ .card h2 {
+ margin: 0 0 8px;
+ font-size: 16px;
+ line-height: 1.2;
+ }
 
-    .card p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.45;
-    }
+ .card p {
+ margin: 0;
+ color: var(--muted);
+ font-size: 13px;
+ line-height: 1.45;
+ }
 
-    footer {
-      margin-top: 24px;
-      padding-top: 14px;
-      border-top: 1px solid var(--rule);
-      color: var(--soft);
-      font: 400 11px/1.4 Consolas, "Courier New", monospace;
-    }
+ .card code {
+ font-family: Consolas, "Courier New", monospace;
+ font-size: 12px;
+ }
 
-    svg text {
-      fill: var(--ink);
-    }
-  </style>
+ footer {
+ margin-top: 24px;
+ padding-top: 14px;
+ border-top: 1px solid var(--rule);
+ color: var(--soft);
+ font: 400 11px/1.4 Consolas, "Courier New", monospace;
+ }
+
+ svg text { fill: var(--ink); }
+ </style>
 </head>
 <body>
-  <main class="page">
-    <p class="eyebrow">User Flow</p>
-    <h1>Claude Code model switching through mHD</h1>
-    <p class="subtitle">Claude Code keeps talking to one local endpoint. You switch where the next request goes: native Anthropic passthrough or an OpenAI-compatible provider with your own API key.</p>
+ <main class="page">
+ <p class="eyebrow">User Flow · v0.7.0</p>
+ <h1>Claude Code &amp; OpenAI clients through mHD</h1>
+ <p class="subtitle">Two kinds of client point at one local endpoint. The proxy routes each request type to its matching surface — Anthropic Messages or OpenAI chat-completions — runs the native trim engine, then forwards upstream. You switch where each tier goes from the tray or a hotkey while the session stays open.</p>
 
-    <section class="diagram-frame">
-      <svg width="100%" viewBox="0 0 1080 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Claude Code CLI routes through mHD LLM Proxy to either Anthropic native passthrough or an OpenAI-compatible provider">
-        <defs>
-          <marker id="arrow-default" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-            <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)" />
-          </marker>
-          <marker id="arrow-accent" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-            <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)" />
-          </marker>
-          <marker id="arrow-link" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-            <path d="M0,0 L10,5 L0,10 z" fill="var(--link)" />
-          </marker>
-        </defs>
+ <section class="diagram-frame">
+ <svg width="100%" viewBox="0 0 1120 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Claude Code and OpenAI-compatible clients route through the mHD LLM Proxy, which applies the native trim engine and forwards to Anthropic native or an OpenAI-compatible side provider">
+ <defs>
+ <marker id="arrow-default" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+ <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)" />
+ </marker>
+ <marker id="arrow-accent" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+ <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)" />
+ </marker>
+ <marker id="arrow-link" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+ <path d="M0,0 L10,5 L0,10 z" fill="var(--link)" />
+ </marker>
+ <marker id="arrow-trim" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+ <path d="M0,0 L10,5 L0,10 z" fill="var(--trim)" />
+ </marker>
+ </defs>
 
-        <rect x="40" y="172" width="208" height="112" rx="8" fill="#ffffff" stroke="var(--ink)" />
-        <text x="72" y="216" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">Claude Code CLI</text>
-        <text x="72" y="244" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">launched via claude-mhd.bat</text>
+ <!-- ── Clients (left column) ───────────────────────────────── -->
+ <rect x="32" y="104" width="200" height="96" rx="8" fill="#ffffff" stroke="var(--ink)" />
+ <text x="60" y="142" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">Claude Code</text>
+ <text x="60" y="168" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">/v1/messages</text>
 
-        <rect x="392" y="148" width="248" height="160" rx="8" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1.2" />
-        <text x="432" y="200" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600">mHD LLM Proxy</text>
-        <text x="432" y="228" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">local 127.0.0.1:3456</text>
-        <text x="432" y="260" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="var(--muted)">one stable endpoint</text>
+ <rect x="32" y="248" width="200" height="96" rx="8" fill="#ffffff" stroke="var(--ink)" />
+ <text x="60" y="286" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">OpenAI client</text>
+ <text x="60" y="312" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">Zed · opencode · pi</text>
 
-        <rect x="776" y="72" width="240" height="112" rx="8" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" />
-        <text x="812" y="116" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">Anthropic</text>
-        <text x="812" y="144" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">native passthrough</text>
+ <text x="32" y="88" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">clients</text>
 
-        <rect x="776" y="272" width="240" height="112" rx="8" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" />
-        <text x="812" y="316" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">Side provider</text>
-        <text x="812" y="344" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">OpenAI-compatible API key</text>
+ <!-- ── Proxy ingress / shape router ─────────────────────────── -->
+ <rect x="316" y="132" width="208" height="200" rx="8" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1.2" />
+ <text x="344" y="164" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">mHD LLM Proxy</text>
+ <text x="344" y="188" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">127.0.0.1:3456</text>
+ <line x1="344" y1="204" x2="492" y2="204" stroke="var(--rule-solid)" />
+ <text x="344" y="228" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="var(--muted)">shape router</text>
+ <text x="344" y="252" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">Anthropic form → /v1/messages</text>
+ <text x="344" y="272" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">OpenAI form → /v1/chat/completions</text>
+ <text x="344" y="300" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">/v1/models list</text>
+ <text x="344" y="322" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="var(--muted)">one stable endpoint</text>
 
-        <rect x="392" y="372" width="248" height="64" rx="8" fill="#ffffff" stroke="var(--rule-solid)" />
-        <text x="428" y="396" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600">You switch models here</text>
-        <text x="428" y="420" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">tray menu / Ctrl+Alt+L</text>
+ <!-- ── Trim engine (middle) ─────────────────────────────────── -->
+ <rect x="604" y="164" width="200" height="136" rx="8" fill="var(--trim-tint)" stroke="var(--trim)" stroke-width="1.2" />
+ <text x="628" y="196" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">Native trim engine</text>
+ <text x="628" y="220" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--trim)">clean-room · deterministic</text>
+ <text x="628" y="244" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="var(--muted)">compresses outgoing body</text>
+ <text x="628" y="268" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="var(--muted)">cache prefix left intact</text>
+ <text x="628" y="292" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">trim_engine toggle · fail-open</text>
 
-        <line x1="248" y1="228" x2="392" y2="228" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow-default)" />
-        <text x="272" y="212" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">ANTHROPIC_BASE_URL</text>
+ <!-- ── Egress targets (right) ───────────────────────────────── -->
+ <rect x="884" y="80" width="216" height="112" rx="8" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" />
+ <text x="912" y="124" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">Anthropic</text>
+ <text x="912" y="152" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">native passthrough</text>
 
-        <path d="M640 196 H704 V128 H776" fill="none" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow-accent)" />
-        <rect x="672" y="112" width="64" height="24" rx="4" fill="var(--paper-2)" />
-        <text x="684" y="128" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--accent)">native</text>
+ <rect x="884" y="248" width="216" height="112" rx="8" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" />
+ <text x="912" y="292" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">Side provider</text>
+ <text x="912" y="320" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="var(--soft)">OpenAI-compatible · your key</text>
 
-        <path d="M640 260 H704 V328 H776" fill="none" stroke="var(--link)" stroke-width="2" marker-end="url(#arrow-link)" />
-        <rect x="656" y="320" width="96" height="24" rx="4" fill="var(--paper-2)" />
-        <text x="668" y="336" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--link)">side API key</text>
+ <!-- ── You switch here (bottom) ─────────────────────────────── -->
+ <rect x="316" y="432" width="208" height="64" rx="8" fill="#ffffff" stroke="var(--rule-solid)" />
+ <text x="352" y="456" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600">You switch models here</text>
+ <text x="352" y="480" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">tray · Ctrl+Alt+L · Settings</text>
 
-        <path d="M516 372 V308" fill="none" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="6 6" marker-end="url(#arrow-default)" />
+ <!-- ── Bench / measure tool (bottom-right, side tap) ───────── -->
+ <rect x="780" y="432" width="200" height="64" rx="8" fill="#ffffff" stroke="var(--rule-solid)" />
+ <text x="808" y="456" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600">Trim Quota Bench</text>
+ <text x="808" y="480" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">A/B measure · spends quota</text>
 
-        <line x1="40" y1="440" x2="1016" y2="440" stroke="var(--rule-solid)" />
-        <text x="40" y="464" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">The CLI stays open. The next request follows the route you selected.</text>
-      </svg>
-    </section>
+ <!-- ── Wires: clients → proxy ───────────────────────────────── -->
+ <line x1="232" y1="152" x2="316" y2="200" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow-default)" />
+ <text x="246" y="172" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">ANTHROPIC_BASE_URL</text>
 
-    <section class="summary">
-      <article class="card">
-        <p class="card-label">Start Once</p>
-        <h2>Claude Code sees one URL</h2>
-        <p><code>claude-mhd.bat</code> points Claude Code at the local proxy instead of changing the CLI itself.</p>
-      </article>
-      <article class="card">
-        <p class="card-label">Switch Live</p>
-        <h2>Tray or hotkey</h2>
-        <p>Use the model selector to change routing while the current Claude Code session keeps running.</p>
-      </article>
-      <article class="card">
-        <p class="card-label">Two Exits</p>
-        <h2>Native or side provider</h2>
-        <p>Send a tier back to Anthropic native, or route it to an OpenAI-compatible model with your API key.</p>
-      </article>
-    </section>
+ <line x1="232" y1="296" x2="316" y2="260" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow-default)" />
+ <text x="246" y="290" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">baseURL / model</text>
 
-    <footer>Standalone user-facing diagram. No proxy internals shown.</footer>
-  </main>
+ <!-- ── Wire: proxy → trim ────────────────────────────────────── -->
+ <line x1="524" y1="232" x2="604" y2="232" stroke="var(--trim)" stroke-width="2" marker-end="url(#arrow-trim)" />
+ <rect x="540" y="216" width="48" height="22" rx="4" fill="var(--paper-2)" />
+ <text x="548" y="232" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--trim)">trim</text>
+
+ <!-- ── Wire: trim → egresses ────────────────────────────────── -->
+ <path d="M804 200 H852 V136 H884" fill="none" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow-accent)" />
+ <rect x="828" y="120" width="56" height="22" rx="4" fill="var(--paper-2)" />
+ <text x="836" y="136" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--accent)">native</text>
+
+ <path d="M804 264 H852 V304 H884" fill="none" stroke="var(--link)" stroke-width="2" marker-end="url(#arrow-link)" />
+ <rect x="832" y="296" width="80" height="22" rx="4" fill="var(--paper-2)" />
+ <text x="836" y="312" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--link)">side key</text>
+
+ <!-- ── Switch → proxy (dashed control) ─────────────────────── -->
+ <path d="M420 432 V332" fill="none" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="6 6" marker-end="url(#arrow-default)" />
+
+ <!-- ── Bench taps proxy (dashed observer) ──────────────────── -->
+ <path d="M880 432 V388 H420 V332" fill="none" stroke="var(--rule-solid)" stroke-width="1.6" stroke-dasharray="4 5" marker-end="url(#arrow-default)" />
+
+ <!-- ── Baseline rule + caption ─────────────────────────────── -->
+ <line x1="32" y1="524" x2="1100" y2="524" stroke="var(--rule-solid)" />
+ <text x="32" y="548" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="var(--soft)">Both client types see one URL. Trim is applied per request before the upstream forward; the cache prefix is preserved. Switch routing live — the open session follows on the next request.</text>
+ </svg>
+ </section>
+
+ <section class="summary">
+ <article class="card">
+ <p class="card-label">Two clients</p>
+ <h2>Claude Code &amp; OpenAI editors</h2>
+ <p>Claude Code and editors like Zed both point at the same local proxy — each on its native API shape.</p>
+ </article>
+ <article class="card">
+ <p class="card-label">Compress</p>
+ <h2>Native trim engine</h2>
+ <p>A clean-room engine shrinks each outgoing request deterministically — no extra model call — with the prompt-cache prefix kept byte-identical.</p>
+ </article>
+ <article class="card">
+ <p class="card-label">Route</p>
+ <h2>Native or side key</h2>
+ <p>Send a tier to Anthropic native passthrough, or to an OpenAI-compatible provider with your own key.</p>
+ </article>
+ <article class="card">
+ <p class="card-label">Measure</p>
+ <h2>Trim Quota Bench</h2>
+ <p>A/B the same workload three ways and see the real share of the 5-hour quota window it cost. ⚠ spends real quota.</p>
+ </article>
+ </section>
+
+ <footer>Stand-alone user-facing diagram · v0.7.0. Trim and routing are user-visible; the internal transform layer is not shown.</footer>
+ </main>
 </body>
 </html>
