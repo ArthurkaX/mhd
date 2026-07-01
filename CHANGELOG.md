@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.0 - 2026-07-01
+
+- **Native trim engine**: a clean-room request-compression engine replaces `llmtrim` as the live default.
+  - Deterministic, zero-extra-LLM-call compression that trims verbose tool outputs, logs, diffs, fat JSON, and tool-description bloat while leaving any `cache_control`-frozen prefix byte-identical, so the prompt cache keeps hitting.
+  - Model-agnostic: it cuts by wire-shape (Anthropic vs OpenAI JSON) and content, not by model, so Claude Code and OpenAI-compatible clients share the same engine and tuning.
+  - Beats the previous engine on the frozen backtest corpus (Anthropic 32.6% vs 22.7%, OpenAI 33.2% vs 10.5%). The legacy `llmtrim` engine is kept behind the `trim_engine` toggle as a fallback and comparison baseline.
+  - **PROTECTED detector** guards real diagrams and structured content by density, not by absolute glyph counts: provenance, then fenced code, then box-glyph density, then arrow density. The arrow route is density-gated (`trim_arrow_density_min`, default 0.01) so a 35 MB log full of stray arrows is no longer falsely protected.
+  - **Fence-gate code-gating** (`trim_fence_requires_code`): a code fence only protects content that actually looks like code, so clients that fence their entire tool output no longer waste the budget.
+  - **strip_thinking**: strips the thinking blocks of older completed turns on the native Anthropic path (target-gated; never applied upstream, where the reasoning content must round-trip).
+  - Live-tunable via `settings.json` with a file watcher (no restart): `trim_engine`, `trim_tool_desc_chars`, `trim_toolresult_head`/`_tail`, `trim_ws_enabled`, `trim_strip_thinking`, `trim_fence_requires_code`, `trim_arrow_density_min`.
+- **OpenAI-compatible native path**: the native engine is wired into the live OpenAI surface (Zed, opencode, pi), with the arrow-density gate bringing OpenAI trim to near-parity with Anthropic (+12.6pp).
+- **Request-body storage**: request bodies are compressed with zstd (BLOB) and capped by a corpus retention limit (`corpus_max_rows`, default 5000).
+- **Proxy Trace**: honest cache-state taxonomy (COLD / EXPIRED / MISS / HIT, prefix-hash aware) and a live 5h/7d quota mini-bar line.
+- **Trim Quota Bench** (power users): an in-app A/B measurement panel that runs the same workload three ways (ECO / native-ON / native-OFF) and reports the weighted quota cost, per-arm time, and the realized share of the live 5-hour quota window consumed. **This spends real quota against the running account** — use a throwaway session, not your primary account.
+
+## 0.6.1 - 2026-06-29
+
+- **Anthropic Trim tuning**: applied the combined Trim tuning to Anthropic requests.
+- **Cache token accounting**: capture upstream cache-creation and cache-read tokens in the Proxy Trace.
+- **Proxy Trace polish**: taskbar minimize support, trim preset cleanup, and model-selection persistence.
+
 ## 0.6.0 - 2026-06-28
 
 - **Request Compression (Trim)**: optional, deterministic, zero-extra-LLM-call compression of outgoing requests, powered by `llmtrim-core`.
