@@ -835,7 +835,11 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             if saved > 0 {
                 let pct = saved as f64 / entry.trim_tokens_before as f64 * 100.0;
                 (
-                    format!("\u{2212}{} ({:.0}%)", fmt_tokens(saved), pct),
+                    if entry.target == "native" {
+                        format!("\u{2212}{} ({:.0}%)", fmt_tokens(saved), pct)
+                    } else {
+                        format!("{:.0}%", pct)
+                    },
                     theme.accent,
                 )
             } else {
