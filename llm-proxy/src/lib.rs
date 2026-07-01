@@ -15,6 +15,7 @@ pub mod providers;
 pub mod state;
 pub mod transform;
 pub mod trim;
+pub mod tune;
 pub mod vision;
 
 use std::sync::Arc;
