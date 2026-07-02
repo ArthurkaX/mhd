@@ -60,6 +60,9 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         retry_max_attempts: cfg.retry_max_attempts,
         retry_base_delay_ms: cfg.retry_base_delay_ms,
         retry_max_delay_ms: cfg.retry_max_delay_ms,
+        throttle_enabled: cfg.throttle_enabled,
+        throttle_rate_per_sec: cfg.throttle_rate_per_sec,
+        throttle_burst: cfg.throttle_burst,
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -122,6 +125,8 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_retry_max_attempts(cfg.retry_max_attempts);
         control.set_retry_base_delay_ms(cfg.retry_base_delay_ms);
         control.set_retry_max_delay_ms(cfg.retry_max_delay_ms);
+        control.set_throttle_enabled(cfg.throttle_enabled);
+        control.set_throttle_rate(cfg.throttle_rate_per_sec, cfg.throttle_burst);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
             drop(guard);

@@ -248,6 +248,15 @@ pub struct AppState {
     /// Cap in ms for a single backoff wait in the native Anthropic retry loop.
     pub retry_max_delay_ms: RwLock<u64>,
 
+    /// Master switch for the outbound rate limiter (token-bucket throttle).
+    pub throttle_enabled: RwLock<bool>,
+    /// Steady refill rate (requests/sec) for the token-bucket throttle.
+    pub throttle_rate_per_sec: RwLock<f64>,
+    /// Bucket capacity (max instantaneous burst) for the token-bucket throttle.
+    pub throttle_burst: RwLock<f64>,
+    /// Concrete token bucket — interior Mutex, live-tunable via set_rate.
+    pub throttle_bucket: crate::throttle::TokenBucket,
+
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: RwLock<bool>,
 
@@ -337,6 +346,10 @@ impl AppState {
             retry_max_attempts: RwLock::new(cfg.retry_max_attempts),
             retry_base_delay_ms: RwLock::new(cfg.retry_base_delay_ms),
             retry_max_delay_ms: RwLock::new(cfg.retry_max_delay_ms),
+    throttle_enabled: RwLock::new(cfg.throttle_enabled),
+    throttle_rate_per_sec: RwLock::new(cfg.throttle_rate_per_sec),
+    throttle_burst: RwLock::new(cfg.throttle_burst),
+    throttle_bucket: crate::throttle::TokenBucket::new(cfg.throttle_burst, cfg.throttle_rate_per_sec),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
@@ -836,6 +849,18 @@ impl AppState {
                 .retry_max_delay_ms
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+    throttle_enabled: *self
+    .throttle_enabled
+    .read()
+    .unwrap_or_else(|e| e.into_inner()),
+    throttle_rate_per_sec: *self
+    .throttle_rate_per_sec
+    .read()
+    .unwrap_or_else(|e| e.into_inner()),
+    throttle_burst: *self
+    .throttle_burst
+    .read()
+    .unwrap_or_else(|e| e.into_inner()),
             trim_ws_enabled: *self
                 .trim_ws_enabled
                 .read()

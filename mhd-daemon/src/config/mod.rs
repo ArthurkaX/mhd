@@ -119,6 +119,12 @@ pub struct LlmProxyConfig {
     pub retry_base_delay_ms: u64,
     /// Per-wait backoff cap in ms.
     pub retry_max_delay_ms: u64,
+    /// Master switch for the outbound rate limiter (token-bucket throttle).
+    pub throttle_enabled: bool,
+    /// Steady refill rate (requests/sec) for the token-bucket throttle.
+    pub throttle_rate_per_sec: f64,
+    /// Bucket capacity (max instantaneous burst) for the token-bucket throttle.
+    pub throttle_burst: f64,
 }
 
 impl Default for LlmProxyConfig {
@@ -154,6 +160,9 @@ impl Default for LlmProxyConfig {
             retry_max_attempts: 3,
             retry_base_delay_ms: 500,
             retry_max_delay_ms: 8000,
+        throttle_enabled: false,
+        throttle_rate_per_sec: 10.0,
+        throttle_burst: 10.0,
         }
     }
 }
@@ -483,6 +492,18 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.retry_max_delay_ms)
                 .unwrap_or(8000),
+        throttle_enabled: settings
+            .as_ref()
+            .map(|s| s.throttle_enabled)
+            .unwrap_or(false),
+        throttle_rate_per_sec: settings
+            .as_ref()
+            .map(|s| s.throttle_rate_per_sec)
+            .unwrap_or(10.0),
+        throttle_burst: settings
+            .as_ref()
+            .map(|s| s.throttle_burst)
+            .unwrap_or(10.0),
         }
     }
 

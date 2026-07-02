@@ -145,6 +145,19 @@ pub async fn send_request(
     }
 
     let retry = RetryKnobs::read(state);
+    // Smooth outbound bursts before they hit Anthropic's per-minute rate
+    // limit. Rate limiter (requests/sec), acquired once per request at send
+    // time — NOT held for the request's duration.
+    if *state.throttle_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+        state.throttle_bucket.acquire().await;
+        if log {
+            state.log_line(&format!(
+                "{} #{req_id} native throttle passed after {} ms",
+                now_ms(),
+                started.elapsed().as_millis()
+            ));
+        }
+    }
     let resp;
     let mut attempt: usize = 0;
     loop {
@@ -321,6 +334,19 @@ pub async fn stream_request(
     }
 
     let retry = RetryKnobs::read(state);
+    // Smooth outbound bursts before they hit Anthropic's per-minute rate
+    // limit. Rate limiter (requests/sec), acquired once per request at send
+    // time — NOT held for the request's duration.
+    if *state.throttle_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+        state.throttle_bucket.acquire().await;
+        if log {
+            state.log_line(&format!(
+                "{} #{req_id} native stream throttle passed after {} ms",
+                now_ms(),
+                started.elapsed().as_millis()
+            ));
+        }
+    }
     let resp;
     let mut attempt: usize = 0;
     loop {

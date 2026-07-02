@@ -136,6 +136,22 @@ pub struct Settings {
     /// Cap in ms for a single backoff wait in the native Anthropic retry loop.
     #[serde(default = "default_retry_max_delay_ms")]
     pub retry_max_delay_ms: u64,
+    /// Master switch for the outbound rate limiter (token-bucket throttle) on
+    /// the native Anthropic path. Default: off — validate offline before
+    /// enabling.
+    #[serde(default = "default_throttle_enabled")]
+    pub throttle_enabled: bool,
+
+    /// Steady refill rate (requests/sec) for the token-bucket throttle. A burst
+    /// in excess of `throttle_burst` is spread at this rate.
+    #[serde(default = "default_throttle_rate_per_sec")]
+    pub throttle_rate_per_sec: f64,
+
+    /// Bucket capacity (max instantaneous burst) for the token-bucket throttle.
+    /// Below this size a burst passes immediately; above it the outbound rate is
+    /// capped at `throttle_rate_per_sec`.
+    #[serde(default = "default_throttle_burst")]
+    pub throttle_burst: f64,
 
     /// Master switch for whitespace compression in the native trim engine.
     /// Default: off — validate offline first.
@@ -193,6 +209,9 @@ impl Default for Settings {
             retry_max_attempts: default_retry_max_attempts(),
             retry_base_delay_ms: default_retry_base_delay_ms(),
             retry_max_delay_ms: default_retry_max_delay_ms(),
+    throttle_enabled: default_throttle_enabled(),
+    throttle_rate_per_sec: default_throttle_rate_per_sec(),
+    throttle_burst: default_throttle_burst(),
             trim_ws_enabled: default_trim_ws_enabled(),
             trim_strip_thinking: default_trim_strip_thinking(),
             trim_fence_requires_code: default_trim_fence_requires_code(),
@@ -277,6 +296,12 @@ pub struct Config {
     pub retry_base_delay_ms: u64,
     /// Cap in ms for a single backoff wait in the native Anthropic retry loop.
     pub retry_max_delay_ms: u64,
+    /// Master switch for the outbound rate limiter (token-bucket throttle).
+    pub throttle_enabled: bool,
+    /// Steady refill rate (requests/sec) for the token-bucket throttle.
+    pub throttle_rate_per_sec: f64,
+    /// Bucket capacity (max instantaneous burst) for the token-bucket throttle.
+    pub throttle_burst: f64,
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: bool,
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
@@ -314,6 +339,9 @@ impl Config {
             retry_max_attempts: settings.retry_max_attempts,
             retry_base_delay_ms: settings.retry_base_delay_ms,
             retry_max_delay_ms: settings.retry_max_delay_ms,
+    throttle_enabled: settings.throttle_enabled,
+    throttle_rate_per_sec: settings.throttle_rate_per_sec,
+    throttle_burst: settings.throttle_burst,
             trim_ws_enabled: settings.trim_ws_enabled,
             trim_strip_thinking: settings.trim_strip_thinking,
             trim_fence_requires_code: settings.trim_fence_requires_code,
@@ -349,6 +377,9 @@ impl Config {
             retry_max_attempts: self.retry_max_attempts,
             retry_base_delay_ms: self.retry_base_delay_ms,
             retry_max_delay_ms: self.retry_max_delay_ms,
+    throttle_enabled: self.throttle_enabled,
+    throttle_rate_per_sec: self.throttle_rate_per_sec,
+    throttle_burst: self.throttle_burst,
             trim_ws_enabled: self.trim_ws_enabled,
             trim_strip_thinking: self.trim_strip_thinking,
             trim_fence_requires_code: self.trim_fence_requires_code,
@@ -453,6 +484,18 @@ fn default_retry_base_delay_ms() -> u64 {
 
 fn default_retry_max_delay_ms() -> u64 {
     8000
+}
+
+fn default_throttle_enabled() -> bool {
+ false
+}
+
+fn default_throttle_rate_per_sec() -> f64 {
+ 10.0
+}
+
+fn default_throttle_burst() -> f64 {
+ 10.0
 }
 
 fn default_trim_ws_enabled() -> bool {

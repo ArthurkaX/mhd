@@ -13,6 +13,7 @@ pub mod measure;
 pub mod native_trim;
 pub mod providers;
 pub mod state;
+pub mod throttle;
 pub mod transform;
 pub mod trim;
 pub mod tune;
@@ -262,6 +263,33 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = v;
     }
 
+    /// Enable or disable the outbound token-bucket throttle on the native
+    /// Anthropic path. Live-tunable via settings.json watcher.
+    pub fn set_throttle_enabled(&self, enabled: bool) {
+        *self
+            .state
+            .throttle_enabled
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
+    /// Set the throttle refill rate (requests/sec) and burst capacity,
+    /// applying both to the RwLocks AND the live token bucket so the new
+    /// rate takes effect immediately. Live-tunable via settings.json watcher.
+    pub fn set_throttle_rate(&self, rate_per_sec: f64, burst: f64) {
+        *self
+            .state
+            .throttle_rate_per_sec
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = rate_per_sec;
+        *self
+            .state
+            .throttle_burst
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = burst;
+        self.state.throttle_bucket.set_rate(burst, rate_per_sec);
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state
@@ -359,7 +387,6 @@ impl ProxyControl {
         }
     }
 }
-
 impl Drop for ProxyControl {
     fn drop(&mut self) {
         self.stop();
