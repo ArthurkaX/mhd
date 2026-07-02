@@ -356,6 +356,27 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         ButtonStyle::Secondary,
     );
 
+    // Tune button (left of Note)
+    let tune_btn_w = (44.0 * scale) as i32;
+    let tune_btn_h = (20.0 * scale) as i32;
+    let tune_btn_x = note_btn_x - (4.0 * scale) as i32 - (48.0 * scale) as i32 - (4.0 * scale) as i32 - tune_btn_w;
+    let tune_btn_y = debug_btn_y;
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        tune_btn_x,
+        tune_btn_y,
+        tune_btn_w,
+        tune_btn_h,
+        "Tune",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Secondary,
+    );
+
     // Bench button (left of Note)
     let bench_btn_w = (48.0 * scale) as i32;
     let bench_btn_h = (20.0 * scale) as i32;
@@ -1112,6 +1133,18 @@ unsafe extern "system" fn panel_wndproc(
                 {
                     return LRESULT(HTCLIENT as isize);
                 }
+                // Check tune button
+                let tune_btn_w = (44.0 * scale) as i32;
+                let tune_btn_h = (20.0 * scale) as i32;
+                let tune_btn_x = note_btn_x - (4.0 * scale) as i32 - (48.0 * scale) as i32 - (4.0 * scale) as i32 - tune_btn_w;
+                let tune_btn_y = debug_btn_y;
+                if pt.x >= tune_btn_x
+                    && pt.x < tune_btn_x + tune_btn_w
+                    && pt.y >= tune_btn_y
+                    && pt.y < tune_btn_y + tune_btn_h
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
                 // Check bench button
                 let bench_btn_w = (48.0 * scale) as i32;
                 let bench_btn_h = (20.0 * scale) as i32;
@@ -1195,6 +1228,24 @@ unsafe extern "system" fn panel_wndproc(
                             crate::overlays::note::NoteSink::ProxyDb,
                             false,
                         );
+                    }
+                    return LRESULT(0);
+                }
+                // Check tune button — opens tune panel overlay
+                let tune_btn_w = (44.0 * scale) as i32;
+                let tune_btn_h = (20.0 * scale) as i32;
+                let tune_btn_x = note_btn_x - (4.0 * scale) as i32 - (48.0 * scale) as i32 - (4.0 * scale) as i32 - tune_btn_w;
+                let tune_btn_y = debug_btn_y;
+                if x >= tune_btn_x
+                    && x < tune_btn_x + tune_btn_w
+                    && y >= tune_btn_y
+                    && y < tune_btn_y + tune_btn_h
+                {
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut NativeTheme;
+                    if !state_ptr.is_null() {
+                        let theme = (*state_ptr).clone();
+                        crate::overlays::tune_panel::show(&theme);
                     }
                     return LRESULT(0);
                 }
