@@ -51,6 +51,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         trim_toolresult_head: cfg.trim_toolresult_head,
         trim_toolresult_tail: cfg.trim_toolresult_tail,
         trim_ws_enabled: cfg.trim_ws_enabled,
+        trim_free_target: cfg.trim_free_target.clone(),
         trim_strip_thinking: cfg.trim_strip_thinking,
         trim_fence_requires_code: cfg.trim_fence_requires_code,
         trim_arrow_density_min: cfg.trim_arrow_density_min,
@@ -115,6 +116,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_trim_toolresult_head(cfg.trim_toolresult_head);
         control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
         control.set_trim_ws_enabled(cfg.trim_ws_enabled);
+        control.set_trim_free_target(&cfg.trim_free_target);
         control.set_trim_strip_thinking(cfg.trim_strip_thinking);
         control.set_trim_fence_requires_code(cfg.trim_fence_requires_code);
         control.set_trim_arrow_density_min(cfg.trim_arrow_density_min);

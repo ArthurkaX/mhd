@@ -193,6 +193,17 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = enabled;
     }
 
+    /// Set the designated free/cheap-tier target (target string, e.g. "native"
+    /// or a model id). Requests resolving to this exact target get the light,
+    /// non-lossy trim profile. Empty string disables the feature.
+    pub fn set_trim_free_target(&self, target: &str) {
+        *self
+            .state
+            .trim_free_target
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = target.to_string();
+    }
+
     /// Enable or disable stripping of thinking blocks from old assistant turns.
     pub fn set_trim_strip_thinking(&self, enabled: bool) {
         *self

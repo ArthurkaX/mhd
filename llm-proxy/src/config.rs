@@ -153,6 +153,11 @@ pub struct Settings {
     #[serde(default = "default_trim_ws_enabled")]
     pub trim_ws_enabled: bool,
 
+    /// Designated free/cheap-tier target. Requests resolving to this exact
+    /// target get the light (declutter-only) trim profile. Empty = disabled.
+    #[serde(default = "default_trim_free_target")]
+    pub trim_free_target: String,
+
     /// Strip thinking/redacted_thinking blocks from old assistant turns (native engine).
     /// Default: off.
     #[serde(default = "default_trim_strip_thinking")]
@@ -207,6 +212,7 @@ impl Default for Settings {
     throttle_rate_per_sec: default_throttle_rate_per_sec(),
     throttle_burst: default_throttle_burst(),
             trim_ws_enabled: default_trim_ws_enabled(),
+            trim_free_target: default_trim_free_target(),
             trim_strip_thinking: default_trim_strip_thinking(),
             trim_fence_requires_code: default_trim_fence_requires_code(),
             trim_arrow_density_min: default_trim_arrow_density_min(),
@@ -296,6 +302,8 @@ pub struct Config {
     pub throttle_burst: f64,
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: bool,
+    /// Designated free/cheap-tier target. Empty = disabled.
+    pub trim_free_target: String,
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
     pub trim_strip_thinking: bool,
     /// When true, Layer 2 fence protection only fires when fenced content looks code-like.
@@ -334,6 +342,7 @@ impl Config {
     throttle_rate_per_sec: settings.throttle_rate_per_sec,
     throttle_burst: settings.throttle_burst,
             trim_ws_enabled: settings.trim_ws_enabled,
+            trim_free_target: settings.trim_free_target.clone(),
             trim_strip_thinking: settings.trim_strip_thinking,
             trim_fence_requires_code: settings.trim_fence_requires_code,
             trim_arrow_density_min: settings.trim_arrow_density_min,
@@ -371,6 +380,7 @@ impl Config {
     throttle_rate_per_sec: self.throttle_rate_per_sec,
     throttle_burst: self.throttle_burst,
             trim_ws_enabled: self.trim_ws_enabled,
+            trim_free_target: self.trim_free_target.clone(),
             trim_strip_thinking: self.trim_strip_thinking,
             trim_fence_requires_code: self.trim_fence_requires_code,
             trim_arrow_density_min: self.trim_arrow_density_min,
@@ -486,6 +496,10 @@ fn default_throttle_burst() -> f64 {
 
 fn default_trim_ws_enabled() -> bool {
     false
+}
+
+fn default_trim_free_target() -> String {
+    String::new()
 }
 
 fn default_trim_strip_thinking() -> bool {

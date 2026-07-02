@@ -274,6 +274,13 @@ pub async fn post_messages(
                 .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
+        // Check if this target qualifies for the light trim profile.
+        let free_target = state
+            .trim_free_target
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let native_knobs = crate::trim::resolve_knobs(target.as_str(), &free_target, native_knobs);
         let out = crate::trim::trim_anthropic(payload, native_knobs);
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
@@ -449,6 +456,13 @@ pub async fn post_chat_completions(
                 .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
+        // Check if this target qualifies for the light trim profile.
+        let free_target = state
+            .trim_free_target
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let native_knobs = crate::trim::resolve_knobs(&model, &free_target, native_knobs);
         let out = crate::trim::trim_openai(payload, native_knobs);
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;

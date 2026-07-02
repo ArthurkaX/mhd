@@ -11,6 +11,21 @@
 
 use serde_json::Value;
 
+/// Pick the knob set for a resolved request target: the designated free-tier
+/// `free_target` (if non-empty and matching) gets the light, non-lossy profile;
+/// everything else gets the caller-supplied live-tunable knobs.
+pub fn resolve_knobs(
+    target: &str,
+    free_target: &str,
+    live: crate::native_trim::NativeKnobs,
+) -> crate::native_trim::NativeKnobs {
+    if !free_target.is_empty() && target == free_target {
+        crate::native_trim::NativeKnobs::light()
+    } else {
+        live
+    }
+}
+
 /// Minimum serialised body length (in bytes) before Trim even attempts work.
 /// Below this, there is nothing worth compressing.
 const TRIM_MIN_BYTES: usize = 4096;
@@ -180,6 +195,42 @@ pub fn trim_openai(payload: Value, native_knobs: crate::native_trim::NativeKnobs
 mod tests {
     use super::*;
     use crate::native_trim::NativeKnobs;
+
+    // ── resolve_knobs ────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_knobs_matches_free_target() {
+        let result = resolve_knobs("some-id", "some-id", NativeKnobs::default());
+        assert_eq!(result.tool_max_desc_chars, usize::MAX);
+        assert_eq!(result.tool_result_min_elide, usize::MAX);
+        assert!(result.ws_enabled);
+        assert!(result.strip_thinking);
+    }
+
+    #[test]
+    fn resolve_knobs_non_match_returns_live() {
+        let live = NativeKnobs {
+            tool_max_desc_chars: 42,
+            ..NativeKnobs::default()
+        };
+        let result = resolve_knobs("some-id", "other-id", live);
+        assert_eq!(result.tool_max_desc_chars, 42);
+    }
+
+    #[test]
+    fn resolve_knobs_empty_free_target_disabled() {
+        let live = NativeKnobs {
+            tool_max_desc_chars: 99,
+            ..NativeKnobs::default()
+        };
+        // target != "" (non-empty target, empty free_target — always live)
+        let result = resolve_knobs("anything", "", live);
+        assert_eq!(result.tool_max_desc_chars, 99);
+
+        // target == "" too — empty free_target can never accidentally match
+        let result2 = resolve_knobs("", "", NativeKnobs::default());
+        assert_eq!(result2.tool_max_desc_chars, NativeKnobs::default().tool_max_desc_chars);
+    }
 
     /// A small body below TRIM_MIN_BYTES should be passed through untouched.
     #[test]

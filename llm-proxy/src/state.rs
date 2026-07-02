@@ -267,6 +267,9 @@ pub struct AppState {
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: RwLock<bool>,
 
+    /// Designated free/cheap-tier target. Empty string disables the feature.
+    pub trim_free_target: RwLock<String>,
+
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
     pub trim_strip_thinking: RwLock<bool>,
 
@@ -358,6 +361,7 @@ impl AppState {
     throttle_bucket: crate::throttle::TokenBucket::new(cfg.throttle_burst, cfg.throttle_rate_per_sec),
         throttle_probe_bucket: crate::throttle::TokenBucket::new(4.0, 4.0),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
+            trim_free_target: RwLock::new(cfg.trim_free_target.clone()),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
             trim_arrow_density_min: RwLock::new(cfg.trim_arrow_density_min),
@@ -882,6 +886,11 @@ impl AppState {
                 .trim_ws_enabled
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
+            trim_free_target: self
+                .trim_free_target
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         trim_strip_thinking: *self
             .trim_strip_thinking
             .read()

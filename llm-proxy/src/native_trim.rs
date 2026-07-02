@@ -82,6 +82,23 @@ impl Default for NativeKnobs {
     }
 }
 
+impl NativeKnobs {
+    /// Declutter-only profile for a designated free/cheap-tier model: keeps
+    /// whitespace cleanup and old-thinking stripping (lossless), and disables
+    /// both lossy levers (tool-description truncation, tool_result head/tail
+    /// compression) by making their trigger conditions unreachable — not a
+    /// "generous" setting, a structural no-op for those two code paths.
+    pub fn light() -> Self {
+        Self {
+            tool_max_desc_chars: usize::MAX,
+            tool_result_min_elide: usize::MAX,
+            ws_enabled: true,
+            strip_thinking: true,
+            ..Self::default()
+        }
+    }
+}
+
 // ── protected content detector ────────────────────────────────────────────────
 
 /// Returns `true` when the tool_result block must be left completely untouched
@@ -720,6 +737,60 @@ mod tests {
             tool_result_tail: tail,
             ..Default::default()
         }
+    }
+
+    // ── light profile (declutter-only, non-lossy) ─────────────────────────
+
+    /// The `light()` profile keeps whitespace and thinking-strip enabled while
+    /// structurally disabling both lossy levers (tool_desc truncation and
+    /// tool_result head/tail compression). On a large body that would normally
+    /// compress under default knobs, the output must be byte-identical to the
+    /// input, and a long tool description must survive untouched.
+    #[test]
+    fn light_profile_is_inert() {
+        // tool_result body big enough to compress under Default::default()
+        let big_text = "A".repeat(9000);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu01",
+                            "content": big_text
+                        }
+                    ]
+                }
+            ],
+            "tools": [
+                {
+                    "name": "big_tool",
+                    "description": "X".repeat(5000)
+                }
+            ]
+        });
+
+        let knobs = NativeKnobs::light();
+
+        // Lossy levers structurally disabled
+        assert_eq!(knobs.tool_max_desc_chars, usize::MAX);
+        assert_eq!(knobs.tool_result_min_elide, usize::MAX);
+
+        // Lossless levers enabled
+        assert!(knobs.ws_enabled);
+        assert!(knobs.strip_thinking);
+
+        // Run through native trim — tool_result must be byte-identical (no
+        // compression markers inserted).
+        let result = trim_native(body, &knobs);
+        let content = &result["messages"][0]["content"][0]["content"];
+        assert_eq!(content.as_str().unwrap(), big_text);
+
+        // Tool description must survive untouched.
+        let desc = result["tools"][0]["description"].as_str().unwrap();
+        assert_eq!(desc.len(), 5000);
     }
 
     // ── existing description-truncation tests ─────────────────────────────────
