@@ -143,6 +143,11 @@ pub struct TraceEntry {
     /// HTTP status of the upstream response (None until the response arrives).
     /// 2xx = success; >=400 = error (rendered red + collapsed in the trace).
     pub status: Option<u16>,
+    /// True when this request was a `max_tokens == 1` background probe (token
+    /// count / cache-warm check) sent by Claude Code. Probes get their own
+    /// throttle lane and render as a quiet gray "×N probe" line in the trace
+    /// instead of a red error burst.
+    pub is_probe: bool,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -256,6 +261,11 @@ pub struct AppState {
     pub throttle_burst: RwLock<f64>,
     /// Concrete token bucket — interior Mutex, live-tunable via set_rate.
     pub throttle_bucket: crate::throttle::TokenBucket,
+    /// Separate throttle lane for `max_tokens == 1` background probes sent by
+    /// Claude Code (token-count / cache-warm checks). A probe salvo draws from
+    /// this bucket so it never queues ahead of a real request in the shared
+    /// bucket. Fixed modest rate (burst 4, 4/sec) — not yet config-tunable.
+    pub throttle_probe_bucket: crate::throttle::TokenBucket,
 
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: RwLock<bool>,
@@ -350,6 +360,7 @@ impl AppState {
     throttle_rate_per_sec: RwLock::new(cfg.throttle_rate_per_sec),
     throttle_burst: RwLock::new(cfg.throttle_burst),
     throttle_bucket: crate::throttle::TokenBucket::new(cfg.throttle_burst, cfg.throttle_rate_per_sec),
+        throttle_probe_bucket: crate::throttle::TokenBucket::new(4.0, 4.0),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
@@ -580,6 +591,21 @@ impl AppState {
                     Some(error),
                     Some(error_kind),
                 );
+            }
+        }
+    }
+
+    /// Flip the `is_probe` flag on the in-flight trace entry for `req_id`.
+    /// Called from the native Anthropic path once the request body is known to
+    /// be a `max_tokens == 1` background probe, so the Proxy Trace overlay can
+    /// render it as a quiet gray "×N probe" line instead of a red error burst.
+    /// No-op if the entry has already rotated out of the ring buffer.
+    pub fn mark_probe(&self, req_id: u64) {
+        let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
+        for entry in trace.iter_mut().rev() {
+            if entry.seq == req_id {
+                entry.is_probe = true;
+                break;
             }
         }
     }

@@ -709,10 +709,27 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     {
         let mut i = 0usize;
         while i < n_disp {
+            // Probe rows collapse together regardless of their exact status
+            // (a probe salvo may mix 200 and 429). They render as a quiet gray
+            // "xN probe" line instead of a red error burst.
+            if display_entries[i].is_probe {
+                let mut j = i + 1;
+                while j < n_disp && display_entries[j].is_probe {
+                    j += 1;
+                }
+                run_len[i] = j - i;
+                for k in (i + 1)..j {
+                    skip[k] = true;
+                }
+                i = j;
+                continue;
+            }
             let code = display_entries[i].status.filter(|&s| s >= 400);
             if let Some(code) = code {
                 let mut j = i + 1;
-                while j < n_disp && display_entries[j].status == Some(code) {
+                while j < n_disp && !display_entries[j].is_probe
+                    && display_entries[j].status == Some(code)
+                {
                     j += 1;
                 }
                 run_len[i] = j - i;
@@ -755,6 +772,39 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 );
                 let _ = DeleteObject(brush);
             }
+        }
+
+        // Probe row (single or collapsed salvo): render one quiet gray summary
+        // line instead of the red error burst a 429 probe would otherwise be.
+        // Probes that 429 are harmless background noise (zero quota), so they
+        // should not look like lost work.
+        if entry.is_probe {
+            let text = if run_len[i] > 1 {
+                format!("\u{00d7}{} probe", run_len[i])
+            } else {
+                "probe".to_string()
+            };
+            let probe_color = theme.text_muted;
+            unsafe {
+                let _ = SetTextColor(dib_dc, probe_color.to_colorref());
+            }
+            let mut pw = crate::osd::to_utf16_z(&text);
+            let mut prc = RECT {
+                left: pad,
+                top: ry,
+                right: win_w - pad,
+                bottom: ry + row_h,
+            };
+            unsafe {
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut pw,
+                    &mut prc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
+            out_row += 1;
+            continue;
         }
 
         // Error row (single or collapsed burst): render one red summary line

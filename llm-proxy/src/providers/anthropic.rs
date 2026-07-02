@@ -145,11 +145,23 @@ pub async fn send_request(
     }
 
     let retry = RetryKnobs::read(state);
+    // Detect `max_tokens == 1` background probes (token-count / cache-warm
+    // checks Claude Code fires at turn end). These get their own throttle
+    // lane and a quiet trace render so they don't masquerade as lost work.
+    let is_probe = payload.get("max_tokens").and_then(|v| v.as_u64()) == Some(1);
+    if is_probe {
+        state.mark_probe(req_id);
+    }
     // Smooth outbound bursts before they hit Anthropic's per-minute rate
     // limit. Rate limiter (requests/sec), acquired once per request at send
-    // time — NOT held for the request's duration.
+    // time — NOT held for the request's duration. Probes draw from a separate
+    // bucket so a salvo can't queue ahead of a real request.
     if *state.throttle_enabled.read().unwrap_or_else(|e| e.into_inner()) {
-        state.throttle_bucket.acquire().await;
+        if is_probe {
+            state.throttle_probe_bucket.acquire().await;
+        } else {
+            state.throttle_bucket.acquire().await;
+        }
         if log {
             state.log_line(&format!(
                 "{} #{req_id} native throttle passed after {} ms",
@@ -334,11 +346,23 @@ pub async fn stream_request(
     }
 
     let retry = RetryKnobs::read(state);
+    // Detect `max_tokens == 1` background probes (token-count / cache-warm
+    // checks Claude Code fires at turn end). These get their own throttle
+    // lane and a quiet trace render so they don't masquerade as lost work.
+    let is_probe = payload.get("max_tokens").and_then(|v| v.as_u64()) == Some(1);
+    if is_probe {
+        state.mark_probe(req_id);
+    }
     // Smooth outbound bursts before they hit Anthropic's per-minute rate
     // limit. Rate limiter (requests/sec), acquired once per request at send
-    // time — NOT held for the request's duration.
+    // time — NOT held for the request's duration. Probes draw from a separate
+    // bucket so a salvo can't queue ahead of a real request.
     if *state.throttle_enabled.read().unwrap_or_else(|e| e.into_inner()) {
-        state.throttle_bucket.acquire().await;
+        if is_probe {
+            state.throttle_probe_bucket.acquire().await;
+        } else {
+            state.throttle_bucket.acquire().await;
+        }
         if log {
             state.log_line(&format!(
                 "{} #{req_id} native stream throttle passed after {} ms",

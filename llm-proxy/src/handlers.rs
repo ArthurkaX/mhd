@@ -353,6 +353,7 @@ pub async fn post_messages(
         started_ms: crate::providers::now_unix_ms(),
         prefix_hash: prefix_hash(&payload),
         status: None,
+        is_probe: payload.get("max_tokens").and_then(|v| v.as_u64()) == Some(1),
     });
 
     if stream {
@@ -527,6 +528,7 @@ pub async fn post_chat_completions(
         started_ms: crate::providers::now_unix_ms(),
         prefix_hash: 0,
         status: None,
+        is_probe: false,
     });
 
     if stream {
