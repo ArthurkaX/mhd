@@ -33,6 +33,10 @@ const REFRESH_TIMER_ID: usize = 1;
 /// idle gap is classified as COLD (expected) rather than a real MISS.
 const CACHE_TTL_SECS: u64 = 360;
 
+/// Vertical scroll offset for the trace list, in collapsed visual rows from the
+/// top (newest). 0 = pinned to newest (default). Clamped in paint_panel.
+static TRACE_SCROLL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
 fn fmt_tokens(n: u64) -> String {
     if n == 0 {
         "\u{2014}".to_string() // em dash
@@ -746,10 +750,23 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     // Output row index: advances only when a row is actually drawn, so collapsed
     // bursts reclaim screen space instead of leaving blank gaps.
     let mut out_row: i32 = 0;
+    let mut visual_idx: i32 = 0;
+    // Total collapsed (visible) rows and how many fit on screen.
+    let total_visual: i32 = skip.iter().filter(|s| !**s).count() as i32;
+    let avail_h: i32 = (win_h - pad) - list_top;
+    let visible_rows: i32 = (avail_h / row_h).max(1);
+    let max_scroll: i32 = (total_visual - visible_rows).max(0);
+    let mut scroll = TRACE_SCROLL.load(std::sync::atomic::Ordering::Relaxed);
+    if scroll < 0 { scroll = 0; }
+    if scroll > max_scroll { scroll = max_scroll; }
+    TRACE_SCROLL.store(scroll, std::sync::atomic::Ordering::Relaxed);
     for (i, entry) in display_entries.iter().enumerate() {
         if skip[i] {
             continue;
         }
+        // Skip visual rows scrolled off the top; stop once the viewport is full.
+        if visual_idx < scroll { visual_idx += 1; continue; }
+        visual_idx += 1;
         let ry = list_top + out_row * row_h;
         if ry + row_h > win_h - pad {
             break;
@@ -1038,6 +1055,30 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             }
         }
         out_row += 1;
+    }
+
+    // Thin scrollbar on the right edge when the list overflows the viewport.
+    if total_visual > visible_rows {
+        let sb_w = (4.0 * scale).max(3.0) as i32;
+        let sb_x = win_w - pad - sb_w;
+        let track_top = list_top;
+        let track_h = visible_rows * row_h;
+        // Track
+        let track_brush = unsafe { CreateSolidBrush(theme.surface.blend_over(theme.background).to_colorref()) };
+        unsafe {
+            let _ = FillRect(dib_dc, &RECT { left: sb_x, top: track_top, right: sb_x + sb_w, bottom: track_top + track_h }, track_brush);
+            let _ = DeleteObject(track_brush);
+        }
+        // Thumb: height proportional to visible/total, position proportional to scroll/max_scroll.
+        let thumb_h = ((visible_rows as f32 / total_visual as f32) * track_h as f32).max(row_h as f32 * 0.75) as i32;
+        let thumb_travel = (track_h - thumb_h).max(0);
+        let thumb_frac = if max_scroll > 0 { scroll as f32 / max_scroll as f32 } else { 0.0 };
+        let thumb_top = track_top + (thumb_frac * thumb_travel as f32) as i32;
+        let thumb_brush = unsafe { CreateSolidBrush(theme.text_muted.to_colorref()) };
+        unsafe {
+            let _ = FillRect(dib_dc, &RECT { left: sb_x, top: thumb_top, right: sb_x + sb_w, bottom: thumb_top + thumb_h }, thumb_brush);
+            let _ = DeleteObject(thumb_brush);
+        }
     }
 
     // ── Vision trace section ─────────────────────────────────────
@@ -1434,6 +1475,16 @@ unsafe extern "system" fn panel_wndproc(
                     let _ = Box::from_raw(ptr);
                 }
                 PostQuitMessage(0);
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                // wheel delta is the high word of wparam, in multiples of 120.
+                let delta = ((wparam.0 >> 16) as i16) as i32 / 120;
+                // Wheel up (delta > 0) scrolls toward newer (offset decreases).
+                let cur = TRACE_SCROLL.load(Ordering::Relaxed);
+                TRACE_SCROLL.store(cur - delta, Ordering::Relaxed);
+                // Clamping happens in paint_panel. Repaint now.
+                paint_panel(hwnd, 0.0, 0, 0);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
