@@ -121,7 +121,7 @@ pub struct TraceEntry {
     pub cache_read_tokens: u64,
     /// Tokens written to the prompt cache this turn (Anthropic only; 0 for OpenAI).
     pub cache_creation_tokens: u64,
-    /// True if llmtrim was applied to this request.
+    /// True if the trim engine was applied to this request.
     pub trim_applied: bool,
     /// Estimated tokens before trimming.
     pub trim_tokens_before: u64,
@@ -229,11 +229,8 @@ pub struct AppState {
     /// Only updated for Opus/Sonnet requests when a downgrade tier is enabled.
     pub session_last_ts: RwLock<HashMap<u64, u64>>,
 
-    /// Master switch for llmtrim request compression.
+    /// Master switch for native request compression.
     pub trim_enabled: RwLock<bool>,
-
-    /// Active trim engine: "llmtrim" (default) or "native".
-    pub trim_engine: RwLock<String>,
 
     /// Max Unicode chars per tool description (native engine knob).
     pub trim_tool_desc_chars: RwLock<usize>,
@@ -348,7 +345,6 @@ impl AppState {
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
-            trim_engine: RwLock::new(cfg.trim_engine.clone()),
             trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
@@ -842,11 +838,6 @@ impl AppState {
             trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
             corpus_capture: *self.corpus_capture_enabled.read().unwrap_or_else(|e| e.into_inner()),
             db_log_enabled: self.is_db_log_enabled(),
-            trim_engine: self
-                .trim_engine
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
             trim_tool_desc_chars: *self
                 .trim_tool_desc_chars
                 .read()

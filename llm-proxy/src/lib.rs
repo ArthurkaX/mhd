@@ -114,6 +114,12 @@ impl ProxyControl {
         )
     }
 
+    /// The current proxy run id (process-start ms). Combine with a TraceEntry's
+    /// `seq` to identify a captured request `(run_id, seq)`.
+    pub fn run_id(&self) -> u64 {
+        self.state.run_id
+    }
+
     /// Set the debug log level on the embedded state (no disk persist).
     pub fn set_log_level(&self, level: &str) {
         *self
@@ -133,7 +139,7 @@ impl ProxyControl {
             .to_string()
     }
 
-    /// Enable or disable request compression via llmtrim.
+    /// Enable or disable native request compression.
     pub fn set_trim_enabled(&self, enabled: bool) {
         *self
             .state
@@ -149,15 +155,6 @@ impl ProxyControl {
             .trim_enabled
             .read()
             .unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Set the active trim engine ("llmtrim" or "native").
-    pub fn set_trim_engine(&self, engine: &str) {
-        *self
-            .state
-            .trim_engine
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = engine.to_string();
     }
 
     /// Set the max chars per tool description for the native trim engine.
@@ -288,15 +285,6 @@ impl ProxyControl {
             .write()
             .unwrap_or_else(|e| e.into_inner()) = burst;
         self.state.throttle_bucket.set_rate(burst, rate_per_sec);
-    }
-
-    /// Current trim engine.
-    pub fn trim_engine(&self) -> String {
-        self.state
-            .trim_engine
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
     }
 
     /// Snapshot the live native-trim knobs (same reads the request path uses).

@@ -231,7 +231,7 @@ pub async fn post_messages(
     state.capture_request_body(req_id, Some(&model), "anthropic", &payload);
 
     // ── Trim hook ───────────────────────────────────────────────────
-    // Run llmtrim-powered request compression before forwarding.
+    // Run native request compression before forwarding.
     // Fail-open: any error or no-gain returns the original body.
     // Trim metadata (preset, config, stages) rides on the requests DB row —
     // no separate TRIM event needed.
@@ -242,9 +242,7 @@ pub async fn post_messages(
     let mut trim_config_json = String::new();
     let mut trim_stages_json = String::new();
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
-        // Read the active engine: "native" or default "llmtrim".
-        let engine = state.trim_engine.read().unwrap_or_else(|e| e.into_inner()).clone();
-        // Read live-tunable native engine knobs (also used as a fallback on the llmtrim path).
+        // Read live-tunable native engine knobs.
         let native_knobs = crate::native_trim::NativeKnobs {
             tool_max_desc_chars: *state
                 .trim_tool_desc_chars
@@ -276,8 +274,7 @@ pub async fn post_messages(
                 .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
-        // Claude Code is always an agent — use the agent preset for cache safety.
-        let out = crate::trim::trim_anthropic_with_engine(payload, &engine, "agent", native_knobs);
+        let out = crate::trim::trim_anthropic(payload, native_knobs);
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;
@@ -315,8 +312,8 @@ pub async fn post_messages(
                 .dump_bodies()
             {
                 eprintln!(
-                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset={} engine={}",
-                    saved, pct, out.preset, engine,
+                    "[llm-proxy] trim: −{} tok ({:.1}%) — preset={}",
+                    saved, pct, out.preset,
                 );
             }
         }
@@ -386,7 +383,7 @@ pub async fn post_messages(
 /// Handler for `POST /v1/chat/completions` — OpenAI-compatible passthrough to
 /// the upstream gateway (for OpenAI-native clients like Zed).
 ///
-/// Supports non-streaming and streaming responses. Trim (llmtrim compression)
+/// Supports non-streaming and streaming responses. Trim (native compression)
 /// is applied under the same single `state.trim_enabled` flag that governs the
 /// `/v1/messages` path.
 ///
@@ -422,8 +419,6 @@ pub async fn post_chat_completions(
     let mut trim_config_json = String::new();
     let mut trim_stages_json = String::new();
     let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
-        // Read the active engine: "native" or default "llmtrim".
-        let engine = state.trim_engine.read().unwrap_or_else(|e| e.into_inner()).clone();
         // Read live-tunable native engine knobs (same reads as post_messages;
         // strip_thinking is irrelevant for OpenAI shape — set false).
         let native_knobs = crate::native_trim::NativeKnobs {
@@ -454,8 +449,7 @@ pub async fn post_chat_completions(
                 .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         };
-        // OpenAI clients (Zed etc.) get the auto preset for shape-routing.
-        let out = crate::trim::trim_openai_with_engine(payload, &engine, "auto", native_knobs);
+        let out = crate::trim::trim_openai(payload, native_knobs);
         trim_applied = out.applied;
         trim_tokens_before = out.tokens_before;
         trim_tokens_after = out.tokens_after;
@@ -493,8 +487,8 @@ pub async fn post_chat_completions(
                 .dump_bodies()
             {
                 eprintln!(
-                    "[llm-proxy] trim(openai): −{} tok ({:.1}%) — preset=auto engine={}",
-                    saved, pct, engine,
+                    "[llm-proxy] trim(openai): −{} tok ({:.1}%)",
+                    saved, pct,
                 );
             }
         }

@@ -1,4 +1,4 @@
-﻿//! Live trim-vs-quota measurement overlay.
+//! Live trim-vs-quota measurement overlay.
 //!
 //! Opens a layered WS_POPUP window that drives
 //! `llm_proxy::measure::run_measurement` on a background thread,
@@ -489,7 +489,7 @@ fn render_idle_confirm(
     dib_dc: HDC, bits: *mut core::ffi::c_void,
     hfont_small: HFONT, theme: &NativeTheme, scale: f32,
     win_w: i32, win_h: i32, pad: i32, y0: i32, row_h: i32,
-    prog: &llm_proxy::measure::MeasureProgress,
+    _prog: &llm_proxy::measure::MeasureProgress,
 ) {
     let indent = pad + (8.0 * scale) as i32;
 
@@ -514,9 +514,7 @@ fn render_idle_confirm(
 
     // Info table
     let info_y = y0 + 2 * row_h + (4.0 * scale) as i32;
-    let trim_engine_str = prog.trim_engine.as_deref().unwrap_or("unknown");
     let info_lines = [
-        format!("  Trim engine:   {}", trim_engine_str),
         "  Method:        three warm-cache sessions, proxy-log usage".to_string(),
         "  Spends:        real quota (three agent sessions)".to_string(),
     ];

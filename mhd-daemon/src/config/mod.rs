@@ -86,13 +86,11 @@ pub struct LlmProxyConfig {
     pub sonnet_downgrade_enabled: bool,
     /// Selected model for vision screenshot feature.
     pub vision_model: Option<llm_proxy::config::ModelRef>,
-    /// Enable llmtrim-powered request compression.
+    /// Enable native request compression.
     pub trim_enabled: bool,
     /// Enable replay-corpus capture: store full pre-trim request bodies in
     /// proxy.db so a candidate trim preset can be backtested against real traffic.
     pub corpus_capture: bool,
-    /// Trim engine: "llmtrim" (default) or "native".
-    pub trim_engine: String,
     /// Max Unicode chars per tool description (native engine).
     pub trim_tool_desc_chars: usize,
     /// Max chars for the head of a tool_result block (native engine).
@@ -147,7 +145,6 @@ impl Default for LlmProxyConfig {
             vision_model: None,
             trim_enabled: false,
             corpus_capture: false,
-            trim_engine: "llmtrim".to_string(),
             trim_tool_desc_chars: 150,
             trim_toolresult_head: 3000,
             trim_toolresult_tail: 1000,
@@ -440,10 +437,6 @@ impl AppConfig {
             vision_model: settings.as_ref().and_then(|s| s.vision_model.clone()),
             trim_enabled: settings.as_ref().map(|s| s.trim_enabled).unwrap_or(false),
             corpus_capture: settings.as_ref().map(|s| s.corpus_capture).unwrap_or(false),
-            trim_engine: settings
-                .as_ref()
-                .map(|s| s.trim_engine.clone())
-                .unwrap_or_else(|| "llmtrim".to_string()),
             trim_tool_desc_chars: settings
                 .as_ref()
                 .map(|s| s.trim_tool_desc_chars)

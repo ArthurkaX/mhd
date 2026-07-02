@@ -44,7 +44,6 @@ base64 = "0.22"
 dirs = "5"
 tracing = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-llmtrim-core = { git = "https://github.com/fkiene/llmtrim", rev = "d49742885669e27eff91f6ff7ed0e8625a9dc295", default-features = false }
 zstd = "0.13"
 
 [dev-dependencies]

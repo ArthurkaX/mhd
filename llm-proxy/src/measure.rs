@@ -164,7 +164,6 @@ pub enum MeasurePhase {
 pub struct MeasureProgress {
     pub phase: MeasurePhase,
     pub message: String,
-    pub trim_engine: Option<String>,
     pub corpus_dir: Option<PathBuf>,
     pub corpus_files: Vec<(String, usize)>,
     pub eco: Option<ArmAggregate>,
@@ -182,7 +181,6 @@ impl MeasureProgress {
         Self {
             phase: MeasurePhase::Idle,
             message: String::new(),
-            trim_engine: None,
             corpus_dir: None,
             corpus_files: Vec::new(),
             eco: None,
@@ -256,12 +254,6 @@ pub fn set_targets(opus: &str, sonnet: &str, haiku: &str) -> anyhow::Result<()> 
 pub fn read_trim_enabled() -> Option<bool> {
     let v = read_settings_value()?;
     v.get("trim_enabled")?.as_bool()
-}
-
-/// Read the current `trim_engine` value from settings.json (for informational display).
-pub fn read_trim_engine() -> Option<String> {
-    let v = read_settings_value()?;
-    v.get("trim_engine")?.as_str().map(|s| s.to_string())
 }
 
 // ── helpers: snapshot corpus ────────────────────────────────────────────────────────────
@@ -714,29 +706,9 @@ pub fn run_measurement(
         .and_then(|v| v.get("trim_enabled"))
         .and_then(|v| v.as_bool());
 
-    let trim_engine = read_trim_engine();
     match original_trim_enabled {
         Some(v) => set_msg(progress, &format!("  Current trim_enabled: {v}")),
         None => set_msg(progress, "  trim_enabled: not found in settings.json (will create it)"),
-    }
-    match &trim_engine {
-        Some(e) if e != "native" => {
-            set_msg(
-                progress,
-                &format!(
-                    "  Warning: trim_engine = \"{e}\" (not \"native\"). The measurement will \
-                     reflect whatever engine is currently live."
-                ),
-            );
-        }
-        Some(e) => set_msg(progress, &format!("  trim_engine: {e}")),
-        None => set_msg(progress, "  trim_engine: not found"),
-    }
-
-    // Store for progress.
-    {
-        let mut p = progress.lock().unwrap();
-        p.trim_engine = trim_engine;
     }
 
     let mut guard = TrimRestoreGuard::new(settings_snapshot);

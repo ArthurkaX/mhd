@@ -87,7 +87,7 @@ pub struct Settings {
     #[serde(default = "default_vision_prompt")]
     pub vision_prompt: String,
 
-    /// Master switch for llmtrim-powered request compression.
+    /// Master switch for native request compression.
     /// Default: off.
     #[serde(default)]
     pub trim_enabled: bool,
@@ -100,11 +100,6 @@ pub struct Settings {
     /// Default: on — the DB log is opened at proxy startup when true.
     #[serde(default = "default_db_log_enabled")]
     pub db_log_enabled: bool,
-
-    /// Trim engine to use on the Anthropic request path: "llmtrim" (default)
-    /// or "native". Missing key in settings.json is treated as "llmtrim".
-    #[serde(default = "default_trim_engine")]
-    pub trim_engine: String,
 
     /// Max Unicode chars kept per tool `description` in the native trim engine.
     #[serde(default = "default_trim_tool_desc_chars")]
@@ -201,7 +196,6 @@ impl Default for Settings {
             trim_enabled: false,
             corpus_capture: false,
             db_log_enabled: default_db_log_enabled(),
-            trim_engine: default_trim_engine(),
             trim_tool_desc_chars: default_trim_tool_desc_chars(),
             trim_toolresult_head: default_trim_toolresult_head(),
             trim_toolresult_tail: default_trim_toolresult_tail(),
@@ -280,8 +274,6 @@ pub struct Config {
     pub corpus_capture: bool,
     /// Whether to write structured events to `proxy.db`.
     pub db_log_enabled: bool,
-    /// Trim engine: "llmtrim" (default) or "native".
-    pub trim_engine: String,
     /// Max Unicode chars per tool description (native engine).
     pub trim_tool_desc_chars: usize,
     /// Max chars for the head of a tool_result block (native engine).
@@ -331,7 +323,6 @@ impl Config {
             trim_enabled: settings.trim_enabled,
             corpus_capture: settings.corpus_capture,
             db_log_enabled: settings.db_log_enabled,
-            trim_engine: settings.trim_engine.clone(),
             trim_tool_desc_chars: settings.trim_tool_desc_chars,
             trim_toolresult_head: settings.trim_toolresult_head,
             trim_toolresult_tail: settings.trim_toolresult_tail,
@@ -369,7 +360,6 @@ impl Config {
             trim_enabled: self.trim_enabled,
             corpus_capture: self.corpus_capture,
             db_log_enabled: self.db_log_enabled,
-            trim_engine: self.trim_engine.clone(),
             trim_tool_desc_chars: self.trim_tool_desc_chars,
             trim_toolresult_head: self.trim_toolresult_head,
             trim_toolresult_tail: self.trim_toolresult_tail,
@@ -452,10 +442,6 @@ fn default_log_level() -> String {
 
 fn default_db_log_enabled() -> bool {
     true
-}
-
-fn default_trim_engine() -> String {
-    "llmtrim".to_string()
 }
 
 fn default_trim_tool_desc_chars() -> usize {

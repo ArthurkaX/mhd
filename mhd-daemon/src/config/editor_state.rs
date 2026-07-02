@@ -279,6 +279,6 @@ pub struct SettingsState {
     pub vision_test_status: String,
     /// Whether a vision test is currently running.
     pub vision_test_running: bool,
-    /// Enable llmtrim-powered request compression.
+    /// Enable native request compression.
     pub trim_enabled: bool,
 }

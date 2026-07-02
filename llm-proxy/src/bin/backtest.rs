@@ -1,7 +1,7 @@
 //! backtest — re-apply candidate trim configurations to the replay corpus.
 //!
 //! Usage:
-//!   backtest [--db <path>] [--desc-chars <comma-list>] [--engine <llmtrim|native>]
+//!   backtest [--db <path>] [--desc-chars <comma-list>] [--engine <native>]
 //!            [--provider <anthropic|openai>]
 //!
 //! Reads all rows from `request_bodies` in proxy.db, sweeps the
@@ -12,12 +12,11 @@
 //! The corpus is populated when `corpus_capture = true` in llm-proxy settings.
 //! --provider selects which corpus rows to measure (default: anthropic).
 //! When --provider openai is given, the native engine calls trim_native_openai
-//! instead of trim_native; llmtrim does not support openai bodies (skipped).
+//! instead of trim_native.
 
 use llm_proxy::config::config_dir;
 use llm_proxy::db_log::decompress_body;
 use llm_proxy::native_trim::{NativeKnobs, trim_native_openai};
-use llm_proxy::trim::{TrimKnobs, TrimProvider, trim_with_knobs};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -90,19 +89,18 @@ fn fmt_tok(n: u64) -> String {
 // ── unified token estimator ───────────────────────────────────────────────────
 
 /// Unified token estimator (~4 chars/token over the serialized body).
-/// Same metric for both engines → fair A/B. NOT llmtrim's internal counter.
+/// Unified token estimator (~4 chars/token).
 fn est_tokens(v: &serde_json::Value) -> u64 {
     (serde_json::to_string(v).map(|s| s.len()).unwrap_or(0) as u64) / 4
 }
 
 // ── engine dispatch ───────────────────────────────────────────────────────────
 
-/// Produce a trimmed body for a given engine, provider, and desc_chars sweep value.
-/// - engine="native" + provider="openai"  → trim_native_openai
-/// - engine="native" + provider="anthropic" → trim_native
-/// - engine="llmtrim"                      → llmtrim (Anthropic shape only)
+/// Produce a trimmed body for a given provider and desc_chars sweep value.
+/// - provider="openai"  → trim_native_openai
+/// - provider="anthropic" → trim_native
 fn apply_engine(
-    engine: &str,
+    _engine: &str,
     provider: &str,
     body: Value,
     v: usize,
@@ -111,26 +109,18 @@ fn apply_engine(
     fence_requires_code: bool,
     arrow_density_min: f64,
 ) -> Value {
-    match engine {
-        "native" => {
-            let knobs = NativeKnobs {
-                tool_max_desc_chars: v,
-                ws_enabled: ws_on,
-                strip_thinking: strip_thinking_on,
-                tool_result_fence_requires_code: fence_requires_code,
-                tool_result_arrow_density_min: arrow_density_min,
-                ..NativeKnobs::default()
-            };
-            if provider == "openai" {
-                trim_native_openai(body, &knobs)
-            } else {
-                llm_proxy::native_trim::trim_native(body, &knobs)
-            }
-        }
-        _ /* "llmtrim" */ => {
-            let knobs = TrimKnobs { tool_max_desc_chars: v, ..TrimKnobs::default() };
-            trim_with_knobs(body, TrimProvider::Anthropic, &knobs).body
-        }
+    let knobs = NativeKnobs {
+        tool_max_desc_chars: v,
+        ws_enabled: ws_on,
+        strip_thinking: strip_thinking_on,
+        tool_result_fence_requires_code: fence_requires_code,
+        tool_result_arrow_density_min: arrow_density_min,
+        ..NativeKnobs::default()
+    };
+    if provider == "openai" {
+        trim_native_openai(body, &knobs)
+    } else {
+        llm_proxy::native_trim::trim_native(body, &knobs)
     }
 }
 
@@ -198,7 +188,7 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64, usize) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
-    let default_engine = "llmtrim".to_string();
+    let default_engine = "native".to_string();
     let default_provider = "anthropic".to_string();
 
     let mut db_path = default_db;
@@ -246,10 +236,10 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64, 
                 if i < args.len() {
                     let val = args[i].as_str();
                     match val {
-                        "llmtrim" | "native" => engine = val.to_string(),
+                        "native" => engine = val.to_string(),
                         other => {
                             eprintln!(
-                                "Warning: unknown --engine value '{other}'; using default 'llmtrim'."
+                                "Warning: unknown --engine value '{other}'; using default 'native'."
                             );
                         }
                     }
@@ -411,12 +401,6 @@ fn main() {
             println!("Generate some Claude Code traffic via the Anthropic path, then re-run.");
         }
         return;
-    }
-
-    // llmtrim only supports the Anthropic body shape — warn if mismatched.
-    if engine == "llmtrim" && provider == "openai" {
-        eprintln!("Warning: llmtrim does not understand OpenAI bodies; results will be 0% savings.");
-        eprintln!("Use --engine native for OpenAI corpus measurement.");
     }
 
     // ── determinism sanity check (uses the selected engine + provider) ────────

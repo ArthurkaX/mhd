@@ -5,6 +5,7 @@
 //! target model, and a "downgraded" badge.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::*;
@@ -37,6 +38,10 @@ const CACHE_TTL_SECS: u64 = 360;
 /// top (newest). 0 = pinned to newest (default). Clamped in paint_panel.
 static TRACE_SCROLL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// Click hit-map for trace rows: (y_top, y_bottom, seq), rebuilt every paint.
+/// Lets WM_LBUTTONDOWN map a Y coordinate back to the request under it.
+static ROW_HITS: Mutex<Vec<(i32, i32, u64)>> = Mutex::new(Vec::new());
+
 fn fmt_tokens(n: u64) -> String {
     if n == 0 {
         "\u{2014}".to_string() // em dash
@@ -49,6 +54,21 @@ fn fmt_tokens(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// Spawn the standalone request inspector for `(run_id, seq)`. Best-effort:
+/// logs on failure, never blocks or panics the UI thread.
+fn launch_inspector(run_id: u64, seq: u64) {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("mhd-inspector.exe")));
+    let Some(exe) = exe else { return };
+    let _ = std::process::Command::new(exe)
+        .arg("--run-id")
+        .arg(run_id.to_string())
+        .arg("--seq")
+        .arg(seq.to_string())
+        .spawn();
 }
 
 // ── Safe wrapper for the event handle ────────────────────────────────
@@ -680,6 +700,10 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     // Collect newest-first so we can index [i+1] for the gap-to-previous calc.
     let display_entries: Vec<_> = trace.iter().rev().take(max_rows as usize).collect();
 
+    if let Ok(mut hits) = ROW_HITS.lock() {
+        hits.clear();
+    }
+
     // Pre-compute whether each entry's prefix_hash was seen in an OLDER entry
     // (i.e. appeared earlier in time = later in the newest-first vector).
     // Strategy: iterate oldest→newest (reverse of display order), maintaining a
@@ -770,6 +794,10 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let ry = list_top + out_row * row_h;
         if ry + row_h > win_h - pad {
             break;
+        }
+
+        if let Ok(mut hits) = ROW_HITS.lock() {
+            hits.push((ry, ry + row_h, entry.seq));
         }
 
         // Row background (zebra)
@@ -1441,6 +1469,19 @@ unsafe extern "system" fn panel_wndproc(
                     && y < pad + btn_size + 4
                 {
                     let _ = DestroyWindow(hwnd);
+                }
+                // Row click -> open the inspector for that request.
+                {
+                    let hit_seq = ROW_HITS
+                        .lock()
+                        .ok()
+                        .and_then(|hits| hits.iter().find(|(t, b, _)| y >= *t && y < *b).map(|(_, _, s)| *s));
+                    if let Some(seq) = hit_seq {
+                        if let Some(run_id) = crate::core::llm_proxy::get_run_id() {
+                            launch_inspector(run_id, seq);
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 LRESULT(0)
             }

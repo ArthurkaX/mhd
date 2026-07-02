@@ -47,7 +47,6 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         trim_enabled: cfg.trim_enabled,
         corpus_capture: cfg.corpus_capture,
         db_log_enabled: true, // DB log is always on; verbosity is a separate knob
-        trim_engine: cfg.trim_engine.clone(),
         trim_tool_desc_chars: cfg.trim_tool_desc_chars,
         trim_toolresult_head: cfg.trim_toolresult_head,
         trim_toolresult_tail: cfg.trim_toolresult_tail,
@@ -112,7 +111,6 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_target("fable", &cfg.fable);
         control.set_log_level(&cfg.log_level);
         control.set_trim_enabled(cfg.trim_enabled);
-        control.set_trim_engine(&cfg.trim_engine);
         control.set_trim_tool_desc_chars(cfg.trim_tool_desc_chars);
         control.set_trim_toolresult_head(cfg.trim_toolresult_head);
         control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
@@ -153,6 +151,11 @@ pub fn get_trace() -> Vec<TraceEntry> {
         .as_ref()
         .map(|c| c.trace())
         .unwrap_or_default()
+}
+
+/// Current proxy run id, or None if the proxy is off.
+pub fn get_run_id() -> Option<u64> {
+    CONTROL.lock().unwrap().as_ref().map(|c| c.run_id())
 }
 
 /// Snapshot of recent vision screenshot requests.
@@ -266,7 +269,7 @@ pub fn toggle_debug_logging() -> bool {
     }
 }
 
-/// Enable or disable request compression via llmtrim.
+/// Enable or disable request compression via the native engine.
 pub fn set_trim_enabled(enabled: bool) -> bool {
     CONTROL
         .lock()
