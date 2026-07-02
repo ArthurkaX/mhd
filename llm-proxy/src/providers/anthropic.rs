@@ -76,6 +76,48 @@ fn record_quota_headers(state: &Arc<AppState>, headers: &reqwest::header::Header
     state.record_quota(snap);
 }
 
+/// Snapshot of the live-tunable retry knobs read once at the start of a
+/// request so the loop sees a consistent view for its whole duration.
+struct RetryKnobs {
+ enabled: bool,
+ max_attempts: usize,
+ base_delay_ms: u64,
+ max_delay_ms: u64,
+}
+
+impl RetryKnobs {
+ /// Read the four retry knobs from the shared state (poisoned-lock safe).
+ fn read(state: &Arc<AppState>) -> Self {
+ Self {
+ enabled: *state.retry_enabled.read().unwrap_or_else(|e| e.into_inner()),
+ max_attempts: *state.retry_max_attempts.read().unwrap_or_else(|e| e.into_inner()),
+ base_delay_ms: *state.retry_base_delay_ms.read().unwrap_or_else(|e| e.into_inner()),
+ max_delay_ms: *state.retry_max_delay_ms.read().unwrap_or_else(|e| e.into_inner()),
+ }
+ }
+
+ /// True if this status code is one we should retry (429 rate-limit or
+ /// 529 overloaded_error). Other 4xx/5xx are NOT retried on the native path.
+ fn is_retryable(status: u16) -> bool {
+ status == 429 || status == 529
+ }
+
+ /// Compute the backoff wait in ms for a given attempt index (0-based).
+ /// Honors a `retry-after` response header (integer seconds) when present;
+ /// otherwise uses exponential backoff `base_delay_ms << attempt`, capped at
+ /// `max_delay_ms`. A tiny deterministic jitter (`req_id % 100` ms) is added
+ /// to spread a thundering herd of parallel retries.
+ fn wait_ms(&self, attempt: usize, headers: &reqwest::header::HeaderMap, req_id: u64) -> u64 {
+ if let Some(ra) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
+ if let Ok(secs) = ra.trim().parse::<u64>() {
+ return secs.saturating_mul(1000).saturating_add(req_id % 100);
+ }
+ }
+ let exp = self.base_delay_ms.saturating_mul(1u64 << attempt.min(31));
+ exp.min(self.max_delay_ms).saturating_add(req_id % 100)
+ }
+}
+
 /// Non-streaming request — returns the parsed JSON body.
 pub async fn send_request(
     state: &Arc<AppState>,
@@ -84,7 +126,7 @@ pub async fn send_request(
     incoming: &HeaderMap,
 ) -> Result<Value> {
     let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
-    let _guard = InflightGuard::new(state.clone());
+    let _guard = InflightGuard::new(state.clone(), req_id);
     let started = std::time::Instant::now();
     if log {
         let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
@@ -102,41 +144,72 @@ pub async fn send_request(
         ));
     }
 
-    let resp = match build_request(state, incoming, false)
-        .await
-        .json(&payload)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let kind = if e.is_connect() {
-                "CONNECT_FAILED"
-            } else if e.is_timeout() {
-                "TIMEOUT"
-            } else {
-                "SEND_ERR"
-            };
-            if log {
-                state.log_line(&format!(
-                    "{} #{req_id} native SEND_ERROR {kind} after {} ms: {e}",
-                    now_ms(),
-                    started.elapsed().as_millis()
-                ));
+    let retry = RetryKnobs::read(state);
+    let resp;
+    let mut attempt: usize = 0;
+    loop {
+        let send_result = build_request(state, incoming, false)
+            .await
+            .json(&payload.clone())
+            .send()
+            .await;
+        match send_result {
+            Ok(r) => {
+                // Record Anthropic quota snapshot from unified rate-limit headers
+                // for every response (intermediate retried ones included).
+                record_quota_headers(state, r.headers());
+                let status = r.status();
+                if retry.enabled
+                    && RetryKnobs::is_retryable(status.as_u16())
+                    && attempt + 1 < retry.max_attempts
+                {
+                    let wait_ms = retry.wait_ms(attempt, r.headers(), req_id);
+                    if log {
+                        state.log_line(&format!(
+                            "{} #{req_id} native retry {}/{} after HTTP {} — waiting {}ms",
+                            now_ms(),
+                            attempt + 1,
+                            retry.max_attempts,
+                            status,
+                            wait_ms
+                        ));
+                    }
+                    drop(r);
+                    tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                    attempt += 1;
+                    continue;
+                }
+                resp = r;
+                break;
             }
-            state.mark_request_failed(
-                req_id,
-                Some(started.elapsed().as_millis() as u64),
-                None,
-                &e.to_string(),
-                kind,
-            );
-            return Err(e.into());
+            Err(e) => {
+                let kind = if e.is_connect() {
+                    "CONNECT_FAILED"
+                } else if e.is_timeout() {
+                    "TIMEOUT"
+                } else {
+                    "SEND_ERR"
+                };
+                if log {
+                    state.log_line(&format!(
+                        "{} #{req_id} native SEND_ERROR {kind} after {} ms: {e}",
+                        now_ms(),
+                        started.elapsed().as_millis()
+                    ));
+                }
+                state.mark_request_failed(
+                    req_id,
+                    Some(started.elapsed().as_millis() as u64),
+                    None,
+                    &e.to_string(),
+                    kind,
+                );
+                return Err(e.into());
+            }
         }
-    };
-
-    // Record Anthropic quota snapshot from unified rate-limit headers.
-    record_quota_headers(state, resp.headers());
+    }
+    // `record_quota_headers` was already called above for the terminal response
+    // (and for every intermediate retried one), so it is NOT re-run here.
 
     let status = resp.status();
     if !status.is_success() {
@@ -181,17 +254,18 @@ pub async fn send_request(
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        if inp > 0 || out > 0 {
-            state.update_trace_tokens(
-                req_id,
-                inp,
-                out,
-                cache_read,
-                cache_creation,
-                Some(started.elapsed().as_millis() as u64),
-                Some(status.as_u16()),
-            );
-        }
+        // Always write the completion (even with zero tokens) so the DB row
+        // is closed — otherwise the InflightGuard's Drop mislabels a
+        // successful 200 as CANCELLED.
+        state.update_trace_tokens(
+            req_id,
+            inp,
+            out,
+            cache_read,
+            cache_creation,
+            Some(started.elapsed().as_millis() as u64),
+            Some(status.as_u16()),
+        );
     }
 
     if log {
@@ -228,7 +302,7 @@ pub async fn stream_request(
     incoming: &HeaderMap,
 ) -> Result<Body> {
     let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
-    let guard = InflightGuard::new(state.clone());
+    let guard = InflightGuard::new(state.clone(), req_id);
     let started = std::time::Instant::now();
     if log {
         let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
@@ -246,38 +320,70 @@ pub async fn stream_request(
         ));
     }
 
-    let resp = match build_request(state, incoming, true)
-        .await
-        .json(&payload)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let kind = if e.is_connect() {
-                "CONNECT_FAILED"
-            } else if e.is_timeout() {
-                "TIMEOUT"
-            } else {
-                "SEND_ERR"
-            };
-            if log {
-                state.log_line(&format!(
-                    "{} #{req_id} native stream SEND_ERROR {kind} after {} ms: {e}",
-                    now_ms(),
-                    started.elapsed().as_millis()
-                ));
+    let retry = RetryKnobs::read(state);
+    let resp;
+    let mut attempt: usize = 0;
+    loop {
+        let send_result = build_request(state, incoming, true)
+            .await
+            .json(&payload.clone())
+            .send()
+            .await;
+        match send_result {
+            Ok(r) => {
+                // Record Anthropic quota snapshot from unified rate-limit headers
+                // for every response (intermediate retried ones included).
+                record_quota_headers(state, r.headers());
+                let status = r.status();
+                if retry.enabled
+                    && RetryKnobs::is_retryable(status.as_u16())
+                    && attempt + 1 < retry.max_attempts
+                {
+                    let wait_ms = retry.wait_ms(attempt, r.headers(), req_id);
+                    if log {
+                        state.log_line(&format!(
+                            "{} #{req_id} native stream retry {}/{} after HTTP {} — waiting {}ms",
+                            now_ms(),
+                            attempt + 1,
+                            retry.max_attempts,
+                            status,
+                            wait_ms
+                        ));
+                    }
+                    drop(r);
+                    tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                    attempt += 1;
+                    continue;
+                }
+                resp = r;
+                break;
             }
-            state.mark_request_failed(
-                req_id,
-                Some(started.elapsed().as_millis() as u64),
-                None,
-                &e.to_string(),
-                kind,
-            );
-            return Err(e.into());
+            Err(e) => {
+                let kind = if e.is_connect() {
+                    "CONNECT_FAILED"
+                } else if e.is_timeout() {
+                    "TIMEOUT"
+                } else {
+                    "SEND_ERR"
+                };
+                if log {
+                    state.log_line(&format!(
+                        "{} #{req_id} native stream SEND_ERROR {kind} after {} ms: {e}",
+                        now_ms(),
+                        started.elapsed().as_millis()
+                    ));
+                }
+                state.mark_request_failed(
+                    req_id,
+                    Some(started.elapsed().as_millis() as u64),
+                    None,
+                    &e.to_string(),
+                    kind,
+                );
+                return Err(e.into());
+            }
         }
-    };
+    }
 
     if log {
         state.log_line(&format!(
@@ -287,8 +393,8 @@ pub async fn stream_request(
         ));
     }
 
-    // Record Anthropic quota snapshot from unified rate-limit headers.
-    record_quota_headers(state, resp.headers());
+    // `record_quota_headers` was already called above for the terminal response
+    // (and for every intermediate retried one), so it is NOT re-run here.
 
     let status = resp.status();
     if !status.is_success() {
@@ -385,7 +491,8 @@ pub async fn stream_request(
                 "stream transport error",
                 "STREAM_ERR",
             );
-        } else if base_input > 0 || output_tokens > 0 {
+        } else {
+            // Success path: always close the row (zero tokens included).
             state_for_log.update_trace_tokens(
                 req_id,
                 base_input,

@@ -364,6 +364,30 @@ impl DbLog {
         }
     }
 
+    /// Close a request row that was left open (ts_end IS NULL) because the
+    /// client cancelled mid-flight and the completion future was dropped.
+    /// Race-free: the `ts_end IS NULL` guard in the WHERE clause means this
+    /// no-ops if a real completion (success or error) already ran. Best-effort.
+    pub fn mark_request_cancelled(&self, run_id: u64, seq: u64, ts_end: &str, duration_ms: Option<u64>) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "UPDATE requests SET
+                    ts_end = ?3,
+                    duration_ms = ?4,
+                    status = 0,
+                    error = 'client cancelled (dropped mid-flight)',
+                    error_kind = 'CANCELLED'
+                 WHERE run_id = ?1 AND seq = ?2 AND ts_end IS NULL",
+                rusqlite::params![
+                    run_id as i64,
+                    seq as i64,
+                    ts_end,
+                    duration_ms.map(|v| v as i64),
+                ],
+            );
+        }
+    }
+
     /// Insert a user note. Best-effort: errors are swallowed.
     pub fn insert_note(&self, ts: &str, text: &str) {
         if let Ok(conn) = self.conn.lock() {

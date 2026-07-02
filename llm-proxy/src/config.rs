@@ -118,6 +118,25 @@ pub struct Settings {
     #[serde(default = "default_trim_toolresult_tail")]
     pub trim_toolresult_tail: usize,
 
+    /// Master switch for native Anthropic retry on HTTP 429 / 529. Default: off
+    /// (validate offline before enabling in production).
+    #[serde(default = "default_retry_enabled")]
+    pub retry_enabled: bool,
+
+    /// Total attempts (including the first) for the native Anthropic retry loop.
+    #[serde(default = "default_retry_max_attempts")]
+    pub retry_max_attempts: usize,
+
+    /// Base backoff delay in ms for the native Anthropic retry loop. Each retry
+    /// waits `retry_base_delay_ms << attempt` (capped at `retry_max_delay_ms`),
+    /// unless a `retry-after` response header overrides it.
+    #[serde(default = "default_retry_base_delay_ms")]
+    pub retry_base_delay_ms: u64,
+
+    /// Cap in ms for a single backoff wait in the native Anthropic retry loop.
+    #[serde(default = "default_retry_max_delay_ms")]
+    pub retry_max_delay_ms: u64,
+
     /// Master switch for whitespace compression in the native trim engine.
     /// Default: off — validate offline first.
     #[serde(default = "default_trim_ws_enabled")]
@@ -170,6 +189,10 @@ impl Default for Settings {
             trim_tool_desc_chars: default_trim_tool_desc_chars(),
             trim_toolresult_head: default_trim_toolresult_head(),
             trim_toolresult_tail: default_trim_toolresult_tail(),
+            retry_enabled: default_retry_enabled(),
+            retry_max_attempts: default_retry_max_attempts(),
+            retry_base_delay_ms: default_retry_base_delay_ms(),
+            retry_max_delay_ms: default_retry_max_delay_ms(),
             trim_ws_enabled: default_trim_ws_enabled(),
             trim_strip_thinking: default_trim_strip_thinking(),
             trim_fence_requires_code: default_trim_fence_requires_code(),
@@ -246,6 +269,14 @@ pub struct Config {
     pub trim_toolresult_head: usize,
     /// Max chars for the tail of a tool_result block (native engine).
     pub trim_toolresult_tail: usize,
+    /// Master switch for native Anthropic retry on HTTP 429 / 529.
+    pub retry_enabled: bool,
+    /// Total attempts (including the first) for the native Anthropic retry loop.
+    pub retry_max_attempts: usize,
+    /// Base backoff delay in ms for the native Anthropic retry loop.
+    pub retry_base_delay_ms: u64,
+    /// Cap in ms for a single backoff wait in the native Anthropic retry loop.
+    pub retry_max_delay_ms: u64,
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: bool,
     /// Strip thinking/redacted_thinking from old assistant turns (native engine).
@@ -279,6 +310,10 @@ impl Config {
             trim_tool_desc_chars: settings.trim_tool_desc_chars,
             trim_toolresult_head: settings.trim_toolresult_head,
             trim_toolresult_tail: settings.trim_toolresult_tail,
+            retry_enabled: settings.retry_enabled,
+            retry_max_attempts: settings.retry_max_attempts,
+            retry_base_delay_ms: settings.retry_base_delay_ms,
+            retry_max_delay_ms: settings.retry_max_delay_ms,
             trim_ws_enabled: settings.trim_ws_enabled,
             trim_strip_thinking: settings.trim_strip_thinking,
             trim_fence_requires_code: settings.trim_fence_requires_code,
@@ -310,6 +345,10 @@ impl Config {
             trim_tool_desc_chars: self.trim_tool_desc_chars,
             trim_toolresult_head: self.trim_toolresult_head,
             trim_toolresult_tail: self.trim_toolresult_tail,
+            retry_enabled: self.retry_enabled,
+            retry_max_attempts: self.retry_max_attempts,
+            retry_base_delay_ms: self.retry_base_delay_ms,
+            retry_max_delay_ms: self.retry_max_delay_ms,
             trim_ws_enabled: self.trim_ws_enabled,
             trim_strip_thinking: self.trim_strip_thinking,
             trim_fence_requires_code: self.trim_fence_requires_code,
@@ -398,6 +437,22 @@ fn default_trim_toolresult_head() -> usize {
 
 fn default_trim_toolresult_tail() -> usize {
     1000
+}
+
+fn default_retry_enabled() -> bool {
+    false
+}
+
+fn default_retry_max_attempts() -> usize {
+    3
+}
+
+fn default_retry_base_delay_ms() -> u64 {
+    500
+}
+
+fn default_retry_max_delay_ms() -> u64 {
+    8000
 }
 
 fn default_trim_ws_enabled() -> bool {

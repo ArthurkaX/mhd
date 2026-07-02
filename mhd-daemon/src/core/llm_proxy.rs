@@ -56,6 +56,10 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         trim_fence_requires_code: cfg.trim_fence_requires_code,
         trim_arrow_density_min: cfg.trim_arrow_density_min,
         corpus_max_rows: cfg.corpus_max_rows,
+        retry_enabled: cfg.retry_enabled,
+        retry_max_attempts: cfg.retry_max_attempts,
+        retry_base_delay_ms: cfg.retry_base_delay_ms,
+        retry_max_delay_ms: cfg.retry_max_delay_ms,
     };
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
@@ -114,6 +118,10 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_trim_fence_requires_code(cfg.trim_fence_requires_code);
         control.set_trim_arrow_density_min(cfg.trim_arrow_density_min);
         control.set_corpus_capture_enabled(cfg.corpus_capture);
+        control.set_retry_enabled(cfg.retry_enabled);
+        control.set_retry_max_attempts(cfg.retry_max_attempts);
+        control.set_retry_base_delay_ms(cfg.retry_base_delay_ms);
+        control.set_retry_max_delay_ms(cfg.retry_max_delay_ms);
 
         if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
             drop(guard);

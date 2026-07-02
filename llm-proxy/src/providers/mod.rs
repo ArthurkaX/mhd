@@ -10,22 +10,37 @@ use crate::state::AppState;
 /// a request errors out or the future/stream is cancelled mid-flight. Owns an
 /// `Arc<AppState>` so it can be moved into a streaming response body and live
 /// for the full duration of the stream.
-pub struct InflightGuard(pub Arc<AppState>);
+pub struct InflightGuard {
+    state: Arc<AppState>,
+    req_id: u64,
+    started: std::time::Instant,
+}
 
 impl InflightGuard {
-    pub fn new(state: Arc<AppState>) -> Self {
+    pub fn new(state: Arc<AppState>, req_id: u64) -> Self {
         state
             .inflight
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self(state)
+        Self {
+            state,
+            req_id,
+            started: std::time::Instant::now(),
+        }
     }
 }
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.0
+        self.state
             .inflight
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        // If the completion future never ran (client cancelled mid-flight),
+        // the row is still open — close it as CANCELLED. Race-free: no-ops if
+        // a real completion already wrote ts_end.
+        self.state.mark_request_cancelled(
+            self.req_id,
+            Some(self.started.elapsed().as_millis() as u64),
+        );
     }
 }
 

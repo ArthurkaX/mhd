@@ -698,14 +698,48 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         seen_before
     };
 
+    // Collapse consecutive error rows sharing the same HTTP status into one
+    // summary line (e.g. a 32× burst of 429s). `run_len[i]` = how many rows the
+    // run starting at i covers; `skip[i]` marks the tail rows of a run (drawn as
+    // part of the head's summary). display_entries is newest-first and already
+    // time-ordered, so "consecutive" = adjacent indices.
+    let n_disp = display_entries.len();
+    let mut run_len = vec![1usize; n_disp];
+    let mut skip = vec![false; n_disp];
+    {
+        let mut i = 0usize;
+        while i < n_disp {
+            let code = display_entries[i].status.filter(|&s| s >= 400);
+            if let Some(code) = code {
+                let mut j = i + 1;
+                while j < n_disp && display_entries[j].status == Some(code) {
+                    j += 1;
+                }
+                run_len[i] = j - i;
+                for k in (i + 1)..j {
+                    skip[k] = true;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    // Output row index: advances only when a row is actually drawn, so collapsed
+    // bursts reclaim screen space instead of leaving blank gaps.
+    let mut out_row: i32 = 0;
     for (i, entry) in display_entries.iter().enumerate() {
-        let ry = list_top + i as i32 * row_h;
+        if skip[i] {
+            continue;
+        }
+        let ry = list_top + out_row * row_h;
         if ry + row_h > win_h - pad {
             break;
         }
 
         // Row background (zebra)
-        if i % 2 == 1 {
+        if out_row % 2 == 1 {
             let bg = theme.surface.blend_over(theme.background);
             let brush = unsafe { CreateSolidBrush(bg.to_colorref()) };
             unsafe {
@@ -721,6 +755,46 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 );
                 let _ = DeleteObject(brush);
             }
+        }
+
+        // Error row (single or collapsed burst): render one red summary line
+        // instead of the normal 7 columns, then move to the next row.
+        if let Some(code) = entry.status.filter(|&s| s >= 400) {
+            let label = match code {
+                429 => "rate_limit",
+                529 => "overloaded",
+                503 => "unavailable",
+                500..=599 => "server_error",
+                401 | 403 => "auth",
+                400..=499 => "client_error",
+                _ => "error",
+            };
+            let text = if run_len[i] > 1 {
+                format!("\u{00d7}{}  HTTP {}  {}", run_len[i], code, label)
+            } else {
+                format!("HTTP {}  {}", code, label)
+            };
+            let err_color = Argb::new(255, 220, 80, 80);
+            unsafe {
+                let _ = SetTextColor(dib_dc, err_color.to_colorref());
+            }
+            let mut ew = crate::osd::to_utf16_z(&text);
+            let mut erc = RECT {
+                left: pad,
+                top: ry,
+                right: win_w - pad,
+                bottom: ry + row_h,
+            };
+            unsafe {
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut ew,
+                    &mut erc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
+            out_row += 1;
+            continue;
         }
 
         /// Convert HSV to Argb. h in degrees [0,360), s/v in [0,1].
@@ -913,6 +987,7 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 );
             }
         }
+        out_row += 1;
     }
 
     // ── Vision trace section ─────────────────────────────────────

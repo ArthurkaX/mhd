@@ -140,6 +140,9 @@ pub struct TraceEntry {
     /// unknown (old entries or OpenAI passthrough). Used in the Proxy Trace
     /// overlay to distinguish COLD (first fill) from MISS (warm but missed).
     pub prefix_hash: u64,
+    /// HTTP status of the upstream response (None until the response arrives).
+    /// 2xx = success; >=400 = error (rendered red + collapsed in the trace).
+    pub status: Option<u16>,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -236,6 +239,15 @@ pub struct AppState {
     /// Max chars for the tail of a tool_result block (native engine knob).
     pub trim_toolresult_tail: RwLock<usize>,
 
+    /// Master switch for native Anthropic retry on HTTP 429 / 529. Live-tunable.
+    pub retry_enabled: RwLock<bool>,
+    /// Total attempts (including the first) for the native Anthropic retry loop.
+    pub retry_max_attempts: RwLock<usize>,
+    /// Base backoff delay in ms for the native Anthropic retry loop.
+    pub retry_base_delay_ms: RwLock<u64>,
+    /// Cap in ms for a single backoff wait in the native Anthropic retry loop.
+    pub retry_max_delay_ms: RwLock<u64>,
+
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: RwLock<bool>,
 
@@ -321,6 +333,10 @@ impl AppState {
             trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
+            retry_enabled: RwLock::new(cfg.retry_enabled),
+            retry_max_attempts: RwLock::new(cfg.retry_max_attempts),
+            retry_base_delay_ms: RwLock::new(cfg.retry_base_delay_ms),
+            retry_max_delay_ms: RwLock::new(cfg.retry_max_delay_ms),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
@@ -489,6 +505,7 @@ impl AppState {
                 entry.output_tokens = output_tokens;
                 entry.cache_read_tokens = cache_read_tokens;
                 entry.cache_creation_tokens = cache_creation_tokens;
+                entry.status = status;
                 break;
             }
         }
@@ -524,6 +541,17 @@ impl AppState {
         error: &str,
         error_kind: &str,
     ) {
+        // Reflect the failure on the live trace entry so the Proxy Trace overlay
+        // can render it (red + collapsed). Mirrors update_trace_tokens' locking.
+        {
+            let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
+            for entry in trace.iter_mut().rev() {
+                if entry.seq == req_id {
+                    entry.status = status;
+                    break;
+                }
+            }
+        }
         if let Ok(guard) = self.db_log.lock() {
             if let Some(ref db) = *guard {
                 db.update_request_completion(
@@ -538,6 +566,22 @@ impl AppState {
                     status,
                     Some(error),
                     Some(error_kind),
+                );
+            }
+        }
+    }
+
+    /// Close a request row left open by a mid-flight client cancellation.
+    /// Delegates to the race-free [`crate::db_log::DbLog::mark_request_cancelled`]
+    /// — a no-op if a real completion already wrote `ts_end`. Best-effort.
+    pub fn mark_request_cancelled(&self, req_id: u64, duration_ms: Option<u64>) {
+        if let Ok(guard) = self.db_log.lock() {
+            if let Some(ref db) = *guard {
+                db.mark_request_cancelled(
+                    self.run_id,
+                    req_id,
+                    &crate::providers::now_ms(),
+                    duration_ms,
                 );
             }
         }
@@ -774,6 +818,22 @@ impl AppState {
                 .unwrap_or_else(|e| e.into_inner()),
             trim_toolresult_tail: *self
                 .trim_toolresult_tail
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            retry_enabled: *self
+                .retry_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            retry_max_attempts: *self
+                .retry_max_attempts
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            retry_base_delay_ms: *self
+                .retry_base_delay_ms
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            retry_max_delay_ms: *self
+                .retry_max_delay_ms
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             trim_ws_enabled: *self

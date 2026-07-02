@@ -352,6 +352,7 @@ pub async fn post_messages(
         trim_stages_json,
         started_ms: crate::providers::now_unix_ms(),
         prefix_hash: prefix_hash(&payload),
+        status: None,
     });
 
     if stream {
@@ -525,6 +526,7 @@ pub async fn post_chat_completions(
         trim_stages_json,
         started_ms: crate::providers::now_unix_ms(),
         prefix_hash: 0,
+        status: None,
     });
 
     if stream {

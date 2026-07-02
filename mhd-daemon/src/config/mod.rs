@@ -111,6 +111,14 @@ pub struct LlmProxyConfig {
     pub trim_arrow_density_min: f64,
     /// Maximum rows to keep in the `request_bodies` corpus table (0 = unlimited).
     pub corpus_max_rows: usize,
+    /// Master switch for transparent retry on Anthropic 429/529.
+    pub retry_enabled: bool,
+    /// Total retry attempts including the first (429/529 backoff).
+    pub retry_max_attempts: usize,
+    /// Base backoff delay in ms; waits `base << attempt` capped at max.
+    pub retry_base_delay_ms: u64,
+    /// Per-wait backoff cap in ms.
+    pub retry_max_delay_ms: u64,
 }
 
 impl Default for LlmProxyConfig {
@@ -142,6 +150,10 @@ impl Default for LlmProxyConfig {
             trim_fence_requires_code: true,
             trim_arrow_density_min: 0.01,
             corpus_max_rows: 5000,
+            retry_enabled: false,
+            retry_max_attempts: 3,
+            retry_base_delay_ms: 500,
+            retry_max_delay_ms: 8000,
         }
     }
 }
@@ -455,6 +467,22 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.corpus_max_rows)
                 .unwrap_or(5000),
+            retry_enabled: settings
+                .as_ref()
+                .map(|s| s.retry_enabled)
+                .unwrap_or(false),
+            retry_max_attempts: settings
+                .as_ref()
+                .map(|s| s.retry_max_attempts)
+                .unwrap_or(3),
+            retry_base_delay_ms: settings
+                .as_ref()
+                .map(|s| s.retry_base_delay_ms)
+                .unwrap_or(500),
+            retry_max_delay_ms: settings
+                .as_ref()
+                .map(|s| s.retry_max_delay_ms)
+                .unwrap_or(8000),
         }
     }
 

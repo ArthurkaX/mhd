@@ -225,6 +225,43 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = val;
     }
 
+    /// Enable or disable transparent retry on Anthropic 429/529.
+    /// Live-tunable via settings.json watcher.
+    pub fn set_retry_enabled(&self, enabled: bool) {
+        *self
+            .state
+            .retry_enabled
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
+    /// Set the total retry attempts (including the first) for 429/529 backoff.
+    pub fn set_retry_max_attempts(&self, v: usize) {
+        *self
+            .state
+            .retry_max_attempts
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    /// Set the base backoff delay (ms) for the 429/529 retry loop.
+    pub fn set_retry_base_delay_ms(&self, v: u64) {
+        *self
+            .state
+            .retry_base_delay_ms
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    /// Set the per-wait backoff cap (ms) for the 429/529 retry loop.
+    pub fn set_retry_max_delay_ms(&self, v: u64) {
+        *self
+            .state
+            .retry_max_delay_ms
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
     /// Current trim engine.
     pub fn trim_engine(&self) -> String {
         self.state

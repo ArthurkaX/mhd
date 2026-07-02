@@ -88,7 +88,7 @@ pub async fn send_request(
     // Observability: log timing + concurrency under `maximal`. This is how you
     // confirm whether parallel requests are queueing behind one another.
     let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
-    let _guard = InflightGuard::new(state.clone());
+    let _guard = InflightGuard::new(state.clone(), req_id);
     let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
     let started = std::time::Instant::now();
     if log {
@@ -164,18 +164,18 @@ pub async fn send_request(
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        if prompt_total > 0 || output_tokens > 0 {
-            let fresh_input = prompt_total.saturating_sub(cached_tokens);
-            state.update_trace_tokens(
-                req_id,
-                fresh_input,
-                output_tokens,
-                cached_tokens,
-                0,
-                Some(started.elapsed().as_millis() as u64),
-                status_opt,
-            );
-        }
+        // Always close the row on success (zero tokens included) so the
+        // InflightGuard's Drop doesn't mislabel a 200 as CANCELLED.
+        let fresh_input = prompt_total.saturating_sub(cached_tokens);
+        state.update_trace_tokens(
+            req_id,
+            fresh_input,
+            output_tokens,
+            cached_tokens,
+            0,
+            Some(started.elapsed().as_millis() as u64),
+            status_opt,
+        );
     }
 
     if detailed {
@@ -547,7 +547,7 @@ pub async fn stream_request(
     // Guard is moved into the stream below, so the in-flight count stays
     // elevated for the full duration of the stream (and decrements on drop even
     // if the client disconnects mid-stream).
-    let guard = InflightGuard::new(state.clone());
+    let guard = InflightGuard::new(state.clone(), req_id);
     if log {
         let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
         state.log_line(&format!(
@@ -772,18 +772,17 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|n| n.as_u64())
             .unwrap_or(0);
-        if prompt_total > 0 || out > 0 || cache_read > 0 {
-            let fresh_in = prompt_total.saturating_sub(cache_read);
-            state.update_trace_tokens(
-                req_id,
-                fresh_in,
-                out,
-                cache_read,
-                0,
-                Some(started.elapsed().as_millis() as u64),
-                status_opt,
-            );
-        }
+        // Always close the row on success (zero tokens included).
+        let fresh_in = prompt_total.saturating_sub(cache_read);
+        state.update_trace_tokens(
+            req_id,
+            fresh_in,
+            out,
+            cache_read,
+            0,
+            Some(started.elapsed().as_millis() as u64),
+            status_opt,
+        );
     }
 
     Ok(body)
@@ -808,7 +807,7 @@ pub async fn stream_raw_openai(
 
     let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
     let started = std::time::Instant::now();
-    let guard = InflightGuard::new(state.clone());
+    let guard = InflightGuard::new(state.clone(), req_id);
     if log {
         let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
         state.log_line(&format!(
@@ -908,7 +907,8 @@ pub async fn stream_raw_openai(
                 "stream transport error",
                 "STREAM_ERR",
             );
-        } else if in_tok > 0 || out_tok > 0 || cached_tok > 0 {
+        } else {
+            // Success path: always close the row (zero tokens included).
             let fresh_in = in_tok.saturating_sub(cached_tok);
             state_for_log.update_trace_tokens(
                 req_id,
