@@ -71,7 +71,7 @@ pub use crate::config::editor_layout::{
 };
 pub use crate::config::editor_paint::{
     build_advanced_controls, build_general_controls, build_llm_proxy_controls,
-    build_shortcuts_controls, paint_page,
+    build_llm_trim_controls, build_shortcuts_controls, paint_page,
 };
 pub use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::{
@@ -81,7 +81,7 @@ use crate::config::editor_state::{
 pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
 
-const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "Advanced"];
+const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "LLM Trim", "Advanced"];
 const WM_VISION_PROMPT_UPDATED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 const VISION_TEST_PROMPT: &str = "Describe this image in one short sentence.";
 const VISION_TEST_ICON_PNG: &[u8] =
@@ -256,6 +256,12 @@ pub fn show_config_editor(handle: AppHandle) {
         trim_enabled: llm_proxy::config::load_settings()
             .map(|s| s.trim_enabled)
             .unwrap_or(false),
+        trim_tool_desc_chars: llm_proxy::config::load_settings().map(|s| s.trim_tool_desc_chars).unwrap_or(150),
+        trim_toolresult_head: llm_proxy::config::load_settings().map(|s| s.trim_toolresult_head).unwrap_or(3000),
+        trim_toolresult_tail: llm_proxy::config::load_settings().map(|s| s.trim_toolresult_tail).unwrap_or(1000),
+        trim_ws_enabled: llm_proxy::config::load_settings().map(|s| s.trim_ws_enabled).unwrap_or(false),
+        trim_strip_thinking: llm_proxy::config::load_settings().map(|s| s.trim_strip_thinking).unwrap_or(false),
+        trim_free_target: llm_proxy::config::load_settings().map(|s| s.trim_free_target).unwrap_or_default(),
         vision_model: llm_proxy::config::load_settings()
             .ok()
             .and_then(|s| s.vision_model),
@@ -265,6 +271,8 @@ pub fn show_config_editor(handle: AppHandle) {
             .unwrap_or_else(|| llm_proxy::vision::DEFAULT_VISION_PROMPT.to_string()),
         vision_model_items: Vec::new(),
         vision_model_dropdown: SearchDropdownState::default(),
+        trim_free_target_items: Vec::new(),
+        trim_free_target_dropdown: SearchDropdownState::default(),
         vision_test_status: String::new(),
         vision_test_running: false,
         providers: {
@@ -570,7 +578,8 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         let is_active = (ti == 0 && state.active_section == SettingsPage::General)
             || (ti == 1 && state.active_section == SettingsPage::Shortcuts)
             || (ti == 2 && state.active_section == SettingsPage::LlmProxy)
-            || (ti == 3 && state.active_section == SettingsPage::Advanced);
+            || (ti == 3 && state.active_section == SettingsPage::LlmTrim)
+            || (ti == 4 && state.active_section == SettingsPage::Advanced);
         let is_hovered = match state.hovered_target {
             SettingsHit::Tab(i) => i == ti,
             _ => false,
@@ -714,6 +723,21 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
                     small_font,
                 );
             }
+            SettingsPage::LlmTrim => {
+                let ctls = build_llm_trim_controls(lay, state);
+                page_regions = paint_page(
+                    &ctls,
+                    dib_dc,
+                    bits,
+                    lay.win_w(),
+                    lay.win_h(),
+                    state.content_scroll_y,
+                    theme,
+                    title_font,
+                    body_font,
+                    small_font,
+                );
+            }
         }
 
         // Restore viewport origin and the buffer clip band.
@@ -773,6 +797,11 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
     // ── Vision model search dropdown overlay ──────────────────────────
     if state.active_section == SettingsPage::LlmProxy && state.vision_model_dropdown.is_open {
         draw_vision_model_dropdown(dib_dc, bits, lay, state, body_font, small_font);
+    }
+
+    // ── Free/cheap trim target search dropdown overlay ────────────
+    if state.active_section == SettingsPage::LlmTrim && state.trim_free_target_dropdown.is_open {
+        draw_free_target_dropdown(dib_dc, bits, lay, state, body_font, small_font);
     }
 
     // Separator above footer
@@ -934,6 +963,10 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
                 lay.llm_proxy.providers_header_y + section_h + table_header_h + row_h
                     - lay.content_y(),
             )
+        }
+        SettingsPage::LlmTrim => {
+            let last_y = lay.llm_trim.strip_y + 2 * lay.llm_trim.row_h - lay.content_y();
+            last_y
         }
     }
 }
@@ -1313,6 +1346,12 @@ fn apply_settings(state: &mut SettingsState) {
             settings.opus_downgrade_enabled = state.opus_downgrade_enabled;
             settings.sonnet_downgrade_enabled = state.sonnet_downgrade_enabled;
             settings.trim_enabled = state.trim_enabled;
+            settings.trim_tool_desc_chars = state.trim_tool_desc_chars;
+            settings.trim_toolresult_head = state.trim_toolresult_head;
+            settings.trim_toolresult_tail = state.trim_toolresult_tail;
+            settings.trim_ws_enabled = state.trim_ws_enabled;
+            settings.trim_strip_thinking = state.trim_strip_thinking;
+            settings.trim_free_target = state.trim_free_target.clone();
             settings.vision_model = state.vision_model.clone();
             settings.vision_prompt = state.vision_prompt.clone();
             if let Err(e) = llm_proxy::config::save_settings(&settings) {
@@ -1641,6 +1680,59 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
 
+                // ── Free/cheap trim target search dropdown hit test ───
+                if state.trim_free_target_dropdown.is_open
+                    && state.active_section == SettingsPage::LlmTrim
+                {
+                    let scale = state.layout.scale();
+                    let combo_y = state.layout.llm_trim.free_y;
+                    let combo_x = state.layout.pad();
+                    let combo_w = state.layout.llm_trim.combo_w;
+                    let combo_h = (30.0 * scale) as i32;
+                    let dropdown_top = combo_y + combo_h;
+                    let item_h = (24.0 * scale) as i32;
+                    let search_h = (30.0 * scale) as i32;
+                    let visible_rows = 8;
+                    let filtered_count = state
+                        .trim_free_target_dropdown
+                        .filtered_count(&state.trim_free_target_items);
+                    let max_visible = filtered_count.min(visible_rows);
+                    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+                    let dropdown_w = combo_w;
+
+                    let on_combo_button = y >= combo_y
+                        && y < combo_y + combo_h
+                        && x >= combo_x
+                        && x < combo_x + combo_w;
+
+                    let on_dropdown = y >= dropdown_top
+                        && y < dropdown_top + dropdown_h
+                        && x >= combo_x
+                        && x < combo_x + dropdown_w;
+
+                    if on_combo_button {
+                        // fall through to TrimFreeTargetCombo handler (toggles close)
+                    } else if on_dropdown {
+                        if y >= dropdown_top + search_h {
+                            let item_idx = (y - (dropdown_top + search_h)) / item_h;
+                            let visible_items = state
+                                .trim_free_target_dropdown
+                                .visible_items(&state.trim_free_target_items, visible_rows);
+                            if (item_idx as usize) < visible_items.len() {
+                                let selected = visible_items[item_idx as usize];
+                                select_free_target(state, selected.id);
+                                state.trim_free_target_dropdown.close();
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                        }
+                        return LRESULT(0);
+                    } else {
+                        state.trim_free_target_dropdown.close();
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+                }
+
                 let hit = hit_test_settings(state, x, y);
                 match hit {
                     SettingsHit::Tab(ti) => {
@@ -1650,6 +1742,7 @@ unsafe extern "system" fn settings_wndproc(
                             0 => SettingsPage::General,
                             1 => SettingsPage::Shortcuts,
                             2 => SettingsPage::LlmProxy,
+                            3 => SettingsPage::LlmTrim,
                             _ => SettingsPage::Advanced,
                         };
                         if state.active_section != new_section {
@@ -1866,6 +1959,38 @@ unsafe extern "system" fn settings_wndproc(
                         state.trim_enabled = !state.trim_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
+                    SettingsHit::TrimWsToggle => {
+                        state.trim_ws_enabled = !state.trim_ws_enabled;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimStripThinkingToggle => {
+                        state.trim_strip_thinking = !state.trim_strip_thinking;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimDescCharsDown => {
+                        state.trim_tool_desc_chars = state.trim_tool_desc_chars.saturating_sub(50).max(20);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimDescCharsUp => {
+                        state.trim_tool_desc_chars = (state.trim_tool_desc_chars + 50).min(2000);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimHeadDown => {
+                        state.trim_toolresult_head = state.trim_toolresult_head.saturating_sub(500).max(500);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimHeadUp => {
+                        state.trim_toolresult_head = (state.trim_toolresult_head + 500).min(20000);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimTailDown => {
+                        state.trim_toolresult_tail = state.trim_toolresult_tail.saturating_sub(250);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimTailUp => {
+                        state.trim_toolresult_tail = (state.trim_toolresult_tail + 250).min(10000);
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
 
                     // ── Vision model ───────────────────────────────────
                     SettingsHit::VisionModelCombo => {
@@ -1922,6 +2047,47 @@ unsafe extern "system" fn settings_wndproc(
                             let _ = DestroyWindow(popup);
                         }
                         state.theme_dropdown.close();
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimFreeTargetCombo => {
+                        close_kind_popup(state);
+                        // Build items: "Off" + all provider model IDs
+                        let mut items = Vec::new();
+                        items.push(SearchDropdownItem::new(
+                            0,
+                            "Off",
+                            vec!["off".into(), "none".into()],
+                        ));
+                        let mut id = 1;
+                        for p in &state.providers {
+                            for m in &p.models {
+                                items.push(SearchDropdownItem::new(
+                                    id,
+                                    m.clone(),
+                                    vec![p.name.to_lowercase(), m.to_lowercase()],
+                                ));
+                                id += 1;
+                            }
+                        }
+                        state.trim_free_target_items = items;
+
+                        // Determine selected ID
+                        let selected_id = state
+                            .trim_free_target_items
+                            .iter()
+                            .position(|item| item.label == state.trim_free_target)
+                            .unwrap_or(0);
+
+                        state
+                            .trim_free_target_dropdown
+                            .open(&state.trim_free_target_items, selected_id, 8);
+                        // Close the other combos
+                        state.combo_open.store(false, Ordering::SeqCst);
+                        if let Some(popup) = state.combo_popup.take() {
+                            let _ = DestroyWindow(popup);
+                        }
+                        state.theme_dropdown.close();
+                        state.vision_model_dropdown.close();
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     SettingsHit::VisionPromptBtn => {
@@ -2405,6 +2571,20 @@ unsafe extern "system" fn settings_wndproc(
                         return LRESULT(0);
                     }
 
+                    // Free/cheap trim target search dropdown scroll
+                    if state.trim_free_target_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmTrim
+                    {
+                        let delta_rows = if delta > 0 { -3 } else { 3 };
+                        state.trim_free_target_dropdown.scroll_by(
+                            delta_rows,
+                            &state.trim_free_target_items,
+                            8,
+                        );
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+
                     let lay = state.layout;
                     let content_h = page_control_content_height(state, &lay);
                     let max_scroll = (content_h - lay.content_visible_h()).max(0);
@@ -2755,6 +2935,69 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
+
+                    // Free/cheap trim target search dropdown keyboard handling
+                    if state.trim_free_target_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmTrim
+                    {
+                        let vk = wparam.0 as u32;
+                        match vk {
+                            0x0D => {
+                                let visible = state
+                                    .trim_free_target_dropdown
+                                    .visible_items(&state.trim_free_target_items, 8);
+                                if let Some(first) = visible.first() {
+                                    select_free_target(state, first.id);
+                                    state.trim_free_target_dropdown.close();
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x1B => {
+                                state.trim_free_target_dropdown.close();
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x08 => {
+                                state
+                                    .trim_free_target_dropdown
+                                    .backspace(&state.trim_free_target_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x26 => {
+                                state.trim_free_target_dropdown.scroll_by(
+                                    -1,
+                                    &state.trim_free_target_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x28 => {
+                                state.trim_free_target_dropdown.scroll_by(
+                                    1,
+                                    &state.trim_free_target_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x21 => {
+                                state.trim_free_target_dropdown.scroll_by(
+                                    -8,
+                                    &state.trim_free_target_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x22 => {
+                                state.trim_free_target_dropdown.scroll_by(
+                                    8,
+                                    &state.trim_free_target_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            _ => {}
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -2809,6 +3052,22 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
+
+                    // Free/cheap trim target search dropdown character input
+                    if state.trim_free_target_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmTrim
+                    {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            state.trim_free_target_dropdown.input_char(
+                                ch,
+                                &state.trim_free_target_items,
+                                8,
+                            );
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -2853,6 +3112,14 @@ fn select_vision_model(state: &mut SettingsState, item_id: usize) {
                 model: model_name.to_string(),
             });
         }
+    }
+}
+
+fn select_free_target(state: &mut SettingsState, item_id: usize) {
+    if item_id == 0 {
+        state.trim_free_target = String::new();
+    } else if let Some(item) = state.trim_free_target_items.get(item_id) {
+        state.trim_free_target = item.label.clone();
     }
 }
 
@@ -3772,6 +4039,187 @@ fn draw_vision_model_dropdown(
             .as_ref()
             .map(|vm| format!("{} / {}", vm.provider, vm.model) == item.label)
             .unwrap_or(false);
+        let highlight = if is_selected {
+            Some(theme.selected)
+        } else {
+            None
+        };
+        if let Some(c) = highlight {
+            draw_rounded_rect_in_buffer(
+                bits,
+                lay.win_w(),
+                lay.win_h(),
+                item_rect,
+                (2.0 * scale) as i32,
+                c,
+            );
+        }
+
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            let mut label_wz = to_utf16_z(&item.label);
+            let mut label_rc = RECT {
+                left: item_rect.left + 4,
+                top: item_rect.top,
+                right: item_rect.right - 4,
+                bottom: item_rect.bottom,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut label_wz,
+                &mut label_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
+
+    // No results message
+    if visible_items.is_empty() {
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            let mut empty_wz = to_utf16_z("No matching models");
+            let mut empty_rc = RECT {
+                left: combo_x + 4,
+                top: list_top,
+                right: combo_x + dropdown_w - 4,
+                bottom: list_top + item_h,
+            };
+            let _ = DrawTextW(
+                dib_dc,
+                &mut empty_wz,
+                &mut empty_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
+}
+
+fn draw_free_target_dropdown(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    lay: &Layout,
+    state: &SettingsState,
+    body_font: HFONT,
+    small_font: HFONT,
+) {
+    let theme = &state.theme;
+    let scale = lay.scale();
+    let combo_h = (30.0 * scale) as i32;
+    let combo_y = lay.llm_trim.free_y;
+    let combo_x = lay.pad();
+    let combo_w = lay.llm_trim.combo_w;
+    let dropdown_top = combo_y + combo_h;
+    let item_h = (24.0 * scale) as i32;
+    let search_h = (30.0 * scale) as i32;
+    let visible_rows = 8;
+    let filtered_count = state
+        .trim_free_target_dropdown
+        .filtered_count(&state.trim_free_target_items);
+    let max_visible = filtered_count.min(visible_rows);
+    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+    let dropdown_w = combo_w;
+
+    let dropdown_rect = RECT {
+        left: combo_x,
+        top: dropdown_top,
+        right: combo_x + dropdown_w,
+        bottom: dropdown_top + dropdown_h,
+    };
+
+    // Background
+    let bg = theme.surface.blend_over(theme.background);
+    draw_rounded_rect_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
+    );
+
+    // Search field
+    let search_rect = RECT {
+        left: combo_x + 4,
+        top: dropdown_top + 2,
+        right: combo_x + dropdown_w - 4,
+        bottom: dropdown_top + 2 + search_h,
+    };
+    let search_bg = theme.background;
+    draw_rounded_rect_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        search_bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
+    );
+
+    unsafe {
+        let _ = SelectObject(dib_dc, body_font);
+        let search_text = if state.trim_free_target_dropdown.filter.is_empty() {
+            "Search models\u{2026}"
+        } else {
+            state.trim_free_target_dropdown.filter.as_str()
+        };
+        let _ = SetTextColor(
+            dib_dc,
+            if state.trim_free_target_dropdown.filter.is_empty() {
+                theme.text_muted
+            } else {
+                theme.text
+            }
+            .to_colorref(),
+        );
+        let mut search_wz = to_utf16_z(search_text);
+        let mut search_text_rc = RECT {
+            left: search_rect.left + 4,
+            top: search_rect.top,
+            right: search_rect.right - 4,
+            bottom: search_rect.bottom,
+        };
+        let _ = DrawTextW(
+            dib_dc,
+            &mut search_wz,
+            &mut search_text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // Items list
+    let visible_items = state
+        .trim_free_target_dropdown
+        .visible_items(&state.trim_free_target_items, visible_rows);
+    let list_top = dropdown_top + 2 + search_h;
+
+    for (i, item) in visible_items.iter().enumerate() {
+        let item_rect = RECT {
+            left: combo_x + 4,
+            top: list_top + i as i32 * item_h,
+            right: combo_x + dropdown_w - 4,
+            bottom: list_top + (i as i32 + 1) * item_h,
+        };
+
+        let is_selected = state.trim_free_target == item.label;
         let highlight = if is_selected {
             Some(theme.selected)
         } else {

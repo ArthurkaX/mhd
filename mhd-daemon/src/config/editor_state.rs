@@ -32,6 +32,7 @@ pub enum SettingsPage {
     General,
     Shortcuts,
     LlmProxy,
+    LlmTrim,
     Advanced,
 }
 
@@ -119,6 +120,24 @@ pub enum SettingsHit {
     VisionPromptBtn,
     /// Trim (request compression) toggle.
     TrimToggle,
+    /// Trim whitespace compression toggle.
+    TrimWsToggle,
+    /// Trim strip-thinking toggle.
+    TrimStripThinkingToggle,
+    /// Free/cheap model selector dropdown.
+    TrimFreeTargetCombo,
+    /// Tool description max chars down.
+    TrimDescCharsDown,
+    /// Tool description max chars up.
+    TrimDescCharsUp,
+    /// Tool result head chars down.
+    TrimHeadDown,
+    /// Tool result head chars up.
+    TrimHeadUp,
+    /// Tool result tail chars down.
+    TrimTailDown,
+    /// Tool result tail chars up.
+    TrimTailUp,
 }
 
 /// Which global proxy field is being inline-edited.
@@ -281,4 +300,20 @@ pub struct SettingsState {
     pub vision_test_running: bool,
     /// Enable native request compression.
     pub trim_enabled: bool,
+    /// Tool description max chars for trim.
+    pub trim_tool_desc_chars: usize,
+    /// Tool result head chars for trim.
+    pub trim_toolresult_head: usize,
+    /// Tool result tail chars for trim.
+    pub trim_toolresult_tail: usize,
+    /// Trim whitespace compression toggle.
+    pub trim_ws_enabled: bool,
+    /// Trim strip-thinking toggle.
+    pub trim_strip_thinking: bool,
+    /// Free/cheap trim target model id (empty = off).
+    pub trim_free_target: String,
+    /// Items for the free target search dropdown.
+    pub trim_free_target_items: Vec<SearchDropdownItem>,
+    /// Search dropdown state for free target selection.
+    pub trim_free_target_dropdown: SearchDropdownState,
 }

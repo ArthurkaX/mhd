@@ -274,6 +274,39 @@ pub struct LlmProxyLayout {
     pub vision_prompt_w: i32,
 }
 
+#[derive(Copy, Clone)]
+pub struct LlmTrimLayout {
+    pub top_y: i32,     // "Request Compression" header
+    pub master_y: i32,  // master toggle row
+    pub free_y: i32,    // free-model combo row
+    pub desc_y: i32,    // desc-chars stepper row
+    pub head_y: i32,    // head stepper row
+    pub tail_y: i32,    // tail stepper row
+    pub ws_y: i32,      // whitespace toggle row
+    pub strip_y: i32,   // strip-thinking toggle row
+    pub row_h: i32,
+    pub combo_w: i32,   // free-model combo width
+}
+
+fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
+    let section_h = (20.0 * c.scale) as i32;
+    let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
+    let gap = (6.0 * c.scale) as i32;
+    let top_y = c.content_y;
+    let master_y = top_y + section_h + gap;
+    let free_y = master_y + row_h + gap;
+    let desc_y = free_y + row_h + gap;
+    let head_y = desc_y + row_h + gap;
+    let tail_y = head_y + row_h + gap;
+    let ws_y = tail_y + row_h + gap;
+    let strip_y = ws_y + row_h + gap;
+    LlmTrimLayout {
+        top_y, master_y, free_y, desc_y, head_y, tail_y, ws_y, strip_y,
+        row_h,
+        combo_w: (250.0 * c.scale) as i32,
+    }
+}
+
 /// Top-level layout composition.
 #[derive(Copy, Clone)]
 pub struct Layout {
@@ -282,6 +315,7 @@ pub struct Layout {
     pub shortcuts: ShortcutsLayout,
     pub advanced: AdvancedLayout,
     pub llm_proxy: LlmProxyLayout,
+    pub llm_trim: LlmTrimLayout,
 }
 
 // SAFETY: Layout contains only plain i32/f32 fields, no raw pointers.
@@ -463,6 +497,7 @@ pub fn compute_layout(scale: f32) -> Layout {
     let shortcuts = compute_shortcuts_layout(&common);
     let advanced = compute_advanced_layout(&common);
     let llm_proxy = compute_llm_proxy_layout(&common);
+    let llm_trim = compute_llm_trim_layout(&common);
 
     Layout {
         common,
@@ -470,6 +505,7 @@ pub fn compute_layout(scale: f32) -> Layout {
         shortcuts,
         advanced,
         llm_proxy,
+        llm_trim,
     }
 }
 
