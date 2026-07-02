@@ -49,6 +49,8 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         db_log_enabled: true, // DB log is always on; verbosity is a separate knob
         trim_tool_desc_chars: cfg.trim_tool_desc_chars,
         trim_toolresult_head: cfg.trim_toolresult_head,
+        trim_head_haiku: cfg.trim_head_haiku,
+        trim_head_harness: cfg.trim_head_harness,
         trim_toolresult_tail: cfg.trim_toolresult_tail,
         trim_ws_enabled: cfg.trim_ws_enabled,
         trim_free_target: cfg.trim_free_target.clone(),
@@ -114,6 +116,8 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
         control.set_trim_enabled(cfg.trim_enabled);
         control.set_trim_tool_desc_chars(cfg.trim_tool_desc_chars);
         control.set_trim_toolresult_head(cfg.trim_toolresult_head);
+        control.set_trim_head_haiku(cfg.trim_head_haiku);
+        control.set_trim_head_harness(cfg.trim_head_harness);
         control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
         control.set_trim_ws_enabled(cfg.trim_ws_enabled);
         control.set_trim_free_target(&cfg.trim_free_target);

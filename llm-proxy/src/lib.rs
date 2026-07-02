@@ -175,6 +175,16 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = v;
     }
 
+    /// Set the head budget for tool_result blocks on native Haiku requests.
+    pub fn set_trim_head_haiku(&self, v: usize) {
+        *self.state.trim_head_haiku.write().unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    /// Set the head budget for tool_result blocks on OpenAI-harness requests.
+    pub fn set_trim_head_harness(&self, v: usize) {
+        *self.state.trim_head_harness.write().unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
     /// Set the tail budget for tool_result blocks in the native trim engine.
     pub fn set_trim_toolresult_tail(&self, v: usize) {
         *self

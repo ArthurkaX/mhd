@@ -109,6 +109,14 @@ pub struct Settings {
     #[serde(default = "default_trim_toolresult_head")]
     pub trim_toolresult_head: usize,
 
+    /// Max chars kept as the head of a tool_result for a native Haiku request.
+    #[serde(default = "default_trim_head_haiku")]
+    pub trim_head_haiku: usize,
+
+    /// Max chars kept as the head of a tool_result for an OpenAI-harness request.
+    #[serde(default = "default_trim_head_harness")]
+    pub trim_head_harness: usize,
+
     /// Max chars kept as the tail of a `tool_result` block (native engine).
     #[serde(default = "default_trim_toolresult_tail")]
     pub trim_toolresult_tail: usize,
@@ -203,6 +211,8 @@ impl Default for Settings {
             db_log_enabled: default_db_log_enabled(),
             trim_tool_desc_chars: default_trim_tool_desc_chars(),
             trim_toolresult_head: default_trim_toolresult_head(),
+            trim_head_haiku: default_trim_head_haiku(),
+            trim_head_harness: default_trim_head_harness(),
             trim_toolresult_tail: default_trim_toolresult_tail(),
             retry_enabled: default_retry_enabled(),
             retry_max_attempts: default_retry_max_attempts(),
@@ -284,6 +294,13 @@ pub struct Config {
     pub trim_tool_desc_chars: usize,
     /// Max chars for the head of a tool_result block (native engine).
     pub trim_toolresult_head: usize,
+
+    /// Max chars for the head of a tool_result block (native Haiku requests).
+    pub trim_head_haiku: usize,
+
+    /// Max chars for the head of a tool_result block (OpenAI-harness requests).
+    pub trim_head_harness: usize,
+
     /// Max chars for the tail of a tool_result block (native engine).
     pub trim_toolresult_tail: usize,
     /// Master switch for native Anthropic retry on HTTP 429 / 529.
@@ -333,6 +350,8 @@ impl Config {
             db_log_enabled: settings.db_log_enabled,
             trim_tool_desc_chars: settings.trim_tool_desc_chars,
             trim_toolresult_head: settings.trim_toolresult_head,
+        trim_head_haiku: settings.trim_head_haiku,
+        trim_head_harness: settings.trim_head_harness,
             trim_toolresult_tail: settings.trim_toolresult_tail,
             retry_enabled: settings.retry_enabled,
             retry_max_attempts: settings.retry_max_attempts,
@@ -371,6 +390,8 @@ impl Config {
             db_log_enabled: self.db_log_enabled,
             trim_tool_desc_chars: self.trim_tool_desc_chars,
             trim_toolresult_head: self.trim_toolresult_head,
+        trim_head_haiku: self.trim_head_haiku,
+        trim_head_harness: self.trim_head_harness,
             trim_toolresult_tail: self.trim_toolresult_tail,
             retry_enabled: self.retry_enabled,
             retry_max_attempts: self.retry_max_attempts,
@@ -459,6 +480,14 @@ fn default_trim_tool_desc_chars() -> usize {
 }
 
 fn default_trim_toolresult_head() -> usize {
+    3000
+}
+
+fn default_trim_head_haiku() -> usize {
+    3000
+}
+
+fn default_trim_head_harness() -> usize {
     3000
 }
 

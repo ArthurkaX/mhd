@@ -95,6 +95,10 @@ pub struct LlmProxyConfig {
     pub trim_tool_desc_chars: usize,
     /// Max chars for the head of a tool_result block (native engine).
     pub trim_toolresult_head: usize,
+    /// Max chars for the head of a tool_result block (native Haiku requests).
+    pub trim_head_haiku: usize,
+    /// Max chars for the head of a tool_result block (OpenAI-harness requests).
+    pub trim_head_harness: usize,
     /// Max chars for the tail of a tool_result block (native engine).
     pub trim_toolresult_tail: usize,
     /// Master switch for whitespace compression in the native trim engine.
@@ -149,6 +153,8 @@ impl Default for LlmProxyConfig {
             corpus_capture: false,
             trim_tool_desc_chars: 150,
             trim_toolresult_head: 3000,
+            trim_head_haiku: 3000,
+            trim_head_harness: 3000,
             trim_toolresult_tail: 1000,
             trim_ws_enabled: false,
             trim_free_target: String::new(),
@@ -447,6 +453,14 @@ impl AppConfig {
             trim_toolresult_head: settings
                 .as_ref()
                 .map(|s| s.trim_toolresult_head)
+                .unwrap_or(3000),
+            trim_head_haiku: settings
+                .as_ref()
+                .map(|s| s.trim_head_haiku)
+                .unwrap_or(3000),
+            trim_head_harness: settings
+                .as_ref()
+                .map(|s| s.trim_head_harness)
                 .unwrap_or(3000),
             trim_toolresult_tail: settings
                 .as_ref()

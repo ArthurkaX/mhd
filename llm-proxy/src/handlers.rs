@@ -248,10 +248,11 @@ pub async fn post_messages(
                 .trim_tool_desc_chars
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
-            tool_result_head: *state
-                .trim_toolresult_head
-                .read()
-                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_head: if effective_tier == Tier::Haiku {
+                *state.trim_head_haiku.read().unwrap_or_else(|e| e.into_inner())
+            } else {
+                *state.trim_toolresult_head.read().unwrap_or_else(|e| e.into_inner())
+            },
             tool_result_tail: *state
                 .trim_toolresult_tail
                 .read()
@@ -434,7 +435,7 @@ pub async fn post_chat_completions(
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             tool_result_head: *state
-                .trim_toolresult_head
+                .trim_head_harness
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             tool_result_tail: *state

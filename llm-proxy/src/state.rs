@@ -238,6 +238,12 @@ pub struct AppState {
     /// Max chars for the head of a tool_result block (native engine knob).
     pub trim_toolresult_head: RwLock<usize>,
 
+    /// Max chars for the head of a tool_result block (native Haiku requests).
+    pub trim_head_haiku: RwLock<usize>,
+
+    /// Max chars for the head of a tool_result block (OpenAI-harness requests).
+    pub trim_head_harness: RwLock<usize>,
+
     /// Max chars for the tail of a tool_result block (native engine knob).
     pub trim_toolresult_tail: RwLock<usize>,
 
@@ -350,6 +356,8 @@ impl AppState {
             trim_enabled: RwLock::new(cfg.trim_enabled),
             trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
+        trim_head_haiku: RwLock::new(cfg.trim_head_haiku),
+        trim_head_harness: RwLock::new(cfg.trim_head_harness),
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
             retry_enabled: RwLock::new(cfg.retry_enabled),
             retry_max_attempts: RwLock::new(cfg.retry_max_attempts),
@@ -848,6 +856,14 @@ impl AppState {
                 .unwrap_or_else(|e| e.into_inner()),
             trim_toolresult_head: *self
                 .trim_toolresult_head
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_head_haiku: *self
+                .trim_head_haiku
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_head_harness: *self
+                .trim_head_harness
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             trim_toolresult_tail: *self
