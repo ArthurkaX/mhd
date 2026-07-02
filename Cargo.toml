@@ -1,5 +1,5 @@
 [workspace]
-members = ["mhd-daemon", "llm-proxy"]
+members = ["mhd-daemon", "llm-proxy", "mhd-inspector"]
 resolver = "2"
 
 [workspace.package]
