@@ -156,11 +156,25 @@ fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
         options: options.clone(),
         selected: 0,
     };
-    vec![
+
+    let mut free_options = vec![Opt {
+        label: "Off".to_string(),
+        target: String::new(),
+    }];
+    free_options.extend(options.iter().cloned());
+
+    let mut tiers = vec![
         mk("Opus", "opus"),
         mk("Sonnet", "sonnet"),
         mk("Haiku", "haiku"),
-    ]
+    ];
+    tiers.push(TierRow {
+        name: "Free tier (light trim)",
+        slot: "free_target",
+        options: free_options,
+        selected: 0,
+    });
+    tiers
 }
 
 /// Mark the selected option for each tier from the proxy's live config.
@@ -173,6 +187,15 @@ fn refresh_selection(state: &mut PanelState) {
                 .options
                 .iter()
                 .position(|o| &o.target == current)
+                .unwrap_or(0);
+        }
+    }
+    if let Some(free_target) = crate::llm_proxy::get_trim_free_target() {
+        if let Some(tier) = state.tiers.iter_mut().find(|t| t.slot == "free_target") {
+            tier.selected = tier
+                .options
+                .iter()
+                .position(|o| o.target == free_target)
                 .unwrap_or(0);
         }
     }
@@ -388,7 +411,11 @@ fn apply_selection(state: &mut PanelState, ti: usize, oi: usize) {
     };
     tier.selected = oi;
     let slot = tier.slot;
-    let ok = crate::llm_proxy::set_target(slot, &opt.target);
+    let ok = if slot == "free_target" {
+        crate::llm_proxy::set_free_target(&opt.target)
+    } else {
+        crate::llm_proxy::set_target(slot, &opt.target)
+    };
     if !ok {
         // Proxy not running — reflect that in the status line.
         state.running = crate::llm_proxy::is_running();

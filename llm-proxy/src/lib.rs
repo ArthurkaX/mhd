@@ -204,6 +204,15 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = target.to_string();
     }
 
+    /// Current free/cheap-tier target string. Empty means the feature is off.
+    pub fn trim_free_target(&self) -> String {
+        self.state
+            .trim_free_target
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Enable or disable stripping of thinking blocks from old assistant turns.
     pub fn set_trim_strip_thinking(&self, enabled: bool) {
         *self

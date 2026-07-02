@@ -294,6 +294,11 @@ pub fn is_trim_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Current free/cheap-tier target string ("" if unset), or None if the proxy is off.
+pub fn get_trim_free_target() -> Option<String> {
+    CONTROL.lock().unwrap().as_ref().map(|c| c.trim_free_target())
+}
+
 /// Toggle trim on/off. Returns the new state.
 pub fn toggle_trim() -> bool {
     let guard = CONTROL.lock().unwrap();
@@ -336,5 +341,27 @@ pub fn set_target(slot: &str, target: &str) -> bool {
         .unwrap()
         .as_ref()
         .map(|c| c.set_target(slot, target))
+        .unwrap_or(false)
+}
+
+/// Set the designated free/cheap-tier target ("" disables the light-trim feature).
+/// Persisted to settings.json so the choice survives daemon restarts. Returns false
+/// if the proxy is off (the value is persisted regardless of the running state).
+pub fn set_free_target(target: &str) -> bool {
+    // Persist the selection so it is restored on the next start.
+    if let Ok(mut settings) = llm_proxy::config::load_settings() {
+        settings.trim_free_target = target.to_string();
+        let _ = llm_proxy::config::save_settings(&settings);
+    }
+
+    // Apply to the live proxy if it is running.
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| {
+            c.set_trim_free_target(target);
+            true
+        })
         .unwrap_or(false)
 }
