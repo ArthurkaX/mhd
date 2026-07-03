@@ -276,34 +276,37 @@ pub struct LlmProxyLayout {
 
 #[derive(Copy, Clone)]
 pub struct LlmTrimLayout {
-    pub top_y: i32,     // "Request Compression" header
-    pub master_y: i32,  // master toggle row
-    pub free_y: i32,    // free-model combo row
-    pub desc_y: i32,    // desc-chars stepper row
-    pub head_y: i32,    // head stepper row
-    pub tail_y: i32,    // tail stepper row
-    pub ws_y: i32,      // whitespace toggle row
-    pub strip_y: i32,   // strip-thinking toggle row
+    pub top_y: i32,        // "Request Compression" header
+    pub master_y: i32,     // master toggle row
+    pub groups_hdr_y: i32, // "head budget per traffic group" sub-header
+    pub row_a_y: i32,      // Native big row
+    pub row_b_y: i32,      // Native Haiku row
+    pub row_c_y: i32,      // Harness row
+    pub cheap_hdr_y: i32,  // "Cheapest / free model" sub-header
+    pub free_y: i32,       // free-target combo row (KEEP name)
     pub row_h: i32,
-    pub combo_w: i32,   // free-model combo width
+    pub combo_w: i32,      // free-target combo width (KEEP)
+    pub arrow_w: i32,      // width of the "→" value button
 }
-
 fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
     let section_h = (20.0 * c.scale) as i32;
     let row_h = (ROW_HEIGHT_BASE as f32 * c.scale) as i32;
+    let help_h = (16.0 * c.scale) as i32;
     let gap = (6.0 * c.scale) as i32;
     let top_y = c.content_y;
     let master_y = top_y + section_h + gap;
-    let free_y = master_y + row_h + gap;
-    let desc_y = free_y + row_h + gap;
-    let head_y = desc_y + row_h + gap;
-    let tail_y = head_y + row_h + gap;
-    let ws_y = tail_y + row_h + gap;
-    let strip_y = ws_y + row_h + gap;
+    let groups_hdr_y = master_y + row_h + gap * 2;
+    let group_stride = row_h + help_h + gap;
+    let row_a_y = groups_hdr_y + section_h + gap;
+    let row_b_y = row_a_y + group_stride;
+    let row_c_y = row_b_y + group_stride;
+    let cheap_hdr_y = row_c_y + group_stride + gap;
+    let free_y = cheap_hdr_y + section_h + gap;
     LlmTrimLayout {
-        top_y, master_y, free_y, desc_y, head_y, tail_y, ws_y, strip_y,
+        top_y, master_y, groups_hdr_y, row_a_y, row_b_y, row_c_y, cheap_hdr_y, free_y,
         row_h,
         combo_w: (250.0 * c.scale) as i32,
+        arrow_w: (90.0 * c.scale) as i32,
     }
 }
 

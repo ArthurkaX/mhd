@@ -120,24 +120,37 @@ pub enum SettingsHit {
     VisionPromptBtn,
     /// Trim (request compression) toggle.
     TrimToggle,
-    /// Trim whitespace compression toggle.
-    TrimWsToggle,
-    /// Trim strip-thinking toggle.
-    TrimStripThinkingToggle,
     /// Free/cheap model selector dropdown.
     TrimFreeTargetCombo,
-    /// Tool description max chars down.
-    TrimDescCharsDown,
-    /// Tool description max chars up.
-    TrimDescCharsUp,
-    /// Tool result head chars down.
-    TrimHeadDown,
-    /// Tool result head chars up.
-    TrimHeadUp,
-    /// Tool result tail chars down.
-    TrimTailDown,
-    /// Tool result tail chars up.
-    TrimTailUp,
+    /// Head-budget arrow button for Native-big group.
+    HeadArrowNativeBig,
+    /// Head-budget arrow button for Native-Haiku group.
+    HeadArrowHaiku,
+    /// Head-budget arrow button for Harness group.
+    HeadArrowHarness,
+}
+
+/// Which head-budget group the shared head dropdown is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadGroup { NativeBig, NativeHaiku, Harness }
+
+/// Sweep of head-budget values for the head dropdown.
+pub const HEAD_SWEEP: [usize; 9] = [100, 200, 300, 500, 1000, 2000, 3000, 5000, 8000];
+
+/// Canned (pre-measurement) explanation for a head value in a group.
+/// Replaced by live Tune numbers in a later pass.
+pub fn head_help_text(group: HeadGroup, head: usize) -> String {
+    let tier = match group {
+        HeadGroup::NativeBig => "big native tiers",
+        HeadGroup::NativeHaiku => "Haiku",
+        HeadGroup::Harness => "OpenAI harness",
+    };
+    match head {
+        0..=200 => format!("Aggressive — smallest prompts for {tier} (est.)"),
+        201..=1000 => format!("Balanced — good savings for {tier} (est.)"),
+        1001..=3000 => format!("Conservative — safe default for {tier} (est.)"),
+        _ => format!("Minimal trim — largest context for {tier} (est.)"),
+    }
 }
 
 /// Which global proxy field is being inline-edited.
@@ -316,4 +329,14 @@ pub struct SettingsState {
     pub trim_free_target_items: Vec<SearchDropdownItem>,
     /// Search dropdown state for free target selection.
     pub trim_free_target_dropdown: SearchDropdownState,
+    /// Haiku group head-budget value.
+    pub trim_head_haiku: usize,
+    /// Harness group head-budget value.
+    pub trim_head_harness: usize,
+    /// Items for the shared head-budget dropdown.
+    pub head_items: Vec<SearchDropdownItem>,
+    /// Shared head-budget dropdown state.
+    pub head_dropdown: SearchDropdownState,
+    /// Which group the head dropdown is currently editing (None = closed).
+    pub head_open_group: Option<HeadGroup>,
 }

@@ -17,7 +17,7 @@ use crate::config::editor_layout::{
     ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
     WIN_WIDTH_BASE, editor_action_desc,
 };
-use crate::config::editor_state::{ButtonStyle, ProxyEditField, SettingsHit, SettingsState};
+use crate::config::editor_state::{ButtonStyle, HeadGroup, head_help_text, ProxyEditField, SettingsHit, SettingsState};
 use crate::config::editor_theme::{
     draw_button, draw_collapsed_combo_box, draw_plain_label, draw_readonly_text_field,
     draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer, draw_section_header,
@@ -1287,84 +1287,6 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
         hit: SettingsHit::VisionPromptBtn,
     });
 
-    // ── Auto Downgrade (Experimental) section ──────────────────────────
-    let downgrade_y = lay.llm_proxy.downgrade_y;
-    let toggle_w = (36.0 * scale) as i32;
-    let toggle_h = (18.0 * scale) as i32;
-
-    // Section header
-    ctls.push(Control::Divider {
-        rect: RECT {
-            left: pad,
-            top: downgrade_y - gap / 2,
-            right: win_w_val - pad,
-            bottom: downgrade_y - gap / 2 + 1,
-        },
-    });
-    ctls.push(Control::Header {
-        rect: RECT {
-            left: pad,
-            top: downgrade_y,
-            right: win_w_val - pad,
-            bottom: downgrade_y + section_h,
-        },
-        label: "Auto Downgrade (Experimental)".into(),
-        font: FontChoice::Small,
-        text_color: theme_text_muted(state),
-    });
-
-    // Opus toggle row
-    let opus_y = downgrade_y + section_h + gap;
-    let is_opus_hovered = state.hovered_target == SettingsHit::ProxyOpusDowngradeToggle;
-    ctls.push(Control::Toggle {
-        rect: RECT {
-            left: pad,
-            top: opus_y + (row_h - toggle_h) / 2,
-            right: pad + toggle_w,
-            bottom: opus_y + (row_h + toggle_h) / 2,
-        },
-        is_on: state.opus_downgrade_enabled,
-        is_hovered: is_opus_hovered,
-        hit: SettingsHit::ProxyOpusDowngradeToggle,
-    });
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad + toggle_w + (4.0 * scale) as i32,
-            top: opus_y,
-            right: win_w_val - pad,
-            bottom: opus_y + row_h,
-        },
-        label: "Downgrade Opus to Sonnet (fast tool loops)".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-
-    // Sonnet toggle row
-    let sonnet_y = opus_y + row_h;
-    let is_sonnet_hovered = state.hovered_target == SettingsHit::ProxySonnetDowngradeToggle;
-    ctls.push(Control::Toggle {
-        rect: RECT {
-            left: pad,
-            top: sonnet_y + (row_h - toggle_h) / 2,
-            right: pad + toggle_w,
-            bottom: sonnet_y + (row_h + toggle_h) / 2,
-        },
-        is_on: state.sonnet_downgrade_enabled,
-        is_hovered: is_sonnet_hovered,
-        hit: SettingsHit::ProxySonnetDowngradeToggle,
-    });
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad + toggle_w + (4.0 * scale) as i32,
-            top: sonnet_y,
-            right: win_w_val - pad,
-            bottom: sonnet_y + row_h,
-        },
-        label: "Downgrade Sonnet to Haiku (fast tool loops)".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-
     // ── Providers section ──────────────────────────────────────
     // Section header
     ctls.push(Control::Divider {
@@ -1654,7 +1576,159 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
         text_color: theme_text(state),
     });
 
-    // ── Free/cheap model combo ────────────────────────────────────────
+    // ── Grouped head-budget rows ─────────────────────────────────────
+    // Sub-header
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.groups_hdr_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.groups_hdr_y + row_h,
+        },
+        label: "Tool-result head budget per traffic group".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    let help_h = (16.0 * scale) as i32;
+    let arrow_w = lay.llm_trim.arrow_w;
+
+    // Row A - Native Big
+    let row_a_is_hovered = state.hovered_target == SettingsHit::HeadArrowNativeBig;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.row_a_y,
+            right: win_w_val - pad - arrow_w,
+            bottom: lay.llm_trim.row_a_y + row_h,
+        },
+        label: "Native Claude Code \u{00b7} Opus / Sonnet / Fable".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: win_w_val - pad - arrow_w,
+            top: lay.llm_trim.row_a_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.row_a_y + row_h,
+        },
+        label: format!("{}  \u{2192}", state.trim_toolresult_head),
+        font: FontChoice::Body,
+        is_hovered: row_a_is_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::HeadArrowNativeBig,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.row_a_y + row_h,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.row_a_y + row_h + help_h,
+        },
+        label: head_help_text(HeadGroup::NativeBig, state.trim_toolresult_head),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // Row B - Native Haiku
+    let row_b_is_hovered = state.hovered_target == SettingsHit::HeadArrowHaiku;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.row_b_y,
+            right: win_w_val - pad - arrow_w,
+            bottom: lay.llm_trim.row_b_y + row_h,
+        },
+        label: "Native Claude Code \u{00b7} Haiku".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: win_w_val - pad - arrow_w,
+            top: lay.llm_trim.row_b_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.row_b_y + row_h,
+        },
+        label: format!("{}  \u{2192}", state.trim_head_haiku),
+        font: FontChoice::Body,
+        is_hovered: row_b_is_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::HeadArrowHaiku,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.row_b_y + row_h,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.row_b_y + row_h + help_h,
+        },
+        label: head_help_text(HeadGroup::NativeHaiku, state.trim_head_haiku),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // Row C - Harness
+    let row_c_is_hovered = state.hovered_target == SettingsHit::HeadArrowHarness;
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.row_c_y,
+            right: win_w_val - pad - arrow_w,
+            bottom: lay.llm_trim.row_c_y + row_h,
+        },
+        label: "Other Harness (OpenAI clients)".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: win_w_val - pad - arrow_w,
+            top: lay.llm_trim.row_c_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.row_c_y + row_h,
+        },
+        label: format!("{}  \u{2192}", state.trim_head_harness),
+        font: FontChoice::Body,
+        is_hovered: row_c_is_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::HeadArrowHarness,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.row_c_y + row_h,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.row_c_y + row_h + help_h,
+        },
+        label: head_help_text(HeadGroup::Harness, state.trim_head_harness),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // ── Divider + Cheapest / free model section ───────────────────
+    ctls.push(Control::Divider {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.cheap_hdr_y - gap / 2,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.cheap_hdr_y - gap / 2 + 1,
+        },
+    });
+    ctls.push(Control::Header {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.cheap_hdr_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.cheap_hdr_y + section_h,
+        },
+        label: "Cheapest / free model".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
+
+    // Free-target combo (existing, unchanged)
     let is_free_hovered = state.hovered_target == SettingsHit::TrimFreeTargetCombo;
     let free_border = if is_free_hovered {
         state.theme.text
@@ -1683,232 +1757,9 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
             right: win_w_val - pad,
             bottom: lay.llm_trim.free_y + row_h,
         },
-        label: "Requests to this model use a light, non-lossy trim profile.".into(),
+        label: "Light profile \u{2014} head trimming off (non-lossy).".into(),
         font: FontChoice::Small,
         text_color: theme_text_muted(state),
-    });
-
-    // ── Tool description max chars stepper ────────────────────────────
-    let step_btn_w = (36.0 * scale) as i32;
-    let value_w = (96.0 * scale) as i32;
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad,
-            top: lay.llm_trim.desc_y,
-            right: pad + lay.label_w(),
-            bottom: lay.llm_trim.desc_y + row_h,
-        },
-        label: "Tool description max chars".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-    let desc_down_hovered = state.hovered_target == SettingsHit::TrimDescCharsDown;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: pad + lay.label_w() + gap,
-            top: lay.llm_trim.desc_y,
-            right: pad + lay.label_w() + gap + step_btn_w,
-            bottom: lay.llm_trim.desc_y + field_h,
-        },
-        label: "-".into(),
-        font: FontChoice::Body,
-        is_hovered: desc_down_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::TrimDescCharsDown,
-    });
-    ctls.push(Control::TextField {
-        rect: RECT {
-            left: pad + lay.label_w() + gap + step_btn_w + gap,
-            top: lay.llm_trim.desc_y,
-            right: pad + lay.label_w() + gap + step_btn_w + gap + value_w,
-            bottom: lay.llm_trim.desc_y + field_h,
-        },
-        text: format!("{}", state.trim_tool_desc_chars),
-        placeholder: None,
-        font: FontChoice::Small,
-        bg_color: theme_surface(state).blend_over(theme_background(state)),
-        border_color: theme_border(state),
-        text_color: theme_text(state),
-        hit: SettingsHit::None,
-    });
-    let desc_up_x = pad + lay.label_w() + gap + step_btn_w + gap + value_w + gap;
-    let desc_up_hovered = state.hovered_target == SettingsHit::TrimDescCharsUp;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: desc_up_x,
-            top: lay.llm_trim.desc_y,
-            right: desc_up_x + step_btn_w,
-            bottom: lay.llm_trim.desc_y + field_h,
-        },
-        label: "+".into(),
-        font: FontChoice::Body,
-        is_hovered: desc_up_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::TrimDescCharsUp,
-    });
-
-    // ── Tool result head chars stepper ───────────────────────────────
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad,
-            top: lay.llm_trim.head_y,
-            right: pad + lay.label_w(),
-            bottom: lay.llm_trim.head_y + row_h,
-        },
-        label: "Tool result head chars".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-    let head_down_hovered = state.hovered_target == SettingsHit::TrimHeadDown;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: pad + lay.label_w() + gap,
-            top: lay.llm_trim.head_y,
-            right: pad + lay.label_w() + gap + step_btn_w,
-            bottom: lay.llm_trim.head_y + field_h,
-        },
-        label: "-".into(),
-        font: FontChoice::Body,
-        is_hovered: head_down_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::TrimHeadDown,
-    });
-    ctls.push(Control::TextField {
-        rect: RECT {
-            left: pad + lay.label_w() + gap + step_btn_w + gap,
-            top: lay.llm_trim.head_y,
-            right: pad + lay.label_w() + gap + step_btn_w + gap + value_w,
-            bottom: lay.llm_trim.head_y + field_h,
-        },
-        text: format!("{}", state.trim_toolresult_head),
-        placeholder: None,
-        font: FontChoice::Small,
-        bg_color: theme_surface(state).blend_over(theme_background(state)),
-        border_color: theme_border(state),
-        text_color: theme_text(state),
-        hit: SettingsHit::None,
-    });
-    let head_up_x = pad + lay.label_w() + gap + step_btn_w + gap + value_w + gap;
-    let head_up_hovered = state.hovered_target == SettingsHit::TrimHeadUp;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: head_up_x,
-            top: lay.llm_trim.head_y,
-            right: head_up_x + step_btn_w,
-            bottom: lay.llm_trim.head_y + field_h,
-        },
-        label: "+".into(),
-        font: FontChoice::Body,
-        is_hovered: head_up_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::TrimHeadUp,
-    });
-
-    // ── Tool result tail chars stepper ───────────────────────────────
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad,
-            top: lay.llm_trim.tail_y,
-            right: pad + lay.label_w(),
-            bottom: lay.llm_trim.tail_y + row_h,
-        },
-        label: "Tool result tail chars".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-    let tail_down_hovered = state.hovered_target == SettingsHit::TrimTailDown;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: pad + lay.label_w() + gap,
-            top: lay.llm_trim.tail_y,
-            right: pad + lay.label_w() + gap + step_btn_w,
-            bottom: lay.llm_trim.tail_y + field_h,
-        },
-        label: "-".into(),
-        font: FontChoice::Body,
-        is_hovered: tail_down_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::TrimTailDown,
-    });
-    ctls.push(Control::TextField {
-        rect: RECT {
-            left: pad + lay.label_w() + gap + step_btn_w + gap,
-            top: lay.llm_trim.tail_y,
-            right: pad + lay.label_w() + gap + step_btn_w + gap + value_w,
-            bottom: lay.llm_trim.tail_y + field_h,
-        },
-        text: format!("{}", state.trim_toolresult_tail),
-        placeholder: None,
-        font: FontChoice::Small,
-        bg_color: theme_surface(state).blend_over(theme_background(state)),
-        border_color: theme_border(state),
-        text_color: theme_text(state),
-        hit: SettingsHit::None,
-    });
-    let tail_up_x = pad + lay.label_w() + gap + step_btn_w + gap + value_w + gap;
-    let tail_up_hovered = state.hovered_target == SettingsHit::TrimTailUp;
-    ctls.push(Control::Button {
-        rect: RECT {
-            left: tail_up_x,
-            top: lay.llm_trim.tail_y,
-            right: tail_up_x + step_btn_w,
-            bottom: lay.llm_trim.tail_y + field_h,
-        },
-        label: "+".into(),
-        font: FontChoice::Body,
-        is_hovered: tail_up_hovered,
-        style: ButtonStyle::Secondary,
-        hit: SettingsHit::TrimTailUp,
-    });
-
-    // ── Whitespace compression toggle ────────────────────────────────
-    let is_ws_hovered = state.hovered_target == SettingsHit::TrimWsToggle;
-    ctls.push(Control::Toggle {
-        rect: RECT {
-            left: pad,
-            top: lay.llm_trim.ws_y + (row_h - toggle_h) / 2,
-            right: pad + toggle_w,
-            bottom: lay.llm_trim.ws_y + (row_h + toggle_h) / 2,
-        },
-        is_on: state.trim_ws_enabled,
-        is_hovered: is_ws_hovered,
-        hit: SettingsHit::TrimWsToggle,
-    });
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad + toggle_w + (4.0 * scale) as i32,
-            top: lay.llm_trim.ws_y,
-            right: win_w_val - pad,
-            bottom: lay.llm_trim.ws_y + row_h,
-        },
-        label: "Collapse redundant whitespace".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
-    });
-
-    // ── Strip thinking toggle ────────────────────────────────────────
-    let is_strip_hovered = state.hovered_target == SettingsHit::TrimStripThinkingToggle;
-    ctls.push(Control::Toggle {
-        rect: RECT {
-            left: pad,
-            top: lay.llm_trim.strip_y + (row_h - toggle_h) / 2,
-            right: pad + toggle_w,
-            bottom: lay.llm_trim.strip_y + (row_h + toggle_h) / 2,
-        },
-        is_on: state.trim_strip_thinking,
-        is_hovered: is_strip_hovered,
-        hit: SettingsHit::TrimStripThinkingToggle,
-    });
-    ctls.push(Control::Label {
-        rect: RECT {
-            left: pad + toggle_w + (4.0 * scale) as i32,
-            top: lay.llm_trim.strip_y,
-            right: win_w_val - pad,
-            bottom: lay.llm_trim.strip_y + row_h,
-        },
-        label: "Strip thinking from old turns".into(),
-        font: FontChoice::Body,
-        text_color: theme_text(state),
     });
 
     ctls

@@ -75,8 +75,8 @@ pub use crate::config::editor_paint::{
 };
 pub use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::{
-    ButtonStyle, ParamEditCreateInfo, ProxyEditField, SettingsHit, SettingsPage, SettingsState,
-    UIBinding, UiProvider,
+    ButtonStyle, HEAD_SWEEP, HeadGroup, ParamEditCreateInfo, ProxyEditField, SettingsHit,
+    SettingsPage, SettingsState, UIBinding, UiProvider, head_help_text,
 };
 pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
@@ -262,6 +262,11 @@ pub fn show_config_editor(handle: AppHandle) {
         trim_ws_enabled: llm_proxy::config::load_settings().map(|s| s.trim_ws_enabled).unwrap_or(false),
         trim_strip_thinking: llm_proxy::config::load_settings().map(|s| s.trim_strip_thinking).unwrap_or(false),
         trim_free_target: llm_proxy::config::load_settings().map(|s| s.trim_free_target).unwrap_or_default(),
+    trim_head_haiku: llm_proxy::config::load_settings().map(|s| s.trim_head_haiku).unwrap_or(3000),
+    trim_head_harness: llm_proxy::config::load_settings().map(|s| s.trim_head_harness).unwrap_or(3000),
+    head_items: Vec::new(),
+    head_dropdown: SearchDropdownState::default(),
+    head_open_group: None,
         vision_model: llm_proxy::config::load_settings()
             .ok()
             .and_then(|s| s.vision_model),
@@ -804,6 +809,11 @@ fn paint_settings(hwnd: HWND, state_ptr: *mut SettingsState, layout: &Layout) {
         draw_free_target_dropdown(dib_dc, bits, lay, state, body_font, small_font);
     }
 
+    // ── Head budget search dropdown overlay ─────────────────────────
+    if state.active_section == SettingsPage::LlmTrim && state.head_dropdown.is_open {
+        draw_head_dropdown(dib_dc, bits, lay, state, body_font, small_font);
+    }
+
     // Separator above footer
     let footer_y = lay.win_h() - lay.footer_h();
     unsafe {
@@ -965,7 +975,7 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
             )
         }
         SettingsPage::LlmTrim => {
-            let last_y = lay.llm_trim.strip_y + 2 * lay.llm_trim.row_h - lay.content_y();
+            let last_y = lay.llm_trim.free_y + 2 * lay.llm_trim.row_h - lay.content_y();
             last_y
         }
     }
@@ -1348,6 +1358,8 @@ fn apply_settings(state: &mut SettingsState) {
             settings.trim_enabled = state.trim_enabled;
             settings.trim_tool_desc_chars = state.trim_tool_desc_chars;
             settings.trim_toolresult_head = state.trim_toolresult_head;
+            settings.trim_head_haiku = state.trim_head_haiku;
+            settings.trim_head_harness = state.trim_head_harness;
             settings.trim_toolresult_tail = state.trim_toolresult_tail;
             settings.trim_ws_enabled = state.trim_ws_enabled;
             settings.trim_strip_thinking = state.trim_strip_thinking;
@@ -1733,6 +1745,65 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
 
+
+                // ── Head budget search dropdown hit test ─────────────────────
+                if state.head_dropdown.is_open
+                    && state.active_section == SettingsPage::LlmTrim
+                {
+                    let scale = state.layout.scale();
+                    let (combo_y, combo_w) = match state.head_open_group {
+                        Some(HeadGroup::NativeBig) => (state.layout.llm_trim.row_a_y, state.layout.llm_trim.combo_w),
+                        Some(HeadGroup::NativeHaiku) => (state.layout.llm_trim.row_b_y, state.layout.llm_trim.combo_w),
+                        Some(HeadGroup::Harness) => (state.layout.llm_trim.row_c_y, state.layout.llm_trim.combo_w),
+                        None => (0, 0),
+                    };
+                    let combo_x = state.layout.win_w() - state.layout.pad() - combo_w;
+                    let combo_h = state.layout.llm_trim.row_h;
+                    let dropdown_top = combo_y + combo_h;
+                    let item_h = (24.0 * scale) as i32;
+                    let search_h = (30.0 * scale) as i32;
+                    let visible_rows = 8;
+                    let filtered_count = state
+                        .head_dropdown
+                        .filtered_count(&state.head_items);
+                    let max_visible = filtered_count.min(visible_rows);
+                    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+                    let dropdown_w = combo_w;
+
+                    let on_combo_button = y >= combo_y
+                        && y < combo_y + combo_h
+                        && x >= combo_x
+                        && x < combo_x + combo_w;
+
+                    let on_dropdown = y >= dropdown_top
+                        && y < dropdown_top + dropdown_h
+                        && x >= combo_x
+                        && x < combo_x + dropdown_w;
+
+                    if on_combo_button {
+                        // fall through to HeadArrow handler (toggles close)
+                    } else if on_dropdown {
+                        if y >= dropdown_top + search_h {
+                            let item_idx = (y - (dropdown_top + search_h)) / item_h;
+                            let visible_items = state
+                                .head_dropdown
+                                .visible_items(&state.head_items, visible_rows);
+                            if (item_idx as usize) < visible_items.len() {
+                                let selected = visible_items[item_idx as usize];
+                                select_head(state, selected.id);
+                                state.head_dropdown.close();
+                                state.head_open_group = None;
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                        }
+                        return LRESULT(0);
+                    } else {
+                        state.head_dropdown.close();
+                        state.head_open_group = None;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+                }
                 let hit = hit_test_settings(state, x, y);
                 match hit {
                     SettingsHit::Tab(ti) => {
@@ -1959,36 +2030,39 @@ unsafe extern "system" fn settings_wndproc(
                         state.trim_enabled = !state.trim_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::TrimWsToggle => {
-                        state.trim_ws_enabled = !state.trim_ws_enabled;
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimStripThinkingToggle => {
-                        state.trim_strip_thinking = !state.trim_strip_thinking;
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimDescCharsDown => {
-                        state.trim_tool_desc_chars = state.trim_tool_desc_chars.saturating_sub(50).max(20);
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimDescCharsUp => {
-                        state.trim_tool_desc_chars = (state.trim_tool_desc_chars + 50).min(2000);
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimHeadDown => {
-                        state.trim_toolresult_head = state.trim_toolresult_head.saturating_sub(500).max(500);
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimHeadUp => {
-                        state.trim_toolresult_head = (state.trim_toolresult_head + 500).min(20000);
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimTailDown => {
-                        state.trim_toolresult_tail = state.trim_toolresult_tail.saturating_sub(250);
-                        paint_settings(hwnd, state_ptr, &state.layout);
-                    }
-                    SettingsHit::TrimTailUp => {
-                        state.trim_toolresult_tail = (state.trim_toolresult_tail + 250).min(10000);
+                    SettingsHit::HeadArrowNativeBig | SettingsHit::HeadArrowHaiku | SettingsHit::HeadArrowHarness => {
+                        close_kind_popup(state);
+                        let group = match hit {
+                            SettingsHit::HeadArrowNativeBig => HeadGroup::NativeBig,
+                            SettingsHit::HeadArrowHaiku => HeadGroup::NativeHaiku,
+                            _ => HeadGroup::Harness,
+                        };
+                        state.head_open_group = Some(group);
+                        // Build items from HEAD_SWEEP
+                        let mut items: Vec<SearchDropdownItem> = Vec::new();
+                        for (i, &v) in HEAD_SWEEP.iter().enumerate() {
+                            items.push(
+                                SearchDropdownItem::new(i, format!("{v}"), vec![format!("{v}")])
+                                    .with_description(head_help_text(group, v)),
+                            );
+                        }
+                        state.head_items = items;
+                        // Determine selected ID
+                        let cur_val = match group {
+                            HeadGroup::NativeBig => state.trim_toolresult_head,
+                            HeadGroup::NativeHaiku => state.trim_head_haiku,
+                            HeadGroup::Harness => state.trim_head_harness,
+                        };
+                        let selected_id = HEAD_SWEEP.iter().position(|&v| v == cur_val).unwrap_or(4);
+                        state.head_dropdown.open(&state.head_items, selected_id, 8);
+                        // Close other dropdowns
+                        state.combo_open.store(false, Ordering::SeqCst);
+                        if let Some(popup) = state.combo_popup.take() {
+                            let _ = DestroyWindow(popup);
+                        }
+                        state.theme_dropdown.close();
+                        state.vision_model_dropdown.close();
+                        state.trim_free_target_dropdown.close();
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
 
@@ -2585,6 +2659,20 @@ unsafe extern "system" fn settings_wndproc(
                         return LRESULT(0);
                     }
 
+                    // Head budget search dropdown scroll
+                    if state.head_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmTrim
+                    {
+                        let delta_rows = if delta > 0 { -3 } else { 3 };
+                        state.head_dropdown.scroll_by(
+                            delta_rows,
+                            &state.head_items,
+                            8,
+                        );
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                        return LRESULT(0);
+                    }
+
                     let lay = state.layout;
                     let content_h = page_control_content_height(state, &lay);
                     let max_scroll = (content_h - lay.content_visible_h()).max(0);
@@ -2937,6 +3025,71 @@ unsafe extern "system" fn settings_wndproc(
                     }
 
                     // Free/cheap trim target search dropdown keyboard handling
+
+                    // Head budget search dropdown keyboard handling
+                    if state.head_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmTrim
+                    {
+                        let vk = wparam.0 as u32;
+                        match vk {
+                            0x0D => {
+                                let visible = state
+                                    .head_dropdown
+                                    .visible_items(&state.head_items, 8);
+                                if let Some(first) = visible.first() {
+                                    select_head(state, first.id);
+                                    state.head_dropdown.close();
+                                    state.head_open_group = None;
+                                    paint_settings(hwnd, state_ptr, &state.layout);
+                                }
+                            }
+                            0x1B => {
+                                state.head_dropdown.close();
+                                state.head_open_group = None;
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x08 => {
+                                state
+                                    .head_dropdown
+                                    .backspace(&state.head_items, 8);
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x26 => {
+                                state.head_dropdown.scroll_by(
+                                    -1,
+                                    &state.head_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x28 => {
+                                state.head_dropdown.scroll_by(
+                                    1,
+                                    &state.head_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x21 => {
+                                state.head_dropdown.scroll_by(
+                                    -8,
+                                    &state.head_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            0x22 => {
+                                state.head_dropdown.scroll_by(
+                                    8,
+                                    &state.head_items,
+                                    8,
+                                );
+                                paint_settings(hwnd, state_ptr, &state.layout);
+                            }
+                            _ => {}
+                        }
+                        return LRESULT(0);
+                    }
                     if state.trim_free_target_dropdown.is_open
                         && state.active_section == SettingsPage::LlmTrim
                     {
@@ -3068,6 +3221,22 @@ unsafe extern "system" fn settings_wndproc(
                         }
                         return LRESULT(0);
                     }
+
+                    // Head budget search dropdown character input
+                    if state.head_dropdown.is_open
+                        && state.active_section == SettingsPage::LlmTrim
+                    {
+                        let ch = (wparam.0 as u32) as u8 as char;
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            state.head_dropdown.input_char(
+                                ch,
+                                &state.head_items,
+                                8,
+                            );
+                            paint_settings(hwnd, state_ptr, &state.layout);
+                        }
+                        return LRESULT(0);
+                    }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -3120,6 +3289,20 @@ fn select_free_target(state: &mut SettingsState, item_id: usize) {
         state.trim_free_target = String::new();
     } else if let Some(item) = state.trim_free_target_items.get(item_id) {
         state.trim_free_target = item.label.clone();
+    }
+}
+
+fn select_head(state: &mut SettingsState, item_id: usize) {
+    let group = match state.head_open_group {
+        Some(g) => g,
+        None => return,
+    };
+    if let Some(&v) = HEAD_SWEEP.get(item_id) {
+        match group {
+            HeadGroup::NativeBig => state.trim_toolresult_head = v,
+            HeadGroup::NativeHaiku => state.trim_head_haiku = v,
+            HeadGroup::Harness => state.trim_head_harness = v,
+        }
     }
 }
 
@@ -4278,6 +4461,185 @@ fn draw_free_target_dropdown(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+
+fn draw_head_dropdown(
+    dib_dc: HDC,
+    bits: *mut c_void,
+    lay: &Layout,
+    state: &SettingsState,
+    body_font: HFONT,
+    small_font: HFONT,
+) {
+    let theme = &state.theme;
+    let scale = lay.scale();
+    let (combo_y, combo_w) = match state.head_open_group {
+        Some(HeadGroup::NativeBig) => (lay.llm_trim.row_a_y, lay.llm_trim.combo_w),
+        Some(HeadGroup::NativeHaiku) => (lay.llm_trim.row_b_y, lay.llm_trim.combo_w),
+        Some(HeadGroup::Harness) => (lay.llm_trim.row_c_y, lay.llm_trim.combo_w),
+        None => (0, 0),
+    };
+    let combo_x = lay.win_w() - lay.pad() - combo_w;
+    let combo_h = lay.llm_trim.row_h;
+    let dropdown_top = combo_y + combo_h;
+    let item_h = (24.0 * scale) as i32;
+    let search_h = (30.0 * scale) as i32;
+    let visible_rows = 8;
+    let filtered_count = state
+        .head_dropdown
+        .filtered_count(&state.head_items);
+    let max_visible = filtered_count.min(visible_rows);
+    let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
+    let dropdown_w = combo_w;
+
+    let dropdown_rect = RECT {
+        left: combo_x,
+        top: dropdown_top,
+        right: combo_x + dropdown_w,
+        bottom: dropdown_top + dropdown_h,
+    };
+
+    // Background
+    let bg = theme.surface.blend_over(theme.background);
+    draw_rounded_rect_in_buffer(
+        bits, lay.win_w(), lay.win_h(), dropdown_rect,
+        (4.0 * scale) as i32, bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits, lay.win_w(), lay.win_h(), dropdown_rect,
+        (4.0 * scale) as i32, 1, theme.border,
+    );
+
+    // Search field
+    let search_rect = RECT {
+        left: combo_x + 4,
+        top: dropdown_top + 2,
+        right: combo_x + dropdown_w - 4,
+        bottom: dropdown_top + 2 + search_h,
+    };
+    let search_bg = theme.background;
+    draw_rounded_rect_in_buffer(
+        bits, lay.win_w(), lay.win_h(), search_rect,
+        (4.0 * scale) as i32, search_bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits, lay.win_w(), lay.win_h(), search_rect,
+        (4.0 * scale) as i32, 1, theme.border,
+    );
+
+    unsafe {
+        let _ = SelectObject(dib_dc, body_font);
+        let search_text = if state.head_dropdown.filter.is_empty() {
+            "Search values\u{2026}"
+        } else {
+            state.head_dropdown.filter.as_str()
+        };
+        let _ = SetTextColor(
+            dib_dc,
+            if state.head_dropdown.filter.is_empty() {
+                theme.text_muted
+            } else {
+                theme.text
+            }.to_colorref(),
+        );
+        let mut search_wz = to_utf16_z(search_text);
+        let mut search_text_rc = RECT {
+            left: search_rect.left + 4,
+            top: search_rect.top,
+            right: search_rect.right - 4,
+            bottom: search_rect.bottom,
+        };
+        let _ = DrawTextW(
+            dib_dc, &mut search_wz, &mut search_text_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    // Items list
+    let visible_items = state
+        .head_dropdown
+        .visible_items(&state.head_items, visible_rows);
+    let list_top = dropdown_top + 2 + search_h;
+
+    for (i, item) in visible_items.iter().enumerate() {
+        let item_rect = RECT {
+            left: combo_x + 4,
+            top: list_top + i as i32 * item_h,
+            right: combo_x + dropdown_w - 4,
+            bottom: list_top + (i as i32 + 1) * item_h,
+        };
+
+        // Highlight selected
+        let is_selected = match state.head_open_group {
+            Some(g) => {
+                let cur = match g {
+                    HeadGroup::NativeBig => state.trim_toolresult_head,
+                    HeadGroup::NativeHaiku => state.trim_head_haiku,
+                    HeadGroup::Harness => state.trim_head_harness,
+                };
+                item.label == format!("{}", cur)
+            }
+            None => false,
+        };
+        if is_selected {
+            draw_rounded_rect_in_buffer(
+                bits, lay.win_w(), lay.win_h(), item_rect,
+                (2.0 * scale) as i32, theme.selected,
+            );
+        }
+
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+            // Draw value (left)
+            let mut label_wz = to_utf16_z(&item.label);
+            let mut label_rc = RECT {
+                left: item_rect.left + 4,
+                top: item_rect.top,
+                right: item_rect.left + (combo_w / 3),
+                bottom: item_rect.bottom,
+            };
+            let _ = DrawTextW(
+                dib_dc, &mut label_wz, &mut label_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+            // Draw description (right, muted)
+            if let Some(desc) = &item.description {
+                let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                let mut desc_wz = to_utf16_z(desc);
+                let mut desc_rc = RECT {
+                    left: item_rect.left + (combo_w / 3) + 4,
+                    top: item_rect.top,
+                    right: item_rect.right - 4,
+                    bottom: item_rect.bottom,
+                };
+                let _ = DrawTextW(
+                    dib_dc, &mut desc_wz, &mut desc_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
+            }
+        }
+    }
+
+    // No results message
+    if visible_items.is_empty() {
+        unsafe {
+            let _ = SelectObject(dib_dc, small_font);
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+            let mut empty_wz = to_utf16_z("No matching values");
+            let mut empty_rc = RECT {
+                left: combo_x + 4,
+                top: list_top,
+                right: combo_x + dropdown_w - 4,
+                bottom: list_top + item_h,
+            };
+            let _ = DrawTextW(
+                dib_dc, &mut empty_wz, &mut empty_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
+    }
+}
+
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════
 
