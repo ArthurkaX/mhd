@@ -1762,7 +1762,6 @@ unsafe extern "system" fn settings_wndproc(
                     };
                     let combo_x = state.layout.win_w() - state.layout.pad() - combo_w;
                     let combo_h = state.layout.llm_trim.row_h;
-                    let dropdown_top = combo_y + combo_h;
                     let item_h = (24.0 * scale) as i32;
                     let search_h = (30.0 * scale) as i32;
                     let visible_rows = 8;
@@ -1772,6 +1771,9 @@ unsafe extern "system" fn settings_wndproc(
                     let max_visible = filtered_count.min(visible_rows);
                     let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
                     let dropdown_w = combo_w;
+                    let footer_y = state.layout.win_h() - state.layout.footer_h();
+                    let open_up = combo_y + combo_h + dropdown_h > footer_y;
+                    let dropdown_top = if open_up { combo_y - dropdown_h } else { combo_y + combo_h };
 
                     let on_combo_button = y >= combo_y
                         && y < combo_y + combo_h
@@ -2600,12 +2602,20 @@ unsafe extern "system" fn settings_wndproc(
                             let combo_h = lay.llm_trim.row_h;
                             let item_h = (24.0 * hscale) as i32;
                             let search_h = (30.0 * hscale) as i32;
-                            let list_top = combo_y + combo_h + search_h;
                             let vis = state
                                 .head_dropdown
                                 .visible_items(&state.head_items, 8)
                                 .len();
-                            let new_idx = if x >= combo_x && x < combo_x + combo_w && y >= list_top {
+                            let dropdown_h = search_h + (vis as i32) * item_h + 4;
+                            let footer_y = lay.win_h() - lay.footer_h();
+                            let open_up = combo_y + combo_h + dropdown_h > footer_y;
+                            let dropdown_top = if open_up { combo_y - dropdown_h } else { combo_y + combo_h };
+                            let list_top = dropdown_top + search_h;
+                            let new_idx = if x >= combo_x
+                                && x < combo_x + combo_w
+                                && y >= list_top
+                                && y < list_top + (vis as i32) * item_h
+                            {
                                 let ci = ((y - list_top) / item_h) as usize;
                                 if ci < vis { Some(ci) } else { None }
                             } else {
@@ -4541,7 +4551,6 @@ fn draw_head_dropdown(
     };
     let combo_x = lay.win_w() - lay.pad() - combo_w;
     let combo_h = lay.llm_trim.row_h;
-    let dropdown_top = combo_y + combo_h;
     let item_h = (24.0 * scale) as i32;
     let search_h = (30.0 * scale) as i32;
     let visible_rows = 8;
@@ -4551,6 +4560,10 @@ fn draw_head_dropdown(
     let max_visible = filtered_count.min(visible_rows);
     let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
     let dropdown_w = combo_w;
+    // Flip the dropdown above the row when it would collide with the footer.
+    let footer_y = lay.win_h() - lay.footer_h();
+    let open_up = combo_y + combo_h + dropdown_h > footer_y;
+    let dropdown_top = if open_up { combo_y - dropdown_h } else { combo_y + combo_h };
 
     let dropdown_rect = RECT {
         left: combo_x,
