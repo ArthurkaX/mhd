@@ -13,6 +13,7 @@ use windows::Win32::Graphics::Gdi::*;
 
 use crate::action::ActionParamSchema;
 use crate::config::editor_control::{Control, ControlList, FontChoice, HitRegion};
+use crate::config::editor_head_tune;
 use crate::config::editor_layout::{
     ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
     WIN_WIDTH_BASE, editor_action_desc,
@@ -1578,19 +1579,47 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
 
     // ── Grouped head-budget rows ─────────────────────────────────────
     // Sub-header
+    let calc_w = (110.0 * scale) as i32;
+    let calc_h = row_h;
     ctls.push(Control::Label {
         rect: RECT {
             left: pad,
             top: lay.llm_trim.groups_hdr_y,
-            right: win_w_val - pad,
+            right: win_w_val - pad - calc_w - gap,
             bottom: lay.llm_trim.groups_hdr_y + row_h,
         },
         label: "Tool-result head budget per traffic group".into(),
         font: FontChoice::Small,
         text_color: theme_text_muted(state),
     });
+    // Calculate button (right-aligned, same row as sub-header)
+    let calc_is_hovered = state.hovered_target == SettingsHit::HeadCalculateBtn;
+    ctls.push(Control::Button {
+        rect: RECT {
+            left: win_w_val - pad - calc_w,
+            top: lay.llm_trim.groups_hdr_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.groups_hdr_y + calc_h,
+        },
+        label: editor_head_tune::calculate_button_label(),
+        font: FontChoice::Small,
+        is_hovered: calc_is_hovered,
+        style: ButtonStyle::Secondary,
+        hit: SettingsHit::HeadCalculateBtn,
+    });
+    // Hint label below sub-header
+    let help_h = (16.0 * scale) as i32;    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.groups_hdr_y + section_h + gap,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.groups_hdr_y + section_h + gap + help_h,
+        },
+        label: "?  Measures trim% per value from your captured corpus.".into(),
+        font: FontChoice::Small,
+        text_color: theme_text_muted(state),
+    });
 
-    let help_h = (16.0 * scale) as i32;
     let arrow_w = lay.llm_trim.arrow_w;
 
     // Row A - Native Big
@@ -1626,7 +1655,8 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
             right: win_w_val - pad,
             bottom: lay.llm_trim.row_a_y + row_h + help_h,
         },
-        label: head_help_text(HeadGroup::NativeBig, state.trim_toolresult_head),
+        label: editor_head_tune::measured_group_line(HeadGroup::NativeBig)
+            .unwrap_or_else(|| head_help_text(HeadGroup::NativeBig, state.trim_toolresult_head)),
         font: FontChoice::Small,
         text_color: theme_text_muted(state),
     });
@@ -1664,7 +1694,8 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
             right: win_w_val - pad,
             bottom: lay.llm_trim.row_b_y + row_h + help_h,
         },
-        label: head_help_text(HeadGroup::NativeHaiku, state.trim_head_haiku),
+        label: editor_head_tune::measured_group_line(HeadGroup::NativeHaiku)
+            .unwrap_or_else(|| head_help_text(HeadGroup::NativeHaiku, state.trim_head_haiku)),
         font: FontChoice::Small,
         text_color: theme_text_muted(state),
     });
@@ -1702,7 +1733,8 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
             right: win_w_val - pad,
             bottom: lay.llm_trim.row_c_y + row_h + help_h,
         },
-        label: head_help_text(HeadGroup::Harness, state.trim_head_harness),
+        label: editor_head_tune::measured_group_line(HeadGroup::Harness)
+            .unwrap_or_else(|| head_help_text(HeadGroup::Harness, state.trim_head_harness)),
         font: FontChoice::Small,
         text_color: theme_text_muted(state),
     });

@@ -73,7 +73,8 @@ pub use crate::config::editor_paint::{
     build_advanced_controls, build_general_controls, build_llm_proxy_controls,
     build_llm_trim_controls, build_shortcuts_controls, paint_page,
 };
-pub use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
+pub use crate::config::editor_head_tune;
+use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::{
     ButtonStyle, HEAD_SWEEP, HeadGroup, ParamEditCreateInfo, ProxyEditField, SettingsHit,
     SettingsPage, SettingsState, UIBinding, UiProvider, head_help_text,
@@ -82,6 +83,7 @@ pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
 
 const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "LLM Trim", "Advanced"];
+const HEAD_TUNE_TIMER_ID: usize = 0xB0B0;
 const WM_VISION_PROMPT_UPDATED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 const VISION_TEST_PROMPT: &str = "Describe this image in one short sentence.";
 const VISION_TEST_ICON_PNG: &[u8] =
@@ -2040,10 +2042,13 @@ unsafe extern "system" fn settings_wndproc(
                         state.head_open_group = Some(group);
                         // Build items from HEAD_SWEEP
                         let mut items: Vec<SearchDropdownItem> = Vec::new();
-                        for (i, &v) in HEAD_SWEEP.iter().enumerate() {
+						for (i, &v) in HEAD_SWEEP.iter().enumerate() {
                             items.push(
                                 SearchDropdownItem::new(i, format!("{v}"), vec![format!("{v}")])
-                                    .with_description(head_help_text(group, v)),
+							.with_description(
+								editor_head_tune::measured_value_desc(group, v)
+									.unwrap_or_else(|| head_help_text(group, v)),
+							)
                             );
                         }
                         state.head_items = items;
@@ -2063,6 +2068,12 @@ unsafe extern "system" fn settings_wndproc(
                         state.theme_dropdown.close();
                         state.vision_model_dropdown.close();
                         state.trim_free_target_dropdown.close();
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+
+                    SettingsHit::HeadCalculateBtn => {
+                        editor_head_tune::start();
+                        let _ = SetTimer(hwnd, HEAD_TUNE_TIMER_ID, 400, None);
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
 
@@ -3253,6 +3264,18 @@ unsafe extern "system" fn settings_wndproc(
                 }
                 LRESULT(0)
             }
+
+	WM_TIMER if wparam.0 == HEAD_TUNE_TIMER_ID => {
+	    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+	    if !state_ptr.is_null() {
+	        let state = &*state_ptr;
+	        paint_settings(hwnd, state_ptr, &state.layout);
+	        if !editor_head_tune::is_running() {
+	            let _ = KillTimer(hwnd, HEAD_TUNE_TIMER_ID);
+	        }
+	    }
+	    LRESULT(0)
+	}
 
             WM_DESTROY => {
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;

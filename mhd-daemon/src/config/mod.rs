@@ -1,6 +1,7 @@
 pub mod editor;
 pub mod editor_binding_popup;
 pub mod editor_control;
+pub mod editor_head_tune;
 pub mod editor_hittest;
 pub mod editor_key_combo;
 pub mod editor_layout;

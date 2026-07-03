@@ -297,7 +297,8 @@ fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
     let master_y = top_y + section_h + gap;
     let groups_hdr_y = master_y + row_h + gap * 2;
     let group_stride = row_h + help_h + gap;
-    let row_a_y = groups_hdr_y + section_h + gap;
+    // Sub-header row, then a hint line (Calculate button explanation), then rows.
+    let row_a_y = groups_hdr_y + section_h + gap + help_h + gap;
     let row_b_y = row_a_y + group_stride;
     let row_c_y = row_b_y + group_stride;
     let cheap_hdr_y = row_c_y + group_stride + gap;

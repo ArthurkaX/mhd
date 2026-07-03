@@ -128,6 +128,8 @@ pub enum SettingsHit {
     HeadArrowHaiku,
     /// Head-budget arrow button for Harness group.
     HeadArrowHarness,
+    /// Calculate button that runs the Tune sweep on background thread.
+    HeadCalculateBtn,
 }
 
 /// Which head-budget group the shared head dropdown is editing.
