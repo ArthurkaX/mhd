@@ -2040,15 +2040,14 @@ unsafe extern "system" fn settings_wndproc(
                             _ => HeadGroup::Harness,
                         };
                         state.head_open_group = Some(group);
-                        // Build items from HEAD_SWEEP
+                        // Build items from HEAD_SWEEP. The dropdown draw renders
+                        // measured Tune columns per row; the canned description is a
+                        // keyword/fallback only.
                         let mut items: Vec<SearchDropdownItem> = Vec::new();
-						for (i, &v) in HEAD_SWEEP.iter().enumerate() {
+                        for (i, &v) in HEAD_SWEEP.iter().enumerate() {
                             items.push(
                                 SearchDropdownItem::new(i, format!("{v}"), vec![format!("{v}")])
-							.with_description(
-								editor_head_tune::measured_value_desc(group, v)
-									.unwrap_or_else(|| head_help_text(group, v)),
-							)
+                                    .with_description(head_help_text(group, v)),
                             );
                         }
                         state.head_items = items;
@@ -4583,6 +4582,18 @@ fn draw_head_dropdown(
         .visible_items(&state.head_items, visible_rows);
     let list_top = dropdown_top + 2 + search_h;
 
+    let group = state.head_open_group;
+    let current = match group {
+        Some(HeadGroup::NativeBig) => state.trim_toolresult_head,
+        Some(HeadGroup::NativeHaiku) => state.trim_head_haiku,
+        Some(HeadGroup::Harness) => state.trim_head_harness,
+        None => 0,
+    };
+    // Column x-offsets inside the row (Tune-style: head / trim% / bar / tags).
+    let inner = dropdown_w - 8;
+    let head_w = inner * 22 / 100;
+    let pct_w = inner * 24 / 100;
+    let bar_w = inner * 30 / 100;
     for (i, item) in visible_items.iter().enumerate() {
         let item_rect = RECT {
             left: combo_x + 4,
@@ -4591,18 +4602,7 @@ fn draw_head_dropdown(
             bottom: list_top + (i as i32 + 1) * item_h,
         };
 
-        // Highlight selected
-        let is_selected = match state.head_open_group {
-            Some(g) => {
-                let cur = match g {
-                    HeadGroup::NativeBig => state.trim_toolresult_head,
-                    HeadGroup::NativeHaiku => state.trim_head_haiku,
-                    HeadGroup::Harness => state.trim_head_harness,
-                };
-                item.label == format!("{}", cur)
-            }
-            None => false,
-        };
+        let is_selected = item.label == format!("{}", current);
         if is_selected {
             draw_rounded_rect_in_buffer(
                 bits, lay.win_w(), lay.win_h(), item_rect,
@@ -4610,35 +4610,46 @@ fn draw_head_dropdown(
             );
         }
 
+        let head: usize = item.label.parse().unwrap_or(0);
+        let view = group.and_then(|g| editor_head_tune::head_row_view(g, head, current));
+        let col0 = item_rect.left + 4;
+
         unsafe {
             let _ = SelectObject(dib_dc, small_font);
-            let _ = SetTextColor(dib_dc, theme.text.to_colorref());
-            // Draw value (left)
-            let mut label_wz = to_utf16_z(&item.label);
-            let mut label_rc = RECT {
-                left: item_rect.left + 4,
-                top: item_rect.top,
-                right: item_rect.left + (combo_w / 3),
-                bottom: item_rect.bottom,
-            };
-            let _ = DrawTextW(
-                dib_dc, &mut label_wz, &mut label_rc,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-            );
-            // Draw description (right, muted)
-            if let Some(desc) = &item.description {
-                let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
-                let mut desc_wz = to_utf16_z(desc);
-                let mut desc_rc = RECT {
-                    left: item_rect.left + (combo_w / 3) + 4,
-                    top: item_rect.top,
-                    right: item_rect.right - 4,
-                    bottom: item_rect.bottom,
-                };
-                let _ = DrawTextW(
-                    dib_dc, &mut desc_wz, &mut desc_rc,
-                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                );
+            match &view {
+                Some(v) => {
+                    // head value, coloured by risk zone
+                    let _ = SetTextColor(dib_dc, v.color.to_colorref());
+                    let mut head_wz = to_utf16_z(&item.label);
+                    let mut head_rc = RECT { left: col0, top: item_rect.top, right: col0 + head_w, bottom: item_rect.bottom };
+                    let _ = DrawTextW(dib_dc, &mut head_wz, &mut head_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    // trim%
+                    let mut pct_wz = to_utf16_z(&v.pct);
+                    let mut pct_rc = RECT { left: col0 + head_w, top: item_rect.top, right: col0 + head_w + pct_w, bottom: item_rect.bottom };
+                    let _ = DrawTextW(dib_dc, &mut pct_wz, &mut pct_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    // bar (squares)
+                    let mut bar_wz = to_utf16_z(&v.bar);
+                    let mut bar_rc = RECT { left: col0 + head_w + pct_w, top: item_rect.top, right: col0 + head_w + pct_w + bar_w, bottom: item_rect.bottom };
+                    let _ = DrawTextW(dib_dc, &mut bar_wz, &mut bar_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    // tags (base / rec), muted
+                    let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                    let mut tag_wz = to_utf16_z(&v.tags);
+                    let mut tag_rc = RECT { left: col0 + head_w + pct_w + bar_w, top: item_rect.top, right: item_rect.right - 4, bottom: item_rect.bottom };
+                    let _ = DrawTextW(dib_dc, &mut tag_wz, &mut tag_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                }
+                None => {
+                    // Unmeasured: head value + canned help text.
+                    let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+                    let mut head_wz = to_utf16_z(&item.label);
+                    let mut head_rc = RECT { left: col0, top: item_rect.top, right: col0 + head_w, bottom: item_rect.bottom };
+                    let _ = DrawTextW(dib_dc, &mut head_wz, &mut head_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    if let Some(desc) = &item.description {
+                        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                        let mut desc_wz = to_utf16_z(desc);
+                        let mut desc_rc = RECT { left: col0 + head_w, top: item_rect.top, right: item_rect.right - 4, bottom: item_rect.bottom };
+                        let _ = DrawTextW(dib_dc, &mut desc_wz, &mut desc_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    }
+                }
             }
         }
     }

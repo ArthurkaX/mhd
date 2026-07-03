@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::editor_state::{HeadGroup, HEAD_SWEEP};
+use crate::core::native_theme::Argb;
 
 /// Minimum bodies in a bucket before we trust its numbers; below this we
 /// report "not enough data yet".
@@ -17,8 +18,8 @@ pub struct HeadBucketOut {
     pub recommended: usize,
     pub verdict: String,
     pub n_bodies: usize,
-    /// (swept head value, avg_trim_pct) for every HEAD_SWEEP point.
-    pub points: Vec<(usize, f64)>,
+    /// (swept head value, avg_trim_pct, fail_open_ok) for every HEAD_SWEEP point.
+    pub points: Vec<(usize, f64, bool)>,
 }
 
 #[derive(Clone)]
@@ -92,7 +93,11 @@ pub fn start() {
                         recommended: r.recommended,
                         verdict: format!("{:?}", r.verdict),
                         n_bodies: r.n_bodies,
-                        points: r.points.iter().map(|p| (p.desc_chars, p.avg_trim_pct)).collect(),
+                        points: r
+                            .points
+                            .iter()
+                            .map(|p| (p.desc_chars, p.avg_trim_pct, p.fail_open_ok))
+                            .collect(),
                     }),
                     _ => None, // Ok(None), Err, or panic all collapse to "no data"
                 };
@@ -110,15 +115,75 @@ fn group_bucket_idx(group: HeadGroup) -> usize {
     }
 }
 
-/// Measured description for one head value in a group, or None if unmeasured /
-/// insufficient. Format e.g. "trim 41.2%" (+ "  ★ rec" when this is the knee).
-pub fn measured_value_desc(group: HeadGroup, head: usize) -> Option<String> {
+/// Measured, colour-ready view of one head value in a group's dropdown row —
+/// mirrors the Tune panel's `head / trim% / bar / tags` language.
+pub struct HeadRowView {
+    /// trim% column, e.g. "40.8%".
+    pub pct: String,
+    /// filled/empty squares bar (or "!" when a body grew at this setting).
+    pub bar: String,
+    /// tags column: "\u{2039}base", "\u{2039}rec", or both.
+    pub tags: String,
+    /// risk-zone colour for the head value (green/amber/red).
+    pub color: Argb,
+}
+
+/// Filled/empty square bar for a trim%, identical to the Tune panel.
+fn trim_bar(pct: f64) -> String {
+    let f = ((pct / 50.0) * 5.0).floor() as i32;
+    let f = f.clamp(0, 5);
+    let mut s = String::with_capacity(5);
+    for _ in 0..f {
+        s.push('\u{25B0}');
+    }
+    for _ in f..5 {
+        s.push('\u{25B1}');
+    }
+    s
+}
+
+/// Risk-zone colour for a head value: green >=2000, amber 500-1999, red <500.
+fn head_zone_color(head: usize) -> Argb {
+    if head >= 2000 {
+        Argb::new(255, 80, 200, 120)
+    } else if head >= 500 {
+        Argb::new(255, 235, 185, 90)
+    } else {
+        Argb::new(255, 235, 100, 100)
+    }
+}
+
+/// Coloured Tune-style row data for one head value, or None if unmeasured /
+/// insufficient (caller falls back to canned text). `current` = the group's
+/// saved head (tagged "\u{2039}base").
+pub fn head_row_view(group: HeadGroup, head: usize, current: usize) -> Option<HeadRowView> {
     let snap = snapshot()?;
     let out = snap.results[group_bucket_idx(group)].as_ref()?;
-    if out.n_bodies < MIN_BODIES { return None; }
-    let (_, pct) = out.points.iter().find(|(v, _)| *v == head)?;
-    let star = if out.recommended == head { "  \u{2605} rec" } else { "" };
-    Some(format!("trim {:.1}%{}", pct, star))
+    if out.n_bodies < MIN_BODIES {
+        return None;
+    }
+    let (_, pct, fail_open_ok) = *out.points.iter().find(|(v, _, _)| *v == head)?;
+    let bar = if fail_open_ok {
+        trim_bar(pct)
+    } else {
+        "!".to_string()
+    };
+    let mut tags = String::new();
+    if head == current {
+        tags.push_str("\u{2039}base");
+    }
+    if head == out.recommended {
+        if !tags.is_empty() {
+            tags.push(' ');
+        }
+        tags.push_str("\u{2039}rec");
+    }
+    Some(HeadRowView {
+        pct: format!("{:.1}%", pct),
+        bar,
+        tags,
+        color: head_zone_color(head),
+    })
 }
 
 /// One-line status under a group row: measured recommendation, or a running /
