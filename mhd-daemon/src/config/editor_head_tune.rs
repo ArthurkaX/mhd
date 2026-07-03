@@ -143,13 +143,35 @@ fn trim_bar(pct: f64) -> String {
 }
 
 /// Risk-zone colour for a head value: green >=2000, amber 500-1999, red <500.
-fn head_zone_color(head: usize) -> Argb {
+pub fn head_zone_color(head: usize) -> Argb {
     if head >= 2000 {
         Argb::new(255, 80, 200, 120)
     } else if head >= 500 {
         Argb::new(255, 235, 185, 90)
     } else {
         Argb::new(255, 235, 100, 100)
+    }
+}
+
+/// Short zone name for a head value (matches `head_zone_color`).
+pub fn head_zone_label(head: usize) -> &'static str {
+    if head >= 2000 {
+        "Safe"
+    } else if head >= 500 {
+        "Balanced"
+    } else {
+        "Aggressive"
+    }
+}
+
+/// One-line meaning of a head value's zone, for the description inset.
+pub fn head_zone_note(head: usize) -> &'static str {
+    if head >= 2000 {
+        "Keeps most tool output — minimal trimming, safest for context."
+    } else if head >= 500 {
+        "Trims long tool results while keeping their head/tail — good balance."
+    } else {
+        "Cuts tool results hard — biggest savings, may drop useful context."
     }
 }
 

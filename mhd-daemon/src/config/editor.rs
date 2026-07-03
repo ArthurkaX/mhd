@@ -269,6 +269,7 @@ pub fn show_config_editor(handle: AppHandle) {
     head_items: Vec::new(),
     head_dropdown: SearchDropdownState::default(),
     head_open_group: None,
+    head_hover_idx: None,
         vision_model: llm_proxy::config::load_settings()
             .ok()
             .and_then(|s| s.vision_model),
@@ -1795,6 +1796,7 @@ unsafe extern "system" fn settings_wndproc(
                                 select_head(state, selected.id);
                                 state.head_dropdown.close();
                                 state.head_open_group = None;
+                                state.head_hover_idx = None;
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                         }
@@ -1802,6 +1804,7 @@ unsafe extern "system" fn settings_wndproc(
                     } else {
                         state.head_dropdown.close();
                         state.head_open_group = None;
+                        state.head_hover_idx = None;
                         paint_settings(hwnd, state_ptr, &state.layout);
                         return LRESULT(0);
                     }
@@ -2059,6 +2062,7 @@ unsafe extern "system" fn settings_wndproc(
                         };
                         let selected_id = HEAD_SWEEP.iter().position(|&v| v == cur_val).unwrap_or(4);
                         state.head_dropdown.open(&state.head_items, selected_id, 8);
+                        state.head_hover_idx = None;
                         // Close other dropdowns
                         state.combo_open.store(false, Ordering::SeqCst);
                         if let Some(popup) = state.combo_popup.take() {
@@ -2579,6 +2583,39 @@ unsafe extern "system" fn settings_wndproc(
                             (state.scroll_drag_start_offset + scroll_delta).clamp(0, max_scroll);
                         paint_settings(hwnd, state_ptr, &lay);
                     } else {
+                        // Head dropdown: track hovered row so the left description inset
+                        // updates as the cursor moves. Uses the hit-test geometry exactly.
+                        if state.head_dropdown.is_open
+                            && state.active_section == SettingsPage::LlmTrim
+                        {
+                            let hscale = lay.scale();
+                            let combo_y = match state.head_open_group {
+                                Some(HeadGroup::NativeBig) => lay.llm_trim.row_a_y,
+                                Some(HeadGroup::NativeHaiku) => lay.llm_trim.row_b_y,
+                                Some(HeadGroup::Harness) => lay.llm_trim.row_c_y,
+                                None => 0,
+                            };
+                            let combo_w = lay.llm_trim.combo_w;
+                            let combo_x = lay.win_w() - lay.pad() - combo_w;
+                            let combo_h = lay.llm_trim.row_h;
+                            let item_h = (24.0 * hscale) as i32;
+                            let search_h = (30.0 * hscale) as i32;
+                            let list_top = combo_y + combo_h + search_h;
+                            let vis = state
+                                .head_dropdown
+                                .visible_items(&state.head_items, 8)
+                                .len();
+                            let new_idx = if x >= combo_x && x < combo_x + combo_w && y >= list_top {
+                                let ci = ((y - list_top) / item_h) as usize;
+                                if ci < vis { Some(ci) } else { None }
+                            } else {
+                                None
+                            };
+                            if state.head_hover_idx != new_idx {
+                                state.head_hover_idx = new_idx;
+                                paint_settings(hwnd, state_ptr, &lay);
+                            }
+                        }
                         let target = hit_test_settings(state, x, y);
 
                         if state.hovered_target != target {
@@ -3050,12 +3087,14 @@ unsafe extern "system" fn settings_wndproc(
                                     select_head(state, first.id);
                                     state.head_dropdown.close();
                                     state.head_open_group = None;
+                                    state.head_hover_idx = None;
                                     paint_settings(hwnd, state_ptr, &state.layout);
                                 }
                             }
                             0x1B => {
                                 state.head_dropdown.close();
                                 state.head_open_group = None;
+                                state.head_hover_idx = None;
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x08 => {
@@ -4671,6 +4710,106 @@ fn draw_head_dropdown(
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER,
             );
         }
+    }
+
+    // ── Description inset (left of the list) ─────────────────────────────
+    // Explains the zone (green / amber / red) of the hovered — or selected —
+    // head value, and shows its measured detail. Purely informational: it does
+    // not participate in hit-testing, so list-click geometry is unaffected.
+    let inset_w = (230.0 * scale) as i32;
+    let inset_gap = (8.0 * scale) as i32;
+    let inset_right = combo_x - inset_gap;
+    let inset_left = (inset_right - inset_w).max(lay.pad());
+    let inset_rect = RECT {
+        left: inset_left,
+        top: dropdown_top,
+        right: inset_right,
+        bottom: dropdown_top + dropdown_h,
+    };
+    draw_rounded_rect_in_buffer(
+        bits, lay.win_w(), lay.win_h(), inset_rect,
+        (4.0 * scale) as i32, bg,
+    );
+    draw_rounded_border_in_buffer(
+        bits, lay.win_w(), lay.win_h(), inset_rect,
+        (4.0 * scale) as i32, 1, theme.border,
+    );
+
+    // Which row does the inset describe: hovered row, else the selected value.
+    let hover_head: usize = state
+        .head_hover_idx
+        .and_then(|i| visible_items.get(i))
+        .map(|it| &it.label)
+        .or_else(|| {
+            visible_items
+                .iter()
+                .find(|it| it.label == format!("{}", current))
+                .map(|it| &it.label)
+        })
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(current);
+
+    let pad_in = (10.0 * scale) as i32;
+    let mut ty = dropdown_top + pad_in;
+    let line_h = (18.0 * scale) as i32;
+    let zone_color = editor_head_tune::head_zone_color(hover_head);
+
+    unsafe {
+        // Title: "head — Zone" with a colour swatch dot.
+        let swatch = RECT {
+            left: inset_left + pad_in,
+            top: ty + (line_h - (10.0 * scale) as i32) / 2,
+            right: inset_left + pad_in + (10.0 * scale) as i32,
+            bottom: ty + (line_h + (10.0 * scale) as i32) / 2,
+        };
+        draw_rounded_rect_in_buffer(
+            bits, lay.win_w(), lay.win_h(), swatch, (2.0 * scale) as i32, zone_color,
+        );
+        let _ = SelectObject(dib_dc, body_font);
+        let _ = SetTextColor(dib_dc, zone_color.to_colorref());
+        let title = format!("{}  {}", hover_head, editor_head_tune::head_zone_label(hover_head));
+        let mut title_wz = to_utf16_z(&title);
+        let mut title_rc = RECT {
+            left: inset_left + pad_in + (16.0 * scale) as i32,
+            top: ty,
+            right: inset_right - pad_in,
+            bottom: ty + line_h,
+        };
+        let _ = DrawTextW(dib_dc, &mut title_wz, &mut title_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        ty += line_h + (2.0 * scale) as i32;
+
+        // Zone note (wraps across the inset width).
+        let _ = SelectObject(dib_dc, small_font);
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+        let mut note_wz = to_utf16_z(editor_head_tune::head_zone_note(hover_head));
+        let mut note_rc = RECT {
+            left: inset_left + pad_in,
+            top: ty,
+            right: inset_right - pad_in,
+            bottom: dropdown_top + dropdown_h - pad_in - line_h * 2,
+        };
+        let _ = DrawTextW(
+            dib_dc, &mut note_wz, &mut note_rc,
+            DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL,
+        );
+
+        // Measured detail line at the bottom, if Calculate has run.
+        let detail = match state
+            .head_open_group
+            .and_then(|g| editor_head_tune::head_row_view(g, hover_head, current))
+        {
+            Some(v) => format!("trim {}   {}", v.pct, v.tags),
+            None => "Press Calculate for measured trim%.".to_string(),
+        };
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        let mut det_wz = to_utf16_z(&detail);
+        let mut det_rc = RECT {
+            left: inset_left + pad_in,
+            top: dropdown_top + dropdown_h - pad_in - line_h,
+            right: inset_right - pad_in,
+            bottom: dropdown_top + dropdown_h - pad_in,
+        };
+        let _ = DrawTextW(dib_dc, &mut det_wz, &mut det_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     }
 }
 

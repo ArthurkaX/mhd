@@ -341,4 +341,7 @@ pub struct SettingsState {
     pub head_dropdown: SearchDropdownState,
     /// Which group the head dropdown is currently editing (None = closed).
     pub head_open_group: Option<HeadGroup>,
+    /// Hovered row index in the open head dropdown (drives the description
+    /// inset); None = nothing hovered / falls back to the selected row.
+    pub head_hover_idx: Option<usize>,
 }
