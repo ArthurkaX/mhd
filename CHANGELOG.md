@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.5 - 2026-07-04
+
+- **LLM Trim settings page**: trim controls moved out of the LLM Proxy tab into a dedicated page — a searchable model picker, grouped `tool_result_head` budget rows sharing a dropdown, a **Calculate** button backed by live Tune data, and a Free-tier (light-trim) picker in the model-selection overlay.
+- **Tune advisor**: a live advisor overlay that runs a stratified sweep over `tool_result_head`, picks the knee, and reports an honest verdict, with a per-bucket breakdown (Native / CcGateway / OtherOpenai).
+- **mhd-inspector**: a standalone egui request/trim inspector; clicking a Proxy Trace row opens it.
+- **Per-group head budgets**: separate `tool_result_head` for Native-big / Haiku / harness targets.
+- **Fixes**:
+  - **Source-code reads protected from elision**: the native trim engine no longer elides the middle of source-file reads (`.py`, `.js`, `.rs`, and other code/config extensions). Layer-1 provenance protection previously covered only documentation extensions, so large code reads were compressed; the model then reconstructed an `old_string` that no longer matched the on-disk file, breaking the Edit tool (observed 83% edit failures on a 30 KB file).
+  - **Deterministic bench task**: the 3-arm live measure now runs a deterministic file-chain workload that forces identical turn counts across arms, so the trim A/B cost is reproducible (was swinging by more than 180 points between runs).
+  - Fixed a `render_done` self-deadlock (reentrant mutex) in the Tune panel.
+- **Proxy reliability**:
+  - Retry-with-backoff on 429/529, a CANCELLED-on-200 fix, and collapsed error rows.
+  - Outbound token-bucket rate limiter (throttle) on the native path; a probe lane for `max_tokens=1` background probes.
+- **Other**:
+  - The native trim engine is now the only engine; the legacy `llmtrim` fallback is removed.
+  - Proxy Trace: mouse-wheel scroll with a thin scrollbar; trim % shown only on gateway targets.
+
 ## 0.7.0 - 2026-07-01
 
 - **Native trim engine**: a clean-room request-compression engine replaces `llmtrim` as the live default.
