@@ -24,36 +24,19 @@ use std::time::Instant;
 
 // ── Constants ────────────────────────────────────────────────────────────────────────────
 
-/// SolidWorks PC-suitability orchestrator: launches two subagents, reads sysreq
-/// directly, then writes a verdict.
+/// Chain-walk task: reads N linked files sequentially, one per turn, forcing
+/// exactly N serial turns so the trim comparison is not confounded by turn count.
 const PROMPT: &str = "\
-You are evaluating whether THIS PC can run SolidWorks. Inside the added directory there are \
-three files: cpu-memory.txt, gpu-devices.txt, and solidworks-sysreq.txt.\n\
-Launch EXACTLY TWO subagents using your Task tool, in parallel:\n\
-  - Subagent 1: read cpu-memory.txt IN FULL and report the CPU model, core/thread count, \
-    total RAM, and OS version. Do not read the other files.\n\
-  - Subagent 2: read gpu-devices.txt IN FULL and report the GPU/display adapter model(s) \
-    and whether any is a professional/workstation card. Do not read the other files.\n\
-Do NOT read cpu-memory.txt or gpu-devices.txt yourself -- delegate them to the subagents.\n\
-While the subagents work, read solidworks-sysreq.txt yourself (it is small).\n\
-After both subagents return, compare this PC's specs against the requirements and write a \
-verdict as EXACTLY 10 numbered sentences (1 to 10): state CPU, RAM, GPU, OS findings, whether \
-each meets the requirement, and a final SUITABLE / NOT SUITABLE / MARGINAL conclusion.\n\
-No markdown, no headings, no code blocks, no lists. Then stop.";
-
-/// Frozen SolidWorks system requirements reference, written as a static file
-/// into the corpus so the orchestrator can read it directly.
-const SOLIDWORKS_SYSREQ: &str = "\
-SolidWorks 2024 - System Requirements (frozen reference)\n\
-Operating System: Windows 10 64-bit or Windows 11 64-bit (Home/Pro/Enterprise).\n\
-Processor: 3.3 GHz or higher clock speed; Intel or AMD x64 with SSE4.2 support; 4+ cores recommended.\n\
-RAM: 16 GB or more recommended (8 GB absolute minimum); 32 GB for large assemblies.\n\
-Graphics: A certified workstation GPU with OpenGL 4.x support is required for full functionality\n\
-  (NVIDIA Quadro / RTX A-series, or AMD Radeon Pro). Consumer GeForce/Radeon cards are not certified\n\
-  and may render incorrectly. Minimum 4 GB VRAM; 8 GB recommended.\n\
-Storage: SSD strongly recommended; 20 GB free disk space for installation.\n\
-Other: Microsoft .NET Framework 4.8; a certified graphics driver matching the SolidWorks release.\n\
-A PC is SUITABLE only if OS, CPU, RAM and GPU all meet or exceed the minimums.";
+There are 15 files named link_01.txt through link_15.txt in the added directory. \
+Follow the chain STRICTLY ONE AT A TIME:\n\
+  1. Read link_01.txt.\n\
+  2. Each file's LAST line is exactly 'NEXT: <filename>' naming the next file to read \
+(or 'NEXT: STOP' if it is the last).\n\
+  3. Read ONLY the file named by the current file's NEXT line. Read exactly one file per step. \
+Do NOT read ahead, do NOT read multiple files in one step, do NOT use subagents.\n\
+  4. When you reach 'NEXT: STOP', output a single line: DONE followed by the count of files you read. \
+Then stop.\n\
+Do not summarize the files. Do not use markdown. Just walk the chain and report DONE <count>.";
 
 /// How long to wait after writing settings.json for the daemon's file watcher to
 /// pick up the change (milliseconds).
@@ -61,6 +44,9 @@ const SETTINGS_WAIT_MS: u64 = 1200;
 
 /// Default path for the frozen corpus directory.
 const CORPUS_DIR_NAME: &str = "mhd-bench-corpus";
+
+/// Number of files in the chain-walk corpus.
+const CHAIN_LEN: usize = 15;
 
 /// Temp run directories for each measurement arm.
 const ECO_RUN_DIR: &str = "mhd-bench-run-eco";
@@ -78,11 +64,6 @@ const POST_SESSION_SLEEP_MS: u64 = 700;
 const W_INPUT: f64 = 1.0;
 const W_CACHE_CREATION: f64 = 1.25;
 const W_CACHE_READ: f64 = 0.10;
-
-/// If the native ON/OFF arms diverge in request count by more than this percent,
-/// the run is flagged INVALID (the sessions took different paths, so token totals
-/// reflect turn count rather than trim).
-const NATIVE_DIVERGENCE_PCT: f64 = 25.0;
 
 /// Quota-equivalent cost of one arm, in fresh-input-token units.
 fn weighted_billed(a: &ArmAggregate) -> f64 {
@@ -270,57 +251,48 @@ pub fn capture_command_to_file(cmd: &str, args: &[&str], path: &std::path::Path)
     Some(content)
 }
 
-/// Create the frozen corpus directory and populate it with system dumps for
-/// the SolidWorks PC-suitability workload. Produces three files:
-///   - cpu-memory.txt    (systeminfo + driverquery /v /fo list, concatenated)
-///   - gpu-devices.txt   (pnputil /enum-devices)
-///   - solidworks-sysreq.txt (static frozen requirements)
+/// Create the frozen corpus directory and populate it with link_01.txt ..
+/// link_N.txt chain-walk files, each padded with ~14 KB of deterministic filler
+/// text (identical structure across files; only the index and terminal NEXT line
+/// differ). All files are always generated — no system dumps needed.
 ///
 /// Returns the corpus path and the list of (filename, bytes) pairs, or an error
-/// string if BOTH machine-dump files are missing.
+/// if filesystem writes fail.
 pub fn snapshot_corpus() -> Result<(PathBuf, Vec<(String, usize)>), String> {
     let corpus_dir = std::env::temp_dir().join(CORPUS_DIR_NAME);
     let _ = std::fs::create_dir_all(&corpus_dir);
 
     let mut files: Vec<(String, usize)> = Vec::new();
-    let mut got_cpu = false;
-    let mut got_gpu = false;
 
-    // cpu-memory.txt = systeminfo output FOLLOWED BY driverquery /v /fo list output.
-    let cpu_path = corpus_dir.join("cpu-memory.txt");
-    let si_out = Command::new("systeminfo").output().ok();
-    let dq_out = Command::new("driverquery").args(["/v", "/fo", "list"]).output().ok();
-    if let (Some(si), Some(dq)) = (&si_out, &dq_out) {
-        if si.status.success() && dq.status.success() {
-            let mut combined = si.stdout.clone();
-            combined.extend_from_slice(&dq.stdout);
-            let _ = std::fs::write(&cpu_path, &combined);
-            got_cpu = true;
-            let bytes = std::fs::metadata(&cpu_path).map(|m| m.len()).unwrap_or(0) as usize;
-            files.push(("cpu-memory.txt".to_string(), bytes));
-        }
-    }
+    for i in 1..=CHAIN_LEN {
+        let filename = format!("link_{i:02}.txt");
+        let path = corpus_dir.join(&filename);
 
-    // gpu-devices.txt = pnputil /enum-devices  (~125 KB)
-    let gpu_path = corpus_dir.join("gpu-devices.txt");
-    if let Some(_content) = capture_command_to_file("pnputil", &["/enum-devices"], &gpu_path) {
-        got_gpu = true;
-        let bytes = std::fs::metadata(&gpu_path).map(|m| m.len()).unwrap_or(0) as usize;
-        files.push(("gpu-devices.txt".to_string(), bytes));
-    }
+        let next_line = if i < CHAIN_LEN {
+            format!("NEXT: link_{:02}.txt", i + 1)
+        } else {
+            "NEXT: STOP".to_string()
+        };
 
-    // solidworks-sysreq.txt = static frozen reference (always written).
-    let sysreq_path = corpus_dir.join("solidworks-sysreq.txt");
-    let _ = std::fs::write(&sysreq_path, SOLIDWORKS_SYSREQ);
-    let bytes = std::fs::metadata(&sysreq_path).map(|m| m.len()).unwrap_or(0) as usize;
-    files.push(("solidworks-sysreq.txt".to_string(), bytes));
-
-    if !got_cpu && !got_gpu {
-        return Err(
-            "Both cpu-memory.txt and gpu-devices.txt are missing -- cannot proceed.\n\
-             Make sure you are on Windows with systeminfo, driverquery and pnputil available."
-                .to_string(),
+        // Deterministic filler: ~14 KB per file, identical structure.
+        let filler_line = format!(
+            "ChainWalk: file {i:02} of {CHAIN_LEN}. This deterministic filler ensures each \
+             chain-link file exceeds the trim elision threshold so trim behavior is exercised \
+             during measurement. Content structure is identical across all files; only the index \
+             and the terminal NEXT directive differ.\n"
         );
+        let mut content: String = String::with_capacity(14500);
+        while content.len() + next_line.len() + 1 < 14000 {
+            content.push_str(&filler_line);
+        }
+        content.push_str(&next_line);
+        content.push('\n');
+
+        std::fs::write(&path, &content)
+            .map_err(|e| format!("Failed to write {filename}: {e}"))?;
+
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as usize;
+        files.push((filename, bytes));
     }
 
     Ok((corpus_dir, files))
@@ -398,6 +370,8 @@ pub fn run_claude(
         .arg("--add-dir")
         .arg(corpus_dir)
         .arg("--dangerously-skip-permissions")
+        .arg("--max-turns")
+        .arg("20")
         .env("ANTHROPIC_BASE_URL", proxy_base_url())
         .env("CLAUDE_CODE_SUBAGENT_MODEL", "claude-sonnet-4-6")
         .current_dir(run_dir)
@@ -716,7 +690,7 @@ pub fn run_measurement(
     // ── S1 SNAPSHOT corpus ─────────────────────────────────────────────────
 
     set_msg(progress, "");
-    set_phase(progress, MeasurePhase::Snapshot, "S1: Snapshotting system data to frozen corpus...");
+    set_phase(progress, MeasurePhase::Snapshot, "S1: Writing chain-walk corpus (15 linked files)...");
 
     let (corpus_dir, corpus_files) = match snapshot_corpus() {
         Ok((d, f)) => (d, f),
@@ -730,14 +704,6 @@ pub fn run_measurement(
     // Log each file's status.
     for (name, bytes) in &corpus_files {
         set_msg(progress, &format!("    {name}  OK  ({bytes} bytes)"));
-    }
-    // Check which files failed.
-    let names: Vec<String> = corpus_files.iter().map(|(n, _)| n.clone()).collect();
-    if !names.contains(&"cpu-memory.txt".to_string()) {
-        set_msg(progress, "    cpu-memory.txt  FAILED (systeminfo or driverquery not available or errored)");
-    }
-    if !names.contains(&"gpu-devices.txt".to_string()) {
-        set_msg(progress, "    gpu-devices.txt  FAILED (pnputil not available or errored)");
     }
 
     {
@@ -840,6 +806,14 @@ pub fn run_measurement(
     let cost_native_on = weighted_billed(&native_on).round() as u64;
     let cost_native_off = weighted_billed(&native_off).round() as u64;
 
+    // Per-turn cost normalization for arm comparison.
+    let cost_per_turn_off = cost_native_off as f64 / (native_off.n_requests.max(1) as f64);
+    let cost_per_turn_on = cost_native_on as f64 / (native_on.n_requests.max(1) as f64);
+    eprintln!(
+        "[measure] cost/turn: OFF={:.0} ON={:.0} (n_off={} n_on={})",
+        cost_per_turn_off, cost_per_turn_on, native_off.n_requests, native_on.n_requests
+    );
+
     let native_saved_pct = if cost_native_off > 0 {
         (cost_native_off as f64 - cost_native_on as f64) / cost_native_off as f64 * 100.0
     } else {
@@ -858,25 +832,22 @@ pub fn run_measurement(
         0.0
     };
 
-    // Session-divergence gate: two LLM sessions are not byte-identical, and if the
-    // arms take a very different number of turns (e.g. 10 vs 15 requests) their token
-    // totals scale with turn count, not trim, making the comparison meaningless. When
-    // the native ON/OFF request counts diverge beyond the threshold, the verdict is
-    // INVALID rather than a misleading PROVEN/BACKWARDS. (This caught a bogus -9.4%
-    // BACKWARDS run where OFF=10 reqs vs ON=15.)
-    let div_max = native_on.n_requests.max(native_off.n_requests) as f64;
-    let div_pct = if div_max > 0.0 {
-        (native_on.n_requests as i64 - native_off.n_requests as i64).unsigned_abs() as f64
-            / div_max
-            * 100.0
-    } else {
-        0.0
-    };
-    let diverged = div_pct > NATIVE_DIVERGENCE_PCT;
+    // Session-divergence gate: if the native ON/OFF arms differ in request count,
+    // the comparison is unreliable because token totals scale with turn count, not
+    // trim. The chain-walk task is designed to force identical turn counts, so any
+    // mismatch indicates a problem (e.g. claude hit the --max-turns cap or a tool
+    // call failed mid-chain).
+    let turn_mismatch = native_on.n_requests != native_off.n_requests;
+    if turn_mismatch {
+        eprintln!(
+            "[measure] WARNING: arm turn-count mismatch off={} on={} -- comparison unreliable",
+            native_off.n_requests, native_on.n_requests
+        );
+    }
 
     let verdict_of = |saved: f64, backwards_msg: &str| -> String {
-        if diverged {
-            format!("INVALID (session divergence {div_pct:.0}%)")
+        if turn_mismatch {
+            "INVALID (turn-mismatch)".to_string()
         } else if saved >= 5.0 {
             "PROVEN".to_string()
         } else if saved >= 0.0 {
