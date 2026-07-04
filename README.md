@@ -351,6 +351,15 @@ The built-in **Trim Quota Bench** measures the real quota impact of compression 
 
 ![Trim Quota Bench results](img/bench-results.png)
 
+#### Measured savings
+
+Two independent levers reduce how much of the paid Anthropic quota a session consumes, and they stack. The numbers below come from this project's own proxy database (`proxy.db`). "Weighted quota cost" here means `input + cache_creation × 1.25 + cache_read × 0.1` — a cache-aware proxy for real quota burn, since most of what compression removes lives in cheap cache reads and raw byte counts overstate the savings.
+
+- **Delegation to a flash model — the larger lever, ~30%.** Routing bulky work (sub-agents, information gathering, mechanical edits) to a cheaper OpenAI-compatible model moves those requests off the Anthropic quota entirely. Over a delegation-heavy 7-day window, external-provider requests carried ~48M weighted tokens against ~159M on the native Anthropic path — so without that offload the Anthropic quota consumption would have been roughly 30% higher. This is an estimate: external providers tokenize and cache differently, so the equivalent Anthropic cost is approximate.
+- **Trim (request compression) — the secondary lever, ~9–13%.** With delegation already in place, native trim shaves the remaining on-quota requests. A deterministic three-arm A/B (identical workload, trim ON vs OFF) reproducibly measures a 9–13% reduction in weighted quota cost (9% with `strip_thinking` on, 13% with it off — that knob turned out to be a net cache drag and now defaults off). The figure is measured on a controlled synthetic workload; real sessions vary with how much verbose tool output they generate.
+
+Delegation does the heavy lifting (it removes whole requests from the meter) and trim is a worthwhile top-up on what remains. The two compound: without either lever a session would burn roughly 1.4× the quota it does with both (~1.3× from delegation, a further ~1.1× from trim on the remainder). Delegation is the lever that moves the needle; trim is the safe extra few percent.
+
 See [llm-proxy/README.md](llm-proxy/README.md) for setup details, provider configuration, runtime switching, trace view, and the proxy configuration files.
 
 ### Config editor and tray
