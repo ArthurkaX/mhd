@@ -175,7 +175,18 @@ fn looks_like_code(text: &str) -> bool {
 pub fn tool_result_protected(text: &str, src_ext: Option<&str>, fence_requires_code: bool, arrow_density_min: f64) -> bool {
     // Layer 1: provenance
     if let Some(ext) = src_ext {
-        if matches!(ext, "md" | "markdown" | "txt" | "rst" | "adoc" | "org") {
+        if matches!(ext,
+            // documentation
+            "md" | "markdown" | "txt" | "rst" | "adoc" | "org"
+            // source code — never elide; the model needs exact bytes to Edit
+            | "py" | "js" | "mjs" | "cjs" | "ts" | "jsx" | "tsx" | "rs" | "go"
+            | "java" | "kt" | "scala" | "c" | "h" | "cc" | "cpp" | "hpp" | "cxx"
+            | "cs" | "rb" | "php" | "swift" | "m" | "mm" | "lua" | "dart" | "ex" | "exs"
+            | "sh" | "bash" | "zsh" | "ps1" | "sql" | "r" | "jl" | "pl" | "pm"
+            // structured / config — edited exactly too
+            | "json" | "jsonc" | "yaml" | "yml" | "toml" | "ini" | "xml"
+            | "html" | "htm" | "css" | "scss" | "less" | "vue" | "svelte"
+        ) {
             return true;
         }
     }
