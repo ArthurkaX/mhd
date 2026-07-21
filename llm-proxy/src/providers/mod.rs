@@ -2,9 +2,23 @@ pub mod anthropic;
 pub mod upstream;
 
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::state::AppState;
+
+/// Synthesize an Anthropic-style message id, unique within this process even
+/// under concurrent calls in the same microsecond.
+static MSG_ID_SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub fn synth_msg_id() -> String {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    let seq = MSG_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("msg_{micros}{seq:06}")
+}
 
 /// Decrements the in-flight counter when dropped, so it stays accurate even if
 /// a request errors out or the future/stream is cancelled mid-flight. Owns an

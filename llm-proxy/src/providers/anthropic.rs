@@ -290,6 +290,7 @@ pub async fn send_request(
             cache_creation,
             Some(started.elapsed().as_millis() as u64),
             Some(status.as_u16()),
+            None,
         );
     }
 
@@ -551,6 +552,7 @@ pub async fn stream_request(
                 cache_creation,
                 Some(elapsed),
                 status_opt,
+                None,
             );
         }
         if log {

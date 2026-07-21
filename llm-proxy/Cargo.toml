@@ -29,6 +29,10 @@ path = "src/bin/tune_check.rs"
 name = "tune3_check"
 path = "src/bin/tune3_check.rs"
 
+[[bin]]
+name = "dump_body"
+path = "src/bin/dump_body.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }

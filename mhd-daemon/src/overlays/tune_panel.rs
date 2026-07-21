@@ -48,6 +48,8 @@ static APPLIED_HEAD: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(Non
 struct PanelSweepPoint {
     desc_chars: usize,
     avg_trim_pct: f64,
+    /// Computed for the tune panel; not yet rendered.
+    #[allow(dead_code)]
     n_trimmed: usize,
     fail_open_ok: bool,
 }
@@ -56,11 +58,19 @@ struct PanelSweepPoint {
 struct PanelBucketResult {
     points: Vec<PanelSweepPoint>,
     baseline_desc_chars: usize,
+    /// Computed for the tune panel; not yet rendered.
+    #[allow(dead_code)]
     baseline_trim_pct: f64,
     recommended: usize,
+    /// Computed for the tune panel; not yet rendered.
+    #[allow(dead_code)]
     recommended_trim_pct: f64,
     verdict: String,
+    /// Computed for the tune panel; not yet rendered.
+    #[allow(dead_code)]
     n_bodies: usize,
+    /// Computed for the tune panel; not yet rendered.
+    #[allow(dead_code)]
     elapsed_ms: u64,
 }
 

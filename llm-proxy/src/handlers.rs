@@ -136,6 +136,10 @@ pub async fn post_messages(
         .to_string();
     let tier = Tier::from_model(&model);
     let req_id = state.next_req_id();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     // Calculate per-session gap for expensive tiers that can be downgraded.
     // Only for Opus/Sonnet — cheap tiers and background calls don't stamp the clock.
@@ -359,6 +363,7 @@ pub async fn post_messages(
         prefix_hash: prefix_hash(&payload),
         status: None,
         is_probe: payload.get("max_tokens").and_then(|v| v.as_u64()) == Some(1),
+        user_agent,
     });
 
     if stream {
@@ -400,9 +405,14 @@ pub async fn post_messages(
 /// response), so OpenAI clients appear alongside Claude Code traffic.
 pub async fn post_chat_completions(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<Response, AppError> {
     let req_id = state.next_req_id();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let model = payload
         .get("model")
         .and_then(|v| v.as_str())
@@ -538,6 +548,7 @@ pub async fn post_chat_completions(
         prefix_hash: 0,
         status: None,
         is_probe: false,
+        user_agent,
     });
 
     if stream {
