@@ -108,9 +108,11 @@ pub enum SettingsHit {
     ProxyAnthropicKeyField,
     /// Inline-editable bind address field.
     ProxyBindAddressField,
-    /// Opus downgrade toggle.
+    /// Reserved: hit-target for the proxy downgrade toggles (not yet wired).
+    #[allow(dead_code)]
     ProxyOpusDowngradeToggle,
-    /// Sonnet downgrade toggle.
+    /// Reserved: hit-target for the proxy downgrade toggles (not yet wired).
+    #[allow(dead_code)]
     ProxySonnetDowngradeToggle,
     /// Vision model selector dropdown.
     VisionModelCombo,
