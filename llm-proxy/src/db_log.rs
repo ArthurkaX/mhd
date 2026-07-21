@@ -70,6 +70,7 @@ pub struct RequestRow {
     pub trim_tokens_before: Option<u64>,
     pub trim_tokens_after: Option<u64>,
     pub trim_stages: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 /// One typed snapshot of Anthropic `anthropic-ratelimit-unified-*` quota state.
@@ -99,8 +100,11 @@ impl DbLog {
     /// (0 = unlimited).
     pub fn open(db_path: &Path, corpus_max_rows: usize) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
+        // Read schema version BEFORE the batch so we can detect old DBs
+        // that need ALTER TABLE migration.
+        let old_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         conn.execute_batch(
-            "PRAGMA user_version = 1;
+            "PRAGMA user_version = 2;
 
             -- events: append-only log stream.
             -- Hot-path lines (REQ/RESP/START/DONE/STREAM_*) arrive via
@@ -162,7 +166,9 @@ impl DbLog {
                 cache_creation_tokens INTEGER,
                 status        INTEGER,
                 error         TEXT,
-                error_kind    TEXT
+                error_kind    TEXT,
+                user_agent    TEXT,
+                upstream_model TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_requests_run_seq ON requests(run_id, seq);
             CREATE INDEX IF NOT EXISTS idx_requests_model   ON requests(model);
@@ -227,6 +233,14 @@ impl DbLog {
             );
             CREATE INDEX IF NOT EXISTS idx_bench_runs_ts ON bench_runs(id);",
         )?;
+        // Migration: add user_agent / upstream_model columns to pre-existing DBs.
+        // Fresh DBs already have them from CREATE TABLE; old DBs (version < 2) need ALTERs.
+        // `let _ =` tolerates "duplicate column" if the CREATE TABLE already added them.
+        if old_version < 2 {
+            let _ = conn.execute("ALTER TABLE requests ADD COLUMN user_agent TEXT", []);
+            let _ = conn.execute("ALTER TABLE requests ADD COLUMN upstream_model TEXT", []);
+            conn.pragma_update(None, "user_version", 2)?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             corpus_max_rows,
@@ -295,8 +309,9 @@ impl DbLog {
                     run_id, seq, ts_start, tier, effective_tier, target, model,
                     downgraded, downgrade_reason,
                     trim_applied, trim_preset, trim_config,
-                    trim_tokens_before, trim_tokens_after, trim_stages
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    trim_tokens_before, trim_tokens_after, trim_stages,
+                    user_agent
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 rusqlite::params![
                     row.run_id as i64,
                     row.seq as i64,
@@ -313,6 +328,7 @@ impl DbLog {
                     row.trim_tokens_before.map(|v| v as i64),
                     row.trim_tokens_after.map(|v| v as i64),
                     row.trim_stages,
+                    row.user_agent,
                 ],
             );
         }
@@ -333,6 +349,7 @@ impl DbLog {
         status: Option<u16>,
         error: Option<&str>,
         error_kind: Option<&str>,
+        upstream_model: Option<&str>,
     ) {
         if let Ok(conn) = self.conn.lock() {
             let _ = conn.execute(
@@ -345,7 +362,8 @@ impl DbLog {
                     cache_creation_tokens = ?8,
                     status = ?9,
                     error = ?10,
-                    error_kind = ?11
+                    error_kind = ?11,
+                    upstream_model = ?12
                  WHERE run_id = ?1 AND seq = ?2",
                 rusqlite::params![
                     run_id as i64,
@@ -359,6 +377,7 @@ impl DbLog {
                     status.map(|v| v as i64),
                     error,
                     error_kind,
+                    upstream_model,
                 ],
             );
         }

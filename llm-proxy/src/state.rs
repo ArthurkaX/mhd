@@ -145,9 +145,11 @@ pub struct TraceEntry {
     pub status: Option<u16>,
     /// True when this request was a `max_tokens == 1` background probe (token
     /// count / cache-warm check) sent by Claude Code. Probes get their own
-    /// throttle lane and render as a quiet gray "×N probe" line in the trace
+    /// throttle lane and render as a quiet gray "xN probe" line in the trace
     /// instead of a red error burst.
     pub is_probe: bool,
+    /// Client HTTP User-Agent (e.g. "claude-cli/..."). Written at INSERT time.
+    pub user_agent: Option<String>,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -504,6 +506,7 @@ impl AppState {
                     } else {
                         None
                     },
+                    user_agent: entry.user_agent.clone(),
                 };
                 db.insert_request(&row);
             }
@@ -528,6 +531,7 @@ impl AppState {
         cache_creation_tokens: u64,
         duration_ms: Option<u64>,
         status: Option<u16>,
+        upstream_model: Option<&str>,
     ) {
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         // Search from the back — the matching entry is almost certainly recent.
@@ -556,6 +560,7 @@ impl AppState {
                     status,
                     None,
                     None,
+                    upstream_model,
                 );
             }
         }
@@ -598,6 +603,7 @@ impl AppState {
                     status,
                     Some(error),
                     Some(error_kind),
+                    None,
                 );
             }
         }

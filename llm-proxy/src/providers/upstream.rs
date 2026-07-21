@@ -151,8 +151,20 @@ pub async fn send_request(
         .and_then(|d| d.get("cached_tokens"))
         .and_then(|n| n.as_u64())
         .unwrap_or(0);
+    // The actual model the upstream served (may differ from target_model).
+    let upstream_model = openai_resp
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
 
-    let anthropic_resp = transform::openai_to_anthropic(openai_resp);
+    let mut anthropic_resp = transform::openai_to_anthropic(openai_resp);
+    if let Some(obj) = anthropic_resp.as_object_mut() {
+        obj.insert("id".to_string(), Value::String(super::synth_msg_id()));
+        obj.insert(
+            "model".to_string(),
+            Value::String(target_model.to_string()),
+        );
+    }
 
     // Push token usage into the trace entry with correctly separated counts.
     if let Some(usage) = anthropic_resp.get("usage") {
@@ -175,6 +187,7 @@ pub async fn send_request(
             0,
             Some(started.elapsed().as_millis() as u64),
             status_opt,
+            upstream_model.as_deref(),
         );
     }
 
@@ -602,13 +615,7 @@ pub async fn stream_request(
     }
 
     let requested_model = requested_model.to_string();
-    let msg_id = format!(
-        "msg_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros()
-    );
+    let msg_id = super::synth_msg_id();
     let mut byte_stream = resp.bytes_stream();
 
     // Clone the Arc so the stream has its own handle to log DONE/ERROR.
@@ -698,6 +705,7 @@ pub async fn stream_request(
                 0,
                 Some(elapsed),
                 status_opt,
+                None,
             );
         }
 
@@ -752,6 +760,10 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
     };
     let status_opt = Some(resp.status().as_u16());
     let body: Value = resp.json().await?;
+    let upstream_model = body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
 
     // Fill the trace entry's token counts from the OpenAI usage block
     // (prompt_tokens/completion_tokens, with input_/output_ as a fallback).
@@ -782,6 +794,7 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
             0,
             Some(started.elapsed().as_millis() as u64),
             status_opt,
+            upstream_model.as_deref(),
         );
     }
 
@@ -918,6 +931,7 @@ pub async fn stream_raw_openai(
                 0,
                 Some(elapsed),
                 status_opt,
+                None,
             );
         }
 
