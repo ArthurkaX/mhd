@@ -156,6 +156,8 @@ pub struct TraceEntry {
     /// Value of the `x-client-run-id` header, if the client sent one. Stitches
     /// this request to a harness-side session log. Never forwarded upstream.
     pub client_run_id: Option<String>,
+    /// Prefix-shape measurements. Not a cache signal — see [`crate::prefix`].
+    pub prefix: crate::prefix::PrefixStats,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -309,6 +311,12 @@ pub struct AppState {
     /// Stable id for this daemon run (epoch-millis at construction). Used to
     /// group all requests from one process lifetime in the `requests` table.
     pub run_id: u64,
+
+    /// Last request seen per (client run, route), for the prefix-shape metric.
+    /// In-memory and TTL'd rather than a `requests` lookup: the previous digest
+    /// is needed on the hot path and `db_log` is a single mutex shared with
+    /// every write the proxy makes.
+    pub prefix_tracker: crate::prefix::PrefixTracker,
 }
 
 /// Material change = utilization moved >=0.01 on either window, OR any status /
@@ -335,6 +343,7 @@ impl AppState {
             .unwrap_or_default()
             .as_millis() as u64;
         Arc::new(Self {
+            prefix_tracker: crate::prefix::PrefixTracker::new(),
             anthropic_key: RwLock::new(cfg.anthropic_key.clone()),
             upstream_base_url: RwLock::new(cfg.upstream_base_url.clone()),
             upstream_key: RwLock::new(cfg.upstream_key.clone()),
@@ -514,6 +523,7 @@ impl AppState {
                     },
                     user_agent: entry.user_agent.clone(),
                     client_run_id: entry.client_run_id.clone(),
+                    prefix: entry.prefix.clone(),
                 };
                 db.insert_request(&row);
             }

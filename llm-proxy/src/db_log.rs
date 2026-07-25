@@ -20,9 +20,27 @@
 //! before schema v3 have 0 for both, which is ambiguous; `route_cache` excludes
 //! them via the `cache_null_epoch_id` watermark in `meta`.
 //!
+//! **Prefix shape is a separate question.** `msg_digest`, `msg_total_chars`,
+//! `prefix_shared_chars` and `prefix_shared_chars_sent` describe how much of a
+//! request repeated the previous one — i.e. how *cacheable* it was. They say
+//! nothing about whether the upstream actually cached it, and must never be
+//! folded into the cache columns or used to infer a cache verdict: routes exist
+//! that are >90% prefix-shared and cache nothing. See [`crate::prefix`].
+//!
 //! ```sql
 //! -- Requests with cache hits
 //! SELECT * FROM requests WHERE cache_read_tokens > 0;
+//!
+//! -- How cacheable the traffic was, next to what the route did with it.
+//! -- Two independent numbers, deliberately not combined.
+//! SELECT target,
+//!        avg(1.0 * prefix_shared_chars / nullif(msg_total_chars, 0)) AS prefix_shared,
+//!        sum(cache_read_tokens IS NOT NULL)                          AS reporting
+//!   FROM requests WHERE prefix_shared_chars NOT NULL GROUP BY 1;
+//!
+//! -- Is our own trim breaking prefixes the client kept stable?
+//! SELECT count(*) FROM requests
+//!  WHERE prefix_shared_chars_sent < prefix_shared_chars;
 //!
 //! -- Per-route cache verdict (three states: reports+caches / reports+doesn't /
 //! -- silent). `reporting_requests = 0` means "unknown", not "no cache".
@@ -87,6 +105,9 @@ pub struct RequestRow {
     /// Value of the `x-client-run-id` request header, if the client sent one.
     /// Lets proxy rows be stitched to a harness-side session log by run id.
     pub client_run_id: Option<String>,
+    /// Prefix-shape measurements for this request. Independent of the cache
+    /// columns and never a substitute for them — see [`crate::prefix`].
+    pub prefix: crate::prefix::PrefixStats,
 }
 
 /// One row of the `route_cache` view: the cache verdict for a single route.
@@ -149,7 +170,7 @@ impl DbLog {
         // that need ALTER TABLE migration.
         let old_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         conn.execute_batch(
-            "PRAGMA user_version = 3;
+            "PRAGMA user_version = 4;
 
             -- meta: small key/value store for schema watermarks.
             -- `cache_null_epoch_id` = the highest `requests.id` that predates
@@ -227,7 +248,21 @@ impl DbLog {
                 error_kind    TEXT,
                 user_agent    TEXT,
                 upstream_model TEXT,
-                client_run_id TEXT
+                client_run_id TEXT,
+                -- Prefix shape (see the `prefix` module). NOT a cache signal:
+                -- a route can be 90%+ prefix-shared and still never cache.
+                -- msg_digest is JSON [[<hex hash>, <bytes>], ...] over
+                -- system, tools, then each message, of the body as SENT.
+                msg_digest    TEXT,
+                msg_total_chars INTEGER,
+                -- Longest common prefix in bytes vs the previous request of the
+                -- same (client run, route) within 5 min. NULL = no comparable
+                -- predecessor, which is not the same as 0 = shared nothing.
+                -- ..._chars is measured pre-trim (the harness's own prefix
+                -- discipline); ..._sent post-trim (what we actually sent). The
+                -- gap between them is trim breaking cacheable prefixes.
+                prefix_shared_chars      INTEGER,
+                prefix_shared_chars_sent INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_requests_run_seq ON requests(run_id, seq);
             CREATE INDEX IF NOT EXISTS idx_requests_model   ON requests(model);
@@ -349,6 +384,22 @@ impl DbLog {
             );
             conn.pragma_update(None, "user_version", 3)?;
         }
+        // Migration to v4: prefix-shape columns. Purely additive -- existing rows
+        // stay NULL, which is the correct reading (never measured), and the
+        // metric is only comparable within a single client session anyway.
+        if old_version < 4 {
+            let _ = conn.execute("ALTER TABLE requests ADD COLUMN msg_digest TEXT", []);
+            let _ = conn.execute("ALTER TABLE requests ADD COLUMN msg_total_chars INTEGER", []);
+            let _ = conn.execute(
+                "ALTER TABLE requests ADD COLUMN prefix_shared_chars INTEGER",
+                [],
+            );
+            let _ = conn.execute(
+                "ALTER TABLE requests ADD COLUMN prefix_shared_chars_sent INTEGER",
+                [],
+            );
+            conn.pragma_update(None, "user_version", 4)?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             corpus_max_rows,
@@ -418,8 +469,10 @@ impl DbLog {
                     downgraded, downgrade_reason,
                     trim_applied, trim_preset, trim_config,
                     trim_tokens_before, trim_tokens_after, trim_stages,
-                    user_agent, client_run_id
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                    user_agent, client_run_id,
+                    msg_digest, msg_total_chars,
+                    prefix_shared_chars, prefix_shared_chars_sent
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 rusqlite::params![
                     row.run_id as i64,
                     row.seq as i64,
@@ -438,6 +491,10 @@ impl DbLog {
                     row.trim_stages,
                     row.user_agent,
                     row.client_run_id,
+                    row.prefix.msg_digest,
+                    row.prefix.msg_total_chars.map(|v| v as i64),
+                    row.prefix.prefix_shared_chars.map(|v| v as i64),
+                    row.prefix.prefix_shared_chars_sent.map(|v| v as i64),
                 ],
             );
         }
@@ -921,6 +978,59 @@ mod tests {
         assert_eq!(cache_read_of(&db, 1), None, "absent field must be NULL");
         assert_eq!(cache_read_of(&db, 2), Some(0), "reported zero must be 0");
         assert_eq!(cache_read_of(&db, 3), Some(4096));
+    }
+
+    /// The digest and prefix columns must land in the columns they name — the
+    /// insert binds 21 positional params and a column-order slip would silently
+    /// write the digest into a neighbouring field.
+    #[test]
+    fn prefix_columns_round_trip_and_stay_null_when_unmeasured() {
+        let (db, _tmp) = open_temp_db(0);
+        db.insert_request(&RequestRow {
+            run_id: 1,
+            seq: 1,
+            ts_start: "2026-07-26T00:00:00Z".to_string(),
+            ..Default::default()
+        });
+        db.insert_request(&RequestRow {
+            run_id: 1,
+            seq: 2,
+            ts_start: "2026-07-26T00:00:00Z".to_string(),
+            prefix: crate::prefix::PrefixStats {
+                msg_digest: Some("[[\"00ff\",7]]".to_string()),
+                msg_total_chars: Some(7),
+                prefix_shared_chars: Some(5),
+                prefix_shared_chars_sent: Some(3),
+            },
+            ..Default::default()
+        });
+
+        let conn = db.conn.lock().expect("lock");
+        let read = |seq: i64| {
+            conn.query_row(
+                "SELECT msg_digest, msg_total_chars, prefix_shared_chars,
+                        prefix_shared_chars_sent
+                   FROM requests WHERE seq = ?1",
+                rusqlite::params![seq],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<i64>>(3)?,
+                    ))
+                },
+            )
+            .expect("row")
+        };
+
+        // Unmeasured stays NULL — never 0, which would read as "compared and
+        // shared nothing".
+        assert_eq!(read(1), (None, None, None, None));
+        assert_eq!(
+            read(2),
+            (Some("[[\"00ff\",7]]".to_string()), Some(7), Some(5), Some(3))
+        );
     }
 
     /// The three route states must stay distinguishable through the view.

@@ -11,6 +11,7 @@ pub mod db_log;
 pub mod handlers;
 pub mod measure;
 pub mod native_trim;
+pub mod prefix;
 pub mod providers;
 pub mod state;
 pub mod throttle;

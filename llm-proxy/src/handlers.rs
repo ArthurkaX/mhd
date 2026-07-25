@@ -256,6 +256,13 @@ pub async fn post_messages(
     // Fail-open: any error or no-gain returns the original body.
     // Trim metadata (preset, config, stages) rides on the requests DB row —
     // no separate TRIM event needed.
+    // Digest the untouched body first: `prefix_shared_chars` must reflect the
+    // harness's own prefix discipline, not what trim left of it.
+    let pre_trim_digest = if state.is_db_log_enabled() {
+        crate::prefix::digest_anthropic(&payload)
+    } else {
+        Vec::new()
+    };
     let mut trim_applied = false;
     let mut trim_tokens_before = 0u64;
     let mut trim_tokens_after = 0u64;
@@ -352,6 +359,31 @@ pub async fn post_messages(
         payload
     };
 
+    // ── Prefix shape ────────────────────────────────────────────────
+    // Digest the body before and after trim, and measure both against the
+    // previous request of this client session on this route. Gated on the DB
+    // log: the digest hashes the whole body, and nothing reads the result when
+    // there is nowhere to write it. NOT a cache signal — see `crate::prefix`.
+    let prefix = if state.is_db_log_enabled() {
+        let route = match &target {
+            Target::Model(id) => id.clone(),
+            Target::Native => model.clone(),
+        };
+        let key = crate::prefix::session_key(
+            client_run_id.as_deref(),
+            user_agent.as_deref(),
+            &route,
+        );
+        state.prefix_tracker.observe(
+            &key,
+            pre_trim_digest,
+            crate::prefix::digest_anthropic(&payload),
+            crate::providers::now_unix_ms(),
+        )
+    } else {
+        crate::prefix::PrefixStats::default()
+    };
+
     // Record routing decision in the trace ring buffer (and proxy.db requests row).
     let downgraded = effective_tier != tier;
     state.push_trace(TraceEntry {
@@ -382,6 +414,7 @@ pub async fn post_messages(
         is_probe: payload.get("max_tokens").and_then(|v| v.as_u64()) == Some(1),
         user_agent,
         client_run_id,
+        prefix,
     });
 
     if stream {
@@ -449,6 +482,12 @@ pub async fn post_chat_completions(
     // ── Trim hook ───────────────────────────────────────────────────
     // Same single flag as the /v1/messages path.
     // Trim metadata rides on the requests DB row — no separate TRIM event needed.
+    // Digest the untouched body first — see the /v1/messages path.
+    let pre_trim_digest = if state.is_db_log_enabled() {
+        crate::prefix::digest_openai(&payload)
+    } else {
+        Vec::new()
+    };
     let mut trim_applied = false;
     let mut trim_tokens_before = 0u64;
     let mut trim_tokens_after = 0u64;
@@ -542,6 +581,22 @@ pub async fn post_chat_completions(
         payload
     };
 
+    // ── Prefix shape ────────────────────────────────────────────────
+    // Same measurement as the /v1/messages path; the route here is always the
+    // requested model (OpenAI passthrough does no tier routing).
+    let prefix = if state.is_db_log_enabled() {
+        let key =
+            crate::prefix::session_key(client_run_id.as_deref(), user_agent.as_deref(), &model);
+        state.prefix_tracker.observe(
+            &key,
+            pre_trim_digest,
+            crate::prefix::digest_openai(&payload),
+            crate::providers::now_unix_ms(),
+        )
+    } else {
+        crate::prefix::PrefixStats::default()
+    };
+
     // Record this passthrough in the trace ring buffer (and proxy.db requests row).
     // Tokens are 0 here and get filled from the upstream response usage (see `*_raw_openai`).
     // prefix_hash is 0 for OpenAI passthrough (no Anthropic-style system/tools prefix).
@@ -569,6 +624,7 @@ pub async fn post_chat_completions(
         is_probe: false,
         user_agent,
         client_run_id,
+        prefix,
     });
 
     if stream {
