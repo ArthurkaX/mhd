@@ -261,7 +261,9 @@ pub async fn send_request(
 
     // Push token usage into the trace entry.
     // On the Anthropic native path, input_tokens is already fresh (uncached).
-    // cache_read_input_tokens and cache_creation_input_tokens are separate fields.
+    // cache_read_input_tokens and cache_creation_input_tokens are separate fields
+    // and are recorded as None when absent — Anthropic omits them on requests
+    // that carried no cache_control, and "omitted" must not read as "zero".
     if let Some(usage) = json.get("usage") {
         let inp = usage
             .get("input_tokens")
@@ -271,14 +273,10 @@ pub async fn send_request(
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let cache_read = usage
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
         let cache_creation = usage
             .get("cache_creation_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+            .and_then(|v| v.as_u64());
         // Always write the completion (even with zero tokens) so the DB row
         // is closed — otherwise the InflightGuard's Drop mislabels a
         // successful 200 as CANCELLED.
@@ -474,8 +472,8 @@ pub async fn stream_request(
         // message_delta (the old behaviour) left input/cache at 0, so the In
         // column and the cache colour never populated on the native path.
         let mut base_input: u64 = 0;
-        let mut cache_read: u64 = 0;
-        let mut cache_creation: u64 = 0;
+        let mut cache_read: Option<u64> = None;
+        let mut cache_creation: Option<u64> = None;
         let mut output_tokens: u64 = 0;
         while let Some(item) = byte_stream.next().await {
             let chunk = match item {
@@ -499,10 +497,10 @@ pub async fn stream_request(
                                             base_input = n;
                                         }
                                         if let Some(n) = usage.get("cache_read_input_tokens").and_then(|n| n.as_u64()) {
-                                            cache_read = n;
+                                            cache_read = Some(n);
                                         }
                                         if let Some(n) = usage.get("cache_creation_input_tokens").and_then(|n| n.as_u64()) {
-                                            cache_creation = n;
+                                            cache_creation = Some(n);
                                         }
                                         if let Some(n) = usage.get("output_tokens").and_then(|n| n.as_u64()) {
                                             output_tokens = n;

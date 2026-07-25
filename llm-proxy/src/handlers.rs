@@ -15,6 +15,22 @@ use serde_json::Value;
 use crate::providers;
 use crate::state::{AppState, Target, Tier, TraceEntry};
 
+/// Read the `x-client-run-id` header a harness may send to identify its session.
+///
+/// Purely observational: the value is logged onto the request row and is never
+/// forwarded upstream (outbound headers are rebuilt from scratch in the provider
+/// modules, so nothing has to be stripped). Values longer than 128 chars are
+/// dropped rather than truncated — a run id that long is a client bug, and a
+/// truncated one would silently collide with its siblings.
+fn client_run_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-client-run-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .map(|s| s.to_string())
+}
+
 /// Derive a stable session hash from a messages payload.
 /// The session is identified by the system prompt + the first user message,
 /// which stay constant across tool loops in one conversation.
@@ -140,6 +156,7 @@ pub async fn post_messages(
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let client_run_id = client_run_id(&headers);
 
     // Calculate per-session gap for expensive tiers that can be downgraded.
     // Only for Opus/Sonnet — cheap tiers and background calls don't stamp the clock.
@@ -351,8 +368,8 @@ pub async fn post_messages(
         },
         input_tokens: 0,
         output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
         trim_applied,
         trim_tokens_before,
         trim_tokens_after,
@@ -364,6 +381,7 @@ pub async fn post_messages(
         status: None,
         is_probe: payload.get("max_tokens").and_then(|v| v.as_u64()) == Some(1),
         user_agent,
+        client_run_id,
     });
 
     if stream {
@@ -413,6 +431,7 @@ pub async fn post_chat_completions(
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let client_run_id = client_run_id(&headers);
     let model = payload
         .get("model")
         .and_then(|v| v.as_str())
@@ -536,8 +555,8 @@ pub async fn post_chat_completions(
         reason: String::new(),
         input_tokens: 0,
         output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
         trim_applied,
         trim_tokens_before,
         trim_tokens_after,
@@ -549,6 +568,7 @@ pub async fn post_chat_completions(
         status: None,
         is_probe: false,
         user_agent,
+        client_run_id,
     });
 
     if stream {
@@ -680,6 +700,44 @@ pub async fn toggle_debug(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 /// `GET /health` — health check.
+/// `GET /stats/routes` — per-route cache verdict, so a client can decide at
+/// runtime whether a route is worth shaping requests for instead of hardcoding
+/// an assumption.
+///
+/// Each entry reports two independent booleans:
+///   * `reports` — the route sends cache fields at all.
+///   * `caches`  — it has actually served cached tokens.
+///
+/// `reports: false` means **nothing is known** about this route's caching. It is
+/// not the same answer as `reports: true, caches: false` ("asked, told no"), and
+/// clients must not collapse the two. `reporting_requests` is exposed so callers
+/// can see how much evidence is behind the verdict.
+///
+/// Counts cover successful requests only, and only those logged since the
+/// schema-v3 migration — older rows cannot distinguish absent from zero. A route
+/// that has only pre-migration traffic is therefore absent from this list
+/// entirely, which again means "unknown", not "does not cache".
+/// Returns an empty array when the DB log is disabled.
+pub async fn get_route_stats(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let rows = state.route_cache();
+    Json(Value::Array(
+        rows.into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "route": r.route,
+                    "reports": r.reports(),
+                    "caches": r.caches(),
+                    "requests": r.requests,
+                    "reporting_requests": r.reporting_requests,
+                    "cache_read_tokens": r.cache_read_tokens,
+                    "cache_creation_tokens": r.cache_creation_tokens,
+                    "last_seen": r.last_seen,
+                })
+            })
+            .collect(),
+    ))
+}
+
 pub async fn health() -> Json<Value> {
     Json(serde_json::json!({
         "status": "ok",

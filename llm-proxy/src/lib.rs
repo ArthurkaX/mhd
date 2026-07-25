@@ -45,6 +45,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/models", get(handlers::get_models))
         .route("/set_model/{slot}", post(handlers::set_model))
         .route("/config", get(handlers::get_config))
+        .route("/stats/routes", get(handlers::get_route_stats))
         .route("/debug", post(handlers::toggle_debug))
         .route("/health", get(handlers::health))
         .with_state(state)

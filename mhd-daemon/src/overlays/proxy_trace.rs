@@ -533,11 +533,16 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 }
             });
         // Cache-hit avg: average cache_read/total_prompt% over sizeable requests.
+        // Requests whose route reported no cache field are skipped entirely —
+        // averaging them in as 0% would drag the number down with non-evidence.
         let (cache_count, cache_sum) =
             trace.iter().fold((0usize, 0.0f64), |(cnt, sum), e| {
-                let total = e.input_tokens + e.cache_read_tokens + e.cache_creation_tokens;
+                let Some(cr) = e.cache_read_tokens else {
+                    return (cnt, sum);
+                };
+                let total = e.input_tokens + cr + e.cache_creation_tokens.unwrap_or(0);
                 if total >= 1024 {
-                    let ratio = e.cache_read_tokens as f64 / total as f64 * 100.0;
+                    let ratio = cr as f64 / total as f64 * 100.0;
                     (cnt + 1, sum + ratio)
                 } else {
                     (cnt, sum)
@@ -914,14 +919,16 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             )
         }
 
-        // total_prompt = fresh input + cache reads + cache writes.
-        let total_prompt =
-            entry.input_tokens + entry.cache_read_tokens + entry.cache_creation_tokens;
-        let cache_hit = entry.cache_read_tokens > 0;
-        let cache_ratio = if total_prompt > 0 {
-            entry.cache_read_tokens as f64 / total_prompt as f64
-        } else {
-            0.0
+        // total_prompt = fresh input + cache reads + cache writes. Unreported
+        // cache counts contribute nothing rather than being read as zero.
+        let cache_read = entry.cache_read_tokens;
+        let total_prompt = entry.input_tokens
+            + cache_read.unwrap_or(0)
+            + entry.cache_creation_tokens.unwrap_or(0);
+        let cache_hit = cache_read.is_some_and(|n| n > 0);
+        let cache_ratio = match (cache_read, total_prompt) {
+            (Some(n), t) if t > 0 => n as f64 / t as f64,
+            _ => 0.0,
         };
         // Compute elapsed time (secs) between this entry and the chronologically-
         // previous one. display_entries is newest-first, so the predecessor is [i+1].
@@ -936,13 +943,18 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 }
             })
         };
-        // Four-state cache classification when cache_read == 0:
+        // Four-state cache classification when the route reported cache_read == 0:
         //   COLD    — prefix hash never seen before (first fill, new project/session)
         //   EXPIRED — prefix was seen before but gap > TTL (cache aged out)
         //   MISS    — prefix was seen before and gap <= TTL (warm but missed → investigate)
-        // HIT is handled separately (cache_read_tokens > 0).
+        // HIT is handled separately (cache_read > 0).
         // hash==0 (unknown): never treated as COLD; falls to gap logic instead.
-        let cache_miss_candidate = entry.cache_read_tokens == 0 && total_prompt >= 1024;
+        //
+        // A route that reported NO cache field at all (cache_read == None) is
+        // excluded from all four: we know nothing, so calling it a MISS would be
+        // inventing a fact. It renders as "—" instead.
+        let cache_miss_candidate =
+            cache_read.is_some_and(|n| n == 0) && total_prompt >= 1024;
         let seen_before = prefix_seen_before[i];
         let h = entry.prefix_hash;
         #[derive(PartialEq)]
@@ -981,15 +993,13 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         // ── Cache column (col 5) ─────────────────────────────────
         let cache_text = if cache_hit {
             let ratio_pct = cache_ratio * 100.0;
-            if entry.cache_creation_tokens > 0 {
-                format!(
-                    "{:.0}% +{}",
-                    ratio_pct,
-                    fmt_tokens(entry.cache_creation_tokens)
-                )
-            } else {
-                format!("{:.0}%", ratio_pct)
+            match entry.cache_creation_tokens {
+                Some(cc) if cc > 0 => format!("{:.0}% +{}", ratio_pct, fmt_tokens(cc)),
+                _ => format!("{:.0}%", ratio_pct),
             }
+        } else if cache_read.is_none() {
+            // Route never reported a cache field — unknown, not a miss.
+            "\u{2014}".to_string()
         } else if is_cold {
             "cold".to_string()
         } else if is_expired {

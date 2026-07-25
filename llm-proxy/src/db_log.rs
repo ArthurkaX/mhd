@@ -11,9 +11,22 @@
 //! `reason` free-text field on generic events is replaced by typed columns on
 //! `requests`. The `events` table stays for HANG and RAW log lines.
 //!
+//! **NULL vs 0 on the cache columns.** `cache_read_tokens` /
+//! `cache_creation_tokens` are NULL when the upstream response carried no
+//! corresponding field at all, and 0 only when the field was present and zero.
+//! A route that never reports cache usage is therefore distinguishable from one
+//! that reports "no cache was used". Do NOT `coalesce(...,0)` when the question
+//! is "does this route report?" — see the `route_cache` view. Rows written
+//! before schema v3 have 0 for both, which is ambiguous; `route_cache` excludes
+//! them via the `cache_null_epoch_id` watermark in `meta`.
+//!
 //! ```sql
 //! -- Requests with cache hits
 //! SELECT * FROM requests WHERE cache_read_tokens > 0;
+//!
+//! -- Per-route cache verdict (three states: reports+caches / reports+doesn't /
+//! -- silent). `reporting_requests = 0` means "unknown", not "no cache".
+//! SELECT * FROM route_cache;
 //!
 //! -- Average trim savings by tier
 //! SELECT tier, avg(trim_tokens_before - trim_tokens_after) FROM requests
@@ -71,6 +84,38 @@ pub struct RequestRow {
     pub trim_tokens_after: Option<u64>,
     pub trim_stages: Option<String>,
     pub user_agent: Option<String>,
+    /// Value of the `x-client-run-id` request header, if the client sent one.
+    /// Lets proxy rows be stitched to a harness-side session log by run id.
+    pub client_run_id: Option<String>,
+}
+
+/// One row of the `route_cache` view: the cache verdict for a single route.
+#[derive(Debug, Clone, Default)]
+pub struct RouteCacheRow {
+    /// coalesce(upstream_model, nullif(target,'native'), model).
+    pub route: String,
+    /// Successful requests observed on this route since the v3 epoch.
+    pub requests: i64,
+    /// How many of those carried a cache field at all. Zero means the route is
+    /// silent — which is NOT the same as "does not cache".
+    pub reporting_requests: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub last_seen: Option<String>,
+}
+
+impl RouteCacheRow {
+    /// Whether the route reports cache usage at all.
+    pub fn reports(&self) -> bool {
+        self.reporting_requests > 0
+    }
+
+    /// Whether the route has actually served cached tokens. Only meaningful
+    /// when [`reports`](Self::reports) is true; false on a silent route means
+    /// "unknown", not "no".
+    pub fn caches(&self) -> bool {
+        self.reports() && self.cache_read_tokens > 0
+    }
 }
 
 /// One typed snapshot of Anthropic `anthropic-ratelimit-unified-*` quota state.
@@ -104,7 +149,18 @@ impl DbLog {
         // that need ALTER TABLE migration.
         let old_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         conn.execute_batch(
-            "PRAGMA user_version = 2;
+            "PRAGMA user_version = 3;
+
+            -- meta: small key/value store for schema watermarks.
+            -- `cache_null_epoch_id` = the highest `requests.id` that predates
+            -- schema v3. Rows at or below it stored 0 for the cache columns
+            -- regardless of whether the upstream reported anything, so their
+            -- NULL-vs-0 distinction is unrecoverable. Analytics that depend on
+            -- that distinction must filter `id > epoch`.
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
 
             -- events: append-only log stream.
             -- Hot-path lines (REQ/RESP/START/DONE/STREAM_*) arrive via
@@ -141,6 +197,8 @@ impl DbLog {
             -- head/tail), trim_tokens_before/after, input/output/cache_read/
             -- cache_creation_tokens, downgraded, effective_tier. All trim%
             -- and token-savings numbers should be computed from here.
+            -- cache_read_tokens / cache_creation_tokens are NULL when the
+            -- upstream reported no such field (see module docs).
             CREATE TABLE IF NOT EXISTS requests (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id        INTEGER NOT NULL,
@@ -168,11 +226,14 @@ impl DbLog {
                 error         TEXT,
                 error_kind    TEXT,
                 user_agent    TEXT,
-                upstream_model TEXT
+                upstream_model TEXT,
+                client_run_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_requests_run_seq ON requests(run_id, seq);
             CREATE INDEX IF NOT EXISTS idx_requests_model   ON requests(model);
             CREATE INDEX IF NOT EXISTS idx_requests_tier    ON requests(tier);
+            CREATE INDEX IF NOT EXISTS idx_requests_client_run
+                ON requests(client_run_id, target, ts_start);
 
             CREATE TABLE IF NOT EXISTS notes (
                 id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,7 +292,39 @@ impl DbLog {
                 elapsed_ms INTEGER NOT NULL,
                 knobs_json TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_bench_runs_ts ON bench_runs(id);",
+            CREATE INDEX IF NOT EXISTS idx_bench_runs_ts ON bench_runs(id);
+
+            -- route_cache: the per-route cache verdict. THE place to answer
+            -- \"does this route cache?\" -- three distinguishable states:
+            --   reporting_requests = 0            -> silent: nothing is known
+            --   reporting_requests > 0, reads = 0 -> reports, does not cache
+            --   reporting_requests > 0, reads > 0 -> reports and caches
+            -- The middle and the first are NOT the same thing; never collapse them.
+            --
+            -- Scope guards:
+            --  * status = 200 only. A failed request physically cannot carry
+            --    usage, so counting it would make an error-prone route look silent.
+            --  * id > cache_null_epoch_id. Pre-v3 rows stored 0 for absent
+            --    fields and would read as \"reports, does not cache\".
+            --
+            -- Route key: what actually served > what we routed to > what the
+            -- client asked for. Plain `model` would smear downgraded requests
+            -- across routes that never ran. `target` is nullif'd against
+            -- 'native' so Anthropic traffic keys on the real model instead of
+            -- collapsing all four tiers into one row.
+            CREATE VIEW IF NOT EXISTS route_cache AS
+            SELECT coalesce(upstream_model, nullif(target, 'native'), model) AS route,
+                   count(*)                                 AS requests,
+                   sum(cache_read_tokens IS NOT NULL)       AS reporting_requests,
+                   coalesce(sum(cache_read_tokens), 0)      AS cache_read_tokens,
+                   coalesce(sum(cache_creation_tokens), 0)  AS cache_creation_tokens,
+                   max(ts_start)                            AS last_seen
+            FROM requests
+            WHERE status = 200
+              AND id > coalesce(
+                    (SELECT cast(value AS INTEGER) FROM meta
+                      WHERE key = 'cache_null_epoch_id'), 0)
+            GROUP BY 1;",
         )?;
         // Migration: add user_agent / upstream_model columns to pre-existing DBs.
         // Fresh DBs already have them from CREATE TABLE; old DBs (version < 2) need ALTERs.
@@ -239,7 +332,22 @@ impl DbLog {
         if old_version < 2 {
             let _ = conn.execute("ALTER TABLE requests ADD COLUMN user_agent TEXT", []);
             let _ = conn.execute("ALTER TABLE requests ADD COLUMN upstream_model TEXT", []);
-            conn.pragma_update(None, "user_version", 2)?;
+        }
+        // Migration to v3: client_run_id column + the NULL-vs-0 epoch watermark.
+        //
+        // Every row that already exists stored 0 for the cache columns whether or
+        // not the upstream reported them, so the distinction cannot be recovered.
+        // We do NOT rewrite them to NULL -- past measurement runs weight real
+        // cache_read values into quota cost and that history stays intact. Instead
+        // we record where the honest data starts and let `route_cache` filter on it.
+        if old_version < 3 {
+            let _ = conn.execute("ALTER TABLE requests ADD COLUMN client_run_id TEXT", []);
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value)
+                 SELECT 'cache_null_epoch_id', cast(coalesce(max(id), 0) AS TEXT) FROM requests",
+                [],
+            );
+            conn.pragma_update(None, "user_version", 3)?;
         }
         Ok(Self {
             conn: Mutex::new(conn),
@@ -310,8 +418,8 @@ impl DbLog {
                     downgraded, downgrade_reason,
                     trim_applied, trim_preset, trim_config,
                     trim_tokens_before, trim_tokens_after, trim_stages,
-                    user_agent
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    user_agent, client_run_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 rusqlite::params![
                     row.run_id as i64,
                     row.seq as i64,
@@ -329,12 +437,18 @@ impl DbLog {
                     row.trim_tokens_after.map(|v| v as i64),
                     row.trim_stages,
                     row.user_agent,
+                    row.client_run_id,
                 ],
             );
         }
     }
 
     /// Update the completion columns on the request row matching (run_id, seq).
+    ///
+    /// The token arguments are `Option` on purpose: `None` means the upstream
+    /// response carried no such field and is stored as SQL NULL, `Some(0)` means
+    /// it reported zero. Callers must not substitute 0 for an absent field —
+    /// that ambiguity is exactly what the `route_cache` verdict depends on.
     /// Best-effort: errors are swallowed.
     pub fn update_request_completion(
         &self,
@@ -342,10 +456,10 @@ impl DbLog {
         seq: u64,
         ts_end: &str,
         duration_ms: Option<u64>,
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read_tokens: u64,
-        cache_creation_tokens: u64,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_creation_tokens: Option<u64>,
         status: Option<u16>,
         error: Option<&str>,
         error_kind: Option<&str>,
@@ -370,10 +484,10 @@ impl DbLog {
                     seq as i64,
                     ts_end,
                     duration_ms.map(|v| v as i64),
-                    input_tokens as i64,
-                    output_tokens as i64,
-                    cache_read_tokens as i64,
-                    cache_creation_tokens as i64,
+                    input_tokens.map(|v| v as i64),
+                    output_tokens.map(|v| v as i64),
+                    cache_read_tokens.map(|v| v as i64),
+                    cache_creation_tokens.map(|v| v as i64),
                     status.map(|v| v as i64),
                     error,
                     error_kind,
@@ -405,6 +519,38 @@ impl DbLog {
                 ],
             );
         }
+    }
+
+    /// Read the `route_cache` view: one row per route with its cache verdict.
+    ///
+    /// Only covers successful requests logged since the schema-v3 epoch, so a
+    /// freshly-migrated database returns few or no rows until new traffic lands.
+    /// That is deliberate — pre-v3 rows cannot answer the question honestly.
+    /// Returns an empty vec if the query fails.
+    pub fn route_cache(&self) -> Vec<RouteCacheRow> {
+        let Ok(conn) = self.conn.lock() else {
+            return Vec::new();
+        };
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT route, requests, reporting_requests,
+                    cache_read_tokens, cache_creation_tokens, last_seen
+             FROM route_cache ORDER BY requests DESC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok(RouteCacheRow {
+                route: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                requests: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                reporting_requests: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                cache_read_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                cache_creation_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                last_seen: row.get::<_, Option<String>>(5)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.filter_map(Result::ok).collect()
     }
 
     /// Insert a user note. Best-effort: errors are swallowed.
@@ -722,5 +868,138 @@ mod tests {
         let (db, _tmp) = open_temp_db(0); // 0 = unlimited
         insert_n_bodies(&db, 5);
         assert_eq!(count_bodies(&db), 5, "expected all 5 rows to remain");
+    }
+
+    // ── NULL-vs-0 cache semantics + route_cache verdict ──────────────────────
+
+    /// Insert a started request row on `target`, then close it with the given
+    /// cache_read value (None = upstream reported no cache field at all).
+    fn log_request(db: &DbLog, seq: u64, target: &str, cache_read: Option<u64>, status: u16) {
+        db.insert_request(&RequestRow {
+            run_id: 1,
+            seq,
+            ts_start: "2026-07-26T00:00:00Z".to_string(),
+            target: Some(target.to_string()),
+            model: Some("claude-opus-4-5".to_string()),
+            ..Default::default()
+        });
+        db.update_request_completion(
+            1,
+            seq,
+            "2026-07-26T00:00:01Z",
+            Some(10),
+            Some(100),
+            Some(20),
+            cache_read,
+            None,
+            Some(status),
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn cache_read_of(db: &DbLog, seq: u64) -> Option<i64> {
+        let conn = db.conn.lock().expect("lock");
+        conn.query_row(
+            "SELECT cache_read_tokens FROM requests WHERE seq = ?1",
+            rusqlite::params![seq as i64],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .expect("query")
+    }
+
+    /// An absent upstream field must land as SQL NULL, a reported zero as 0.
+    /// Collapsing these is the whole bug this schema version exists to fix.
+    #[test]
+    fn absent_cache_field_is_null_reported_zero_is_zero() {
+        let (db, _tmp) = open_temp_db(0);
+        log_request(&db, 1, "silent-route", None, 200);
+        log_request(&db, 2, "honest-route", Some(0), 200);
+        log_request(&db, 3, "caching-route", Some(4096), 200);
+
+        assert_eq!(cache_read_of(&db, 1), None, "absent field must be NULL");
+        assert_eq!(cache_read_of(&db, 2), Some(0), "reported zero must be 0");
+        assert_eq!(cache_read_of(&db, 3), Some(4096));
+    }
+
+    /// The three route states must stay distinguishable through the view.
+    #[test]
+    fn route_cache_distinguishes_silent_from_non_caching() {
+        let (db, _tmp) = open_temp_db(0);
+        log_request(&db, 1, "silent-route", None, 200);
+        log_request(&db, 2, "silent-route", None, 200);
+        log_request(&db, 3, "honest-route", Some(0), 200);
+        log_request(&db, 4, "caching-route", Some(4096), 200);
+
+        let rows = db.route_cache();
+        let find = |name: &str| {
+            rows.iter()
+                .find(|r| r.route == name)
+                .unwrap_or_else(|| panic!("route {name} missing from view"))
+        };
+
+        let silent = find("silent-route");
+        assert!(!silent.reports(), "silent route must not claim to report");
+        assert!(!silent.caches());
+        assert_eq!(silent.requests, 2);
+        assert_eq!(silent.reporting_requests, 0, "no evidence behind the verdict");
+
+        let honest = find("honest-route");
+        assert!(honest.reports(), "a reported zero still counts as reporting");
+        assert!(!honest.caches(), "reports, but does not cache");
+        assert_eq!(honest.reporting_requests, 1);
+
+        let caching = find("caching-route");
+        assert!(caching.reports() && caching.caches());
+        assert_eq!(caching.cache_read_tokens, 4096);
+    }
+
+    /// Failed requests carry no usage; counting them would make an error-prone
+    /// route look silent.
+    #[test]
+    fn route_cache_ignores_failed_requests() {
+        let (db, _tmp) = open_temp_db(0);
+        log_request(&db, 1, "flaky-route", Some(2048), 200);
+        log_request(&db, 2, "flaky-route", None, 500);
+        log_request(&db, 3, "flaky-route", None, 429);
+
+        let rows = db.route_cache();
+        let r = rows.iter().find(|r| r.route == "flaky-route").expect("route");
+        assert_eq!(r.requests, 1, "only the 200 should count");
+        assert_eq!(r.reporting_requests, 1);
+        assert!(r.reports() && r.caches());
+    }
+
+    /// Rows written before the v3 migration stored 0 for absent fields. If the
+    /// view counted them, every legacy route would read as "reports, does not
+    /// cache" — the exact false verdict this epoch exists to prevent.
+    #[test]
+    fn route_cache_excludes_pre_epoch_rows() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.into_temp_path();
+
+        // Simulate a legacy DB: rows already present, and no epoch recorded yet.
+        {
+            let db = DbLog::open(path.as_ref(), 0).expect("open");
+            log_request(&db, 1, "legacy-route", Some(0), 200);
+            let conn = db.conn.lock().expect("lock");
+            conn.execute("DELETE FROM meta WHERE key = 'cache_null_epoch_id'", [])
+                .expect("clear epoch");
+            conn.pragma_update(None, "user_version", 2).expect("downgrade");
+        }
+        // Reopening runs the v3 migration, which stamps the watermark.
+        let db = DbLog::open(path.as_ref(), 0).expect("reopen");
+        assert!(
+            db.route_cache().is_empty(),
+            "pre-epoch rows must not produce a verdict"
+        );
+
+        // New traffic after the migration is visible again.
+        log_request(&db, 2, "fresh-route", Some(0), 200);
+        let rows = db.route_cache();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].route, "fresh-route");
+        assert!(rows[0].reports() && !rows[0].caches());
     }
 }

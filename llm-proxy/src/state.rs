@@ -118,9 +118,12 @@ pub struct TraceEntry {
     /// Output tokens reported in the response (0 until response arrives).
     pub output_tokens: u64,
     /// Tokens served from the prompt cache (cache_read_input_tokens / cached_tokens).
-    pub cache_read_tokens: u64,
-    /// Tokens written to the prompt cache this turn (Anthropic only; 0 for OpenAI).
-    pub cache_creation_tokens: u64,
+    /// `None` = the upstream reported no cache field at all (route is silent about
+    /// caching); `Some(0)` = it reported zero. Never collapse the two.
+    pub cache_read_tokens: Option<u64>,
+    /// Tokens written to the prompt cache this turn (Anthropic only).
+    /// `None` on every OpenAI-compatible route — the concept has no wire field there.
+    pub cache_creation_tokens: Option<u64>,
     /// True if the trim engine was applied to this request.
     pub trim_applied: bool,
     /// Estimated tokens before trimming.
@@ -150,6 +153,9 @@ pub struct TraceEntry {
     pub is_probe: bool,
     /// Client HTTP User-Agent (e.g. "claude-cli/..."). Written at INSERT time.
     pub user_agent: Option<String>,
+    /// Value of the `x-client-run-id` header, if the client sent one. Stitches
+    /// this request to a harness-side session log. Never forwarded upstream.
+    pub client_run_id: Option<String>,
 }
 
 pub const MAX_TRACE_ENTRIES: usize = 500;
@@ -507,6 +513,7 @@ impl AppState {
                         None
                     },
                     user_agent: entry.user_agent.clone(),
+                    client_run_id: entry.client_run_id.clone(),
                 };
                 db.insert_request(&row);
             }
@@ -522,13 +529,16 @@ impl AppState {
     /// Best-effort: silently no-ops if the entry was already evicted.
     /// Also updates the completion columns on proxy.db's `requests` row
     /// (independent of log_level — DB write happens whenever the log is open).
+    ///
+    /// `None` for a cache count means the upstream response had no such field;
+    /// it is stored as NULL, not 0. Pass `Some(0)` only for a reported zero.
     pub fn update_trace_tokens(
         &self,
         req_id: u64,
         input_tokens: u64,
         output_tokens: u64,
-        cache_read_tokens: u64,
-        cache_creation_tokens: u64,
+        cache_read_tokens: Option<u64>,
+        cache_creation_tokens: Option<u64>,
         duration_ms: Option<u64>,
         status: Option<u16>,
         upstream_model: Option<&str>,
@@ -553,8 +563,8 @@ impl AppState {
                     req_id,
                     &crate::providers::now_ms(),
                     duration_ms,
-                    input_tokens,
-                    output_tokens,
+                    Some(input_tokens),
+                    Some(output_tokens),
                     cache_read_tokens,
                     cache_creation_tokens,
                     status,
@@ -567,9 +577,12 @@ impl AppState {
     }
 
     /// Write a completion UPDATE for a request that terminated with an error,
-    /// so the row never stays dangling (ts_end NULL). Tokens are recorded as 0
-    /// on a failed request. Best-effort: errors are swallowed and the write is
-    /// gated on the db being enabled — mirrors [`update_trace_tokens`].
+    /// so the row never stays dangling (ts_end NULL). Input/output are recorded
+    /// as 0 (a failed request bills nothing), but the cache columns are left
+    /// NULL: a request that died never carried usage, and writing 0 would make
+    /// the route look like it reported "no cache" in the `route_cache` verdict.
+    /// Best-effort: errors are swallowed and the write is gated on the db being
+    /// enabled — mirrors [`update_trace_tokens`].
     pub fn mark_request_failed(
         &self,
         req_id: u64,
@@ -596,10 +609,10 @@ impl AppState {
                     req_id,
                     &crate::providers::now_ms(),
                     duration_ms,
-                    0,
-                    0,
-                    0,
-                    0,
+                    Some(0),
+                    Some(0),
+                    None,
+                    None,
                     status,
                     Some(error),
                     Some(error_kind),
@@ -637,6 +650,16 @@ impl AppState {
                     duration_ms,
                 );
             }
+        }
+    }
+
+    /// Per-route cache verdict from the `route_cache` view.
+    /// Empty when the DB log is disabled — an empty list means "unknown",
+    /// never "no route caches".
+    pub fn route_cache(&self) -> Vec<crate::db_log::RouteCacheRow> {
+        match self.db_log.lock() {
+            Ok(guard) => guard.as_ref().map(|db| db.route_cache()).unwrap_or_default(),
+            Err(_) => Vec::new(),
         }
     }
 

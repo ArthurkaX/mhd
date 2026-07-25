@@ -145,12 +145,13 @@ pub async fn send_request(
     }
     // Extract cache info from the original OpenAI response before transforming.
     // OpenAI prompt_tokens = fresh + cached, so we subtract to get each bucket.
+    // A missing prompt_tokens_details object means the upstream said nothing
+    // about caching — that stays None (SQL NULL), never 0.
     let cached_tokens = openai_resp
         .get("usage")
         .and_then(|u| u.get("prompt_tokens_details"))
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|n| n.as_u64())
-        .unwrap_or(0);
+        .and_then(|n| n.as_u64());
     // The actual model the upstream served (may differ from target_model).
     let upstream_model = openai_resp
         .get("model")
@@ -178,13 +179,16 @@ pub async fn send_request(
             .unwrap_or(0);
         // Always close the row on success (zero tokens included) so the
         // InflightGuard's Drop doesn't mislabel a 200 as CANCELLED.
-        let fresh_input = prompt_total.saturating_sub(cached_tokens);
+        // When the cache bucket is unknown, no subtraction happens and
+        // input_tokens carries the whole prompt — flagged as unknown, not zero.
+        // cache_creation is None on every OpenAI route: no such wire field exists.
+        let fresh_input = prompt_total.saturating_sub(cached_tokens.unwrap_or(0));
         state.update_trace_tokens(
             req_id,
             fresh_input,
             output_tokens,
             cached_tokens,
-            0,
+            None,
             Some(started.elapsed().as_millis() as u64),
             status_opt,
             upstream_model.as_deref(),
@@ -232,7 +236,10 @@ struct SseTranslator {
     stop_reason: String,
     output_tokens: u64,
     input_tokens: u64,
-    cached_tokens: u64,
+    /// None until a chunk carries `prompt_tokens_details.cached_tokens`. Stays
+    /// None on upstreams that never report caching, so the request row keeps
+    /// "no cache field seen" distinct from "cache field said zero".
+    cached_tokens: Option<u64>,
     any_tool: bool,
 }
 
@@ -247,7 +254,7 @@ impl SseTranslator {
             stop_reason: "end_turn".to_string(),
             output_tokens: 0,
             input_tokens: 0,
-            cached_tokens: 0,
+            cached_tokens: None,
             any_tool: false,
         }
     }
@@ -274,7 +281,7 @@ impl SseTranslator {
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|x| x.as_u64())
         {
-            self.cached_tokens = x;
+            self.cached_tokens = Some(x);
         }
     }
 
@@ -686,7 +693,7 @@ pub async fn stream_request(
         let prompt_total = translator.input_tokens;
         let out_tok = translator.output_tokens;
         let cache_read = translator.cached_tokens;
-        let fresh_in = prompt_total.saturating_sub(cache_read);
+        let fresh_in = prompt_total.saturating_sub(cache_read.unwrap_or(0));
         let elapsed = started.elapsed().as_millis() as u64;
         if had_error {
             state_for_log.mark_request_failed(
@@ -702,7 +709,7 @@ pub async fn stream_request(
                 fresh_in,
                 out_tok,
                 cache_read,
-                0,
+                None,
                 Some(elapsed),
                 status_opt,
                 None,
@@ -782,16 +789,15 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
         let cache_read = usage
             .get("prompt_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0);
+            .and_then(|n| n.as_u64());
         // Always close the row on success (zero tokens included).
-        let fresh_in = prompt_total.saturating_sub(cache_read);
+        let fresh_in = prompt_total.saturating_sub(cache_read.unwrap_or(0));
         state.update_trace_tokens(
             req_id,
             fresh_in,
             out,
             cache_read,
-            0,
+            None,
             Some(started.elapsed().as_millis() as u64),
             status_opt,
             upstream_model.as_deref(),
@@ -866,7 +872,7 @@ pub async fn stream_raw_openai(
         let mut scan: Vec<u8> = Vec::new();
         let mut in_tok: u64 = 0;
         let mut out_tok: u64 = 0;
-        let mut cached_tok: u64 = 0;
+        let mut cached_tok: Option<u64> = None;
 
         while let Some(item) = byte_stream.next().await {
             let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
@@ -903,7 +909,7 @@ pub async fn stream_raw_openai(
                         .and_then(|d| d.get("cached_tokens"))
                         .and_then(|n| n.as_u64())
                     {
-                        cached_tok = n;
+                        cached_tok = Some(n);
                     }
                 }
             }
@@ -922,13 +928,13 @@ pub async fn stream_raw_openai(
             );
         } else {
             // Success path: always close the row (zero tokens included).
-            let fresh_in = in_tok.saturating_sub(cached_tok);
+            let fresh_in = in_tok.saturating_sub(cached_tok.unwrap_or(0));
             state_for_log.update_trace_tokens(
                 req_id,
                 fresh_in,
                 out_tok,
                 cached_tok,
-                0,
+                None,
                 Some(elapsed),
                 status_opt,
                 None,
