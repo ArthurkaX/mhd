@@ -13,6 +13,7 @@ pub mod editor_state;
 pub mod editor_theme;
 pub mod path;
 pub mod raw;
+pub mod text_cursor;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

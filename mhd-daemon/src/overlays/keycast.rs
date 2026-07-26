@@ -998,7 +998,10 @@ fn pretty_vk(vk: u8) -> String {
         "lbracket" => "[".to_string(),
         "rbracket" => "]".to_string(),
         _ if name.len() == 1 => name.to_ascii_uppercase(),
-        _ if name.starts_with('f') && name[1..].chars().all(|c| c.is_ascii_digit()) => {
+        _ if name.len() > 1
+            && name.starts_with('f')
+            && name[1..].chars().all(|c| c.is_ascii_digit()) =>
+        {
             name.to_ascii_uppercase()
         }
         _ if name.starts_with("numpad") => name.replacen("numpad", "Numpad ", 1),

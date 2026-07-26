@@ -126,7 +126,13 @@ pub fn show(theme: &NativeTheme) {
     }
     *APPLIED_HEAD.lock().unwrap() = None;
 
-    let event = unsafe { CreateEventW(None, false, false, None).unwrap() };
+    let event = match unsafe { CreateEventW(None, false, false, None) } {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("mhd: tune-panel: CreateEventW failed: {e}");
+            return;
+        }
+    };
     let handle = SafeHandle(event);
     let dying = Arc::new(AtomicBool::new(false));
     let theme_clone = theme.clone();

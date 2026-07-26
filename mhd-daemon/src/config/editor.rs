@@ -75,6 +75,7 @@ pub use crate::config::editor_paint::{
 };
 pub use crate::config::editor_head_tune;
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
+use crate::config::text_cursor;
 use crate::config::editor_state::{
     ButtonStyle, HEAD_SWEEP, HeadGroup, ParamEditCreateInfo, ProxyEditField, SettingsHit,
     SettingsPage, SettingsState, UIBinding, UiProvider, head_help_text,
@@ -2821,9 +2822,13 @@ unsafe extern "system" fn settings_wndproc(
                         let is_selected = state.edit_select_start.is_some()
                             && state.edit_select_start.unwrap() != state.edit_cursor;
                         let (sel_start, sel_end) = if let Some(sel) = state.edit_select_start {
-                            (sel.min(state.edit_cursor), sel.max(state.edit_cursor))
+                            // Clamp: every consumer below slices or drains with these.
+                            let a = text_cursor::clamp(&state.edit_text, sel);
+                            let b = text_cursor::clamp(&state.edit_text, state.edit_cursor);
+                            (a.min(b), a.max(b))
                         } else {
-                            (state.edit_cursor, state.edit_cursor)
+                            let c = text_cursor::clamp(&state.edit_text, state.edit_cursor);
+                            (c, c)
                         };
 
                         match vk {
@@ -2909,9 +2914,13 @@ unsafe extern "system" fn settings_wndproc(
                                     state.edit_text.drain(sel_start..sel_end);
                                     state.edit_cursor = sel_start;
                                     state.edit_select_start = None;
-                                } else if state.edit_cursor > 0 {
-                                    state.edit_text.remove(state.edit_cursor - 1);
-                                    state.edit_cursor = state.edit_cursor.saturating_sub(1);
+                                } else {
+                                    let start = text_cursor::prev(&state.edit_text, state.edit_cursor);
+                                    let end = text_cursor::clamp(&state.edit_text, state.edit_cursor);
+                                    if start < end {
+                                        state.edit_text.drain(start..end);
+                                    }
+                                    state.edit_cursor = start;
                                 }
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
@@ -2920,29 +2929,32 @@ unsafe extern "system" fn settings_wndproc(
                                     state.edit_text.drain(sel_start..sel_end);
                                     state.edit_cursor = sel_start;
                                     state.edit_select_start = None;
-                                } else if state.edit_cursor < state.edit_text.len() {
-                                    state.edit_text.remove(state.edit_cursor);
+                                } else {
+                                    let start = text_cursor::clamp(&state.edit_text, state.edit_cursor);
+                                    let end = text_cursor::next(&state.edit_text, start);
+                                    if start < end {
+                                        state.edit_text.drain(start..end);
+                                    }
+                                    state.edit_cursor = start;
                                 }
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x25 /* VK_LEFT */ => {
                                 if shift_down {
                                     if state.edit_select_start.is_none() { state.edit_select_start = Some(state.edit_cursor); }
-                                    if state.edit_cursor > 0 { state.edit_cursor -= 1; }
                                 } else {
                                     state.edit_select_start = None;
-                                    if state.edit_cursor > 0 { state.edit_cursor -= 1; }
                                 }
+                                state.edit_cursor = text_cursor::prev(&state.edit_text, state.edit_cursor);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x27 /* VK_RIGHT */ => {
                                 if shift_down {
                                     if state.edit_select_start.is_none() { state.edit_select_start = Some(state.edit_cursor); }
-                                    if state.edit_cursor < state.edit_text.len() { state.edit_cursor += 1; }
                                 } else {
                                     state.edit_select_start = None;
-                                    if state.edit_cursor < state.edit_text.len() { state.edit_cursor += 1; }
                                 }
+                                state.edit_cursor = text_cursor::next(&state.edit_text, state.edit_cursor);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x24 /* VK_HOME */ => {
@@ -3224,14 +3236,18 @@ unsafe extern "system" fn settings_wndproc(
                             if let Some(sel) = state.edit_select_start
                                 && sel != state.edit_cursor
                             {
-                                let (s, e) =
-                                    (sel.min(state.edit_cursor), sel.max(state.edit_cursor));
+                                let (s, e) = {
+                                    let a = text_cursor::clamp(&state.edit_text, sel);
+                                    let b = text_cursor::clamp(&state.edit_text, state.edit_cursor);
+                                    (a.min(b), a.max(b))
+                                };
                                 state.edit_text.drain(s..e);
                                 state.edit_cursor = s;
                                 state.edit_select_start = None;
                             }
-                            state.edit_text.insert(state.edit_cursor, ch);
-                            state.edit_cursor += 1;
+                            let at = text_cursor::clamp(&state.edit_text, state.edit_cursor);
+                            state.edit_text.insert(at, ch);
+                            state.edit_cursor = at + ch.len_utf8();
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                         return LRESULT(0);

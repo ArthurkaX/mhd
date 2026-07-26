@@ -138,12 +138,13 @@ pub fn editor_action_desc(editor_idx: usize) -> &'static crate::core::action::Ac
     crate::core::action::ALL_ACTIONS
         .iter()
         .find(|d| d.name == name)
-        .unwrap_or_else(|| {
+        .or_else(|| {
             crate::core::action::ALL_ACTIONS
                 .iter()
                 .find(|d| d.name == "quit")
-                .unwrap()
         })
+        .or_else(|| crate::core::action::ALL_ACTIONS.first())
+        .expect("ALL_ACTIONS is a non-empty compile-time table")
 }
 
 /// Get the editor index for an action name, falling back to the "quit" action.
@@ -151,12 +152,8 @@ pub fn editor_index_for_action_name(name: &str) -> usize {
     EDITOR_ACTION_NAMES
         .iter()
         .position(|n| *n == name)
-        .unwrap_or_else(|| {
-            EDITOR_ACTION_NAMES
-                .iter()
-                .position(|n| *n == "quit")
-                .unwrap()
-        })
+        .or_else(|| EDITOR_ACTION_NAMES.iter().position(|n| *n == "quit"))
+        .unwrap_or(0)
 }
 
 // ── Layout sub-structs ─────────────────────────────────────────────

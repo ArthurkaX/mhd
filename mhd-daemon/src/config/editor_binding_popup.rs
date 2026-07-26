@@ -46,6 +46,7 @@ use crate::config::editor_key_combo::{KeyComboEditorState, KeyComboSlot};
 use crate::config::editor_layout::*;
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::ButtonStyle;
+use crate::config::text_cursor;
 use crate::config::editor_theme::{
     draw_button, draw_plain_label, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
     to_utf16_z,
@@ -2159,44 +2160,34 @@ unsafe extern "system" fn binding_popup_wndproc(
                         match wparam.0 as u32 {
                             0x08 => {
                                 // Backspace
-                                if state.param_edit_cursor > 0 {
-                                    let before = state.param_edit_cursor - 1;
-                                    let after = state.param.len() - state.param_edit_cursor;
-                                    let mut s = String::with_capacity(state.param.len() - 1);
-                                    s.push_str(&state.param[..before]);
-                                    if after > 0 {
-                                        s.push_str(&state.param[state.param_edit_cursor..]);
-                                    }
-                                    state.param = s;
-                                    state.param_edit_cursor -= 1;
+                                let start = text_cursor::prev(&state.param, state.param_edit_cursor);
+                                let end = text_cursor::clamp(&state.param, state.param_edit_cursor);
+                                if start < end {
+                                    state.param.drain(start..end);
+                                    state.param_edit_cursor = start;
                                 }
                                 paint_binding_popup(hwnd, state_ptr);
                             }
                             0x2E => {
                                 // Delete
-                                if state.param_edit_cursor < state.param.len() {
-                                    let after = state.param.len() - state.param_edit_cursor - 1;
-                                    let mut s = String::with_capacity(state.param.len() - 1);
-                                    s.push_str(&state.param[..state.param_edit_cursor]);
-                                    if after > 0 {
-                                        s.push_str(&state.param[state.param_edit_cursor + 1..]);
-                                    }
-                                    state.param = s;
+                                let start = text_cursor::clamp(&state.param, state.param_edit_cursor);
+                                let end = text_cursor::next(&state.param, start);
+                                if start < end {
+                                    state.param.drain(start..end);
                                 }
+                                state.param_edit_cursor = start;
                                 paint_binding_popup(hwnd, state_ptr);
                             }
                             0x25 => {
                                 // Left arrow
-                                if state.param_edit_cursor > 0 {
-                                    state.param_edit_cursor -= 1;
-                                }
+                                state.param_edit_cursor =
+                                    text_cursor::prev(&state.param, state.param_edit_cursor);
                                 paint_binding_popup(hwnd, state_ptr);
                             }
                             0x27 => {
                                 // Right arrow
-                                if state.param_edit_cursor < state.param.len() {
-                                    state.param_edit_cursor += 1;
-                                }
+                                state.param_edit_cursor =
+                                    text_cursor::next(&state.param, state.param_edit_cursor);
                                 paint_binding_popup(hwnd, state_ptr);
                             }
                             0x0D => {
@@ -2290,12 +2281,9 @@ unsafe extern "system" fn binding_popup_wndproc(
                         if allow {
                             // Clear any previous save error when user starts typing
                             state.param_save_error = None;
-                            let mut s = String::with_capacity(state.param.len() + 1);
-                            s.push_str(&state.param[..state.param_edit_cursor]);
-                            s.push(ch);
-                            s.push_str(&state.param[state.param_edit_cursor..]);
-                            state.param = s;
-                            state.param_edit_cursor += 1;
+                            let at = text_cursor::clamp(&state.param, state.param_edit_cursor);
+                            state.param.insert(at, ch);
+                            state.param_edit_cursor = at + ch.len_utf8();
                         }
                         paint_binding_popup(hwnd, state_ptr);
                     } else if state.param_editor.dropdown.is_open {
