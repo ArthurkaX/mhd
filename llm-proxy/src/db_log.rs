@@ -166,13 +166,13 @@ impl DbLog {
     /// (0 = unlimited).
     pub fn open(db_path: &Path, corpus_max_rows: usize) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
-        // Read schema version BEFORE the batch so we can detect old DBs
-        // that need ALTER TABLE migration.
-        let old_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        // NOTE: user_version is bumped at the END of this function, once the schema and
+        // the migrations below have actually succeeded. It used to be the first statement
+        // of the batch, which committed the new version even when a later statement failed
+        // -- and since the migrations are what repair such a database, the version bump
+        // permanently locked it out of its own repair path. Never bump it up front.
         conn.execute_batch(
-            "PRAGMA user_version = 4;
-
-            -- meta: small key/value store for schema watermarks.
+            "-- meta: small key/value store for schema watermarks.
             -- `cache_null_epoch_id` = the highest `requests.id` that predates
             -- schema v3. Rows at or below it stored 0 for the cache columns
             -- regardless of whether the upstream reported anything, so their
@@ -267,8 +267,10 @@ impl DbLog {
             CREATE INDEX IF NOT EXISTS idx_requests_run_seq ON requests(run_id, seq);
             CREATE INDEX IF NOT EXISTS idx_requests_model   ON requests(model);
             CREATE INDEX IF NOT EXISTS idx_requests_tier    ON requests(tier);
-            CREATE INDEX IF NOT EXISTS idx_requests_client_run
-                ON requests(client_run_id, target, ts_start);
+            -- idx_requests_client_run is NOT here: it indexes client_run_id, which an
+            -- existing database only gains from the ALTER below (CREATE TABLE IF NOT
+            -- EXISTS is a no-op there). Indexing a column before it exists aborted this
+            -- whole batch. It is created after the migrations instead.
 
             CREATE TABLE IF NOT EXISTS notes (
                 id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -361,45 +363,48 @@ impl DbLog {
                       WHERE key = 'cache_null_epoch_id'), 0)
             GROUP BY 1;",
         )?;
-        // Migration: add user_agent / upstream_model columns to pre-existing DBs.
-        // Fresh DBs already have them from CREATE TABLE; old DBs (version < 2) need ALTERs.
-        // `let _ =` tolerates "duplicate column" if the CREATE TABLE already added them.
-        if old_version < 2 {
-            let _ = conn.execute("ALTER TABLE requests ADD COLUMN user_agent TEXT", []);
-            let _ = conn.execute("ALTER TABLE requests ADD COLUMN upstream_model TEXT", []);
-        }
-        // Migration to v3: client_run_id column + the NULL-vs-0 epoch watermark.
+        // Column migrations, run UNCONDITIONALLY rather than gated on user_version.
         //
-        // Every row that already exists stored 0 for the cache columns whether or
-        // not the upstream reported them, so the distinction cannot be recovered.
-        // We do NOT rewrite them to NULL -- past measurement runs weight real
-        // cache_read values into quota cost and that history stays intact. Instead
-        // we record where the honest data starts and let `route_cache` filter on it.
-        if old_version < 3 {
-            let _ = conn.execute("ALTER TABLE requests ADD COLUMN client_run_id TEXT", []);
-            let _ = conn.execute(
-                "INSERT OR IGNORE INTO meta (key, value)
-                 SELECT 'cache_null_epoch_id', cast(coalesce(max(id), 0) AS TEXT) FROM requests",
-                [],
-            );
-            conn.pragma_update(None, "user_version", 3)?;
+        // Version gating assumes the version can only be ahead of the schema if the
+        // migration really ran. That assumption broke: a database exists in the wild with
+        // user_version = 4 and none of the v3/v4 columns, because the version was committed
+        // by a batch that then failed. Gating on the version would skip the very ALTERs
+        // that fix it, forever. Each ALTER is `let _ =` and a duplicate column is a
+        // harmless error, so re-running them every open costs a few microseconds and makes
+        // the schema self-healing regardless of what the version claims.
+        for stmt in [
+            "ALTER TABLE requests ADD COLUMN user_agent TEXT",
+            "ALTER TABLE requests ADD COLUMN upstream_model TEXT",
+            "ALTER TABLE requests ADD COLUMN client_run_id TEXT",
+            "ALTER TABLE requests ADD COLUMN msg_digest TEXT",
+            "ALTER TABLE requests ADD COLUMN msg_total_chars INTEGER",
+            "ALTER TABLE requests ADD COLUMN prefix_shared_chars INTEGER",
+            "ALTER TABLE requests ADD COLUMN prefix_shared_chars_sent INTEGER",
+        ] {
+            let _ = conn.execute(stmt, []);
         }
-        // Migration to v4: prefix-shape columns. Purely additive -- existing rows
-        // stay NULL, which is the correct reading (never measured), and the
-        // metric is only comparable within a single client session anyway.
-        if old_version < 4 {
-            let _ = conn.execute("ALTER TABLE requests ADD COLUMN msg_digest TEXT", []);
-            let _ = conn.execute("ALTER TABLE requests ADD COLUMN msg_total_chars INTEGER", []);
-            let _ = conn.execute(
-                "ALTER TABLE requests ADD COLUMN prefix_shared_chars INTEGER",
-                [],
-            );
-            let _ = conn.execute(
-                "ALTER TABLE requests ADD COLUMN prefix_shared_chars_sent INTEGER",
-                [],
-            );
-            conn.pragma_update(None, "user_version", 4)?;
+        // The NULL-vs-0 epoch watermark. Every row written before the cache columns learned
+        // to store NULL kept 0 whether or not the upstream reported anything, so the
+        // distinction is unrecoverable for them. We do NOT rewrite that history -- past
+        // measurement runs weight real cache_read values into quota cost. We record where
+        // the honest data starts and let `route_cache` filter on it. INSERT OR IGNORE makes
+        // this a one-shot: once set, later opens leave the watermark alone.
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value)
+             SELECT 'cache_null_epoch_id', cast(coalesce(max(id), 0) AS TEXT) FROM requests",
+            [],
+        );
+        // Indexes over migrated columns, after the ALTERs and best-effort: a failure here
+        // costs a slow query, never the whole log. This is what the batch got wrong.
+        if let Err(e) = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_requests_client_run
+             ON requests(client_run_id, target, ts_start)",
+            [],
+        ) {
+            eprintln!("mhd: proxy.db: idx_requests_client_run not created: {e}");
         }
+        // Only now, with the schema actually in place, record the version.
+        conn.pragma_update(None, "user_version", 4)?;
         Ok(Self {
             conn: Mutex::new(conn),
             corpus_max_rows,
@@ -876,6 +881,74 @@ mod tests {
     fn decompress_garbage_returns_none() {
         let garbage: &[u8] = b"\xDE\xAD\xBE\xEF\xFF\xFE garbage that is not zstd";
         assert!(decompress_body(garbage).is_none(), "expected None for garbage bytes");
+    }
+
+    // ── schema migration / self-healing ──────────────────────────────────────
+
+    /// A database that claims to be fully migrated but is not must still repair
+    /// itself. This exact state existed in the wild: `PRAGMA user_version = 4`
+    /// was the first statement of the schema batch, so it committed even though a
+    /// later statement (an index over a not-yet-added column) aborted the batch.
+    /// `open` then returned Err on every start, logging stayed off, and because
+    /// the migrations were gated on `user_version` they could never run again.
+    #[test]
+    fn open_repairs_a_db_whose_version_lies_about_its_schema() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.into_temp_path();
+        // Forge the wedged state: pre-v3 `requests`, but version already at 4.
+        {
+            let conn = Connection::open(&path).expect("create");
+            conn.execute_batch(
+                "CREATE TABLE requests (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     run_id INTEGER NOT NULL, seq INTEGER NOT NULL,
+                     ts_start TEXT NOT NULL, ts_end TEXT, duration_ms INTEGER,
+                     tier TEXT, effective_tier TEXT, target TEXT, model TEXT,
+                     downgraded INTEGER, downgrade_reason TEXT,
+                     trim_applied INTEGER, trim_preset TEXT, trim_config TEXT,
+                     trim_tokens_before INTEGER, trim_tokens_after INTEGER,
+                     trim_stages TEXT, input_tokens INTEGER, output_tokens INTEGER,
+                     cache_read_tokens INTEGER, cache_creation_tokens INTEGER,
+                     status INTEGER, error TEXT, error_kind TEXT,
+                     user_agent TEXT, upstream_model TEXT);
+                 PRAGMA user_version = 4;",
+            )
+            .expect("forge");
+        }
+        let db = DbLog::open(path.as_ref(), 0).expect("open must not fail on a wedged db");
+        {
+            let guard = db.conn.lock().unwrap();
+            for col in [
+                "client_run_id",
+                "msg_digest",
+                "msg_total_chars",
+                "prefix_shared_chars",
+                "prefix_shared_chars_sent",
+            ] {
+                let n: i64 = guard
+                    .query_row(
+                        "SELECT count(*) FROM pragma_table_info('requests') WHERE name = ?1",
+                        [col],
+                        |r| r.get(0),
+                    )
+                    .expect("pragma_table_info");
+                assert_eq!(n, 1, "migration did not add column {col}");
+            }
+        }
+        // The point of all of it: writes actually land again.
+        db.insert_request(&RequestRow {
+            run_id: 1,
+            seq: 1,
+            ts_start: "2026-07-26T06:00:00Z".into(),
+            target: Some("native".into()),
+            model: Some("claude-opus-5".into()),
+            ..Default::default()
+        });
+        let guard = db.conn.lock().unwrap();
+        let n: i64 = guard
+            .query_row("SELECT count(*) FROM requests", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 1, "insert_request silently dropped the row");
     }
 
     // ── corpus_max_rows prune tests ───────────────────────────────────────────

@@ -438,7 +438,14 @@ impl AppState {
                         *guard = Some(db);
                     }
                     Err(e) => {
-                        eprintln!("mhd: failed to open proxy.db: {e}");
+                        // Loud on purpose. When this fired the proxy kept serving
+                        // traffic with logging silently off, and the loss only
+                        // surfaced days later as a flat line on the dashboard.
+                        eprintln!(
+                            "mhd: proxy.db FAILED TO OPEN: {e}\n\
+                             mhd: request/quota logging is DISABLED for this run \
+                             -- the dashboard will show no new data."
+                        );
                     }
                 }
             }
