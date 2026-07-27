@@ -79,6 +79,8 @@ pub enum Action {
     ShowLlmModels,
     /// Show the real-time proxy trace window.
     ShowProxyTrace,
+    /// Show the LLM Monitor window (overview quota, activity, context trim).
+    ShowLlmActivity,
     /// Toggle the llm-proxy process on/off.
     ToggleLlmProxy,
     /// Capture the foreground monitor, send to a vision LLM, copy result to clipboard.
@@ -187,6 +189,7 @@ impl Action {
             "show_cpu_panel" => Ok(Action::ShowCpuPanel),
             "show_llm_models" => Ok(Action::ShowLlmModels),
             "show_proxy_trace" => Ok(Action::ShowProxyTrace),
+            "show_llm_activity" => Ok(Action::ShowLlmActivity),
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
             "power_actions" => Ok(Action::PowerActions),
             "vision_screenshot" => Ok(Action::VisionScreenshot),
@@ -356,6 +359,7 @@ impl Action {
             Action::ShowCpuPanel => "show_cpu_panel",
             Action::ShowLlmModels => "show_llm_models",
             Action::ShowProxyTrace => "show_proxy_trace",
+            Action::ShowLlmActivity => "show_llm_activity",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
             Action::VisionScreenshot => "vision_screenshot",
             Action::VisionSnip => "vision_snip",
@@ -414,6 +418,7 @@ impl Action {
             | Action::ShowCpuPanel
             | Action::ShowLlmModels
             | Action::ShowProxyTrace
+            | Action::ShowLlmActivity
             | Action::ToggleLlmProxy
             | Action::Pomodoro
             | Action::ToggleKeycast
@@ -740,6 +745,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "show_proxy_trace",
         label: "Proxy Trace",
         description: "Open the proxy routing trace window.",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "show_llm_activity",
+        label: "LLM Activity",
+        description: "Open the LLM usage monitor (quota, activity, context trim).",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -1102,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(28)); // quit index in ALL_ACTIONS (not EDITOR_ACTION_NAMES)
+        assert_eq!(find_action_index("quit"), Some(29)); // quit index in ALL_ACTIONS
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

@@ -1,0 +1,303 @@
+//! LLM Monitor — tabbed window for observing LLM usage and agent activity.
+//!
+//! Tabs: Overview (quota + trajectory), Activity (model calls), Context Trim.
+
+use eframe::egui;
+use mhd_telemetry::codex;
+use mhd_telemetry::db::{self, TelemetryDb};
+use mhd_telemetry::import;
+use mhd_telemetry::query::{self, ActivityRow, QuotaSample, SlopeProjection, TokenSummary};
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use crate::activity;
+use crate::overview;
+
+/// Tabs in the monitor window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Overview,
+    Activity,
+    ContextTrim,
+}
+
+/// State for the complete LLM Monitor window.
+pub struct MonitorApp {
+    // ── Tabs ──
+    active_tab: Tab,
+
+    // ── Controls ──
+    provider: String,
+    project_filter: Option<String>,
+    period: Period,
+    last_refresh: Instant,
+    status_message: String,
+
+    // ── Telemetry ──
+    db: Option<TelemetryDb>,
+    codex_home: PathBuf,
+    import_result: Option<import::ImportResult>,
+    latest_sample: Option<i64>,
+
+    // ── Overview data ──
+    quota_5h: Option<query::Utilization>,
+    quota_7d: Option<query::Utilization>,
+    slope_proj_5h: SlopeProjection,
+    slope_proj_7d: SlopeProjection,
+    token_summary: TokenSummary,
+    quota_history: Vec<QuotaSample>,
+
+    // ── Activity data ──
+    activity_rows: Vec<ActivityRow>,
+    projects: Vec<String>,
+
+    // ── Import thread ──
+    #[allow(dead_code)]
+    import_tx: mpsc::Sender<import::ImportResult>,
+    #[allow(dead_code)]
+    import_rx: mpsc::Receiver<import::ImportResult>,
+}
+
+/// Time period selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Period {
+    SixHours,
+    TwentyFourHours,
+    SevenDays,
+    CurrentCycle,
+    All,
+}
+
+impl Period {
+    fn label(&self) -> &str {
+        match self {
+            Period::SixHours => "6h",
+            Period::TwentyFourHours => "24h",
+            Period::SevenDays => "7d",
+            Period::CurrentCycle => "Current cycle",
+            Period::All => "All",
+        }
+    }
+
+    fn since_epoch(&self) -> i64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        match self {
+            Period::SixHours => now - 6 * 3600,
+            Period::TwentyFourHours => now - 24 * 3600,
+            Period::SevenDays => now - 7 * 24 * 3600,
+            Period::CurrentCycle | Period::All => 0,
+        }
+    }
+}
+
+impl MonitorApp {
+    /// Create a new monitor app. Initialises the telemetry DB and runs the first import.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
+        // ── Telemetry DB ──
+        let db_path = db::default_db_path();
+        let db = db::open_or_create(&db_path).ok();
+
+        let codex_home = codex::codex_home();
+
+        // ── Import channel ──
+        let (import_tx, import_rx) = mpsc::channel::<import::ImportResult>();
+
+        let mut app = MonitorApp {
+            active_tab: Tab::Overview,
+            provider: "codex".to_string(),
+            project_filter: None,
+            period: Period::CurrentCycle,
+            last_refresh: Instant::now(),
+            status_message: String::new(),
+            db,
+            codex_home,
+            import_result: None,
+            latest_sample: None,
+            quota_5h: None,
+            quota_7d: None,
+            slope_proj_5h: SlopeProjection::default(),
+            slope_proj_7d: SlopeProjection::default(),
+            token_summary: TokenSummary::default(),
+            quota_history: Vec::new(),
+            activity_rows: Vec::new(),
+            projects: Vec::new(),
+            import_tx,
+            import_rx,
+        };
+
+        app.refresh_data();
+        app
+    }
+
+    /// Refresh all data from the telemetry DB.
+    fn refresh_data(&mut self) {
+        let Some(ref db) = self.db else {
+            self.status_message = "telemetry.db not available".into();
+            return;
+        };
+
+        let since = self.period.since_epoch();
+
+        // Projects
+        self.projects = query::list_projects(db);
+
+        // Token summary
+        self.token_summary = query::token_summary(db, since);
+
+        // Quota
+        self.quota_5h = query::current_utilization(db, &self.provider, "5h");
+        self.quota_7d = query::current_utilization(db, &self.provider, "7d");
+
+        // Slopes
+        self.slope_proj_5h = query::slope_and_projection(db, &self.provider, "5h");
+        self.slope_proj_7d = query::slope_and_projection(db, &self.provider, "7d");
+
+        // Quota history for chart
+        self.quota_history = query::quota_samples(db, &self.provider, "5h", since);
+
+        // Activity rows
+        self.activity_rows = query::model_calls_list(db, since, self.project_filter.as_deref(), 500, 0);
+
+        // Latest sample time
+        self.latest_sample = query::latest_sample_time(db);
+
+        // Status
+        self.status_message = if self.latest_sample.is_some() {
+            format!("Last sample: {}", relative_time(self.latest_sample.unwrap()))
+        } else {
+            "No data imported yet".into()
+        };
+    }
+
+    /// Run an incremental import pass.
+    fn run_import(&mut self) {
+        let Some(ref mut db) = self.db else { return };
+        let result = import::run_import(db, &self.codex_home);
+        self.import_result = Some(result);
+        self.refresh_data();
+    }
+}
+
+impl eframe::App for MonitorApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title("LLM Monitor".to_string()));
+
+        // ── Periodic refresh ──
+        if self.last_refresh.elapsed() >= Duration::from_secs(5) {
+            self.run_import();
+            self.last_refresh = Instant::now();
+        }
+
+        // ── Top bar: global controls ──
+        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Provider:");
+                // For V1 only "codex" is available
+                if ui.selectable_label(self.provider == "codex", "Codex").clicked() {
+                    self.provider = "codex".to_string();
+                    self.refresh_data();
+                }
+
+                ui.separator();
+
+                ui.label("Project:");
+                if ui.selectable_label(self.project_filter.is_none(), "All").clicked() {
+                    self.project_filter = None;
+                    self.refresh_data();
+                }
+                let projects_clone = self.projects.clone();
+                for p in &projects_clone {
+                    let is_selected = self.project_filter.as_deref() == Some(p);
+                    if ui.selectable_label(is_selected, p).clicked() {
+                        self.project_filter = Some(p.clone());
+                        self.refresh_data();
+                    }
+                }
+
+                ui.separator();
+
+                ui.label("Period:");
+                for p in &[Period::SixHours, Period::TwentyFourHours, Period::SevenDays, Period::CurrentCycle, Period::All] {
+                    if ui.selectable_label(self.period == *p, p.label()).clicked() {
+                        self.period = *p;
+                        self.refresh_data();
+                    }
+                }
+
+                ui.separator();
+
+                if ui.button("Refresh").clicked() {
+                    self.run_import();
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(&self.status_message);
+                });
+            });
+        });
+
+        // ── Tab bar ──
+        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.active_tab, Tab::Overview, "Overview");
+                ui.selectable_value(&mut self.active_tab, Tab::Activity, "Activity");
+                ui.selectable_value(&mut self.active_tab, Tab::ContextTrim, "Context Trim");
+            });
+        });
+
+        // ── Tab content ──
+        egui::CentralPanel::default().show(ctx, |ui| {
+            match self.active_tab {
+                Tab::Overview => {
+                    overview::show_overview(
+                        ui,
+                        &self.quota_5h,
+                        &self.quota_7d,
+                        &self.slope_proj_5h,
+                        &self.slope_proj_7d,
+                        &self.token_summary,
+                        &self.quota_history,
+                        &self.import_result,
+                        ctx,
+                    );
+                }
+                Tab::Activity => {
+                    activity::show_activity(ui, &self.activity_rows, &self.projects, &self.project_filter);
+                }
+                Tab::ContextTrim => {
+                    // Embedded context trim — currently shown as placeholder
+                    // The standalone mode still works via the --db, --id, --run-id, --seq flags
+                    ui.heading("Context Trim");
+                    ui.label("Open a request from the proxy trace, or launch with --db / --id / --run-id --seq flags.");
+                }
+            }
+        });
+
+        // Request repaint every 5s for periodic refresh
+        ctx.request_repaint_after(Duration::from_secs(5));
+    }
+}
+
+/// Format a unix timestamp as a relative time string.
+pub(crate) fn relative_time(ts: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - ts;
+    if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{}h {}m ago", delta / 3600, (delta % 3600) / 60)
+    } else {
+        format!("{}d ago", delta / 86400)
+    }
+}

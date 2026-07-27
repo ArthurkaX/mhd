@@ -42,6 +42,7 @@ const CMD_NOTE: usize = 5;
 const CMD_DRAW: usize = 6;
 const CMD_CPU_PANEL: usize = 10;
 const CMD_LLM_MODELS: usize = 11;
+const CMD_LLM_ACTIVITY: usize = 17;
 const CMD_PROXY_TRACE: usize = 12;
 const CMD_LLM_PROXY_TOGGLE: usize = 13;
 const CMD_KEYCAST_TOGGLE: usize = 14;
@@ -66,6 +67,17 @@ fn state_ref() -> Option<&'static TrayState> {
 }
 
 // ── Icon loading ───────────────────────────────────────────────────────
+
+/// Launch the LLM Monitor (mhd-inspector --monitor) as a separate process.
+fn launch_llm_monitor() {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("mhd-inspector.exe")));
+    let Some(exe) = exe else { return };
+    let _ = std::process::Command::new(exe)
+        .arg("--monitor")
+        .spawn();
+}
 
 pub(crate) fn load_tray_icon() -> HICON {
     unsafe {
@@ -177,6 +189,12 @@ fn show_menu(hwnd: HWND) {
             MF_BYPOSITION | MF_STRING,
             CMD_LLM_MODELS,
             "LLM Models",
+        );
+        item(
+            menu,
+            MF_BYPOSITION | MF_STRING,
+            CMD_LLM_ACTIVITY,
+            "LLM Activity",
         );
         item(
             menu,
@@ -363,6 +381,9 @@ unsafe extern "system" fn wnd_proc(
                             state.app.theme(),
                             state.app.llm_proxy_config(),
                         );
+                    }
+                    CMD_LLM_ACTIVITY => {
+                        launch_llm_monitor();
                     }
                     CMD_PROXY_TRACE => {
                         crate::overlays::proxy_trace::show(&state.app.theme());

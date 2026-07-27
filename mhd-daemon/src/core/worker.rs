@@ -245,6 +245,14 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ShowProxyTrace => {
             crate::overlays::proxy_trace::show(&handle.theme());
         }
+        Action::ShowLlmActivity => {
+            let exe = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("mhd-inspector.exe")));
+            if let Some(exe) = exe {
+                let _ = std::process::Command::new(exe).arg("--monitor").spawn();
+            }
+        }
         Action::ToggleLlmProxy => {
             let cfg = handle.llm_proxy_config();
             let on = crate::llm_proxy::toggle(&cfg);
