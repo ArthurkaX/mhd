@@ -6,6 +6,7 @@ use eframe::egui;
 use mhd_telemetry::codex;
 use mhd_telemetry::db::{self, TelemetryDb};
 use mhd_telemetry::import;
+use mhd_telemetry::live;
 use mhd_telemetry::query::{self, ActivityRow, QuotaSample, SlopeProjection, TokenSummary};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -47,6 +48,8 @@ pub struct MonitorApp {
     slope_proj_7d: SlopeProjection,
     token_summary: TokenSummary,
     quota_history: Vec<QuotaSample>,
+    live_quota: Option<live::LiveQuota>,
+    last_live_refresh: Instant,
 
     // ── Activity data ──
     activity_rows: Vec<ActivityRow>,
@@ -112,7 +115,7 @@ impl MonitorApp {
             active_tab: Tab::Overview,
             provider: "codex".to_string(),
             project_filter: None,
-            period: Period::CurrentCycle,
+            period: Period::All,
             last_refresh: Instant::now(),
             status_message: String::new(),
             db,
@@ -125,6 +128,8 @@ impl MonitorApp {
             slope_proj_7d: SlopeProjection::default(),
             token_summary: TokenSummary::default(),
             quota_history: Vec::new(),
+            live_quota: None,
+            last_live_refresh: Instant::now() - Duration::from_secs(60), // prompt first refresh
             activity_rows: Vec::new(),
             projects: Vec::new(),
             import_tx,
@@ -150,9 +155,14 @@ impl MonitorApp {
         // Token summary
         self.token_summary = query::token_summary(db, since);
 
-        // Quota
-        self.quota_5h = query::current_utilization(db, &self.provider, "5h");
-        self.quota_7d = query::current_utilization(db, &self.provider, "7d");
+        // Quota — prefer live data, fall back to DB
+        if let Some(ref lq) = self.live_quota {
+            self.quota_5h = lq.session.clone().map(query::Utilization::from);
+            self.quota_7d = lq.weekly.clone().map(query::Utilization::from);
+        } else {
+            self.quota_5h = query::current_utilization(db, &self.provider, "5h");
+            self.quota_7d = query::current_utilization(db, &self.provider, "7d");
+        }
 
         // Slopes
         self.slope_proj_5h = query::slope_and_projection(db, &self.provider, "5h");
@@ -167,12 +177,27 @@ impl MonitorApp {
         // Latest sample time
         self.latest_sample = query::latest_sample_time(db);
 
-        // Status
-        self.status_message = if self.latest_sample.is_some() {
+        // Status — prefer live data info when available
+        self.status_message = if let Some(ref lq) = self.live_quota {
+            let plan = lq.plan_type.as_deref().unwrap_or("Codex");
+            let session = lq.session.as_ref()
+                .map(|u| format!("5h {:.0}%", u.used_percent))
+                .unwrap_or_default();
+            let weekly = lq.weekly.as_ref()
+                .map(|u| format!("7d {:.0}%", u.used_percent))
+                .unwrap_or_default();
+            format!("{plan} · {session} · {weekly}")
+        } else if self.latest_sample.is_some() {
             format!("Last sample: {}", relative_time(self.latest_sample.unwrap()))
         } else {
             "No data imported yet".into()
         };
+    }
+
+    /// Fetch live quota from the Codex backend API.
+    fn refresh_live_quota(&mut self) {
+        self.live_quota = live::fetch_live_quota(&self.codex_home).ok();
+        self.last_live_refresh = Instant::now();
     }
 
     /// Run an incremental import pass.
@@ -188,10 +213,15 @@ impl eframe::App for MonitorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title("LLM Monitor".to_string()));
 
-        // ── Periodic refresh ──
+        // ── Periodic refresh (import) ──
         if self.last_refresh.elapsed() >= Duration::from_secs(5) {
             self.run_import();
             self.last_refresh = Instant::now();
+        }
+
+        // ── Live quota refresh (30s interval) ──
+        if self.last_live_refresh.elapsed() >= Duration::from_secs(30) {
+            self.refresh_live_quota();
         }
 
         // ── Top bar: global controls ──
@@ -264,6 +294,7 @@ impl eframe::App for MonitorApp {
                         &self.token_summary,
                         &self.quota_history,
                         &self.import_result,
+                        self.live_quota.as_ref(),
                         ctx,
                     );
                 }

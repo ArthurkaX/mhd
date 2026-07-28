@@ -260,6 +260,12 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 println!("mhd: llm-proxy {}", if on { "started" } else { "stopped" });
             }
         }
+        Action::ToggleCodexWatcher => {
+            let on = crate::core::codex_watcher::toggle();
+            if !handle.quiet() {
+                println!("mhd: codex-watcher {}", if on { "started" } else { "stopped" });
+            }
+        }
         Action::VisionScreenshot => {
             crate::core::vision_screenshot::execute(handle);
         }

@@ -61,6 +61,19 @@ pub struct LlmModel {
     pub tags: Vec<String>,
 }
 
+/// Validated codex watcher config (from TOML).
+#[derive(Debug, Clone)]
+pub struct CodexWatcherConfig {
+    /// Enable the background Codex telemetry watcher.
+    pub enabled: bool,
+}
+
+impl Default for CodexWatcherConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
 /// Validated LLM proxy config (loaded from JSON files).
 #[derive(Debug, Clone)]
 pub struct LlmProxyConfig {
@@ -213,6 +226,8 @@ pub struct AppConfig {
     pub power_plans: Vec<String>,
     /// LLM proxy integration config.
     pub llm_proxy: LlmProxyConfig,
+    /// Codex telemetry watcher config.
+    pub codex_watcher: CodexWatcherConfig,
 }
 
 impl AppConfig {
@@ -367,6 +382,13 @@ impl AppConfig {
             // config directory. The old `[llm_proxy]` TOML section is migrated
             // automatically on first access.
             llm_proxy: Self::load_llm_proxy_from_json(content),
+            codex_watcher: CodexWatcherConfig {
+                enabled: raw
+                    .codex_watcher
+                    .as_ref()
+                    .and_then(|c| c.enabled)
+                    .unwrap_or(false),
+            },
         })
     }
 
@@ -779,6 +801,7 @@ impl AppConfig {
     pub fn llm_proxy(&self) -> &LlmProxyConfig {
         &self.llm_proxy
     }
+
 }
 
 fn parse_keycast_config(raw: Option<&self::raw::RawKeycast>) -> KeycastConfig {

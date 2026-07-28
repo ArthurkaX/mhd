@@ -68,28 +68,38 @@ fn import_source(
     let canonical = src.canonical_path.to_string_lossy().to_string();
     let provider = "codex";
 
-    let (cursor_offset, cursor_size) = {
+    let (cursor_offset, cursor_size, cursor_has_data) = {
         let conn = db.conn();
-        let mut stmt = conn.prepare(
-            "SELECT last_offset, last_size FROM sources WHERE canonical_path = ?1"
-        ).or_else(|_| {
-            // Table may not exist if migration already ran but we're re-querying
-            conn.prepare("SELECT last_offset, last_size FROM sources WHERE canonical_path = ?1")
-        })?;
 
-        stmt.query_row(params![&canonical], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-        }).unwrap_or((0, 0))
+        let (offset, size): (i64, i64) = conn.prepare(
+            "SELECT last_offset, last_size FROM sources WHERE canonical_path = ?1"
+        ).and_then(|mut stmt| {
+            stmt.query_row(params![&canonical], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+        }).unwrap_or((0, 0));
+
+        // Check if sessions exist for this source (determines cursor validity)
+        let has_data: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sessions
+             WHERE source_id = (SELECT id FROM sources WHERE canonical_path = ?1)",
+            params![&canonical],
+            |r| r.get::<_, i64>(0),
+        ).map(|c| c > 0).unwrap_or(false);
+
+        (offset, size, has_data)
     };
 
-    // ── Skip if unchanged ──
-    if cursor_size as u64 == src.len && cursor_offset > 0 {
+    // ── Determine start offset ──
+    // Three cases:
+    //   1. File fully consumed AND data exists → skip entirely
+    //   2. File truncated or cursor stale (no data) → restart from 0
+    //   3. Normal resume → start from cursor_offset
+    if cursor_size as u64 == src.len && cursor_offset > 0 && cursor_has_data {
         return Ok(());
     }
 
-    // ── Handle truncation or identity change ──
-    let start_offset = if src.len < cursor_size as u64 {
-        // File was truncated or rotated — restart
+    let start_offset = if cursor_size as u64 > src.len || (!cursor_has_data && cursor_offset > 0) {
         0u64
     } else {
         cursor_offset as u64

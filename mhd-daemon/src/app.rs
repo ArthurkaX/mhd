@@ -227,6 +227,7 @@ impl App {
 
         let native_theme = crate::native_theme::load_theme(app_config.theme.as_deref());
 
+        let codex_watcher_enabled = app_config.codex_watcher.enabled;
         let running = Arc::new(AtomicBool::new(true));
         let hook_thread_id = Arc::new(AtomicU32::new(0));
         let config = Arc::new(Mutex::new(app_config));
@@ -256,6 +257,11 @@ impl App {
                 "mhd: loaded bindings: {}",
                 config.lock().unwrap().active_bindings().len()
             );
+        }
+
+        // Auto-start codex watcher if enabled in config
+        if codex_watcher_enabled {
+            crate::core::codex_watcher::start();
         }
 
         Ok(App {

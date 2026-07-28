@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use mhd_telemetry::import::ImportResult;
+use mhd_telemetry::live;
 use mhd_telemetry::query::{QuotaSample, SlopeProjection, TokenSummary, Utilization};
 
 use crate::app::relative_time;
@@ -10,12 +11,13 @@ use crate::app::relative_time;
 pub fn show_overview(
     ui: &mut egui::Ui,
     quota_5h: &Option<Utilization>,
-    _quota_7d: &Option<Utilization>,
+    quota_7d: &Option<Utilization>,
     slope_5h: &SlopeProjection,
-    _slope_7d: &SlopeProjection,
+    slope_7d: &SlopeProjection,
     tokens: &TokenSummary,
     history: &[QuotaSample],
     import: &Option<ImportResult>,
+    live: Option<&live::LiveQuota>,
     ctx: &egui::Context,
 ) {
     // ── Data quality notice ──
@@ -28,44 +30,28 @@ pub fn show_overview(
         }
     }
 
+    // ── Live data badge ──
+    if let Some(lq) = live {
+        show_live_badge(ui, lq);
+        ui.add_space(4.0);
+    }
+
     // ── Quota cards ──
-    egui::Grid::new("quota_cards").min_col_width(130.0).show(ui, |ui| {
-        // 5h window cards
-        if let Some(q) = quota_5h {
-            card(ui, "Quota (5h)", &format!("{:.1}%", q.used_percent));
-            card(ui, "Reset", &mhd_telemetry::query::time_to_reset(q.resets_at).unwrap_or_else(|| "—".into()));
-        } else {
-            card(ui, "Quota (5h)", "—");
-            card(ui, "Reset", "—");
-        }
+    ui.horizontal(|ui| {
+        show_window_cards(ui, "5h", quota_5h, slope_5h);
+        ui.separator();
+        show_window_cards(ui, "7d", quota_7d, slope_7d);
+    });
 
-        if let Some(p) = slope_5h.projected_at_reset {
-            card(ui, "Projected (5h)", &format!("{:.1}%", p));
-        } else {
-            card(ui, "Projected (5h)", "—");
-        }
+    ui.add_space(8.0);
 
-        if let Some(e) = &slope_5h.projected_exhaustion {
-            card(ui, "Exhaustion", e);
-        } else {
-            card(ui, "Exhaustion", "—");
-        }
-
-        if let Some(s) = slope_5h.full_slope {
-            card(ui, "Slope (full)", &format!("{:.1}%/h", s));
-        } else {
-            card(ui, "Slope (full)", "—");
-        }
-
-        if let Some(s) = slope_5h.active_slope {
-            card(ui, "Slope (active)", &format!("{:.1}%/h", s));
-        } else {
-            card(ui, "Slope (active)", "—");
-        }
-
+    // ── Token summary row ──
+    egui::Grid::new("token_cards").min_col_width(120.0).show(ui, |ui| {
         card(ui, "Input tokens", &format_num(tokens.input_tokens));
         card(ui, "Cached input", &format!("{} ({:.0}%)", format_num(tokens.cached_input_tokens), tokens.cache_hit.unwrap_or(0.0) * 100.0));
         card(ui, "Output tokens", &format_num(tokens.output_tokens));
+        card(ui, "Reasoning", &format_num(tokens.reasoning_tokens));
+        card(ui, "Context hits", &format!("{} / {}", format_num(tokens.cached_input_tokens), format_num(tokens.input_tokens)));
     });
 
     ui.separator();
@@ -76,6 +62,36 @@ pub fn show_overview(
     } else {
         show_quota_chart(ui, history, ctx);
     }
+}
+
+fn show_window_cards(ui: &mut egui::Ui, label: &str, quota: &Option<Utilization>, slope: &SlopeProjection) {
+    ui.vertical(|ui| {
+        if let Some(q) = quota {
+            card(ui, &format!("Quota ({label})"), &format!("{:.1}%", q.used_percent));
+            card(ui, "Reset", &mhd_telemetry::query::time_to_reset(q.resets_at).unwrap_or_else(|| "—".into()));
+        } else {
+            card(ui, &format!("Quota ({label})"), "—");
+            card(ui, "Reset", "—");
+        }
+
+        if let Some(p) = &slope.projected_at_reset {
+            card(ui, &format!("Projected ({label})"), &format!("{:.1}%", p));
+        } else {
+            card(ui, &format!("Projected ({label})"), "—");
+        }
+
+        if let Some(e) = &slope.projected_exhaustion {
+            card(ui, "Exhaustion", e);
+        } else {
+            card(ui, "Exhaustion", "—");
+        }
+
+        if let Some(s) = slope.full_slope {
+            card(ui, &format!("Slope ({label})"), &format!("{:.1}%/h", s));
+        } else {
+            card(ui, &format!("Slope ({label})"), "—");
+        }
+    });
 }
 
 /// Render a colored card with label and value.
@@ -191,4 +207,30 @@ fn format_num(n: i64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// Show a small badge with plan type and reset credits from live data.
+fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
+    let plan = lq.plan_type.as_deref().unwrap_or("Codex");
+    let mut parts: Vec<String> = Vec::new();
+
+    // Reset credits
+    if let Some(rc) = &lq.reset_credits {
+        if rc.available_count > 0 {
+            parts.push(format!("{} reset{} available", rc.available_count, if rc.available_count == 1 { "" } else { "s" }));
+            if let Some(expires) = rc.next_expires_at {
+                parts.push(format!("next expires {}", crate::app::relative_time(expires)));
+            }
+        }
+    }
+
+    let text = if parts.is_empty() {
+        format!("Live · {plan}")
+    } else {
+        format!("Live · {plan} · {}", parts.join(" · "))
+    };
+
+    ui.horizontal(|ui| {
+        ui.colored_label(egui::Color32::LIGHT_GREEN, egui::RichText::new(text).size(11.0));
+    });
 }

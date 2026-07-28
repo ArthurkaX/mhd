@@ -85,6 +85,14 @@ pub struct RawKeycast {
     pub typing_duration_ms: Option<u64>,
 }
 
+/// Raw TOML `[codex_watcher]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawCodexWatcher {
+    /// Enable the background Codex telemetry watcher. Default: `false`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
@@ -111,6 +119,8 @@ pub struct RawConfig {
     /// Ordered list of power plan names for `switch_power_plan` with target="next".
     #[serde(default)]
     pub power_plans: Vec<String>,
+    #[serde(default)]
+    pub codex_watcher: Option<RawCodexWatcher>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }

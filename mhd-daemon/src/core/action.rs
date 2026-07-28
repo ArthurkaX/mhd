@@ -83,6 +83,8 @@ pub enum Action {
     ShowLlmActivity,
     /// Toggle the llm-proxy process on/off.
     ToggleLlmProxy,
+    /// Toggle the Codex telemetry watcher on/off.
+    ToggleCodexWatcher,
     /// Capture the foreground monitor, send to a vision LLM, copy result to clipboard.
     VisionScreenshot,
     /// Capture, crop, annotate, and analyze a screenshot interactively.
@@ -191,6 +193,7 @@ impl Action {
             "show_proxy_trace" => Ok(Action::ShowProxyTrace),
             "show_llm_activity" => Ok(Action::ShowLlmActivity),
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
+            "toggle_codex_watcher" => Ok(Action::ToggleCodexWatcher),
             "power_actions" => Ok(Action::PowerActions),
             "vision_screenshot" => Ok(Action::VisionScreenshot),
             "vision_snip" => Ok(Action::VisionSnip),
@@ -361,6 +364,7 @@ impl Action {
             Action::ShowProxyTrace => "show_proxy_trace",
             Action::ShowLlmActivity => "show_llm_activity",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
+            Action::ToggleCodexWatcher => "toggle_codex_watcher",
             Action::VisionScreenshot => "vision_screenshot",
             Action::VisionSnip => "vision_snip",
             Action::Pomodoro => "pomodoro",
@@ -420,6 +424,7 @@ impl Action {
             | Action::ShowProxyTrace
             | Action::ShowLlmActivity
             | Action::ToggleLlmProxy
+            | Action::ToggleCodexWatcher
             | Action::Pomodoro
             | Action::ToggleKeycast
             | Action::Breathe { .. }
@@ -737,6 +742,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         name: "toggle_llm_proxy",
         label: "Toggle LLM Proxy",
         description: "Enable or disable the local LLM proxy.",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "toggle_codex_watcher",
+        label: "Toggle Codex Watcher",
+        description: "Enable or disable the background Codex telemetry import.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,

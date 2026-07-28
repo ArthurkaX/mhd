@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 
 /// Current schema version stored in `PRAGMA user_version`.
 const SCHEMA_VERSION: i64 = 1;
@@ -200,6 +200,34 @@ impl TelemetryDb {
         self.conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap_or(0)
+    }
+
+    /// Store a live API snapshot into quota_samples.
+    ///
+    /// Inserts rows with `source_offset = -1` (sentinel) so the dashboard
+    /// can query the latest live data alongside historical JSONL samples.
+    pub fn store_live_snapshot(
+        &self,
+        provider: &str,
+        window_kind: &str,
+        window_minutes: i64,
+        used_percent: f64,
+        resets_at: Option<i64>,
+        plan_type: Option<&str>,
+    ) -> Result<(), TelemetryError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        self.conn().execute(
+            "INSERT INTO quota_samples
+             (provider, session_id, event_at, window_kind, window_minutes,
+              used_percent, resets_at, plan_type, source_offset)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, -1)",
+            params![provider, now, window_kind, window_minutes, used_percent, resets_at, plan_type],
+        )?;
+        Ok(())
     }
 }
 
