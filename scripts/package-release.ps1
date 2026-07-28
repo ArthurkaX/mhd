@@ -13,7 +13,10 @@ $checksum = "$zip.sha256"
 
 Push-Location $root
 try {
-    cargo build --release --no-default-features --target-dir $targetDir
+    # Only the two binaries we ship. Building the whole workspace would also
+    # compile llm-proxy's dev-only bins for nothing.
+    cargo build --release --no-default-features --target-dir $targetDir `
+        -p mhd-daemon -p mhd-inspector
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
@@ -31,6 +34,9 @@ try {
     New-Item -ItemType Directory -Path $stage | Out-Null
 
     Copy-Item -LiteralPath (Join-Path $targetDir "release\mhd.exe") -Destination $stage
+    # The daemon launches this by path next to mhd.exe (Proxy Trace row click,
+    # tray "LLM Monitor"). Without it those two entry points silently no-op.
+    Copy-Item -LiteralPath (Join-Path $targetDir "release\mhd-inspector.exe") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root "INSTALL.md") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $stage

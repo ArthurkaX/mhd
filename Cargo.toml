@@ -5,6 +5,17 @@ resolver = "2"
 [workspace.package]
 license = "MIT"
 
+# Single source of truth for versions shared by more than one member.
+# Members reference these with `dep.workspace = true` and add their own
+# `features = [...]` on top where they need extras.
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+# Pinned to the 1.x line on purpose: a bare `>=1.0.150` also matches 2.0.
+serde_json = "1.0.150"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json"] }
+dirs = "5"
+
 [profile.release]
 opt-level = 3
 lto = true

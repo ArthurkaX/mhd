@@ -1,0 +1,4 @@
+edition = "2024"
+# Everything else is rustfmt defaults on purpose: they produced the smallest
+# diff against the hand-written code (8.4k lines, vs 18.4k for
+# use_small_heuristics = "Max"), so this is the cheapest style to adopt.
