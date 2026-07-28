@@ -86,7 +86,7 @@ fn decrypt(cipher: &str, data: &str) -> Option<String> {
             {
                 let ct = hex_decode(data)?;
                 let pt = dpapi_decrypt(&ct)?;
-                return String::from_utf8(pt).ok();
+                String::from_utf8(pt).ok()
             }
             #[cfg(not(windows))]
             {
@@ -110,7 +110,7 @@ fn hex_encode(data: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

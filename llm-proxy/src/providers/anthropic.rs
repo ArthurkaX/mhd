@@ -137,10 +137,10 @@ impl RetryKnobs {
     /// `max_delay_ms`. A tiny deterministic jitter (`req_id % 100` ms) is added
     /// to spread a thundering herd of parallel retries.
     fn wait_ms(&self, attempt: usize, headers: &reqwest::header::HeaderMap, req_id: u64) -> u64 {
-        if let Some(ra) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
-            if let Ok(secs) = ra.trim().parse::<u64>() {
-                return secs.saturating_mul(1000).saturating_add(req_id % 100);
-            }
+        if let Some(ra) = headers.get("retry-after").and_then(|v| v.to_str().ok())
+            && let Ok(secs) = ra.trim().parse::<u64>()
+        {
+            return secs.saturating_mul(1000).saturating_add(req_id % 100);
         }
         let exp = self.base_delay_ms.saturating_mul(1u64 << attempt.min(31));
         exp.min(self.max_delay_ms).saturating_add(req_id % 100)
@@ -542,8 +542,8 @@ pub async fn stream_request(
                 let line_bytes: Vec<u8> = line_buf.drain(..=pos).collect();
                 if let Ok(line) = std::str::from_utf8(&line_bytes) {
                     let data = line.trim();
-                    if let Some(json_str) = data.strip_prefix("data:") {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
+                    if let Some(json_str) = data.strip_prefix("data:")
+                        && let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
                             match v.get("type").and_then(|t| t.as_str()) {
                                 // Prompt-side usage (incl. real Anthropic prompt cache).
                                 Some("message_start") => {
@@ -576,7 +576,6 @@ pub async fn stream_request(
                                 _ => {}
                             }
                         }
-                    }
                 }
             }
 

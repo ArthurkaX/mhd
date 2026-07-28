@@ -276,36 +276,34 @@ fn import_source(
 
                     // ── Quota samples ──
                     if let Some(rl) = rate_limits {
-                        for window in [&rl.primary, &rl.secondary] {
-                            if let Some(w) = window {
-                                let exists_quota: bool = tx
-                                    .query_row(
-                                        "SELECT COUNT(*) FROM quota_samples WHERE provider = ?1 AND session_id = ?2 AND source_offset = ?3 AND window_kind = ?4",
-                                        params![provider, sid, source_offset, &w.window_kind],
-                                        |r| r.get::<_, i64>(0),
-                                    )
-                                    .map(|c| c > 0)
-                                    .unwrap_or(false);
+                        for w in [&rl.primary, &rl.secondary].into_iter().flatten() {
+                            let exists_quota: bool = tx
+                                .query_row(
+                                    "SELECT COUNT(*) FROM quota_samples WHERE provider = ?1 AND session_id = ?2 AND source_offset = ?3 AND window_kind = ?4",
+                                    params![provider, sid, source_offset, &w.window_kind],
+                                    |r| r.get::<_, i64>(0),
+                                )
+                                .map(|c| c > 0)
+                                .unwrap_or(false);
 
-                                if !exists_quota {
-                                    tx.execute(
-                                        "INSERT INTO quota_samples \
-                                         (provider, session_id, event_at, limit_id, limit_name, plan_type, \
-                                          window_kind, window_minutes, used_percent, resets_at, \
-                                          has_credits, unlimited_credits, credit_balance, source_offset) \
-                                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                                        params![
-                                            provider, sid, event_at,
-                                            rl.limit_id, rl.limit_name, rl.plan_type,
-                                            &w.window_kind, w.window_minutes, w.used_percent, w.resets_at,
-                                            rl.credits.as_ref().and_then(|c| c.has_credits),
-                                            rl.credits.as_ref().and_then(|c| c.unlimited_credits),
-                                            rl.credits.as_ref().and_then(|c| c.credit_balance.clone()),
-                                            source_offset,
-                                        ],
-                                    )?;
-                                    result.quota_samples_added += 1;
-                                }
+                            if !exists_quota {
+                                tx.execute(
+                                    "INSERT INTO quota_samples \
+                                     (provider, session_id, event_at, limit_id, limit_name, plan_type, \
+                                      window_kind, window_minutes, used_percent, resets_at, \
+                                      has_credits, unlimited_credits, credit_balance, source_offset) \
+                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                    params![
+                                        provider, sid, event_at,
+                                        rl.limit_id, rl.limit_name, rl.plan_type,
+                                        &w.window_kind, w.window_minutes, w.used_percent, w.resets_at,
+                                        rl.credits.as_ref().and_then(|c| c.has_credits),
+                                        rl.credits.as_ref().and_then(|c| c.unlimited_credits),
+                                        rl.credits.as_ref().and_then(|c| c.credit_balance.clone()),
+                                        source_offset,
+                                    ],
+                                )?;
+                                result.quota_samples_added += 1;
                             }
                         }
                     }

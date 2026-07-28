@@ -723,11 +723,10 @@ mod tests {
         let home = codex_home();
         let archived = home.join("archived_sessions");
         if !archived.exists()
-            || std::fs::read_dir(&archived)
+            || !std::fs::read_dir(&archived)
                 .ok()
                 .map(|mut e| e.next().is_some())
                 .unwrap_or(false)
-                == false
         {
             eprintln!("SKIP: no archived_sessions dir with files");
             return;

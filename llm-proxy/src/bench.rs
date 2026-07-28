@@ -72,10 +72,10 @@ pub fn run_anthropic_bench(
 
     let mut bodies: Vec<Value> = Vec::new();
     for r in rows.flatten() {
-        if let Some(s) = decompress_body(&r) {
-            if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                bodies.push(v);
-            }
+        if let Some(s) = decompress_body(&r)
+            && let Ok(v) = serde_json::from_str::<Value>(&s)
+        {
+            bodies.push(v);
         }
     }
     if bodies.is_empty() {

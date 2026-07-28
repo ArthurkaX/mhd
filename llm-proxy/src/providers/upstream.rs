@@ -318,38 +318,37 @@ impl SseTranslator {
             .get("delta")
             .and_then(|d| d.get("reasoning_content"))
             .and_then(|t| t.as_str())
+            && !rc.is_empty()
         {
-            if !rc.is_empty() {
-                if self.thinking_index.is_none() {
-                    if let Some(oi) = self.open_index {
-                        frames.push(sse(
-                            "content_block_stop",
-                            &json!({
-                                "type": "content_block_stop", "index": oi
-                            }),
-                        ));
-                    }
-                    let idx = self.next_index;
-                    self.next_index += 1;
-                    self.thinking_index = Some(idx);
-                    self.open_index = Some(idx);
+            if self.thinking_index.is_none() {
+                if let Some(oi) = self.open_index {
                     frames.push(sse(
-                        "content_block_start",
+                        "content_block_stop",
                         &json!({
-                            "type": "content_block_start", "index": idx,
-                            "content_block": { "type": "thinking", "thinking": "" }
+                            "type": "content_block_stop", "index": oi
                         }),
                     ));
                 }
-                let idx = self.thinking_index.unwrap();
+                let idx = self.next_index;
+                self.next_index += 1;
+                self.thinking_index = Some(idx);
+                self.open_index = Some(idx);
                 frames.push(sse(
-                    "content_block_delta",
+                    "content_block_start",
                     &json!({
-                        "type": "content_block_delta", "index": idx,
-                        "delta": { "type": "thinking_delta", "thinking": rc }
+                        "type": "content_block_start", "index": idx,
+                        "content_block": { "type": "thinking", "thinking": "" }
                     }),
                 ));
             }
+            let idx = self.thinking_index.unwrap();
+            frames.push(sse(
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta", "index": idx,
+                    "delta": { "type": "thinking_delta", "thinking": rc }
+                }),
+            ));
         }
 
         // ── text delta ────────────────────────────────────────────
@@ -357,50 +356,49 @@ impl SseTranslator {
             .get("delta")
             .and_then(|d| d.get("content"))
             .and_then(|t| t.as_str())
+            && !text.is_empty()
         {
-            if !text.is_empty() {
-                if self.text_index.is_none() {
-                    if let Some(oi) = self.open_index {
-                        if Some(oi) == self.thinking_index {
-                            frames.push(sse(
-                                "content_block_delta",
-                                &json!({
-                                    "type": "content_block_delta", "index": oi,
-                                    "delta": {
-                                        "type": "signature_delta",
-                                        "signature": transform::SYNTHETIC_THINKING_SIGNATURE
-                                    }
-                                }),
-                            ));
-                        }
+            if self.text_index.is_none() {
+                if let Some(oi) = self.open_index {
+                    if Some(oi) == self.thinking_index {
                         frames.push(sse(
-                            "content_block_stop",
+                            "content_block_delta",
                             &json!({
-                                "type": "content_block_stop", "index": oi
+                                "type": "content_block_delta", "index": oi,
+                                "delta": {
+                                    "type": "signature_delta",
+                                    "signature": transform::SYNTHETIC_THINKING_SIGNATURE
+                                }
                             }),
                         ));
                     }
-                    let idx = self.next_index;
-                    self.next_index += 1;
-                    self.text_index = Some(idx);
-                    self.open_index = Some(idx);
                     frames.push(sse(
-                        "content_block_start",
+                        "content_block_stop",
                         &json!({
-                            "type": "content_block_start", "index": idx,
-                            "content_block": { "type": "text", "text": "" }
+                            "type": "content_block_stop", "index": oi
                         }),
                     ));
                 }
-                let idx = self.text_index.unwrap();
+                let idx = self.next_index;
+                self.next_index += 1;
+                self.text_index = Some(idx);
+                self.open_index = Some(idx);
                 frames.push(sse(
-                    "content_block_delta",
+                    "content_block_start",
                     &json!({
-                        "type": "content_block_delta", "index": idx,
-                        "delta": { "type": "text_delta", "text": text }
+                        "type": "content_block_start", "index": idx,
+                        "content_block": { "type": "text", "text": "" }
                     }),
                 ));
             }
+            let idx = self.text_index.unwrap();
+            frames.push(sse(
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta", "index": idx,
+                    "delta": { "type": "text_delta", "text": text }
+                }),
+            ));
         }
 
         // ── tool_call deltas ──────────────────────────────────────
@@ -462,16 +460,15 @@ impl SseTranslator {
                 if let Some(args) = func
                     .and_then(|f| f.get("arguments"))
                     .and_then(|v| v.as_str())
+                    && !args.is_empty()
                 {
-                    if !args.is_empty() {
-                        frames.push(sse(
-                            "content_block_delta",
-                            &json!({
-                                "type": "content_block_delta", "index": anth_idx,
-                                "delta": { "type": "input_json_delta", "partial_json": args }
-                            }),
-                        ));
-                    }
+                    frames.push(sse(
+                        "content_block_delta",
+                        &json!({
+                            "type": "content_block_delta", "index": anth_idx,
+                            "delta": { "type": "input_json_delta", "partial_json": args }
+                        }),
+                    ));
                 }
             }
         }

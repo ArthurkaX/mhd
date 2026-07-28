@@ -43,13 +43,12 @@ fn session_hash(payload: &Value) -> u64 {
     }
 
     // Hash the first user message (stable across turns)
-    if let Some(messages) = payload.get("messages").and_then(|m| m.as_array()) {
-        if let Some(first_user) = messages
+    if let Some(messages) = payload.get("messages").and_then(|m| m.as_array())
+        && let Some(first_user) = messages
             .iter()
             .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        {
-            first_user.to_string().hash(&mut hasher);
-        }
+    {
+        first_user.to_string().hash(&mut hasher);
     }
 
     hasher.finish()
@@ -103,10 +102,9 @@ fn should_keep_on_expensive_tier(payload: &Value, gap_s: u64) -> (bool, &'static
         .get("thinking")
         .and_then(|t| t.get("type"))
         .and_then(|t| t.as_str())
+        && (t == "enabled" || t == "adaptive")
     {
-        if t == "enabled" || t == "adaptive" {
-            return (true, "thinking enabled");
-        }
+        return (true, "thinking enabled");
     }
 
     // 2. Check if the previous assistant turn contained tool_use.
@@ -429,12 +427,12 @@ pub async fn post_messages(
                 providers::upstream::stream_request(&state, req_id, payload, id, &model).await?
             }
         };
-        return Ok(Response::builder()
+        return Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/event-stream")
             .header("cache-control", "no-cache")
             .body(body)
-            .map_err(|e| AppError(e.into()))?);
+            .map_err(|e| AppError(e.into()));
     }
 
     let response = match &target {
@@ -629,12 +627,12 @@ pub async fn post_chat_completions(
 
     if stream {
         let body = providers::upstream::stream_raw_openai(&state, req_id, payload).await?;
-        return Ok(Response::builder()
+        return Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/event-stream")
             .header("cache-control", "no-cache")
             .body(body)
-            .map_err(|e| AppError(e.into()))?);
+            .map_err(|e| AppError(e.into()));
     }
 
     let resp = providers::upstream::send_raw_openai(&state, req_id, payload).await?;

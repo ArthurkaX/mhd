@@ -140,7 +140,7 @@ fn looks_like_code(text: &str) -> bool {
     let mut line_num_count: usize = 0;
     for line in text.lines().take(40) {
         // Strip optional leading whitespace, then expect digits, then '\t'.
-        let rest = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let rest = line.trim_start_matches([' ', '\t']);
         if rest.is_empty() {
             continue;
         }
@@ -187,8 +187,8 @@ pub fn tool_result_protected(
     arrow_density_min: f64,
 ) -> bool {
     // Layer 1: provenance
-    if let Some(ext) = src_ext {
-        if matches!(
+    if let Some(ext) = src_ext
+        && matches!(
             ext,
             // documentation
             "md" | "markdown" | "txt" | "rst" | "adoc" | "org"
@@ -200,18 +200,16 @@ pub fn tool_result_protected(
             // structured / config — edited exactly too
             | "json" | "jsonc" | "yaml" | "yml" | "toml" | "ini" | "xml"
             | "html" | "htm" | "css" | "scss" | "less" | "vue" | "svelte"
-        ) {
-            return true;
-        }
+        )
+    {
+        return true;
     }
     // Layer 2: fenced code block.
     // When fence_requires_code=true, a fence alone does NOT protect — it only
     // protects if the fenced content also looks code-like. When false, a
     // triple-backtick alone protects (original behavior).
-    if text.contains("```") {
-        if !fence_requires_code || looks_like_code(text) {
-            return true;
-        }
+    if text.contains("```") && (!fence_requires_code || looks_like_code(text)) {
+        return true;
     }
     // Layer 3: diagram detection — density + structural glyphs.
     let mut box_count: usize = 0;
@@ -275,7 +273,7 @@ fn apply_ws_ops(text: &str, knobs: &NativeKnobs) -> String {
     // Step 1: strip trailing spaces/tabs
     if knobs.ws_strip_trailing {
         for line in &mut lines {
-            let trimmed = line.trim_end_matches(|c| c == ' ' || c == '\t');
+            let trimmed = line.trim_end_matches([' ', '\t']);
             if trimmed.len() < line.len() {
                 *line = trimmed.to_string();
             }
@@ -472,10 +470,10 @@ fn compress_tool_results(
                     if ib.get("type").and_then(|t| t.as_str()) != Some("text") {
                         continue;
                     }
-                    if let Some(Value::String(s)) = ib.get_mut("text") {
-                        if let Some(new) = transform_text(s, knobs) {
-                            *s = new;
-                        }
+                    if let Some(Value::String(s)) = ib.get_mut("text")
+                        && let Some(new) = transform_text(s, knobs)
+                    {
+                        *s = new;
                     }
                 }
             }
@@ -686,10 +684,10 @@ pub fn trim_native(mut body: Value, knobs: &NativeKnobs) -> Value {
         }
     }
     // 4) Strip thinking/redacted_thinking from old assistant turns (optional).
-    if knobs.strip_thinking {
-        if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            strip_old_thinking(messages);
-        }
+    if knobs.strip_thinking
+        && let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut())
+    {
+        strip_old_thinking(messages);
     }
     body
 }
@@ -750,10 +748,9 @@ pub fn trim_native_openai(mut body: Value, knobs: &NativeKnobs) -> Value {
                     None,
                     knobs.tool_result_fence_requires_code,
                     knobs.tool_result_arrow_density_min,
-                ) {
-                    if let Some(new) = transform_text(s, knobs) {
-                        *s = new;
-                    }
+                ) && let Some(new) = transform_text(s, knobs)
+                {
+                    *s = new;
                 }
             }
         }

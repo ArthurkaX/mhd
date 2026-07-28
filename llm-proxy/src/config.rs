@@ -677,7 +677,7 @@ pub fn resolve_model_endpoint(
         .get(&model_ref.provider)
         .map(|s| s.as_str())
         .filter(|s| !s.is_empty())
-        .or_else(|| {
+        .or({
             if !secrets.upstream_key.is_empty() {
                 Some(secrets.upstream_key.as_str())
             } else {

@@ -185,7 +185,7 @@ fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Con
         painter.line_segment(
             [
                 egui::pos2(canvas_left, y),
-                egui::pos2(canvas_left + width as f32, y),
+                egui::pos2(canvas_left + width, y),
             ],
             egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
         );
@@ -214,7 +214,7 @@ fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Con
 
         // Hover inspection
         if let Some(pos) = response.hover_pos() {
-            let rel_x = (pos.x - canvas_left) / width as f32;
+            let rel_x = (pos.x - canvas_left) / width;
             let idx = ((rel_x as f64) * (display.len() - 1) as f64) as usize;
             let idx = idx.min(display.len() - 1);
             if let Some(sample) = display.get(idx) {
@@ -261,19 +261,19 @@ fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
     let mut parts: Vec<String> = Vec::new();
 
     // Reset credits
-    if let Some(rc) = &lq.reset_credits {
-        if rc.available_count > 0 {
+    if let Some(rc) = &lq.reset_credits
+        && rc.available_count > 0
+    {
+        parts.push(format!(
+            "{} reset{} available",
+            rc.available_count,
+            if rc.available_count == 1 { "" } else { "s" }
+        ));
+        if let Some(expires) = rc.next_expires_at {
             parts.push(format!(
-                "{} reset{} available",
-                rc.available_count,
-                if rc.available_count == 1 { "" } else { "s" }
+                "next expires {}",
+                crate::app::relative_time(expires)
             ));
-            if let Some(expires) = rc.next_expires_at {
-                parts.push(format!(
-                    "next expires {}",
-                    crate::app::relative_time(expires)
-                ));
-            }
         }
     }
 

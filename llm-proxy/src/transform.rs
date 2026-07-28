@@ -273,23 +273,21 @@ pub fn openai_to_anthropic(openai: Value) -> Value {
     if let Some(reasoning) = message
         .and_then(|m| m.get("reasoning_content"))
         .and_then(|c| c.as_str())
+        && !reasoning.is_empty()
     {
-        if !reasoning.is_empty() {
-            content_blocks.push(serde_json::json!({
-                "type": "thinking",
-                "thinking": reasoning,
-                "signature": SYNTHETIC_THINKING_SIGNATURE,
-            }));
-        }
+        content_blocks.push(serde_json::json!({
+            "type": "thinking",
+            "thinking": reasoning,
+            "signature": SYNTHETIC_THINKING_SIGNATURE,
+        }));
     }
 
     if let Some(text) = message
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
+        && !text.is_empty()
     {
-        if !text.is_empty() {
-            content_blocks.push(serde_json::json!({ "type": "text", "text": text }));
-        }
+        content_blocks.push(serde_json::json!({ "type": "text", "text": text }));
     }
 
     let mut has_tool_use = false;

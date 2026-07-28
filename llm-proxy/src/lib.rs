@@ -56,15 +56,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// Apply environment-variable fallbacks for API keys not set in the config.
 /// Checks `ANTHROPIC_API_KEY`, `SVA_API_KEY`, and `OPENCODE_API_KEY`.
 fn apply_env_fallbacks(cfg: &mut Config) {
-    if cfg.anthropic_key.is_empty() {
-        if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
-            cfg.anthropic_key = k;
-        }
+    if cfg.anthropic_key.is_empty()
+        && let Ok(k) = std::env::var("ANTHROPIC_API_KEY")
+    {
+        cfg.anthropic_key = k;
     }
-    if cfg.upstream_key.is_empty() {
-        if let Ok(k) = std::env::var("SVA_API_KEY").or_else(|_| std::env::var("OPENCODE_API_KEY")) {
-            cfg.upstream_key = k;
-        }
+    if cfg.upstream_key.is_empty()
+        && let Ok(k) = std::env::var("SVA_API_KEY").or_else(|_| std::env::var("OPENCODE_API_KEY"))
+    {
+        cfg.upstream_key = k;
     }
 }
 
@@ -98,10 +98,11 @@ impl ProxyControl {
     /// is "native" or an upstream model id. Persists to the proxy config.
     pub fn set_target(&self, slot: &str, target: &str) -> bool {
         let ok = self.state.set_target(slot, Target::parse(target));
-        if ok && self.persist {
-            if let Err(e) = config::save(&self.state.to_config()) {
-                tracing::warn!("failed to persist proxy config: {e}");
-            }
+        if ok
+            && self.persist
+            && let Err(e) = config::save(&self.state.to_config())
+        {
+            tracing::warn!("failed to persist proxy config: {e}");
         }
         ok
     }

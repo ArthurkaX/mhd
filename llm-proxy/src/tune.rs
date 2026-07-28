@@ -233,10 +233,10 @@ pub fn run_tune(
     let mut bodies_with_run_id: Vec<(i64, Value)> = Vec::new();
     for r in rows.flatten() {
         let (run_id, body_bytes) = r;
-        if let Some(s) = decompress_body(&body_bytes) {
-            if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                bodies_with_run_id.push((run_id, v));
-            }
+        if let Some(s) = decompress_body(&body_bytes)
+            && let Ok(v) = serde_json::from_str::<Value>(&s)
+        {
+            bodies_with_run_id.push((run_id, v));
         }
     }
     if bodies_with_run_id.is_empty() {
@@ -431,10 +431,10 @@ pub fn run_bucket_tune(
     let mut bodies_with_run_id: Vec<(i64, Value)> = Vec::new();
     for r in rows.flatten() {
         let (run_id, body_bytes) = r;
-        if let Some(s) = decompress_body(&body_bytes) {
-            if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                bodies_with_run_id.push((run_id, v));
-            }
+        if let Some(s) = decompress_body(&body_bytes)
+            && let Ok(v) = serde_json::from_str::<Value>(&s)
+        {
+            bodies_with_run_id.push((run_id, v));
         }
     }
     if bodies_with_run_id.is_empty() {

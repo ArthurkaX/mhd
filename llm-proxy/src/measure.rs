@@ -313,10 +313,10 @@ pub struct ClaudeRunOutcome {
 /// works on Unix or when claude.exe is already on PATH as an executable).
 fn resolve_claude_exe() -> std::path::PathBuf {
     // Explicit override wins (lets the user point at any install).
-    if let Ok(p) = std::env::var("MHD_CLAUDE_EXE") {
-        if !p.is_empty() {
-            return std::path::PathBuf::from(p);
-        }
+    if let Ok(p) = std::env::var("MHD_CLAUDE_EXE")
+        && !p.is_empty()
+    {
+        return std::path::PathBuf::from(p);
     }
     // npm global install: %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe
     if let Ok(appdata) = std::env::var("APPDATA") {
@@ -401,7 +401,7 @@ pub fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> O
     // Check if the column already exists.
     let exists: bool = conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2"),
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2",
             rusqlite::params![table, col],
             |row| row.get::<_, i64>(0),
         )
@@ -532,11 +532,11 @@ impl TrimRestoreGuard {
 
 impl Drop for TrimRestoreGuard {
     fn drop(&mut self) {
-        if self.dirty {
-            if let Some(v) = &self.snapshot {
-                let _ = write_settings_value(v);
-                std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
-            }
+        if self.dirty
+            && let Some(v) = &self.snapshot
+        {
+            let _ = write_settings_value(v);
+            std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
         }
     }
 }

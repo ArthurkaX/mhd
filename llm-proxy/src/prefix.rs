@@ -203,14 +203,14 @@ impl PrefixTracker {
             stats.prefix_shared_chars_sent = Some(shared_prefix_chars(&prev.sent, &sent));
         }
 
-        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(key) {
-            if let Some(oldest) = sessions
+        if sessions.len() >= MAX_SESSIONS
+            && !sessions.contains_key(key)
+            && let Some(oldest) = sessions
                 .iter()
                 .min_by_key(|(_, s)| s.at_ms)
                 .map(|(k, _)| k.clone())
-            {
-                sessions.remove(&oldest);
-            }
+        {
+            sessions.remove(&oldest);
         }
         sessions.insert(
             key.to_string(),

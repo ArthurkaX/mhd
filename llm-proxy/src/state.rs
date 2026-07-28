@@ -406,29 +406,29 @@ impl AppState {
     /// Append a text line to the database log.
     /// Best-effort: errors are swallowed.
     pub fn log_line(&self, msg: &str) {
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                db.insert(
-                    &crate::providers::now_ms(),
-                    &crate::db_log::LogEvent {
-                        seq: 0,
-                        event_type: "RAW".to_string(),
-                        detail: Some(msg.to_string()),
-                        ..Default::default()
-                    },
-                );
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.insert(
+                &crate::providers::now_ms(),
+                &crate::db_log::LogEvent {
+                    seq: 0,
+                    event_type: "RAW".to_string(),
+                    detail: Some(msg.to_string()),
+                    ..Default::default()
+                },
+            );
         }
     }
 
     /// Log a structured event with typed fields.
     /// Timestamp is automatic. Writes to SQLite.
     pub fn log_event(&self, event: crate::db_log::LogEvent) {
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                let ts = crate::providers::now_ms();
-                db.insert(&ts, &event);
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            let ts = crate::providers::now_ms();
+            db.insert(&ts, &event);
         }
     }
 
@@ -492,54 +492,54 @@ impl AppState {
     /// `requests` table so everything visible in the overlay is queryable later.
     /// DB write happens whenever the log is enabled — independent of log_level.
     pub fn push_trace(&self, entry: TraceEntry) {
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                let row = crate::db_log::RequestRow {
-                    run_id: self.run_id,
-                    seq: entry.seq,
-                    ts_start: crate::providers::now_ms(),
-                    tier: Some(entry.tier.slot().to_string()),
-                    effective_tier: Some(entry.effective_tier.slot().to_string()),
-                    target: Some(entry.target.clone()),
-                    model: Some(entry.model.clone()),
-                    downgraded: entry.downgraded,
-                    downgrade_reason: if entry.downgraded {
-                        Some(entry.reason.clone())
-                    } else {
-                        None
-                    },
-                    trim_applied: entry.trim_applied,
-                    trim_preset: if entry.trim_applied {
-                        Some(entry.trim_preset.clone())
-                    } else {
-                        None
-                    },
-                    trim_config: if entry.trim_applied {
-                        Some(entry.trim_config_json.clone())
-                    } else {
-                        None
-                    },
-                    trim_tokens_before: if entry.trim_applied {
-                        Some(entry.trim_tokens_before)
-                    } else {
-                        None
-                    },
-                    trim_tokens_after: if entry.trim_applied {
-                        Some(entry.trim_tokens_after)
-                    } else {
-                        None
-                    },
-                    trim_stages: if entry.trim_applied {
-                        Some(entry.trim_stages_json.clone())
-                    } else {
-                        None
-                    },
-                    user_agent: entry.user_agent.clone(),
-                    client_run_id: entry.client_run_id.clone(),
-                    prefix: entry.prefix.clone(),
-                };
-                db.insert_request(&row);
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            let row = crate::db_log::RequestRow {
+                run_id: self.run_id,
+                seq: entry.seq,
+                ts_start: crate::providers::now_ms(),
+                tier: Some(entry.tier.slot().to_string()),
+                effective_tier: Some(entry.effective_tier.slot().to_string()),
+                target: Some(entry.target.clone()),
+                model: Some(entry.model.clone()),
+                downgraded: entry.downgraded,
+                downgrade_reason: if entry.downgraded {
+                    Some(entry.reason.clone())
+                } else {
+                    None
+                },
+                trim_applied: entry.trim_applied,
+                trim_preset: if entry.trim_applied {
+                    Some(entry.trim_preset.clone())
+                } else {
+                    None
+                },
+                trim_config: if entry.trim_applied {
+                    Some(entry.trim_config_json.clone())
+                } else {
+                    None
+                },
+                trim_tokens_before: if entry.trim_applied {
+                    Some(entry.trim_tokens_before)
+                } else {
+                    None
+                },
+                trim_tokens_after: if entry.trim_applied {
+                    Some(entry.trim_tokens_after)
+                } else {
+                    None
+                },
+                trim_stages: if entry.trim_applied {
+                    Some(entry.trim_stages_json.clone())
+                } else {
+                    None
+                },
+                user_agent: entry.user_agent.clone(),
+                client_run_id: entry.client_run_id.clone(),
+                prefix: entry.prefix.clone(),
+            };
+            db.insert_request(&row);
         }
         let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
         if trace.len() >= MAX_TRACE_ENTRIES {
@@ -579,23 +579,23 @@ impl AppState {
             }
         }
         drop(trace);
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                db.update_request_completion(
-                    self.run_id,
-                    req_id,
-                    &crate::providers::now_ms(),
-                    duration_ms,
-                    Some(input_tokens),
-                    Some(output_tokens),
-                    cache_read_tokens,
-                    cache_creation_tokens,
-                    status,
-                    None,
-                    None,
-                    upstream_model,
-                );
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.update_request_completion(
+                self.run_id,
+                req_id,
+                &crate::providers::now_ms(),
+                duration_ms,
+                Some(input_tokens),
+                Some(output_tokens),
+                cache_read_tokens,
+                cache_creation_tokens,
+                status,
+                None,
+                None,
+                upstream_model,
+            );
         }
     }
 
@@ -625,23 +625,23 @@ impl AppState {
                 }
             }
         }
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                db.update_request_completion(
-                    self.run_id,
-                    req_id,
-                    &crate::providers::now_ms(),
-                    duration_ms,
-                    Some(0),
-                    Some(0),
-                    None,
-                    None,
-                    status,
-                    Some(error),
-                    Some(error_kind),
-                    None,
-                );
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.update_request_completion(
+                self.run_id,
+                req_id,
+                &crate::providers::now_ms(),
+                duration_ms,
+                Some(0),
+                Some(0),
+                None,
+                None,
+                status,
+                Some(error),
+                Some(error_kind),
+                None,
+            );
         }
     }
 
@@ -664,15 +664,15 @@ impl AppState {
     /// Delegates to the race-free [`crate::db_log::DbLog::mark_request_cancelled`]
     /// — a no-op if a real completion already wrote `ts_end`. Best-effort.
     pub fn mark_request_cancelled(&self, req_id: u64, duration_ms: Option<u64>) {
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                db.mark_request_cancelled(
-                    self.run_id,
-                    req_id,
-                    &crate::providers::now_ms(),
-                    duration_ms,
-                );
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.mark_request_cancelled(
+                self.run_id,
+                req_id,
+                &crate::providers::now_ms(),
+                duration_ms,
+            );
         }
     }
 
@@ -692,10 +692,10 @@ impl AppState {
     /// Write a free-text note to the `notes` table in proxy.db.
     /// Best-effort: no-ops if the log is disabled or the write fails.
     pub fn log_note(&self, text: &str) {
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                db.insert_note(&crate::providers::now_ms(), text);
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.insert_note(&crate::providers::now_ms(), text);
         }
     }
 
@@ -706,16 +706,16 @@ impl AppState {
         headroom_pct: f64,
         knobs_json: &str,
     ) {
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                db.insert_bench_run(
-                    &crate::providers::now_ms(),
-                    "anthropic",
-                    result,
-                    headroom_pct,
-                    knobs_json,
-                );
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.insert_bench_run(
+                &crate::providers::now_ms(),
+                "anthropic",
+                result,
+                headroom_pct,
+                knobs_json,
+            );
         }
     }
 
@@ -739,11 +739,11 @@ impl AppState {
             Ok(s) => s,
             Err(_) => return,
         };
-        if let Ok(guard) = self.db_log.lock() {
-            if let Some(ref db) = *guard {
-                let ts = crate::providers::now_ms();
-                db.insert_request_body(self.run_id, seq, &ts, model, provider, &body_str);
-            }
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            let ts = crate::providers::now_ms();
+            db.insert_request_body(self.run_id, seq, &ts, model, provider, &body_str);
         }
     }
 
@@ -773,10 +773,10 @@ impl AppState {
             return;
         }
 
-        if let Ok(db_guard) = self.db_log.lock() {
-            if let Some(ref db) = *db_guard {
-                db.insert_quota(self.run_id, &crate::providers::now_ms(), &snap);
-            }
+        if let Ok(db_guard) = self.db_log.lock()
+            && let Some(ref db) = *db_guard
+        {
+            db.insert_quota(self.run_id, &crate::providers::now_ms(), &snap);
         }
         *guard = Some((snap, now));
     }

@@ -44,19 +44,18 @@ pub fn current_utilization(
              LIMIT 1",
         )
         .ok()?;
-    let result = stmt
-        .query_row(params![provider, window_kind], |row| {
-            Ok(Utilization {
-                used_percent: row.get::<_, f64>(0)?,
-                window_kind: row.get(1)?,
-                window_minutes: row.get(2)?,
-                resets_at: row.get(3)?,
-                event_at: row.get(4)?,
-                quality: DataQuality::Complete,
-            })
+
+    stmt.query_row(params![provider, window_kind], |row| {
+        Ok(Utilization {
+            used_percent: row.get::<_, f64>(0)?,
+            window_kind: row.get(1)?,
+            window_minutes: row.get(2)?,
+            resets_at: row.get(3)?,
+            event_at: row.get(4)?,
+            quality: DataQuality::Complete,
         })
-        .ok();
-    result
+    })
+    .ok()
 }
 
 // ── Time to reset ───────────────────────────────────────────────────────
@@ -207,24 +206,24 @@ pub fn slope_and_projection(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    if let (Some(resets_at), Some(full_slope)) = (last_reset, result.full_slope) {
-        if full_slope > 0.0 {
-            let hours_until = (resets_at - now) as f64 / 3600.0;
-            let projected = last.1 + full_slope * hours_until;
-            result.projected_at_reset = Some(projected);
+    if let (Some(resets_at), Some(full_slope)) = (last_reset, result.full_slope)
+        && full_slope > 0.0
+    {
+        let hours_until = (resets_at - now) as f64 / 3600.0;
+        let projected = last.1 + full_slope * hours_until;
+        result.projected_at_reset = Some(projected);
 
-            // Projected exhaustion
-            if full_slope > 0.0 {
-                let hours_to_100 = (100.0 - last.1) / full_slope;
-                if hours_to_100.is_finite() && hours_to_100 > 0.0 {
-                    let exhaustion_time = now + (hours_to_100 * 3600.0) as i64;
-                    let hours = exhaustion_time.saturating_sub(now) / 3600;
-                    let minutes = (exhaustion_time.saturating_sub(now) % 3600) / 60;
-                    if hours > 0 {
-                        result.projected_exhaustion = Some(format!("~{hours}h {minutes}m"));
-                    } else {
-                        result.projected_exhaustion = Some(format!("~{minutes}m"));
-                    }
+        // Projected exhaustion
+        if full_slope > 0.0 {
+            let hours_to_100 = (100.0 - last.1) / full_slope;
+            if hours_to_100.is_finite() && hours_to_100 > 0.0 {
+                let exhaustion_time = now + (hours_to_100 * 3600.0) as i64;
+                let hours = exhaustion_time.saturating_sub(now) / 3600;
+                let minutes = (exhaustion_time.saturating_sub(now) % 3600) / 60;
+                if hours > 0 {
+                    result.projected_exhaustion = Some(format!("~{hours}h {minutes}m"));
+                } else {
+                    result.projected_exhaustion = Some(format!("~{minutes}m"));
                 }
             }
         }
@@ -272,7 +271,9 @@ pub fn token_summary(db: &TelemetryDb, since: i64) -> TokenSummary {
                 COUNT(*)
          FROM model_calls WHERE event_at >= ?1",
     ) {
-        if let Ok(row) = stmt.query_row(params![since], |row| {
+        // The closure fills `result` in place, so the query yields unit;
+        // a failed query just leaves the zeroed defaults in place.
+        let _: Result<(), _> = stmt.query_row(params![since], |row| {
             result.input_tokens = row.get(0)?;
             result.cached_input_tokens = row.get(1)?;
             result.cache_write_tokens = row.get(2)?;
@@ -280,9 +281,7 @@ pub fn token_summary(db: &TelemetryDb, since: i64) -> TokenSummary {
             result.reasoning_tokens = row.get(4)?;
             result.total_tokens = row.get(5)?;
             Ok(())
-        }) {
-            let _ = row;
-        }
+        });
     }
 
     // Cache hit ratio
