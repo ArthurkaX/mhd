@@ -6,8 +6,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
 mod activity;
+mod app;
 mod context_trim;
 mod overview;
 
@@ -82,7 +82,11 @@ fn resolve_db_path(cli: &CliArgs) -> PathBuf {
         return PathBuf::from(p);
     }
     let home = dirs::home_dir().unwrap_or_default();
-    let p1 = home.join(".config").join("mhd").join("llm-proxy").join("proxy.db");
+    let p1 = home
+        .join(".config")
+        .join("mhd")
+        .join("llm-proxy")
+        .join("proxy.db");
     if p1.exists() {
         return p1;
     }
@@ -104,8 +108,7 @@ fn main() -> eframe::Result<()> {
         eframe::run_native(
             "LLM Monitor",
             eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_inner_size([1100.0, 760.0]),
+                viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 760.0]),
                 ..Default::default()
             },
             Box::new(|cc| Ok(Box::new(MonitorApp::new(cc)))),
@@ -116,17 +119,12 @@ fn main() -> eframe::Result<()> {
         eframe::run_native(
             "mhd-inspector",
             eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_inner_size([1000.0, 700.0]),
+                viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]),
                 ..Default::default()
             },
             Box::new(|cc| {
                 Ok(Box::new(ContextTrimApp::new(
-                    cc,
-                    db_path,
-                    cli.row_id,
-                    cli.run_id,
-                    cli.seq,
+                    cc, db_path, cli.row_id, cli.run_id, cli.seq,
                 )))
             }),
         )

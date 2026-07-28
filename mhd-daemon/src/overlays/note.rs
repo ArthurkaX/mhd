@@ -118,9 +118,7 @@ pub fn show(theme: crate::core::native_theme::NativeTheme, sink: NoteSink, bb: b
         .name("quicknote".into())
         .spawn(move || {
             qn_log("thread start");
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(theme, sink, bb)
-            }));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(theme, sink, bb)));
             if r.is_err() {
                 qn_log("thread panic caught");
             }

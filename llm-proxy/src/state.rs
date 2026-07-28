@@ -321,7 +321,10 @@ pub struct AppState {
 
 /// Material change = utilization moved >=0.01 on either window, OR any status /
 /// representative_claim string changed.
-fn quota_material_change(prev: &crate::db_log::QuotaSnapshot, next: &crate::db_log::QuotaSnapshot) -> bool {
+fn quota_material_change(
+    prev: &crate::db_log::QuotaSnapshot,
+    next: &crate::db_log::QuotaSnapshot,
+) -> bool {
     fn util_jumped(a: Option<f64>, b: Option<f64>) -> bool {
         match (a, b) {
             (Some(x), Some(y)) => (x - y).abs() >= 0.01,
@@ -373,18 +376,21 @@ impl AppState {
             trim_enabled: RwLock::new(cfg.trim_enabled),
             trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
-        trim_head_haiku: RwLock::new(cfg.trim_head_haiku),
-        trim_head_harness: RwLock::new(cfg.trim_head_harness),
+            trim_head_haiku: RwLock::new(cfg.trim_head_haiku),
+            trim_head_harness: RwLock::new(cfg.trim_head_harness),
             trim_toolresult_tail: RwLock::new(cfg.trim_toolresult_tail),
             retry_enabled: RwLock::new(cfg.retry_enabled),
             retry_max_attempts: RwLock::new(cfg.retry_max_attempts),
             retry_base_delay_ms: RwLock::new(cfg.retry_base_delay_ms),
             retry_max_delay_ms: RwLock::new(cfg.retry_max_delay_ms),
-    throttle_enabled: RwLock::new(cfg.throttle_enabled),
-    throttle_rate_per_sec: RwLock::new(cfg.throttle_rate_per_sec),
-    throttle_burst: RwLock::new(cfg.throttle_burst),
-    throttle_bucket: crate::throttle::TokenBucket::new(cfg.throttle_burst, cfg.throttle_rate_per_sec),
-        throttle_probe_bucket: crate::throttle::TokenBucket::new(4.0, 4.0),
+            throttle_enabled: RwLock::new(cfg.throttle_enabled),
+            throttle_rate_per_sec: RwLock::new(cfg.throttle_rate_per_sec),
+            throttle_burst: RwLock::new(cfg.throttle_burst),
+            throttle_bucket: crate::throttle::TokenBucket::new(
+                cfg.throttle_burst,
+                cfg.throttle_rate_per_sec,
+            ),
+            throttle_probe_bucket: crate::throttle::TokenBucket::new(4.0, 4.0),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
             trim_free_target: RwLock::new(cfg.trim_free_target.clone()),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
@@ -675,7 +681,10 @@ impl AppState {
     /// never "no route caches".
     pub fn route_cache(&self) -> Vec<crate::db_log::RouteCacheRow> {
         match self.db_log.lock() {
-            Ok(guard) => guard.as_ref().map(|db| db.route_cache()).unwrap_or_default(),
+            Ok(guard) => guard
+                .as_ref()
+                .map(|db| db.route_cache())
+                .unwrap_or_default(),
             Err(_) => Vec::new(),
         }
     }
@@ -691,18 +700,39 @@ impl AppState {
     }
 
     /// Record a finished Bench run into proxy.db (best-effort, uses the live writer conn).
-    pub fn record_bench_run(&self, result: &crate::bench::BenchResult, headroom_pct: f64, knobs_json: &str) {
+    pub fn record_bench_run(
+        &self,
+        result: &crate::bench::BenchResult,
+        headroom_pct: f64,
+        knobs_json: &str,
+    ) {
         if let Ok(guard) = self.db_log.lock() {
             if let Some(ref db) = *guard {
-                db.insert_bench_run(&crate::providers::now_ms(), "anthropic", result, headroom_pct, knobs_json);
+                db.insert_bench_run(
+                    &crate::providers::now_ms(),
+                    "anthropic",
+                    result,
+                    headroom_pct,
+                    knobs_json,
+                );
             }
         }
     }
 
     /// Capture the full pre-trim request body into the replay corpus, if enabled.
     /// Best-effort: silent when the flag is off, when the DB log is closed, or on error.
-    pub fn capture_request_body(&self, seq: u64, model: Option<&str>, provider: &str, body: &serde_json::Value) {
-        if !*self.corpus_capture_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+    pub fn capture_request_body(
+        &self,
+        seq: u64,
+        model: Option<&str>,
+        provider: &str,
+        body: &serde_json::Value,
+    ) {
+        if !*self
+            .corpus_capture_enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+        {
             return;
         }
         let body_str = match serde_json::to_string(body) {
@@ -726,7 +756,9 @@ impl AppState {
             return;
         }
         // 2. gate on db logging
-        if !self.is_db_log_enabled() { return; }
+        if !self.is_db_log_enabled() {
+            return;
+        }
 
         let now = std::time::Instant::now();
         let mut guard = self.last_quota.write().unwrap_or_else(|e| e.into_inner());
@@ -737,7 +769,9 @@ impl AppState {
                     || now.duration_since(*at) >= std::time::Duration::from_secs(60)
             }
         };
-        if !should_write { return; }
+        if !should_write {
+            return;
+        }
 
         if let Ok(db_guard) = self.db_log.lock() {
             if let Some(ref db) = *db_guard {
@@ -894,7 +928,10 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
-            corpus_capture: *self.corpus_capture_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            corpus_capture: *self
+                .corpus_capture_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             db_log_enabled: self.is_db_log_enabled(),
             trim_tool_desc_chars: *self
                 .trim_tool_desc_chars
@@ -916,10 +953,7 @@ impl AppState {
                 .trim_toolresult_tail
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
-            retry_enabled: *self
-                .retry_enabled
-                .read()
-                .unwrap_or_else(|e| e.into_inner()),
+            retry_enabled: *self.retry_enabled.read().unwrap_or_else(|e| e.into_inner()),
             retry_max_attempts: *self
                 .retry_max_attempts
                 .read()
@@ -932,18 +966,18 @@ impl AppState {
                 .retry_max_delay_ms
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
-    throttle_enabled: *self
-    .throttle_enabled
-    .read()
-    .unwrap_or_else(|e| e.into_inner()),
-    throttle_rate_per_sec: *self
-    .throttle_rate_per_sec
-    .read()
-    .unwrap_or_else(|e| e.into_inner()),
-    throttle_burst: *self
-    .throttle_burst
-    .read()
-    .unwrap_or_else(|e| e.into_inner()),
+            throttle_enabled: *self
+                .throttle_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            throttle_rate_per_sec: *self
+                .throttle_rate_per_sec
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            throttle_burst: *self
+                .throttle_burst
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             trim_ws_enabled: *self
                 .trim_ws_enabled
                 .read()
@@ -953,19 +987,19 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
-        trim_strip_thinking: *self
-            .trim_strip_thinking
-            .read()
-            .unwrap_or_else(|e| e.into_inner()),
-        trim_fence_requires_code: *self
-            .trim_fence_requires_code
-            .read()
-            .unwrap_or_else(|e| e.into_inner()),
-        trim_arrow_density_min: *self
-            .trim_arrow_density_min
-            .read()
-            .unwrap_or_else(|e| e.into_inner()),
-        corpus_max_rows: self.corpus_max_rows,
+            trim_strip_thinking: *self
+                .trim_strip_thinking
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_fence_requires_code: *self
+                .trim_fence_requires_code
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_arrow_density_min: *self
+                .trim_arrow_density_min
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            corpus_max_rows: self.corpus_max_rows,
         }
     }
 }

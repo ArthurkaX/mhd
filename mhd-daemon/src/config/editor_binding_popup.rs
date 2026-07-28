@@ -46,11 +46,11 @@ use crate::config::editor_key_combo::{KeyComboEditorState, KeyComboSlot};
 use crate::config::editor_layout::*;
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::ButtonStyle;
-use crate::config::text_cursor;
 use crate::config::editor_theme::{
     draw_button, draw_plain_label, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
     to_utf16_z,
 };
+use crate::config::text_cursor;
 use crate::core::action::ActionParamSchema;
 use crate::core::native_theme::{Argb, NativeTheme};
 use crate::core::trigger::KeyCombo;
@@ -2160,7 +2160,8 @@ unsafe extern "system" fn binding_popup_wndproc(
                         match wparam.0 as u32 {
                             0x08 => {
                                 // Backspace
-                                let start = text_cursor::prev(&state.param, state.param_edit_cursor);
+                                let start =
+                                    text_cursor::prev(&state.param, state.param_edit_cursor);
                                 let end = text_cursor::clamp(&state.param, state.param_edit_cursor);
                                 if start < end {
                                     state.param.drain(start..end);
@@ -2170,7 +2171,8 @@ unsafe extern "system" fn binding_popup_wndproc(
                             }
                             0x2E => {
                                 // Delete
-                                let start = text_cursor::clamp(&state.param, state.param_edit_cursor);
+                                let start =
+                                    text_cursor::clamp(&state.param, state.param_edit_cursor);
                                 let end = text_cursor::next(&state.param, start);
                                 if start < end {
                                     state.param.drain(start..end);

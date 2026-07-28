@@ -331,10 +331,7 @@ fn print_report(records: &[UsageRecord]) {
 
     // ── grand total ───────────────────────────────────────────────────────────
     println!("═══════════════════════════════════════════════════════════════════════════");
-    println!(
-        "  Grand total: {}",
-        grand.cost_str()
-    );
+    println!("  Grand total: {}", grand.cost_str());
     println!(
         "  Tokens — in: {}  out: {}  cache_read: {}  c5m: {}  c1h: {}",
         fmt_tok(grand.input),
@@ -356,23 +353,20 @@ fn print_report(records: &[UsageRecord]) {
     let cache_5m_cost: f64 = records
         .iter()
         .filter_map(|r| {
-            price_per_1m(&r.model)
-                .map(|(inp, _)| r.cache_5m as f64 * 1.25 * inp / 1_000_000.0)
+            price_per_1m(&r.model).map(|(inp, _)| r.cache_5m as f64 * 1.25 * inp / 1_000_000.0)
         })
         .sum();
     let cache_1h_cost: f64 = records
         .iter()
         .filter_map(|r| {
-            price_per_1m(&r.model)
-                .map(|(inp, _)| r.cache_1h as f64 * 2.0 * inp / 1_000_000.0)
+            price_per_1m(&r.model).map(|(inp, _)| r.cache_1h as f64 * 2.0 * inp / 1_000_000.0)
         })
         .sum();
     let cache_creation_total = cache_5m_cost + cache_1h_cost;
     let cache_read_cost: f64 = records
         .iter()
         .filter_map(|r| {
-            price_per_1m(&r.model)
-                .map(|(inp, _)| r.cache_read as f64 * 0.1 * inp / 1_000_000.0)
+            price_per_1m(&r.model).map(|(inp, _)| r.cache_read as f64 * 0.1 * inp / 1_000_000.0)
         })
         .sum();
 

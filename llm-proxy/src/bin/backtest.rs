@@ -141,12 +141,11 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
         return Vec::new();
     }
 
-    let mut stmt = match conn.prepare(
-        "SELECT model, provider, body FROM request_bodies ORDER BY id",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let mut stmt =
+        match conn.prepare("SELECT model, provider, body FROM request_bodies ORDER BY id") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
 
     let mut rows: Vec<BodyRow> = Vec::new();
     let mut parse_errors: usize = 0;
@@ -164,10 +163,17 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
                 Ok((model, provider, body_blob)) => {
                     let body_str = match decompress_body(&body_blob) {
                         Some(s) => s,
-                        None => { parse_errors += 1; continue; }
+                        None => {
+                            parse_errors += 1;
+                            continue;
+                        }
                     };
                     match serde_json::from_str::<Value>(&body_str) {
-                        Ok(body) => rows.push(BodyRow { model, provider, body }),
+                        Ok(body) => rows.push(BodyRow {
+                            model,
+                            provider,
+                            body,
+                        }),
                         Err(_) => parse_errors += 1,
                     }
                 }
@@ -185,7 +191,17 @@ fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
 
 // ── arg parsing ───────────────────────────────────────────────────────────────
 
-fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64, usize) {
+fn parse_args() -> (
+    PathBuf,
+    Vec<usize>,
+    String,
+    bool,
+    bool,
+    String,
+    bool,
+    f64,
+    usize,
+) {
     let default_db = config_dir().join("proxy.db");
     let default_sweep: Vec<usize> = vec![40, 80, 120, 150, 200, 300];
     let default_engine = "native".to_string();
@@ -330,13 +346,33 @@ fn parse_args() -> (PathBuf, Vec<usize>, String, bool, bool, String, bool, f64, 
         i += 1;
     }
 
-    (db_path, sweep, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min, max_bodies)
+    (
+        db_path,
+        sweep,
+        engine,
+        ws_on,
+        strip_thinking_on,
+        provider,
+        fence_requires_code,
+        arrow_density_min,
+        max_bodies,
+    )
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let (db_path, sweep_values, engine, ws_on, strip_thinking_on, provider, fence_requires_code, arrow_density_min, max_bodies) = parse_args();
+    let (
+        db_path,
+        sweep_values,
+        engine,
+        ws_on,
+        strip_thinking_on,
+        provider,
+        fence_requires_code,
+        arrow_density_min,
+        max_bodies,
+    ) = parse_args();
 
     eprintln!("DB: {}", db_path.display());
 
@@ -406,8 +442,26 @@ fn main() {
     // ── determinism sanity check (uses the selected engine + provider) ────────
     let det_v: usize = 150;
     let first_body = eligible[0].body.clone();
-    let det_a = apply_engine(&engine, &provider, first_body.clone(), det_v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
-    let det_b = apply_engine(&engine, &provider, first_body, det_v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
+    let det_a = apply_engine(
+        &engine,
+        &provider,
+        first_body.clone(),
+        det_v,
+        ws_on,
+        strip_thinking_on,
+        fence_requires_code,
+        arrow_density_min,
+    );
+    let det_b = apply_engine(
+        &engine,
+        &provider,
+        first_body,
+        det_v,
+        ws_on,
+        strip_thinking_on,
+        fence_requires_code,
+        arrow_density_min,
+    );
     if det_a == det_b {
         println!("determinism: OK");
     } else {
@@ -430,7 +484,16 @@ fn main() {
             if i % 200 == 0 && i > 0 {
                 eprint!(".");
             }
-            let trimmed_body = apply_engine(&engine, &provider, row.body.clone(), v, ws_on, strip_thinking_on, fence_requires_code, arrow_density_min);
+            let trimmed_body = apply_engine(
+                &engine,
+                &provider,
+                row.body.clone(),
+                v,
+                ws_on,
+                strip_thinking_on,
+                fence_requires_code,
+                arrow_density_min,
+            );
             let before = est_tokens(&row.body);
             let after = est_tokens(&trimmed_body);
             if after < before {
@@ -440,7 +503,11 @@ fn main() {
                 dollars += (before - after) as f64 * input_rate_per_1m(&row.model) / 1_000_000.0;
             }
         }
-        eprintln!(" done in {:.1}s ({} bodies)", val_start.elapsed().as_secs_f64(), eligible.len());
+        eprintln!(
+            " done in {:.1}s ({} bodies)",
+            val_start.elapsed().as_secs_f64(),
+            eligible.len()
+        );
 
         let n_trimmed = ratios.len();
         let avg_pct = if ratios.is_empty() {
@@ -463,14 +530,22 @@ fn main() {
             dollars_saved: dollars,
         });
     }
-    eprintln!("  [sweep] total {:.1}s", sweep_start.elapsed().as_secs_f64());
+    eprintln!(
+        "  [sweep] total {:.1}s",
+        sweep_start.elapsed().as_secs_f64()
+    );
 
     // ── table ─────────────────────────────────────────────────────────────────
     println!();
     println!("═══════════════════════════════════════════════════════════════════════");
     println!("  Trim Backtest — tool_max_desc_chars sweep");
     println!("═══════════════════════════════════════════════════════════════════════");
-    println!("  engine: {engine}   provider: {provider}   ws: {}   strip_thinking: {}   fence_requires_code: {}   arrow_density_min: {arrow_density_min}   estimator: ~chars/4 (unified)", if ws_on { "on" } else { "off" }, if strip_thinking_on { "on" } else { "off" }, if fence_requires_code { "on" } else { "off" });
+    println!(
+        "  engine: {engine}   provider: {provider}   ws: {}   strip_thinking: {}   fence_requires_code: {}   arrow_density_min: {arrow_density_min}   estimator: ~chars/4 (unified)",
+        if ws_on { "on" } else { "off" },
+        if strip_thinking_on { "on" } else { "off" },
+        if fence_requires_code { "on" } else { "off" }
+    );
     println!();
     println!(
         "{:<10}  {:>16}  {:>6}  {:>7}  {:>5}  {:>9}  {:>8}",
@@ -491,7 +566,9 @@ fn main() {
     }
     println!("{}", "─".repeat(71));
     println!();
-    println!("Pricing (input only — trim doesn't affect output):  opus=$5/MTok  sonnet=$3/MTok  haiku=$1/MTok  fable=$10/MTok  unknown=$5/MTok");
+    println!(
+        "Pricing (input only — trim doesn't affect output):  opus=$5/MTok  sonnet=$3/MTok  haiku=$1/MTok  fable=$10/MTok  unknown=$5/MTok"
+    );
     println!("avg% = per-request mean of (before-after)/before*100, over trimmed rows only");
     println!();
     let _ = std::io::Write::flush(&mut std::io::stdout());

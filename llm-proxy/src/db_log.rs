@@ -563,7 +563,13 @@ impl DbLog {
     /// client cancelled mid-flight and the completion future was dropped.
     /// Race-free: the `ts_end IS NULL` guard in the WHERE clause means this
     /// no-ops if a real completion (success or error) already ran. Best-effort.
-    pub fn mark_request_cancelled(&self, run_id: u64, seq: u64, ts_end: &str, duration_ms: Option<u64>) {
+    pub fn mark_request_cancelled(
+        &self,
+        run_id: u64,
+        seq: u64,
+        ts_end: &str,
+        duration_ms: Option<u64>,
+    ) {
         if let Ok(conn) = self.conn.lock() {
             let _ = conn.execute(
                 "UPDATE requests SET
@@ -629,7 +635,15 @@ impl DbLog {
     /// The body is zstd-compressed (level 9) before storage.
     /// After a successful insert, prunes the oldest rows so at most
     /// `corpus_max_rows` rows remain (0 = unlimited).
-    pub fn insert_request_body(&self, run_id: u64, seq: u64, ts: &str, model: Option<&str>, provider: &str, body: &str) {
+    pub fn insert_request_body(
+        &self,
+        run_id: u64,
+        seq: u64,
+        ts: &str,
+        model: Option<&str>,
+        provider: &str,
+        body: &str,
+    ) {
         let compressed = compress_body(body);
         if compressed.is_empty() {
             return; // compression produced nothing (only on encode error); skip row
@@ -694,12 +708,19 @@ impl DbLog {
                      elapsed_ms, knobs_json)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 rusqlite::params![
-                    ts, provider,
-                    result.n_bodies as i64, result.n_trimmed as i64,
-                    result.tokens_off as i64, result.tokens_on as i64,
-                    result.avg_trim_pct, result.median_trim_pct, headroom_pct,
-                    result.fail_open_ok as i64, result.deterministic as i64,
-                    result.elapsed_ms as i64, knobs_json,
+                    ts,
+                    provider,
+                    result.n_bodies as i64,
+                    result.n_trimmed as i64,
+                    result.tokens_off as i64,
+                    result.tokens_on as i64,
+                    result.avg_trim_pct,
+                    result.median_trim_pct,
+                    headroom_pct,
+                    result.fail_open_ok as i64,
+                    result.deterministic as i64,
+                    result.elapsed_ms as i64,
+                    knobs_json,
                 ],
             );
         }
@@ -729,12 +750,7 @@ fn classify_raw_detail(
     fallback_event_type: &str,
     fallback_seq: i64,
 ) -> (String, i64, Option<String>, Option<String>) {
-    let default = (
-        fallback_event_type.to_string(),
-        fallback_seq,
-        None,
-        None,
-    );
+    let default = (fallback_event_type.to_string(), fallback_seq, None, None);
 
     let hash_pos = match detail.find('#') {
         Some(p) => p,
@@ -760,9 +776,7 @@ fn classify_raw_detail(
     if after_id.is_empty() {
         return (default.0, seq, default.2, default.3);
     }
-    let target_end = after_id
-        .find(char::is_whitespace)
-        .unwrap_or(after_id.len());
+    let target_end = after_id.find(char::is_whitespace).unwrap_or(after_id.len());
     let target = after_id[..target_end].to_string();
 
     // Classify event type and extract model from the remainder.
@@ -793,9 +807,7 @@ fn classify_event_word(s: &str) -> String {
     }
 
     // Single-word event types.
-    let word_end = trimmed
-        .find(char::is_whitespace)
-        .unwrap_or(trimmed.len());
+    let word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
     let word = &trimmed[..word_end];
     match word {
         "REQ" => return "REQ".to_string(),
@@ -867,12 +879,16 @@ mod tests {
     #[test]
     fn round_trip_large_body() {
         // ~100 KB of repeating JSON-like content.
-        let chunk = r#"{"role":"user","content":"AAAA BBBB CCCC DDDD EEEE FFFF GGGG HHHH IIII JJJJ "}"#;
+        let chunk =
+            r#"{"role":"user","content":"AAAA BBBB CCCC DDDD EEEE FFFF GGGG HHHH IIII JJJJ "}"#;
         let input: String = chunk.repeat(1100); // ~86 KB (78 bytes * 1100 = 85,800)
         assert!(input.len() >= 80_000);
         let compressed = compress_body(&input);
         // Sanity: compressed should be much smaller than the original.
-        assert!(compressed.len() < input.len() / 4, "compression ratio unexpectedly poor");
+        assert!(
+            compressed.len() < input.len() / 4,
+            "compression ratio unexpectedly poor"
+        );
         let restored = decompress_body(&compressed).expect("decompress of large body failed");
         assert_eq!(restored, input);
     }
@@ -880,7 +896,10 @@ mod tests {
     #[test]
     fn decompress_garbage_returns_none() {
         let garbage: &[u8] = b"\xDE\xAD\xBE\xEF\xFF\xFE garbage that is not zstd";
-        assert!(decompress_body(garbage).is_none(), "expected None for garbage bytes");
+        assert!(
+            decompress_body(garbage).is_none(),
+            "expected None for garbage bytes"
+        );
     }
 
     // ── schema migration / self-healing ──────────────────────────────────────
@@ -1102,7 +1121,12 @@ mod tests {
         assert_eq!(read(1), (None, None, None, None));
         assert_eq!(
             read(2),
-            (Some("[[\"00ff\",7]]".to_string()), Some(7), Some(5), Some(3))
+            (
+                Some("[[\"00ff\",7]]".to_string()),
+                Some(7),
+                Some(5),
+                Some(3)
+            )
         );
     }
 
@@ -1126,10 +1150,16 @@ mod tests {
         assert!(!silent.reports(), "silent route must not claim to report");
         assert!(!silent.caches());
         assert_eq!(silent.requests, 2);
-        assert_eq!(silent.reporting_requests, 0, "no evidence behind the verdict");
+        assert_eq!(
+            silent.reporting_requests, 0,
+            "no evidence behind the verdict"
+        );
 
         let honest = find("honest-route");
-        assert!(honest.reports(), "a reported zero still counts as reporting");
+        assert!(
+            honest.reports(),
+            "a reported zero still counts as reporting"
+        );
         assert!(!honest.caches(), "reports, but does not cache");
         assert_eq!(honest.reporting_requests, 1);
 
@@ -1148,7 +1178,10 @@ mod tests {
         log_request(&db, 3, "flaky-route", None, 429);
 
         let rows = db.route_cache();
-        let r = rows.iter().find(|r| r.route == "flaky-route").expect("route");
+        let r = rows
+            .iter()
+            .find(|r| r.route == "flaky-route")
+            .expect("route");
         assert_eq!(r.requests, 1, "only the 200 should count");
         assert_eq!(r.reporting_requests, 1);
         assert!(r.reports() && r.caches());
@@ -1169,7 +1202,8 @@ mod tests {
             let conn = db.conn.lock().expect("lock");
             conn.execute("DELETE FROM meta WHERE key = 'cache_null_epoch_id'", [])
                 .expect("clear epoch");
-            conn.pragma_update(None, "user_version", 2).expect("downgrade");
+            conn.pragma_update(None, "user_version", 2)
+                .expect("downgrade");
         }
         // Reopening runs the v3 migration, which stamps the watermark.
         let db = DbLog::open(path.as_ref(), 0).expect("reopen");

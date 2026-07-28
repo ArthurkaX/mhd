@@ -9,7 +9,7 @@ use eframe::egui;
 use serde_json::Value;
 
 use llm_proxy::db_log::decompress_body;
-use llm_proxy::native_trim::{trim_native, NativeKnobs};
+use llm_proxy::native_trim::{NativeKnobs, trim_native};
 
 // ── Token estimator ──────────────────────────────────────────────────────────
 
@@ -100,7 +100,11 @@ pub fn build_tree(before: &Value, after: &Value) -> Vec<Node> {
             let name = tool
                 .get("name")
                 .and_then(|n| n.as_str())
-                .or_else(|| tool.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+                .or_else(|| {
+                    tool.get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|n| n.as_str())
+                })
                 .unwrap_or("?")
                 .to_string();
             let after_tool = tools_after.and_then(|a| a.get(i));
@@ -224,7 +228,11 @@ pub fn load_settings_from_disk(knobs: &mut NativeKnobs) {
         Some(h) => h,
         None => return,
     };
-    let path = home.join(".config").join("mhd").join("llm-proxy").join("settings.json");
+    let path = home
+        .join(".config")
+        .join("mhd")
+        .join("llm-proxy")
+        .join("settings.json");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -262,7 +270,10 @@ pub fn load_settings_from_disk(knobs: &mut NativeKnobs) {
     if let Some(v) = obj.get("trim_strip_thinking").and_then(|v| v.as_bool()) {
         knobs.strip_thinking = v;
     }
-    if let Some(v) = obj.get("trim_fence_requires_code").and_then(|v| v.as_bool()) {
+    if let Some(v) = obj
+        .get("trim_fence_requires_code")
+        .and_then(|v| v.as_bool())
+    {
         knobs.tool_result_fence_requires_code = v;
     }
     if let Some(v) = obj.get("trim_arrow_density_min").and_then(|v| v.as_f64()) {
@@ -308,7 +319,11 @@ pub fn draw_grid(
     );
     let (rect, _resp) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    let per_cell = if denom == 0 { 1.0 } else { denom as f32 / CELLS as f32 };
+    let per_cell = if denom == 0 {
+        1.0
+    } else {
+        denom as f32 / CELLS as f32
+    };
 
     for k in 0..CELLS {
         let tok_at = (k as f32 + 0.5) * per_cell;
@@ -348,10 +363,7 @@ pub fn show_tree(ui: &mut egui::Ui, nodes: &[Node], selected: &mut Option<NodePa
 
         if node.children.is_empty() {
             ui.horizontal(|ui| {
-                let resp = ui.selectable_label(
-                    selected.as_ref() == Some(&node.path),
-                    &node.label,
-                );
+                let resp = ui.selectable_label(selected.as_ref() == Some(&node.path), &node.label);
                 if resp.clicked() {
                     *selected = Some(node.path.clone());
                 }
@@ -364,22 +376,17 @@ pub fn show_tree(ui: &mut egui::Ui, nodes: &[Node], selected: &mut Option<NodePa
         } else {
             header.show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(
-                        selected.as_ref() == Some(&node.path),
-                        &node.label,
-                    )
-                    .clicked()
+                    if ui
+                        .selectable_label(selected.as_ref() == Some(&node.path), &node.label)
+                        .clicked()
                     {
                         *selected = Some(node.path.clone());
                     }
 
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            let label = format!("{} -> {}", node.tok_before, node.tok_after);
-                            ui.colored_label(delta_color, label);
-                        },
-                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = format!("{} -> {}", node.tok_before, node.tok_after);
+                        ui.colored_label(delta_color, label);
+                    });
                 });
 
                 show_tree(ui, &node.children, selected);
@@ -399,7 +406,10 @@ pub struct RequestRow {
     pub body: Vec<u8>,
 }
 
-pub fn query_by_id(conn: &rusqlite::Connection, id: i64) -> Result<Option<RequestRow>, rusqlite::Error> {
+pub fn query_by_id(
+    conn: &rusqlite::Connection,
+    id: i64,
+) -> Result<Option<RequestRow>, rusqlite::Error> {
     let sql = "SELECT id, run_id, seq, model, provider, body FROM request_bodies WHERE id = ?";
     let mut stmt = conn.prepare(sql)?;
     let mut rows = stmt.query_map([id], |row| {
@@ -514,7 +524,13 @@ pub struct ContextTrimApp {
 }
 
 impl ContextTrimApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, db_path: PathBuf, row_id: Option<i64>, run_id: Option<i64>, seq: Option<i64>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        db_path: PathBuf,
+        row_id: Option<i64>,
+        run_id: Option<i64>,
+        seq: Option<i64>,
+    ) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
 
         let mut app = ContextTrimApp {
@@ -654,47 +670,69 @@ impl eframe::App for ContextTrimApp {
                     egui::Slider::new(&mut self.knobs.tool_max_desc_chars, 0..=2000)
                         .text("tool_max_desc_chars"),
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.add(
                     egui::Slider::new(&mut self.knobs.tool_result_head, 0..=20000)
                         .text("tool_result_head"),
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.add(
                     egui::Slider::new(&mut self.knobs.tool_result_tail, 0..=10000)
                         .text("tool_result_tail"),
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.add(
                     egui::Slider::new(&mut self.knobs.tool_result_min_elide, 0..=20000)
                         .text("tool_result_min_elide"),
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.add(
                     egui::Slider::new(&mut self.knobs.ws_blank_run_max, 0..=20)
                         .text("ws_blank_run_max"),
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
 
                 let r = ui.checkbox(&mut self.knobs.ws_enabled, "ws_enabled");
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.checkbox(&mut self.knobs.ws_strip_trailing, "ws_strip_trailing");
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.checkbox(&mut self.knobs.ws_collapse_inner, "ws_collapse_inner");
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.checkbox(&mut self.knobs.strip_thinking, "strip_thinking");
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
                 let r = ui.checkbox(
                     &mut self.knobs.tool_result_fence_requires_code,
                     "tool_result_fence_requires_code",
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
 
                 let r = ui.add(
                     egui::Slider::new(&mut self.knobs.tool_result_arrow_density_min, 0.0..=0.2)
                         .text("tool_result_arrow_density_min"),
                 );
-                if r.changed() { self.dirty = true; }
+                if r.changed() {
+                    self.dirty = true;
+                }
 
                 ui.separator();
 
@@ -746,8 +784,8 @@ impl eframe::App for ContextTrimApp {
                             (COL_MESSAGES, "messages"),
                             (COL_SAVED, "saved"),
                         ] {
-                            let (r, _) =
-                                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            let (r, _) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                             ui.painter().rect_filled(r, 2.0, c);
                             ui.label(lbl);
                             ui.add_space(6.0);
@@ -780,7 +818,9 @@ impl eframe::App for ContextTrimApp {
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         let before_text = extract(before, path)
-                                            .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
+                                            .map(|v| {
+                                                serde_json::to_string_pretty(v).unwrap_or_default()
+                                            })
                                             .unwrap_or_default();
                                         ui.label(egui::RichText::new(&before_text).monospace());
                                     });
@@ -792,7 +832,9 @@ impl eframe::App for ContextTrimApp {
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         let after_text = extract(after, path)
-                                            .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
+                                            .map(|v| {
+                                                serde_json::to_string_pretty(v).unwrap_or_default()
+                                            })
                                             .unwrap_or_default();
                                         ui.label(egui::RichText::new(&after_text).monospace());
                                     });

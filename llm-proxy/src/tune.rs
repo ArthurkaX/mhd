@@ -4,11 +4,11 @@
 //! Recommends the "knee" value for `tool_max_desc_chars`: the point past which
 //! further tightening yields little extra trim%.  No LLM, no network, no writes.
 
-use std::path::Path;
-use serde_json::Value;
-use rusqlite::{Connection, OpenFlags};
-use crate::native_trim::{NativeKnobs, trim_native, trim_native_openai};
 use crate::db_log::decompress_body;
+use crate::native_trim::{NativeKnobs, trim_native, trim_native_openai};
+use rusqlite::{Connection, OpenFlags};
+use serde_json::Value;
+use std::path::Path;
 
 // ── helpers (mirror bench.rs) ────────────────────────────────────────────────
 
@@ -22,20 +22,20 @@ fn est_tokens(v: &Value) -> u64 {
 
 /// One measured point on the sweep.
 pub struct SweepPoint {
-    pub desc_chars: usize,   // the swept value
-    pub avg_trim_pct: f64,   // avg-of-ratios over reduced bodies
-    pub n_trimmed: usize,    // how many bodies were reduced
-    pub fail_open_ok: bool,  // no body grew at this setting
+    pub desc_chars: usize,  // the swept value
+    pub avg_trim_pct: f64,  // avg-of-ratios over reduced bodies
+    pub n_trimmed: usize,   // how many bodies were reduced
+    pub fail_open_ok: bool, // no body grew at this setting
 }
 
 /// Result of a tune run.
 pub struct TuneResult {
-    pub points: Vec<SweepPoint>,     // every swept value, ascending desc_chars
-    pub baseline_desc_chars: usize,  // the current setting the caller passed in
-    pub baseline_trim_pct: f64,      // trim% at (or nearest to) the baseline value
-    pub recommended: usize,          // the knee pick (see pick_knee)
-    pub recommended_trim_pct: f64,   // trim% at recommendation
-    pub verdict: TuneVerdict,        // how worthwhile the recommendation is
+    pub points: Vec<SweepPoint>,    // every swept value, ascending desc_chars
+    pub baseline_desc_chars: usize, // the current setting the caller passed in
+    pub baseline_trim_pct: f64,     // trim% at (or nearest to) the baseline value
+    pub recommended: usize,         // the knee pick (see pick_knee)
+    pub recommended_trim_pct: f64,  // trim% at recommendation
+    pub verdict: TuneVerdict,       // how worthwhile the recommendation is
     pub n_bodies: usize,
     pub elapsed_ms: u64,
 }
@@ -264,8 +264,7 @@ pub fn run_tune(
                     sampled.extend(session.iter().cloned());
                 } else {
                     let step = session.len() as f64 / q as f64;
-                    sampled
-                        .extend((0..q).map(|i| session[(i as f64 * step) as usize].clone()));
+                    sampled.extend((0..q).map(|i| session[(i as f64 * step) as usize].clone()));
                 }
             }
             if sampled.len() > max_bodies {
@@ -367,7 +366,10 @@ pub enum Bucket {
 
 /// Which knob the sweep varies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SweepKnob { DescChars, ToolResultHead }
+pub enum SweepKnob {
+    DescChars,
+    ToolResultHead,
+}
 
 /// Run a bucket-aware tune sweep over one knob (tool_max_desc_chars or
 /// tool_result_head).  Reuses `pick_knee` / `classify_verdict` from the
@@ -421,9 +423,7 @@ pub fn run_bucket_tune(
         }
     };
 
-    let mut stmt = conn
-        .prepare(query)
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
         .map_err(|e| e.to_string())?;
@@ -461,8 +461,7 @@ pub fn run_bucket_tune(
                     sampled.extend(session.iter().cloned());
                 } else {
                     let step = session.len() as f64 / q as f64;
-                    sampled
-                        .extend((0..q).map(|i| session[(i as f64 * step) as usize].clone()));
+                    sampled.extend((0..q).map(|i| session[(i as f64 * step) as usize].clone()));
                 }
             }
             if sampled.len() > max_bodies {
@@ -744,10 +743,7 @@ mod tests {
     /// No eligible points (all fail_open_ok=false) => NotWorth.
     #[test]
     fn verdict_no_eligible_is_notworth() {
-        let points = vec![
-            sp(80, 15.0, false),
-            sp(100, 14.8, false),
-        ];
+        let points = vec![sp(80, 15.0, false), sp(100, 14.8, false)];
         assert_eq!(
             classify_verdict(&points, 0, 100, 14.8, 14.8),
             TuneVerdict::NotWorth

@@ -33,7 +33,8 @@ impl Canvas for CapturedImage {
         let dst_a = self.rgba[idx + 3] as u32;
         let out_a = src_a + (dst_a * (255 - src_a)) / 255;
         if out_a > 0 {
-            self.rgba[idx] = ((r as u32 * src_a + self.rgba[idx] as u32 * (255 - src_a)) / 255) as u8;
+            self.rgba[idx] =
+                ((r as u32 * src_a + self.rgba[idx] as u32 * (255 - src_a)) / 255) as u8;
             self.rgba[idx + 1] =
                 ((g as u32 * src_a + self.rgba[idx + 1] as u32 * (255 - src_a)) / 255) as u8;
             self.rgba[idx + 2] =

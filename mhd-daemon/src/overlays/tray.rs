@@ -75,9 +75,7 @@ fn launch_llm_monitor() {
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("mhd-inspector.exe")));
     let Some(exe) = exe else { return };
-    let _ = std::process::Command::new(exe)
-        .arg("--monitor")
-        .spawn();
+    let _ = std::process::Command::new(exe).arg("--monitor").spawn();
 }
 
 pub(crate) fn load_tray_icon() -> HICON {
@@ -185,7 +183,12 @@ fn show_menu(hwnd: HWND) {
         } else {
             MF_BYPOSITION | MF_STRING
         };
-        item(menu, cw_flags, CMD_CODEX_WATCHER_TOGGLE, "Codex Watcher on/off");
+        item(
+            menu,
+            cw_flags,
+            CMD_CODEX_WATCHER_TOGGLE,
+            "Codex Watcher on/off",
+        );
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 

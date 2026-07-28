@@ -176,11 +176,7 @@ pub fn get_vision_trace() -> Vec<VisionTraceEntry> {
 
 /// Latest Anthropic quota snapshot from the running proxy, if any.
 pub fn get_quota() -> Option<QuotaSnapshot> {
-    CONTROL
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|c| c.quota())
+    CONTROL.lock().unwrap().as_ref().and_then(|c| c.quota())
 }
 
 /// Run the Anthropic trim A/B bench with the currently-live native knobs.
@@ -203,7 +199,11 @@ pub fn run_bench() -> Result<Option<llm_proxy::bench::BenchResult>, String> {
         } else {
             (1.0 / (1.0 - result.avg_trim_pct / 100.0) - 1.0) * 100.0
         };
-        let headroom_pct = if headroom_pct.is_finite() { headroom_pct } else { 9999.0 };
+        let headroom_pct = if headroom_pct.is_finite() {
+            headroom_pct
+        } else {
+            9999.0
+        };
         let knobs_json = serde_json::to_string(&knobs).unwrap_or_else(|_| "{}".to_string());
         // Re-acquire the control handle to record (don't hold the lock across the bench run).
         if let Ok(guard) = CONTROL.lock() {
@@ -300,7 +300,11 @@ pub fn is_trim_enabled() -> bool {
 
 /// Current free/cheap-tier target string ("" if unset), or None if the proxy is off.
 pub fn get_trim_free_target() -> Option<String> {
-    CONTROL.lock().unwrap().as_ref().map(|c| c.trim_free_target())
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.trim_free_target())
 }
 
 /// Toggle trim on/off. Returns the new state.

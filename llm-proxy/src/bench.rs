@@ -4,11 +4,11 @@
 //! trim engine and reports input-token reduction as avg-of-ratios. Anthropic
 //! shape only (the subscriber quota story is Anthropic/Claude Code specific).
 
-use std::path::Path;
-use serde_json::Value;
-use rusqlite::{Connection, OpenFlags};
-use crate::native_trim::{NativeKnobs, trim_native};
 use crate::db_log::decompress_body;
+use crate::native_trim::{NativeKnobs, trim_native};
+use rusqlite::{Connection, OpenFlags};
+use serde_json::Value;
+use std::path::Path;
 
 /// Same estimator as the `backtest` binary (~4 chars/token over serialized JSON)
 /// so live and offline numbers agree. NOT a real tokenizer.
@@ -42,29 +42,45 @@ pub struct BenchResult {
 /// trims each with `knobs`, and aggregates. Read-only DB access.
 ///
 /// Returns `Ok(None)` when the corpus has no anthropic rows (caller shows "empty").
-pub fn run_anthropic_bench(db_path: &Path, knobs: &NativeKnobs) -> Result<Option<BenchResult>, String> {
+pub fn run_anthropic_bench(
+    db_path: &Path,
+    knobs: &NativeKnobs,
+) -> Result<Option<BenchResult>, String> {
     let t0 = std::time::Instant::now();
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open {}: {e}", db_path.display()))?;
 
     // Gracefully handle a missing table.
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-        [], |r| r.get::<_, i64>(0)).map(|n| n > 0).unwrap_or(false);
-    if !exists { return Ok(None); }
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !exists {
+        return Ok(None);
+    }
 
-    let mut stmt = conn.prepare(
-        "SELECT body FROM request_bodies WHERE provider='anthropic' ORDER BY id")
+    let mut stmt = conn
+        .prepare("SELECT body FROM request_bodies WHERE provider='anthropic' ORDER BY id")
         .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))
+        .map_err(|e| e.to_string())?;
 
     let mut bodies: Vec<Value> = Vec::new();
     for r in rows.flatten() {
         if let Some(s) = decompress_body(&r) {
-            if let Ok(v) = serde_json::from_str::<Value>(&s) { bodies.push(v); }
+            if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                bodies.push(v);
+            }
         }
     }
-    if bodies.is_empty() { return Ok(None); }
+    if bodies.is_empty() {
+        return Ok(None);
+    }
 
     // Determinism sanity: trim the first body twice; outputs must match.
     let deterministic = {
@@ -78,22 +94,38 @@ pub fn run_anthropic_bench(db_path: &Path, knobs: &NativeKnobs) -> Result<Option
     let mut fail_open_ok = true;
     for body in &bodies {
         let before = est_tokens(body);
-        let after  = est_tokens(&trim_native(body.clone(), knobs));
+        let after = est_tokens(&trim_native(body.clone(), knobs));
         tokens_off += before;
-        tokens_on  += after;
-        if after > before { fail_open_ok = false; }
+        tokens_on += after;
+        if after > before {
+            fail_open_ok = false;
+        }
         if after < before && before > 0 {
             ratios.push((before - after) as f64 / before as f64 * 100.0);
         }
     }
     let n_trimmed = ratios.len();
-    let avg_trim_pct = if ratios.is_empty() { 0.0 } else { ratios.iter().sum::<f64>() / n_trimmed as f64 };
+    let avg_trim_pct = if ratios.is_empty() {
+        0.0
+    } else {
+        ratios.iter().sum::<f64>() / n_trimmed as f64
+    };
     ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_trim_pct = if ratios.is_empty() { 0.0 } else { ratios[ratios.len()/2] };
+    let median_trim_pct = if ratios.is_empty() {
+        0.0
+    } else {
+        ratios[ratios.len() / 2]
+    };
 
     Ok(Some(BenchResult {
-        n_bodies: bodies.len(), n_trimmed, tokens_off, tokens_on,
-        avg_trim_pct, median_trim_pct, fail_open_ok, deterministic,
+        n_bodies: bodies.len(),
+        n_trimmed,
+        tokens_off,
+        tokens_on,
+        avg_trim_pct,
+        median_trim_pct,
+        fail_open_ok,
+        deterministic,
         elapsed_ms: t0.elapsed().as_millis() as u64,
     }))
 }
@@ -135,6 +167,9 @@ mod tests {
         let before = est_tokens(&body);
         let after = est_tokens(&trimmed);
         assert!(after <= before, "trim must not increase tokens");
-        assert!(after < before, "trim should reduce tokens for oversized desc");
+        assert!(
+            after < before,
+            "trim should reduce tokens for oversized desc"
+        );
     }
 }

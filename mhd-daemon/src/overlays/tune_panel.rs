@@ -7,8 +7,8 @@
 //! tables + apply controls. Launched from the [Tune] button in the
 //! Proxy Trace window.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -217,7 +217,15 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
     let pos_y = work.top + (work.bottom - work.top - win_h) / 2;
 
     unsafe {
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, win_w, win_h, SWP_SHOWWINDOW);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            pos_x,
+            pos_y,
+            win_w,
+            win_h,
+            SWP_SHOWWINDOW,
+        );
     }
 
     unsafe {
@@ -366,7 +374,12 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         bottom: pad + font_h.abs() + 4,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut title_wz, &mut title_rc, DT_LEFT | DT_SINGLELINE);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut title_wz,
+            &mut title_rc,
+            DT_LEFT | DT_SINGLELINE,
+        );
     }
 
     // Minimize button
@@ -483,7 +496,17 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     let content_y = sep_y + (4.0 * scale) as i32;
 
     if prog.running {
-        render_running(dib_dc, hfont_small, theme, scale, win_w, pad, content_y, row_h, &prog);
+        render_running(
+            dib_dc,
+            hfont_small,
+            theme,
+            scale,
+            win_w,
+            pad,
+            content_y,
+            row_h,
+            &prog,
+        );
     } else if prog.results.iter().any(|r| r.is_some()) {
         render_done(
             dib_dc,
@@ -513,7 +536,12 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             bottom: content_y + row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut ew, &mut erc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut ew,
+                &mut erc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     } else {
         render_idle(
@@ -579,7 +607,12 @@ fn render_idle(
             bottom: y0 + (i + 1) as i32 * row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut wz,
+                &mut rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 
@@ -630,7 +663,12 @@ fn render_running(
         bottom: y0 + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut run_wz, &mut run_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut run_wz,
+            &mut run_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     for bi in 0..3 {
@@ -664,7 +702,12 @@ fn render_running(
             bottom: line_y + row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut wz,
+                &mut rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 }
@@ -719,7 +762,12 @@ fn render_done(
             bottom: section_y + row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut sw, &mut src, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut sw,
+                &mut src,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         // Sub-header: col labels
@@ -783,12 +831,7 @@ fn render_done(
                 tags.push_str("\u{2039}rec");
             }
 
-            let values = [
-                pt.desc_chars.to_string(),
-                pct_str,
-                bar_str,
-                tags,
-            ];
+            let values = [pt.desc_chars.to_string(), pct_str, bar_str, tags];
             let mut col_x = data_x;
             for (ci, val) in values.iter().enumerate() {
                 let cw = col_widths[ci];
@@ -923,7 +966,15 @@ fn render_done(
 
     // MVP note
     let note_y = if applied.is_some() {
-        sel_y + row_h + (4.0 * scale) as i32 + preset_h + (8.0 * scale) as i32 + apply_h + (4.0 * scale) as i32 + row_h + (2.0 * scale) as i32
+        sel_y
+            + row_h
+            + (4.0 * scale) as i32
+            + preset_h
+            + (8.0 * scale) as i32
+            + apply_h
+            + (4.0 * scale) as i32
+            + row_h
+            + (2.0 * scale) as i32
     } else {
         apply_y + apply_h + (4.0 * scale) as i32 + (2.0 * scale) as i32
     };
@@ -1053,10 +1104,21 @@ unsafe extern "system" fn panel_wndproc(
                 // Read progress to determine state
                 let (running, error, results) = {
                     let guard = TUNE_PROGRESS.lock().unwrap();
-                    guard.as_ref().map(|a| {
-                        let p = a.lock().unwrap();
-                        (p.running, p.error.clone(), [p.results[0].is_some(), p.results[1].is_some(), p.results[2].is_some()])
-                    }).unwrap_or((false, None, [false, false, false]))
+                    guard
+                        .as_ref()
+                        .map(|a| {
+                            let p = a.lock().unwrap();
+                            (
+                                p.running,
+                                p.error.clone(),
+                                [
+                                    p.results[0].is_some(),
+                                    p.results[1].is_some(),
+                                    p.results[2].is_some(),
+                                ],
+                            )
+                        })
+                        .unwrap_or((false, None, [false, false, false]))
                 };
 
                 if !running && !results.iter().any(|r| *r) && error.is_none() {
@@ -1065,9 +1127,7 @@ unsafe extern "system" fn panel_wndproc(
                     let btn_h = (24.0 * scale) as i32;
                     let btn_x = win_w / 2 - btn_w / 2;
                     let btn_y = content_y + 2 * row_h + (8.0 * scale) as i32;
-                    if x >= btn_x && x < btn_x + btn_w
-                        && y >= btn_y && y < btn_y + btn_h
-                    {
+                    if x >= btn_x && x < btn_x + btn_w && y >= btn_y && y < btn_y + btn_h {
                         start_tune_run(hwnd);
                         return LRESULT(0);
                     }
@@ -1083,10 +1143,13 @@ unsafe extern "system" fn panel_wndproc(
                             // bucket section: header + sub-header + data rows
                             let n_points = {
                                 let guard = TUNE_PROGRESS.lock().unwrap();
-                                guard.as_ref().map(|a| {
-                                    let p = a.lock().unwrap();
-                                    p.results[bi].as_ref().map(|r| r.points.len()).unwrap_or(0)
-                                }).unwrap_or(0)
+                                guard
+                                    .as_ref()
+                                    .map(|a| {
+                                        let p = a.lock().unwrap();
+                                        p.results[bi].as_ref().map(|r| r.points.len()).unwrap_or(0)
+                                    })
+                                    .unwrap_or(0)
                             };
                             scan_y += (2 + n_points) as i32 * row_h + (4.0 * scale) as i32;
                         }
@@ -1104,8 +1167,10 @@ unsafe extern "system" fn panel_wndproc(
 
                     for (pi, &val) in SWEEP_VALUES.iter().enumerate() {
                         let px = presets_x + pi as i32 * (preset_w + preset_gap);
-                        if x >= px && x < px + preset_w
-                            && y >= presets_y && y < presets_y + preset_h
+                        if x >= px
+                            && x < px + preset_w
+                            && y >= presets_y
+                            && y < presets_y + preset_h
                         {
                             let sel_head = val;
                             SELECTED_HEAD.store(sel_head, Ordering::Relaxed);
@@ -1119,8 +1184,10 @@ unsafe extern "system" fn panel_wndproc(
                     let apply_h = (24.0 * scale) as i32;
                     let apply_x = win_w / 2 - apply_w / 2;
                     let apply_y = presets_y + preset_h + (8.0 * scale) as i32;
-                    if x >= apply_x && x < apply_x + apply_w
-                        && y >= apply_y && y < apply_y + apply_h
+                    if x >= apply_x
+                        && x < apply_x + apply_w
+                        && y >= apply_y
+                        && y < apply_y + apply_h
                     {
                         let head = SELECTED_HEAD.load(Ordering::Relaxed);
                         if let Ok(mut settings) = llm_proxy::config::load_settings() {
@@ -1228,7 +1295,9 @@ fn start_tune_run(hwnd: HWND) {
     std::thread::Builder::new()
         .name("mhd-tune-run".into())
         .spawn(move || {
-            let _guard = RunGuard { progress: progress.clone() };
+            let _guard = RunGuard {
+                progress: progress.clone(),
+            };
             for (idx, &bucket) in buckets.iter().enumerate() {
                 {
                     let mut p = progress.lock().unwrap();
@@ -1245,14 +1314,7 @@ fn start_tune_run(hwnd: HWND) {
 
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     llm_proxy::tune::run_bucket_tune(
-                        &db_path,
-                        &base,
-                        &sweep,
-                        floor,
-                        max_bodies,
-                        bucket,
-                        knob,
-                        callback,
+                        &db_path, &base, &sweep, floor, max_bodies, bucket, knob, callback,
                     )
                 }));
                 match outcome {
@@ -1290,7 +1352,6 @@ fn start_tune_run(hwnd: HWND) {
                     }
                 }
             }
-
         })
         .ok();
 }

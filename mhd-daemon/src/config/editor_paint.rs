@@ -18,7 +18,9 @@ use crate::config::editor_layout::{
     ADVANCED_BUTTONS, COMBO_HIT_HEIGHT, Layout, SECTION_GAP_BASE, SECTION_HEADER_HEIGHT_BASE,
     WIN_WIDTH_BASE, editor_action_desc,
 };
-use crate::config::editor_state::{ButtonStyle, HeadGroup, head_help_text, ProxyEditField, SettingsHit, SettingsState};
+use crate::config::editor_state::{
+    ButtonStyle, HeadGroup, ProxyEditField, SettingsHit, SettingsState, head_help_text,
+};
 use crate::config::editor_theme::{
     draw_button, draw_collapsed_combo_box, draw_plain_label, draw_readonly_text_field,
     draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer, draw_section_header,
@@ -1608,7 +1610,8 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
         hit: SettingsHit::HeadCalculateBtn,
     });
     // Hint label below sub-header
-    let help_h = (16.0 * scale) as i32;    ctls.push(Control::Label {
+    let help_h = (16.0 * scale) as i32;
+    ctls.push(Control::Label {
         rect: RECT {
             left: pad,
             top: lay.llm_trim.groups_hdr_y + section_h + gap,

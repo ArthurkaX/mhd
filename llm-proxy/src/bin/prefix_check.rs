@@ -34,9 +34,7 @@ fn sort_keys_recursive(v: &Value) -> Value {
             }
             Value::Object(sorted)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(sort_keys_recursive).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.iter().map(sort_keys_recursive).collect()),
         other => other.clone(),
     }
 }
@@ -108,7 +106,9 @@ fn parse_args() -> (PathBuf, String) {
                     match val {
                         "anthropic" | "openai" => provider = val.to_string(),
                         other => {
-                            eprintln!("Warning: unknown --provider value '{other}'; expected 'anthropic' or 'openai'. Using 'anthropic'.");
+                            eprintln!(
+                                "Warning: unknown --provider value '{other}'; expected 'anthropic' or 'openai'. Using 'anthropic'."
+                            );
                         }
                     }
                 }
@@ -251,9 +251,7 @@ fn main() {
             let n1 = &pair[1];
 
             // Both bodies must have a messages array to compare.
-            if n.body["messages"].as_array().is_none()
-                || n1.body["messages"].as_array().is_none()
-            {
+            if n.body["messages"].as_array().is_none() || n1.body["messages"].as_array().is_none() {
                 skipped_no_messages += 1;
                 continue;
             }
@@ -264,10 +262,7 @@ fn main() {
             let raw_prefix = count_prefix_turns(&n.body, &n1.body);
             let trimmed_prefix = count_prefix_turns(&trimmed_n, &trimmed_n1);
 
-            let total_turns = n.body["messages"]
-                .as_array()
-                .map(|a| a.len())
-                .unwrap_or(0);
+            let total_turns = n.body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
 
             all_metrics.push(PairMetric {
                 run_id: *run_id,
@@ -280,9 +275,7 @@ fn main() {
     }
 
     if skipped_no_messages > 0 {
-        eprintln!(
-            "Skipped {skipped_no_messages} pair(s) with missing/empty messages array."
-        );
+        eprintln!("Skipped {skipped_no_messages} pair(s) with missing/empty messages array.");
     }
 
     // ── summary statistics ────────────────────────────────────────────────
@@ -332,18 +325,22 @@ fn main() {
     println!("  Runs analyzed:                {n_runs}");
     println!("  Adjacent pairs analysed:      {n_pairs}");
     println!("  Pairs with raw prefix >= 1:   {n_long_raw}");
-    println!(
-        "  Pairs where trim shrank prefix: {n_shrunk}  ({shrunk_pct:.1}% of long-raw pairs)"
-    );
+    println!("  Pairs where trim shrank prefix: {n_shrunk}  ({shrunk_pct:.1}% of long-raw pairs)");
     println!();
     println!("  Avg raw prefix turns:         {avg_raw:.2}");
     println!("  Avg trimmed prefix turns:     {avg_trimmed:.2}");
-    println!("  Avg drop:                     {drop:.2}", drop = avg_raw - avg_trimmed);
+    println!(
+        "  Avg drop:                     {drop:.2}",
+        drop = avg_raw - avg_trimmed
+    );
     println!();
 
     if !worst.is_empty() {
         println!("  Worst offenders (biggest raw->trimmed prefix drop):");
-        println!("  {:>16}  {:>6}  {:>6}  {:>16}", "run_id", "seq(N)", "turns", "raw -> trimmed");
+        println!(
+            "  {:>16}  {:>6}  {:>6}  {:>16}",
+            "run_id", "seq(N)", "turns", "raw -> trimmed"
+        );
         println!("  {}", "─".repeat(48));
         for m in worst.iter().take(10) {
             println!(

@@ -179,12 +179,20 @@ impl ProxyControl {
 
     /// Set the head budget for tool_result blocks on native Haiku requests.
     pub fn set_trim_head_haiku(&self, v: usize) {
-        *self.state.trim_head_haiku.write().unwrap_or_else(|e| e.into_inner()) = v;
+        *self
+            .state
+            .trim_head_haiku
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
     }
 
     /// Set the head budget for tool_result blocks on OpenAI-harness requests.
     pub fn set_trim_head_harness(&self, v: usize) {
-        *self.state.trim_head_harness.write().unwrap_or_else(|e| e.into_inner()) = v;
+        *self
+            .state
+            .trim_head_harness
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = v;
     }
 
     /// Set the tail budget for tool_result blocks in the native trim engine.
@@ -322,13 +330,41 @@ impl ProxyControl {
     /// Snapshot the live native-trim knobs (same reads the request path uses).
     pub fn native_knobs(&self) -> crate::native_trim::NativeKnobs {
         crate::native_trim::NativeKnobs {
-            tool_max_desc_chars: *self.state.trim_tool_desc_chars.read().unwrap_or_else(|e| e.into_inner()),
-            tool_result_head: *self.state.trim_toolresult_head.read().unwrap_or_else(|e| e.into_inner()),
-            tool_result_tail: *self.state.trim_toolresult_tail.read().unwrap_or_else(|e| e.into_inner()),
-            ws_enabled: *self.state.trim_ws_enabled.read().unwrap_or_else(|e| e.into_inner()),
-            strip_thinking: *self.state.trim_strip_thinking.read().unwrap_or_else(|e| e.into_inner()),
-            tool_result_fence_requires_code: *self.state.trim_fence_requires_code.read().unwrap_or_else(|e| e.into_inner()),
-            tool_result_arrow_density_min: *self.state.trim_arrow_density_min.read().unwrap_or_else(|e| e.into_inner()),
+            tool_max_desc_chars: *self
+                .state
+                .trim_tool_desc_chars
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_head: *self
+                .state
+                .trim_toolresult_head
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_tail: *self
+                .state
+                .trim_toolresult_tail
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            ws_enabled: *self
+                .state
+                .trim_ws_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            strip_thinking: *self
+                .state
+                .trim_strip_thinking
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_fence_requires_code: *self
+                .state
+                .trim_fence_requires_code
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            tool_result_arrow_density_min: *self
+                .state
+                .trim_arrow_density_min
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             ..Default::default()
         }
     }
@@ -393,8 +429,14 @@ impl ProxyControl {
     }
 
     /// Record a finished Bench run to proxy.db history.
-    pub fn record_bench_run(&self, result: &crate::bench::BenchResult, headroom_pct: f64, knobs_json: &str) {
-        self.state.record_bench_run(result, headroom_pct, knobs_json);
+    pub fn record_bench_run(
+        &self,
+        result: &crate::bench::BenchResult,
+        headroom_pct: f64,
+        knobs_json: &str,
+    ) {
+        self.state
+            .record_bench_run(result, headroom_pct, knobs_json);
     }
 
     /// Shut the server down gracefully and join its thread.

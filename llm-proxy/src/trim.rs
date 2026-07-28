@@ -67,7 +67,10 @@ pub struct TrimOutcome {
 /// - Body is below [`TRIM_MIN_BYTES`].
 /// - The trimmed result is not smaller (`after ≥ before`).
 /// - Any serialization error occurs.
-pub fn trim_anthropic(payload: Value, native_knobs: crate::native_trim::NativeKnobs) -> TrimOutcome {
+pub fn trim_anthropic(
+    payload: Value,
+    native_knobs: crate::native_trim::NativeKnobs,
+) -> TrimOutcome {
     // Cheap guard: skip tiny bodies — nothing to gain.
     let before_str = match serde_json::to_string(&payload) {
         Ok(s) if s.len() >= TRIM_MIN_BYTES => s,
@@ -229,7 +232,10 @@ mod tests {
 
         // target == "" too — empty free_target can never accidentally match
         let result2 = resolve_knobs("", "", NativeKnobs::default());
-        assert_eq!(result2.tool_max_desc_chars, NativeKnobs::default().tool_max_desc_chars);
+        assert_eq!(
+            result2.tool_max_desc_chars,
+            NativeKnobs::default().tool_max_desc_chars
+        );
     }
 
     /// A small body below TRIM_MIN_BYTES should be passed through untouched.
@@ -301,7 +307,10 @@ mod tests {
             ..Default::default()
         };
         let out = trim_openai(body, knobs);
-        assert!(out.applied, "native engine should apply on a long description");
+        assert!(
+            out.applied,
+            "native engine should apply on a long description"
+        );
         let body_str = serde_json::to_string(&out.body).unwrap();
         assert!(
             body_str.len() < serde_json::to_string(&serde_json::json!({

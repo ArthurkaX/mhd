@@ -6,9 +6,7 @@
 //! Usage:
 //! measure [--db <path>] [--dry-run] [--side <model>]
 
-use llm_proxy::measure::{
-    ConfirmFn, MeasureConfig, MeasureProgress, run_measurement,
-};
+use llm_proxy::measure::{ConfirmFn, MeasureConfig, MeasureProgress, run_measurement};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -55,7 +53,11 @@ fn parse_args() -> Args {
         i += 1;
     }
 
-    Args { db_path, dry_run, side_model }
+    Args {
+        db_path,
+        dry_run,
+        side_model,
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────
@@ -211,20 +213,29 @@ fn main() {
             );
             eprintln!();
             eprintln!("  Quota cost (1.25x cc + 0.1x cr):");
-            eprintln!("    ECO:         {}  (saved {:.1}% vs native_off)",
+            eprintln!(
+                "    ECO:         {}  (saved {:.1}% vs native_off)",
                 fmt_tokens(measure_result.cost_eco),
                 measure_result.eco_saved_pct,
             );
-            eprintln!("    NATIVE_ON:   {}  (saved {:.1}% vs native_off)",
+            eprintln!(
+                "    NATIVE_ON:   {}  (saved {:.1}% vs native_off)",
                 fmt_tokens(measure_result.cost_native_on),
                 measure_result.native_saved_pct,
             );
-            eprintln!("    NATIVE_OFF:  {}  (baseline)",
+            eprintln!(
+                "    NATIVE_OFF:  {}  (baseline)",
                 fmt_tokens(measure_result.cost_native_off),
             );
             eprintln!();
-            eprintln!("  NATIVE verdict: {}  (trim only, all native)", measure_result.native_verdict);
-            eprintln!("  ECO verdict:    {}  (trim + offload effect)", measure_result.eco_verdict);
+            eprintln!(
+                "  NATIVE verdict: {}  (trim only, all native)",
+                measure_result.native_verdict
+            );
+            eprintln!(
+                "  ECO verdict:    {}  (trim + offload effect)",
+                measure_result.eco_verdict
+            );
             eprintln!(
                 "  Note: three LLM sessions are not byte-identical; n_reqs shown for each so divergence is visible."
             );

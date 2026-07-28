@@ -277,9 +277,15 @@ pub async fn post_messages(
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             tool_result_head: if effective_tier == Tier::Haiku {
-                *state.trim_head_haiku.read().unwrap_or_else(|e| e.into_inner())
+                *state
+                    .trim_head_haiku
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
             } else {
-                *state.trim_toolresult_head.read().unwrap_or_else(|e| e.into_inner())
+                *state
+                    .trim_toolresult_head
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
             },
             tool_result_tail: *state
                 .trim_toolresult_tail
@@ -369,11 +375,8 @@ pub async fn post_messages(
             Target::Model(id) => id.clone(),
             Target::Native => model.clone(),
         };
-        let key = crate::prefix::session_key(
-            client_run_id.as_deref(),
-            user_agent.as_deref(),
-            &route,
-        );
+        let key =
+            crate::prefix::session_key(client_run_id.as_deref(), user_agent.as_deref(), &route);
         state.prefix_tracker.observe(
             &key,
             pre_trim_digest,
@@ -569,10 +572,7 @@ pub async fn post_chat_completions(
                 .unwrap_or_else(|e| e.into_inner())
                 .dump_bodies()
             {
-                eprintln!(
-                    "[llm-proxy] trim(openai): −{} tok ({:.1}%)",
-                    saved, pct,
-                );
+                eprintln!("[llm-proxy] trim(openai): −{} tok ({:.1}%)", saved, pct,);
             }
         }
 
@@ -714,7 +714,12 @@ pub async fn set_model(
         event_type: "MODEL_SWITCH".to_string(),
         target: Some(target.as_str().to_string()),
         model: Some(slot.clone()),
-        reason: Some(format!("slot={} {} -> {}", slot, old_target, target.as_str())),
+        reason: Some(format!(
+            "slot={} {} -> {}",
+            slot,
+            old_target,
+            target.as_str()
+        )),
         ..Default::default()
     });
 

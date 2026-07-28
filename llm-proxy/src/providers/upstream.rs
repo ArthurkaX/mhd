@@ -26,10 +26,22 @@ async fn post_chat_completions(
     payload: &Value,
     streaming: bool,
 ) -> Result<(reqwest::Response, String)> {
-    let base_url = state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let api_key = state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let base_url = state
+        .upstream_base_url
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let api_key = state
+        .upstream_key
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = if streaming { &state.http_stream } else { &state.http };
+    let client = if streaming {
+        &state.http_stream
+    } else {
+        &state.http
+    };
     let req_builder = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -68,7 +80,11 @@ pub async fn send_request(
     payload: Value,
     target_model: &str,
 ) -> Result<Value> {
-    let debug = state.log_level.read().unwrap_or_else(|e| e.into_inner()).dump_bodies();
+    let debug = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .dump_bodies();
 
     // Anthropic → OpenAI, then force the real upstream model id.
     let mut openai_payload = transform::anthropic_to_openai(payload.clone());
@@ -77,7 +93,11 @@ pub async fn send_request(
     }
 
     if debug {
-        let base_url = state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let base_url = state
+            .upstream_base_url
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         eprintln!(
             "[llm-proxy] upstream request → {} (model={target_model}):\n{}",
             base_url,
@@ -87,7 +107,11 @@ pub async fn send_request(
 
     // Observability: log timing + concurrency under `maximal`. This is how you
     // confirm whether parallel requests are queueing behind one another.
-    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
+    let log = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_errors();
     let _guard = InflightGuard::new(state.clone(), req_id);
     let inflight = state.inflight.load(std::sync::atomic::Ordering::SeqCst);
     let started = std::time::Instant::now();
@@ -97,7 +121,11 @@ pub async fn send_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
+    let detailed = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} upstream REQ {}",
@@ -161,10 +189,7 @@ pub async fn send_request(
     let mut anthropic_resp = transform::openai_to_anthropic(openai_resp);
     if let Some(obj) = anthropic_resp.as_object_mut() {
         obj.insert("id".to_string(), Value::String(super::synth_msg_id()));
-        obj.insert(
-            "model".to_string(),
-            Value::String(target_model.to_string()),
-        );
+        obj.insert("model".to_string(), Value::String(target_model.to_string()));
     }
 
     // Push token usage into the trace entry with correctly separated counts.
@@ -562,7 +587,11 @@ pub async fn stream_request(
 
     // Observability: streaming is the path Claude Code actually uses. Log the
     // concurrency at send time so overlapping parallel requests are visible.
-    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
+    let log = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_errors();
     let started = std::time::Instant::now();
     // Guard is moved into the stream below, so the in-flight count stays
     // elevated for the full duration of the stream (and decrements on drop even
@@ -575,7 +604,11 @@ pub async fn stream_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
+    let detailed = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} stream REQ {}",
@@ -824,7 +857,11 @@ pub async fn stream_raw_openai(
         );
     }
 
-    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
+    let log = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_errors();
     let started = std::time::Instant::now();
     let guard = InflightGuard::new(state.clone(), req_id);
     if log {

@@ -288,8 +288,7 @@ pub fn snapshot_corpus() -> Result<(PathBuf, Vec<(String, usize)>), String> {
         content.push_str(&next_line);
         content.push('\n');
 
-        std::fs::write(&path, &content)
-            .map_err(|e| format!("Failed to write {filename}: {e}"))?;
+        std::fs::write(&path, &content).map_err(|e| format!("Failed to write {filename}: {e}"))?;
 
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as usize;
         files.push((filename, bytes));
@@ -402,9 +401,7 @@ pub fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> O
     // Check if the column already exists.
     let exists: bool = conn
         .query_row(
-            &format!(
-                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2"
-            ),
+            &format!("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2"),
             rusqlite::params![table, col],
             |row| row.get::<_, i64>(0),
         )
@@ -414,7 +411,9 @@ pub fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> O
     if !exists {
         let sql = format!("ALTER TABLE {table} ADD COLUMN {col} {decl}");
         if let Err(e) = conn.execute_batch(&sql) {
-            return Some(format!("Warning: could not add column {col} to {table}: {e}"));
+            return Some(format!(
+                "Warning: could not add column {col} to {table}: {e}"
+            ));
         }
     }
     None
@@ -450,11 +449,9 @@ pub fn now_iso8601() -> String {
 
 /// Return the maximum `id` from the `requests` table, or 0 if empty.
 fn max_id(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row(
-        "SELECT COALESCE(MAX(id), 0) FROM requests",
-        [],
-        |row| row.get(0),
-    )
+    conn.query_row("SELECT COALESCE(MAX(id), 0) FROM requests", [], |row| {
+        row.get(0)
+    })
 }
 
 /// Aggregate all requests rows with `id > id0` into an `ArmAggregate`.
@@ -469,7 +466,7 @@ fn aggregate_arm_native(conn: &Connection, id0: i64) -> anyhow::Result<ArmAggreg
     let mut stmt = conn.prepare(
         "SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
          trim_tokens_before, trim_tokens_after \
-         FROM requests WHERE id > ?1 AND model LIKE 'claude%'"
+         FROM requests WHERE id > ?1 AND model LIKE 'claude%'",
     )?;
 
     let rows = stmt.query_map(rusqlite::params![id0], |row| {
@@ -560,7 +557,11 @@ fn run_one_arm(
     run_phase: MeasurePhase,
     label: &str,
 ) -> Result<ArmAggregate, String> {
-    set_phase(progress, run_phase.clone(), &format!("{label}: running claude session..."));
+    set_phase(
+        progress,
+        run_phase.clone(),
+        &format!("{label}: running claude session..."),
+    );
 
     let id0 = max_id(ro_conn).unwrap_or(0);
     set_msg(progress, &format!("  {label}: requests id0 = {id0}"));
@@ -577,7 +578,10 @@ fn run_one_arm(
         Ok(outcome) => {
             set_msg(
                 progress,
-                &format!("  {label} session done in {:.1}s", outcome.elapsed.as_secs_f64()),
+                &format!(
+                    "  {label} session done in {:.1}s",
+                    outcome.elapsed.as_secs_f64()
+                ),
             );
             outcome
         }
@@ -591,7 +595,11 @@ fn run_one_arm(
     std::thread::sleep(std::time::Duration::from_millis(POST_SESSION_SLEEP_MS));
 
     // Aggregate (Anthropic-billed rows only).
-    set_phase(progress, run_phase, &format!("{label}: aggregating from requests table..."));
+    set_phase(
+        progress,
+        run_phase,
+        &format!("{label}: aggregating from requests table..."),
+    );
     let mut agg = match aggregate_arm_native(ro_conn, id0) {
         Ok(a) => a,
         Err(e) => {
@@ -635,21 +643,32 @@ pub fn run_measurement(
 
     // ── S0 PREFLIGHT ────────────────────────────────────────────────────────
 
-    set_phase(progress, MeasurePhase::Preflight, "=== Three-run trim measurement (requests-log based) ===");
+    set_phase(
+        progress,
+        MeasurePhase::Preflight,
+        "=== Three-run trim measurement (requests-log based) ===",
+    );
     set_msg(progress, &format!("  DB: {}", cfg.db_path.display()));
     if cfg.dry_run {
         set_msg(progress, "  [DRY-RUN] No claude processes will be spawned.");
     }
-    set_msg(progress, &format!("  side_substitution: {}", cfg.side_substitution));
+    set_msg(
+        progress,
+        &format!("  side_substitution: {}", cfg.side_substitution),
+    );
     if cfg.side_substitution {
         set_msg(progress, &format!("  side_model: {}", cfg.side_model));
     }
 
     // Open a read-only connection for querying the requests table.
-    let ro_conn = match Connection::open_with_flags(&cfg.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let ro_conn = match Connection::open_with_flags(&cfg.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    {
         Ok(c) => c,
         Err(e) => {
-            return fatal(progress, format!("FATAL: Cannot open DB at {}: {e}", cfg.db_path.display()));
+            return fatal(
+                progress,
+                format!("FATAL: Cannot open DB at {}: {e}", cfg.db_path.display()),
+            );
         }
     };
 
@@ -682,7 +701,10 @@ pub fn run_measurement(
 
     match original_trim_enabled {
         Some(v) => set_msg(progress, &format!("  Current trim_enabled: {v}")),
-        None => set_msg(progress, "  trim_enabled: not found in settings.json (will create it)"),
+        None => set_msg(
+            progress,
+            "  trim_enabled: not found in settings.json (will create it)",
+        ),
     }
 
     let mut guard = TrimRestoreGuard::new(settings_snapshot);
@@ -690,7 +712,11 @@ pub fn run_measurement(
     // ── S1 SNAPSHOT corpus ─────────────────────────────────────────────────
 
     set_msg(progress, "");
-    set_phase(progress, MeasurePhase::Snapshot, "S1: Writing chain-walk corpus (15 linked files)...");
+    set_phase(
+        progress,
+        MeasurePhase::Snapshot,
+        "S1: Writing chain-walk corpus (15 linked files)...",
+    );
 
     let (corpus_dir, corpus_files) = match snapshot_corpus() {
         Ok((d, f)) => (d, f),
@@ -724,7 +750,10 @@ pub fn run_measurement(
             return Ok(None);
         }
     } else {
-        set_msg(progress, "S2: [DRY-RUN] Skipping confirmation (no claude spawns).");
+        set_msg(
+            progress,
+            "S2: [DRY-RUN] Skipping confirmation (no claude spawns).",
+        );
         set_phase(progress, MeasurePhase::Done, "[DRY-RUN] plan only");
         return Ok(None);
     }
@@ -735,7 +764,11 @@ pub fn run_measurement(
     // runs back-to-back, minimising cache-state drift between them.
 
     set_msg(progress, "");
-    set_phase(progress, MeasurePhase::RunEco, "S3: Measuring arms (3 runs, ECO first)");
+    set_phase(
+        progress,
+        MeasurePhase::RunEco,
+        "S3: Measuring arms (3 runs, ECO first)",
+    );
 
     let eco_run = std::env::temp_dir().join(ECO_RUN_DIR);
     let on_run = std::env::temp_dir().join(ON_RUN_DIR);
@@ -745,19 +778,35 @@ pub fn run_measurement(
 
     // ─ Arm 1: ECO ──────────────────────────────────────────────────────────
     set_trim_enabled(true).map_err(|e| {
-        cfg_err(progress, format!("FATAL: Could not set trim_enabled for ECO: {e}"))
+        cfg_err(
+            progress,
+            format!("FATAL: Could not set trim_enabled for ECO: {e}"),
+        )
     })?;
     if cfg.side_substitution {
         set_targets("native", &cfg.side_model, &cfg.side_model).map_err(|e| {
-            cfg_err(progress, format!("FATAL: Could not set targets for ECO: {e}"))
+            cfg_err(
+                progress,
+                format!("FATAL: Could not set targets for ECO: {e}"),
+            )
         })?;
     } else {
         set_targets("native", "native", "native").map_err(|e| {
-            cfg_err(progress, format!("FATAL: Could not set targets for ECO: {e}"))
+            cfg_err(
+                progress,
+                format!("FATAL: Could not set targets for ECO: {e}"),
+            )
         })?;
     }
 
-    let eco = run_one_arm(progress, &ro_conn, &corpus_dir, &eco_run, MeasurePhase::RunEco, "ECO")?;
+    let eco = run_one_arm(
+        progress,
+        &ro_conn,
+        &corpus_dir,
+        &eco_run,
+        MeasurePhase::RunEco,
+        "ECO",
+    )?;
     let eco_transcript = eco_run.join("transcript.txt");
     {
         let mut p = progress.lock().unwrap();
@@ -767,13 +816,26 @@ pub fn run_measurement(
 
     // ─ Arm 2: NATIVE_ON ────────────────────────────────────────────────────
     set_trim_enabled(true).map_err(|e| {
-        cfg_err(progress, format!("FATAL: Could not set trim_enabled for NATIVE_ON: {e}"))
+        cfg_err(
+            progress,
+            format!("FATAL: Could not set trim_enabled for NATIVE_ON: {e}"),
+        )
     })?;
     set_targets("native", "native", "native").map_err(|e| {
-        cfg_err(progress, format!("FATAL: Could not set targets for NATIVE_ON: {e}"))
+        cfg_err(
+            progress,
+            format!("FATAL: Could not set targets for NATIVE_ON: {e}"),
+        )
     })?;
 
-    let native_on = run_one_arm(progress, &ro_conn, &corpus_dir, &on_run, MeasurePhase::RunNativeOn, "NATIVE_ON")?;
+    let native_on = run_one_arm(
+        progress,
+        &ro_conn,
+        &corpus_dir,
+        &on_run,
+        MeasurePhase::RunNativeOn,
+        "NATIVE_ON",
+    )?;
     let on_transcript = on_run.join("transcript.txt");
     {
         let mut p = progress.lock().unwrap();
@@ -783,13 +845,26 @@ pub fn run_measurement(
 
     // ─ Arm 3: NATIVE_OFF ───────────────────────────────────────────────────
     set_trim_enabled(false).map_err(|e| {
-        cfg_err(progress, format!("FATAL: Could not set trim_enabled for NATIVE_OFF: {e}"))
+        cfg_err(
+            progress,
+            format!("FATAL: Could not set trim_enabled for NATIVE_OFF: {e}"),
+        )
     })?;
     set_targets("native", "native", "native").map_err(|e| {
-        cfg_err(progress, format!("FATAL: Could not set targets for NATIVE_OFF: {e}"))
+        cfg_err(
+            progress,
+            format!("FATAL: Could not set targets for NATIVE_OFF: {e}"),
+        )
     })?;
 
-    let native_off = run_one_arm(progress, &ro_conn, &corpus_dir, &off_run, MeasurePhase::RunNativeOff, "NATIVE_OFF")?;
+    let native_off = run_one_arm(
+        progress,
+        &ro_conn,
+        &corpus_dir,
+        &off_run,
+        MeasurePhase::RunNativeOff,
+        "NATIVE_OFF",
+    )?;
     let off_transcript = off_run.join("transcript.txt");
     {
         let mut p = progress.lock().unwrap();
@@ -827,7 +902,8 @@ pub fn run_measurement(
     };
 
     let trim_raw_pct = if native_on.trim_before > 0 {
-        (native_on.trim_before as f64 - native_on.trim_after as f64) / native_on.trim_before as f64 * 100.0
+        (native_on.trim_before as f64 - native_on.trim_after as f64) / native_on.trim_before as f64
+            * 100.0
     } else {
         0.0
     };
@@ -857,7 +933,10 @@ pub fn run_measurement(
         }
     };
 
-    let native_verdict = verdict_of(native_saved_pct, "BACKWARDS (trim cost more -- cache effect)");
+    let native_verdict = verdict_of(
+        native_saved_pct,
+        "BACKWARDS (trim cost more -- cache effect)",
+    );
     let eco_verdict = verdict_of(eco_saved_pct, "BACKWARDS");
 
     let result = MeasureResult {
@@ -873,20 +952,28 @@ pub fn run_measurement(
         eco_verdict: eco_verdict.clone(),
     };
 
-    set_msg(progress, &format!(
-        "  ECO cost: {}  NATIVE_ON cost: {}  NATIVE_OFF cost: {}",
-        cost_eco, cost_native_on, cost_native_off
-    ));
-    set_msg(progress, &format!(
-        "  NATIVE saved: {native_saved_pct:.1}%  (verdict: {native_verdict})"
-    ));
-    set_msg(progress, &format!(
-        "  ECO saved: {eco_saved_pct:.1}%  (verdict: {eco_verdict})"
-    ));
-    set_msg(progress, &format!(
-        "  Trim raw (NATIVE_ON): before {} after {}  {trim_raw_pct:.1}%",
-        native_on.trim_before, native_on.trim_after
-    ));
+    set_msg(
+        progress,
+        &format!(
+            "  ECO cost: {}  NATIVE_ON cost: {}  NATIVE_OFF cost: {}",
+            cost_eco, cost_native_on, cost_native_off
+        ),
+    );
+    set_msg(
+        progress,
+        &format!("  NATIVE saved: {native_saved_pct:.1}%  (verdict: {native_verdict})"),
+    );
+    set_msg(
+        progress,
+        &format!("  ECO saved: {eco_saved_pct:.1}%  (verdict: {eco_verdict})"),
+    );
+    set_msg(
+        progress,
+        &format!(
+            "  Trim raw (NATIVE_ON): before {} after {}  {trim_raw_pct:.1}%",
+            native_on.trim_before, native_on.trim_after
+        ),
+    );
 
     {
         let mut p = progress.lock().unwrap();
@@ -899,7 +986,10 @@ pub fn run_measurement(
     if let Some(v) = &guard.snapshot {
         set_msg(progress, "  Restoring original settings...");
         if let Err(e) = write_settings_value(v) {
-            set_msg(progress, &format!("Warning: could not restore settings: {e}"));
+            set_msg(
+                progress,
+                &format!("Warning: could not restore settings: {e}"),
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(SETTINGS_WAIT_MS));
     }
@@ -915,7 +1005,10 @@ pub fn run_measurement(
     let rw_conn = match Connection::open(&cfg.db_path) {
         Ok(c) => {
             if let Err(e) = c.execute_batch("PRAGMA busy_timeout = 5000") {
-                set_msg(progress, &format!("Warning: could not set busy_timeout: {e}"));
+                set_msg(
+                    progress,
+                    &format!("Warning: could not set busy_timeout: {e}"),
+                );
             }
             c
         }
@@ -925,7 +1018,11 @@ pub fn run_measurement(
                 &format!("Warning: could not open DB for write: {e}. Result not persisted."),
             );
             set_msg(progress, "");
-            set_phase(progress, MeasurePhase::Done, "=== Measure complete (not persisted) ===");
+            set_phase(
+                progress,
+                MeasurePhase::Done,
+                "=== Measure complete (not persisted) ===",
+            );
             return Ok(Some(result));
         }
     };
@@ -975,8 +1072,7 @@ pub fn run_measurement(
                     .filter(|(k, _)| k.starts_with("trim_"))
                     .map(|(k, val)| (k.clone(), val.clone()))
                     .collect();
-                serde_json::to_string(&Value::Object(knobs))
-                    .unwrap_or_else(|_| "{}".to_string())
+                serde_json::to_string(&Value::Object(knobs)).unwrap_or_else(|_| "{}".to_string())
             } else {
                 "{}".to_string()
             }
@@ -1005,50 +1101,53 @@ pub fn run_measurement(
         rusqlite::params![
             ts,
             "anthropic",
-            0_i64,                                         // n_bodies
-            native_on.n_requests as i64,                   // n_trimmed
-            cost_native_off as i64,                        // tokens_off
-            cost_native_on as i64,                         // tokens_on
-            trim_raw_pct,                                  // avg_trim_pct
-            0.0_f64,                                       // median_trim_pct
-            0.0_f64,                                       // headroom_pct
-            1_i64,                                         // fail_open_ok
-            0_i64,                                         // deterministic
-            elapsed_ms,                                    // elapsed_ms
-            knobs_json,                                    // knobs_json
-            "live3",                                       // kind
-            native_off.input_tokens as i64,                // off_input
-            native_on.input_tokens as i64,                 // on_input
-            native_off.cache_read_tokens as i64,           // off_cache_read
-            native_on.cache_read_tokens as i64,            // on_cache_read
-            native_off.cache_creation_tokens as i64,       // off_cache_creation
-            native_on.cache_creation_tokens as i64,        // on_cache_creation
-            native_on.trim_before as i64,                  // on_trim_before
-            native_on.trim_after as i64,                   // on_trim_after
-            native_off.n_requests as i64,                  // n_off_reqs
-            native_on.n_requests as i64,                   // n_on_reqs
-            native_saved_pct,                              // input_saved_pct
-            trim_raw_pct,                                  // trim_raw_pct
-            native_verdict,                                // verdict
-            cost_eco as i64,                               // cost_eco
-            cost_native_on as i64,                         // cost_native_on
-            cost_native_off as i64,                        // cost_native_off
-            eco_saved_pct,                                 // eco_saved_pct
-            eco_verdict,                                   // eco_verdict
-            eco.elapsed_ms as i64,                         // eco_elapsed_ms
-            native_on.elapsed_ms as i64,                   // native_on_elapsed_ms
-            native_off.elapsed_ms as i64,                  // native_off_elapsed_ms
-            cfg.side_model,                                // side_model
-            cfg.side_substitution as i64,                  // side_substitution
-            eco.n_requests as i64,                         // n_eco_reqs
-            native_on.n_requests as i64,                   // n_native_on_reqs
-            native_off.n_requests as i64,                  // n_native_off_reqs
+            0_i64,                                   // n_bodies
+            native_on.n_requests as i64,             // n_trimmed
+            cost_native_off as i64,                  // tokens_off
+            cost_native_on as i64,                   // tokens_on
+            trim_raw_pct,                            // avg_trim_pct
+            0.0_f64,                                 // median_trim_pct
+            0.0_f64,                                 // headroom_pct
+            1_i64,                                   // fail_open_ok
+            0_i64,                                   // deterministic
+            elapsed_ms,                              // elapsed_ms
+            knobs_json,                              // knobs_json
+            "live3",                                 // kind
+            native_off.input_tokens as i64,          // off_input
+            native_on.input_tokens as i64,           // on_input
+            native_off.cache_read_tokens as i64,     // off_cache_read
+            native_on.cache_read_tokens as i64,      // on_cache_read
+            native_off.cache_creation_tokens as i64, // off_cache_creation
+            native_on.cache_creation_tokens as i64,  // on_cache_creation
+            native_on.trim_before as i64,            // on_trim_before
+            native_on.trim_after as i64,             // on_trim_after
+            native_off.n_requests as i64,            // n_off_reqs
+            native_on.n_requests as i64,             // n_on_reqs
+            native_saved_pct,                        // input_saved_pct
+            trim_raw_pct,                            // trim_raw_pct
+            native_verdict,                          // verdict
+            cost_eco as i64,                         // cost_eco
+            cost_native_on as i64,                   // cost_native_on
+            cost_native_off as i64,                  // cost_native_off
+            eco_saved_pct,                           // eco_saved_pct
+            eco_verdict,                             // eco_verdict
+            eco.elapsed_ms as i64,                   // eco_elapsed_ms
+            native_on.elapsed_ms as i64,             // native_on_elapsed_ms
+            native_off.elapsed_ms as i64,            // native_off_elapsed_ms
+            cfg.side_model,                          // side_model
+            cfg.side_substitution as i64,            // side_substitution
+            eco.n_requests as i64,                   // n_eco_reqs
+            native_on.n_requests as i64,             // n_native_on_reqs
+            native_off.n_requests as i64,            // n_native_off_reqs
         ],
     );
 
     match insert_result {
         Ok(_) => set_msg(progress, &format!("  Inserted row at {ts}")),
-        Err(e) => set_msg(progress, &format!("Warning: could not insert bench_runs row: {e}")),
+        Err(e) => set_msg(
+            progress,
+            &format!("Warning: could not insert bench_runs row: {e}"),
+        ),
     }
 
     set_msg(progress, "");
@@ -1074,7 +1173,10 @@ fn set_phase(progress: &Arc<Mutex<MeasureProgress>>, phase: MeasurePhase, msg: &
 
 /// Set progress to Error phase with the given message and error string, then return Err.
 /// Use this for all fatal errors so the caller (GUI) sees the error state immediately.
-fn fatal<E: Into<String>>(progress: &Arc<Mutex<MeasureProgress>>, msg: E) -> Result<Option<MeasureResult>, String> {
+fn fatal<E: Into<String>>(
+    progress: &Arc<Mutex<MeasureProgress>>,
+    msg: E,
+) -> Result<Option<MeasureResult>, String> {
     let s: String = msg.into();
     let mut p = progress.lock().unwrap();
     p.phase = MeasurePhase::Error;

@@ -2,8 +2,8 @@ pub mod anthropic;
 pub mod upstream;
 
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::state::AppState;
 
@@ -51,10 +51,8 @@ impl Drop for InflightGuard {
         // If the completion future never ran (client cancelled mid-flight),
         // the row is still open — close it as CANCELLED. Race-free: no-ops if
         // a real completion already wrote ts_end.
-        self.state.mark_request_cancelled(
-            self.req_id,
-            Some(self.started.elapsed().as_millis() as u64),
-        );
+        self.state
+            .mark_request_cancelled(self.req_id, Some(self.started.elapsed().as_millis() as u64));
     }
 }
 

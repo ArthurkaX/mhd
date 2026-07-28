@@ -75,10 +75,24 @@ fn render_point<C: Canvas>(c: &mut C, anchor: Point, badge_origin: Point, color:
     draw_filled_circle(c, anchor.x, anchor.y, 3, fill);
 
     // Leader line to the badge.
-    draw_line(c, anchor.x, anchor.y, badge_origin.x, badge_origin.y, (0, 0, 0, 180), 1);
+    draw_line(
+        c,
+        anchor.x,
+        anchor.y,
+        badge_origin.x,
+        badge_origin.y,
+        (0, 0, 0, 180),
+        1,
+    );
 
     // Badge circle with dark outline.
-    draw_filled_circle(c, badge_origin.x, badge_origin.y, BADGE_R + 1, (0, 0, 0, 200));
+    draw_filled_circle(
+        c,
+        badge_origin.x,
+        badge_origin.y,
+        BADGE_R + 1,
+        (0, 0, 0, 200),
+    );
     draw_filled_circle(c, badge_origin.x, badge_origin.y, BADGE_R, fill);
 }
 
@@ -189,7 +203,13 @@ fn draw_rect<C: Canvas>(c: &mut C, rect: Rect, color: (u8, u8, u8, u8), thicknes
     }
 }
 
-fn draw_filled_circle<C: Canvas>(c: &mut C, cx: i32, cy: i32, radius: i32, color: (u8, u8, u8, u8)) {
+fn draw_filled_circle<C: Canvas>(
+    c: &mut C,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: (u8, u8, u8, u8),
+) {
     for dy in -radius..=radius {
         for dx in -radius..=radius {
             if dx * dx + dy * dy <= radius * radius {
@@ -222,7 +242,11 @@ fn draw_char<C: Canvas>(c: &mut C, x: i32, y: i32, ch: char, color: (u8, u8, u8,
             if (bits & (1 << (4 - col))) != 0 {
                 for sy in 0..scale {
                     for sx in 0..scale {
-                        c.blend(x + col as i32 * scale + sx, y + row as i32 * scale + sy, color);
+                        c.blend(
+                            x + col as i32 * scale + sx,
+                            y + row as i32 * scale + sy,
+                            color,
+                        );
                     }
                 }
             }

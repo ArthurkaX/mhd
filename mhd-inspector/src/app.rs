@@ -178,7 +178,8 @@ impl MonitorApp {
         self.quota_history = query::quota_samples(db, &self.provider, "5h", since);
 
         // Activity rows
-        self.activity_rows = query::model_calls_list(db, since, self.project_filter.as_deref(), 500, 0);
+        self.activity_rows =
+            query::model_calls_list(db, since, self.project_filter.as_deref(), 500, 0);
 
         // Latest sample time
         self.latest_sample = query::latest_sample_time(db);
@@ -186,15 +187,22 @@ impl MonitorApp {
         // Status — prefer live data info when available
         self.status_message = if let Some(ref lq) = self.live_quota {
             let plan = lq.plan_type.as_deref().unwrap_or("Codex");
-            let session = lq.session.as_ref()
+            let session = lq
+                .session
+                .as_ref()
                 .map(|u| format!("5h {:.0}%", u.used_percent))
                 .unwrap_or_default();
-            let weekly = lq.weekly.as_ref()
+            let weekly = lq
+                .weekly
+                .as_ref()
                 .map(|u| format!("7d {:.0}%", u.used_percent))
                 .unwrap_or_default();
             format!("{plan} · {session} · {weekly}")
         } else if self.latest_sample.is_some() {
-            format!("Last sample: {}", relative_time(self.latest_sample.unwrap()))
+            format!(
+                "Last sample: {}",
+                relative_time(self.latest_sample.unwrap())
+            )
         } else {
             "No data imported yet".into()
         };
@@ -235,7 +243,10 @@ impl eframe::App for MonitorApp {
             ui.horizontal(|ui| {
                 ui.label("Provider:");
                 // For V1 only "codex" is available
-                if ui.selectable_label(self.provider == "codex", "Codex").clicked() {
+                if ui
+                    .selectable_label(self.provider == "codex", "Codex")
+                    .clicked()
+                {
                     self.provider = "codex".to_string();
                     self.refresh_data();
                 }
@@ -243,7 +254,10 @@ impl eframe::App for MonitorApp {
                 ui.separator();
 
                 ui.label("Project:");
-                if ui.selectable_label(self.project_filter.is_none(), "All").clicked() {
+                if ui
+                    .selectable_label(self.project_filter.is_none(), "All")
+                    .clicked()
+                {
                     self.project_filter = None;
                     self.refresh_data();
                 }
@@ -259,7 +273,13 @@ impl eframe::App for MonitorApp {
                 ui.separator();
 
                 ui.label("Period:");
-                for p in &[Period::SixHours, Period::TwentyFourHours, Period::SevenDays, Period::CurrentCycle, Period::All] {
+                for p in &[
+                    Period::SixHours,
+                    Period::TwentyFourHours,
+                    Period::SevenDays,
+                    Period::CurrentCycle,
+                    Period::All,
+                ] {
                     if ui.selectable_label(self.period == *p, p.label()).clicked() {
                         self.period = *p;
                         self.refresh_data();
@@ -304,7 +324,10 @@ impl eframe::App for MonitorApp {
                     }
                     ui.horizontal(|ui| {
                         let can_save = !self.note_text.trim().is_empty();
-                        if ui.add_enabled(can_save, egui::Button::new("Save")).clicked() {
+                        if ui
+                            .add_enabled(can_save, egui::Button::new("Save"))
+                            .clicked()
+                        {
                             save = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -314,13 +337,18 @@ impl eframe::App for MonitorApp {
                 });
 
             if save {
-                let plan = self.live_quota
+                let plan = self
+                    .live_quota
                     .as_ref()
                     .and_then(|q| q.plan_type.as_deref());
-                match self.db.as_ref().ok_or("telemetry.db not available").and_then(|db| {
-                    db.insert_note(Some(&self.provider), plan, self.note_text.trim())
-                        .map_err(|_| "Could not save note")
-                }) {
+                match self
+                    .db
+                    .as_ref()
+                    .ok_or("telemetry.db not available")
+                    .and_then(|db| {
+                        db.insert_note(Some(&self.provider), plan, self.note_text.trim())
+                            .map_err(|_| "Could not save note")
+                    }) {
                     Ok(()) => {
                         self.status_message = "Note saved".into();
                         self.note_text.clear();

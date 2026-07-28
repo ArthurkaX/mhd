@@ -15,9 +15,9 @@
 //!    "info":{"last_token_usage":{...},"total_token_usage":{...},"model_context_window":...},
 //!    "rate_limits":{...}}}
 
-use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::{BufRead, BufReader, Seek};
+use std::path::{Path, PathBuf};
 
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
 const DEFAULT_CODEX_HOME: &str = ".codex";
@@ -205,10 +205,7 @@ fn days_from_epoch(year: i64, month: i64, day: i64) -> i64 {
 /// `start_offset` is the byte offset to resume from. Returns `(events, total_lines, skipped, final_offset)`.
 /// `final_offset` is the byte position after the last *complete* line, so partial final lines
 /// can be retried on the next scan.
-pub fn parse_rollout(
-    path: &Path,
-    start_offset: u64,
-) -> std::io::Result<ParseResult> {
+pub fn parse_rollout(path: &Path, start_offset: u64) -> std::io::Result<ParseResult> {
     let file = fs::File::open(path)?;
     let mut reader = BufReader::new(file);
     reader.seek(std::io::SeekFrom::Start(start_offset))?;
@@ -282,7 +279,11 @@ pub fn parse_rollout(
 /// Like `parse_event` but fills in `source_offset`.
 fn parse_event_at(line: &str, offset: u64) -> Result<CodexEvent, serde_json::Error> {
     let mut event = parse_event(line)?;
-    if let CodexEvent::TokenCount { ref mut source_offset, .. } = event {
+    if let CodexEvent::TokenCount {
+        ref mut source_offset,
+        ..
+    } = event
+    {
         *source_offset = offset as i64;
     }
     Ok(event)
@@ -343,11 +344,7 @@ pub fn parse_event(line: &str) -> Result<CodexEvent, serde_json::Error> {
     if event_type == Some("event_msg") {
         let payload = value.get("payload");
 
-        if payload
-            .and_then(|p| p.get("type"))
-            .and_then(|t| t.as_str())
-            == Some("token_count")
-        {
+        if payload.and_then(|p| p.get("type")).and_then(|t| t.as_str()) == Some("token_count") {
             // session_id not present in token_count events — filled by parse_rollout
             let event_at = value
                 .get("timestamp")
@@ -400,9 +397,18 @@ pub fn parse_event(line: &str) -> Result<CodexEvent, serde_json::Error> {
 
 fn parse_rate_limits(rl: &serde_json::Value) -> CodexRateLimits {
     CodexRateLimits {
-        limit_id: rl.get("limit_id").and_then(|v| v.as_str()).map(String::from),
-        limit_name: rl.get("limit_name").and_then(|v| v.as_str()).map(String::from),
-        plan_type: rl.get("plan_type").and_then(|v| v.as_str()).map(String::from),
+        limit_id: rl
+            .get("limit_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        limit_name: rl
+            .get("limit_name")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        plan_type: rl
+            .get("plan_type")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         primary: rl.get("primary").map(|w| parse_window(w, "primary")),
         secondary: rl.get("secondary").map(|w| parse_window(w, "secondary")),
         credits: rl.get("credits").map(parse_credits),
@@ -429,7 +435,10 @@ fn parse_credits(c: &serde_json::Value) -> CodexCredits {
     CodexCredits {
         has_credits: c.get("has_credits").and_then(|v| v.as_bool()),
         unlimited_credits: c.get("unlimited_credits").and_then(|v| v.as_bool()),
-        credit_balance: c.get("credit_balance").and_then(|v| v.as_str()).map(String::from),
+        credit_balance: c
+            .get("credit_balance")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     }
 }
 
@@ -450,7 +459,14 @@ mod tests {
         let line = r#"{"timestamp":"2026-04-10T14:36:55.987Z","type":"session_meta","payload":{"id":"abc123","timestamp":"2026-04-10T14:35:18.675Z","cwd":"/home/user/project","model_provider":"openai","cli_version":"0.119.0-alpha.11"}}"#;
         let event = parse_event(line).unwrap();
         match event {
-            CodexEvent::SessionMeta { session_id, started_at, model, cli_version, cwd, .. } => {
+            CodexEvent::SessionMeta {
+                session_id,
+                started_at,
+                model,
+                cli_version,
+                cwd,
+                ..
+            } => {
                 assert_eq!(session_id, "abc123");
                 // 2026-04-10T14:35:18Z = 20553 days * 86400 + 14*3600+35*60+18 = 1775831718
                 assert_eq!(started_at, Some(1775831718));
@@ -481,7 +497,17 @@ mod tests {
         let line = r#"{"timestamp":"2026-04-10T14:37:03.443Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":50,"total_tokens":150},"total_token_usage":{"total_tokens":1000},"model_context_window":200000},"rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":1.0,"window_minutes":300,"resets_at":1775849059},"secondary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1776435859}}}}"#;
         let event = parse_event(line).unwrap();
         match event {
-            CodexEvent::TokenCount { session_id, event_at, input_tokens, cached_input, output_tokens, total_tokens, cumulative_tokens, context_window, .. } => {
+            CodexEvent::TokenCount {
+                session_id,
+                event_at,
+                input_tokens,
+                cached_input,
+                output_tokens,
+                total_tokens,
+                cumulative_tokens,
+                context_window,
+                ..
+            } => {
                 assert_eq!(session_id, ""); // filled by parse_rollout
                 // 2026-04-10T14:37:03Z = 20553 days * 86400 + 14*3600+37*60+3 = 1775831823
                 assert_eq!(event_at, 1775831823);
@@ -502,7 +528,13 @@ mod tests {
         let line = r#"{"timestamp":"2026-04-10T14:37:03.443Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":1.0,"window_minutes":300,"resets_at":1775849059}}}}"#;
         let event = parse_event(line).unwrap();
         match event {
-            CodexEvent::TokenCount { input_tokens, cached_input, output_tokens, rate_limits, .. } => {
+            CodexEvent::TokenCount {
+                input_tokens,
+                cached_input,
+                output_tokens,
+                rate_limits,
+                ..
+            } => {
                 assert!(input_tokens.is_none());
                 assert!(cached_input.is_none());
                 assert!(output_tokens.is_none());
@@ -609,10 +641,16 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp() {
         // 2026-04-10T14:36:55Z = 20553*86400 + 52615 = 1775831815
-        assert_eq!(parse_iso_timestamp("2026-04-10T14:36:55.987Z"), Some(1775831815));
+        assert_eq!(
+            parse_iso_timestamp("2026-04-10T14:36:55.987Z"),
+            Some(1775831815)
+        );
         assert_eq!(parse_iso_timestamp("1970-01-01T00:00:00Z"), Some(0));
         // 2026-07-01T12:01:36Z = 20635*86400 + 43296 = 1782907296
-        assert_eq!(parse_iso_timestamp("2026-07-01T12:01:36Z"), Some(1782907296));
+        assert_eq!(
+            parse_iso_timestamp("2026-07-01T12:01:36Z"),
+            Some(1782907296)
+        );
         assert_eq!(parse_iso_timestamp("not-a-timestamp"), None);
     }
 
@@ -639,21 +677,39 @@ mod tests {
         assert!(!result.events.is_empty());
         assert_eq!(result.skipped, 0);
 
-        let has_session_meta = result.events.iter().any(|e| matches!(e, CodexEvent::SessionMeta { .. }));
-        let has_token_count = result.events.iter().any(|e| matches!(e, CodexEvent::TokenCount { .. }));
+        let has_session_meta = result
+            .events
+            .iter()
+            .any(|e| matches!(e, CodexEvent::SessionMeta { .. }));
+        let has_token_count = result
+            .events
+            .iter()
+            .any(|e| matches!(e, CodexEvent::TokenCount { .. }));
         assert!(has_session_meta);
         assert!(has_token_count);
 
         for event in &result.events {
             if let CodexEvent::TokenCount { session_id, .. } = event {
-                assert!(!session_id.is_empty(), "token_count should have session_id filled");
+                assert!(
+                    !session_id.is_empty(),
+                    "token_count should have session_id filled"
+                );
             }
         }
 
-        eprintln!("OK: {} events ({} session_meta, {} token_count, skip {}) from {}",
+        eprintln!(
+            "OK: {} events ({} session_meta, {} token_count, skip {}) from {}",
             result.events.len(),
-            result.events.iter().filter(|e| matches!(e, CodexEvent::SessionMeta { .. })).count(),
-            result.events.iter().filter(|e| matches!(e, CodexEvent::TokenCount { .. })).count(),
+            result
+                .events
+                .iter()
+                .filter(|e| matches!(e, CodexEvent::SessionMeta { .. }))
+                .count(),
+            result
+                .events
+                .iter()
+                .filter(|e| matches!(e, CodexEvent::TokenCount { .. }))
+                .count(),
             result.skipped,
             files[0].display(),
         );
@@ -666,7 +722,13 @@ mod tests {
 
         let home = codex_home();
         let archived = home.join("archived_sessions");
-        if !archived.exists() || std::fs::read_dir(&archived).ok().map(|mut e| e.next().is_some()).unwrap_or(false) == false {
+        if !archived.exists()
+            || std::fs::read_dir(&archived)
+                .ok()
+                .map(|mut e| e.next().is_some())
+                .unwrap_or(false)
+                == false
+        {
             eprintln!("SKIP: no archived_sessions dir with files");
             return;
         }
@@ -679,19 +741,32 @@ mod tests {
         let mut telemetry_db = db::open_or_create(&db_path).unwrap();
         let result = import::run_import(&mut telemetry_db, &home);
 
-        eprintln!("Import result: {} sources scanned, {} imported, {} sessions, {} model calls, {} quota samples, {} errors",
-            result.sources_scanned, result.sources_imported,
-            result.sessions_added, result.model_calls_added, result.quota_samples_added,
+        eprintln!(
+            "Import result: {} sources scanned, {} imported, {} sessions, {} model calls, {} quota samples, {} errors",
+            result.sources_scanned,
+            result.sources_imported,
+            result.sessions_added,
+            result.model_calls_added,
+            result.quota_samples_added,
             result.errors.len(),
         );
         for err in &result.errors {
             eprintln!("  error: {err}");
         }
 
-        assert!(result.sources_scanned > 0, "should find at least one source file");
-        assert!(result.sources_imported > 0, "should import at least one source");
+        assert!(
+            result.sources_scanned > 0,
+            "should find at least one source file"
+        );
+        assert!(
+            result.sources_imported > 0,
+            "should import at least one source"
+        );
         assert!(result.sessions_added > 0, "should add at least one session");
-        assert!(result.model_calls_added > 0, "should add at least one model call");
+        assert!(
+            result.model_calls_added > 0,
+            "should add at least one model call"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

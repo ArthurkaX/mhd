@@ -34,8 +34,7 @@ impl Canvas for DibCanvas<'_> {
         }
         let idx = (y * self.w + x) as usize;
         if idx < self.pixels.len() {
-            self.pixels[idx] =
-                (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+            self.pixels[idx] = (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
         }
     }
 }

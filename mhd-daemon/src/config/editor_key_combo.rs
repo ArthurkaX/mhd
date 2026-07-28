@@ -121,7 +121,9 @@ impl KeyComboEditorState {
                     self.key = if id == 0 {
                         None
                     } else {
-                        self.items_for_slot(slot).get(id).map(|item| item.label.clone())
+                        self.items_for_slot(slot)
+                            .get(id)
+                            .map(|item| item.label.clone())
                     };
                 }
             }
@@ -168,7 +170,9 @@ impl KeyComboEditorState {
                     crate::core::trigger::known_key_names()
                         .into_iter()
                         .enumerate()
-                        .map(|(idx, name)| SearchDropdownItem::new(idx + 1, name.clone(), vec![name])),
+                        .map(|(idx, name)| {
+                            SearchDropdownItem::new(idx + 1, name.clone(), vec![name])
+                        }),
                 )
                 .collect(),
         }

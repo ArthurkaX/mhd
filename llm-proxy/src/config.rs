@@ -218,9 +218,9 @@ impl Default for Settings {
             retry_max_attempts: default_retry_max_attempts(),
             retry_base_delay_ms: default_retry_base_delay_ms(),
             retry_max_delay_ms: default_retry_max_delay_ms(),
-    throttle_enabled: default_throttle_enabled(),
-    throttle_rate_per_sec: default_throttle_rate_per_sec(),
-    throttle_burst: default_throttle_burst(),
+            throttle_enabled: default_throttle_enabled(),
+            throttle_rate_per_sec: default_throttle_rate_per_sec(),
+            throttle_burst: default_throttle_burst(),
             trim_ws_enabled: default_trim_ws_enabled(),
             trim_free_target: default_trim_free_target(),
             trim_strip_thinking: default_trim_strip_thinking(),
@@ -350,16 +350,16 @@ impl Config {
             db_log_enabled: settings.db_log_enabled,
             trim_tool_desc_chars: settings.trim_tool_desc_chars,
             trim_toolresult_head: settings.trim_toolresult_head,
-        trim_head_haiku: settings.trim_head_haiku,
-        trim_head_harness: settings.trim_head_harness,
+            trim_head_haiku: settings.trim_head_haiku,
+            trim_head_harness: settings.trim_head_harness,
             trim_toolresult_tail: settings.trim_toolresult_tail,
             retry_enabled: settings.retry_enabled,
             retry_max_attempts: settings.retry_max_attempts,
             retry_base_delay_ms: settings.retry_base_delay_ms,
             retry_max_delay_ms: settings.retry_max_delay_ms,
-    throttle_enabled: settings.throttle_enabled,
-    throttle_rate_per_sec: settings.throttle_rate_per_sec,
-    throttle_burst: settings.throttle_burst,
+            throttle_enabled: settings.throttle_enabled,
+            throttle_rate_per_sec: settings.throttle_rate_per_sec,
+            throttle_burst: settings.throttle_burst,
             trim_ws_enabled: settings.trim_ws_enabled,
             trim_free_target: settings.trim_free_target.clone(),
             trim_strip_thinking: settings.trim_strip_thinking,
@@ -390,16 +390,16 @@ impl Config {
             db_log_enabled: self.db_log_enabled,
             trim_tool_desc_chars: self.trim_tool_desc_chars,
             trim_toolresult_head: self.trim_toolresult_head,
-        trim_head_haiku: self.trim_head_haiku,
-        trim_head_harness: self.trim_head_harness,
+            trim_head_haiku: self.trim_head_haiku,
+            trim_head_harness: self.trim_head_harness,
             trim_toolresult_tail: self.trim_toolresult_tail,
             retry_enabled: self.retry_enabled,
             retry_max_attempts: self.retry_max_attempts,
             retry_base_delay_ms: self.retry_base_delay_ms,
             retry_max_delay_ms: self.retry_max_delay_ms,
-    throttle_enabled: self.throttle_enabled,
-    throttle_rate_per_sec: self.throttle_rate_per_sec,
-    throttle_burst: self.throttle_burst,
+            throttle_enabled: self.throttle_enabled,
+            throttle_rate_per_sec: self.throttle_rate_per_sec,
+            throttle_burst: self.throttle_burst,
             trim_ws_enabled: self.trim_ws_enabled,
             trim_free_target: self.trim_free_target.clone(),
             trim_strip_thinking: self.trim_strip_thinking,
@@ -512,15 +512,15 @@ fn default_retry_max_delay_ms() -> u64 {
 }
 
 fn default_throttle_enabled() -> bool {
- false
+    false
 }
 
 fn default_throttle_rate_per_sec() -> f64 {
- 10.0
+    10.0
 }
 
 fn default_throttle_burst() -> f64 {
- 10.0
+    10.0
 }
 
 fn default_trim_ws_enabled() -> bool {

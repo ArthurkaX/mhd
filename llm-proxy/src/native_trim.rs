@@ -154,8 +154,16 @@ fn looks_like_code(text: &str) -> bool {
     }
     // Route 2: code keyword frequency.
     const KEYWORDS: &[&str] = &[
-        "fn ", "struct ", "impl ", "pub ", "def ", "class ",
-        "import ", "function ", "interface ", "trait ",
+        "fn ",
+        "struct ",
+        "impl ",
+        "pub ",
+        "def ",
+        "class ",
+        "import ",
+        "function ",
+        "interface ",
+        "trait ",
     ];
     let mut kw_total: usize = 0;
     for kw in KEYWORDS {
@@ -172,10 +180,16 @@ fn looks_like_code(text: &str) -> bool {
     false
 }
 
-pub fn tool_result_protected(text: &str, src_ext: Option<&str>, fence_requires_code: bool, arrow_density_min: f64) -> bool {
+pub fn tool_result_protected(
+    text: &str,
+    src_ext: Option<&str>,
+    fence_requires_code: bool,
+    arrow_density_min: f64,
+) -> bool {
     // Layer 1: provenance
     if let Some(ext) = src_ext {
-        if matches!(ext,
+        if matches!(
+            ext,
             // documentation
             "md" | "markdown" | "txt" | "rst" | "adoc" | "org"
             // source code — never elide; the model needs exact bytes to Edit
@@ -209,9 +223,16 @@ pub fn tool_result_protected(text: &str, src_ext: Option<&str>, fence_requires_c
         if ('\u{2500}'..='\u{257F}').contains(&c) {
             box_count += 1;
             // Corners: ┌ ┐ └ ┘ ╔ ╗ ╚ ╝
-            if matches!(c,
-                '\u{250C}' | '\u{2510}' | '\u{2514}' | '\u{2518}'
-                | '\u{2554}' | '\u{2557}' | '\u{255A}' | '\u{255D}'
+            if matches!(
+                c,
+                '\u{250C}'
+                    | '\u{2510}'
+                    | '\u{2514}'
+                    | '\u{2518}'
+                    | '\u{2554}'
+                    | '\u{2557}'
+                    | '\u{255A}'
+                    | '\u{255D}'
             ) {
                 corner_count += 1;
             }
@@ -350,7 +371,9 @@ fn build_id_to_ext(messages: &[Value]) -> HashMap<String, Option<String>> {
             if b.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
                 continue;
             }
-            let Some(id) = b.get("id").and_then(|v| v.as_str()) else { continue };
+            let Some(id) = b.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
             let ext = b.get("input").and_then(|inp| {
                 let obj = inp.as_object()?;
                 let path_str = obj
@@ -387,7 +410,9 @@ fn compress_tool_results(
         return;
     };
     for block in content.iter_mut() {
-        let Some(b) = block.as_object_mut() else { continue };
+        let Some(b) = block.as_object_mut() else {
+            continue;
+        };
         if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
             continue;
         }
@@ -398,15 +423,15 @@ fn compress_tool_results(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let src_ext: Option<&str> = id_to_ext
-            .get(&tool_use_id)
-            .and_then(|opt| opt.as_deref());
+        let src_ext: Option<&str> = id_to_ext.get(&tool_use_id).and_then(|opt| opt.as_deref());
 
         // Determine whether the block is protected.
         let fence_requires_code = knobs.tool_result_fence_requires_code;
         let arrow_density_min = knobs.tool_result_arrow_density_min;
         let protected = match b.get("content") {
-            Some(Value::String(s)) => tool_result_protected(s, src_ext, fence_requires_code, arrow_density_min),
+            Some(Value::String(s)) => {
+                tool_result_protected(s, src_ext, fence_requires_code, arrow_density_min)
+            }
             Some(Value::Array(arr)) => {
                 // Concatenate all inner text blocks for the detector.
                 let combined: String = arr
@@ -416,7 +441,9 @@ fn compress_tool_results(
                         if ib.get("type").and_then(|t| t.as_str()) != Some("text") {
                             return None;
                         }
-                        ib.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                        ib.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -439,7 +466,9 @@ fn compress_tool_results(
             }
             Some(Value::Array(arr)) => {
                 for inner in arr.iter_mut() {
-                    let Some(ib) = inner.as_object_mut() else { continue };
+                    let Some(ib) = inner.as_object_mut() else {
+                        continue;
+                    };
                     if ib.get("type").and_then(|t| t.as_str()) != Some("text") {
                         continue;
                     }
@@ -474,7 +503,7 @@ fn transform_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
     match (ws_out, ht_out) {
         (_, Some(compressed)) => Some(compressed), // head+tail result (already post-ws)
         (Some(ws_reduced), None) => Some(ws_reduced), // only ws changed
-        (None, None) => None,                          // no change
+        (None, None) => None,                      // no change
     }
 }
 
@@ -597,20 +626,28 @@ fn truncate_descriptions(node: &mut Value, max_chars: usize) {
 /// modifies a block. Deterministic, fail-open.
 fn strip_old_thinking(messages: &mut [Value]) {
     // index of the last assistant message
-    let last_assistant = messages.iter().rposition(|m|
-        m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
-    let Some(last_idx) = last_assistant else { return };
+    let last_assistant = messages
+        .iter()
+        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
+    let Some(last_idx) = last_assistant else {
+        return;
+    };
     for (i, msg) in messages.iter_mut().enumerate() {
-        if i == last_idx { continue; } // leave latest assistant untouched
-        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
-        let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else { continue };
+        if i == last_idx {
+            continue;
+        } // leave latest assistant untouched
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
         content.retain(|b| {
             let t = b.get("type").and_then(|t| t.as_str());
             t != Some("thinking") && t != Some("redacted_thinking")
         });
     }
 }
-
 
 // ── public entry point ────────────────────────────────────────────────────────
 
@@ -708,7 +745,12 @@ pub fn trim_native_openai(mut body: Value, knobs: &NativeKnobs) -> Value {
             if let Value::String(s) = content {
                 // Pass src_ext=None: no file-path provenance on OpenAI tool msgs;
                 // content-based protection (fences / diagram glyphs) still fires.
-                if !tool_result_protected(s, None, knobs.tool_result_fence_requires_code, knobs.tool_result_arrow_density_min) {
+                if !tool_result_protected(
+                    s,
+                    None,
+                    knobs.tool_result_fence_requires_code,
+                    knobs.tool_result_arrow_density_min,
+                ) {
                     if let Some(new) = transform_text(s, knobs) {
                         *s = new;
                     }
@@ -835,7 +877,10 @@ mod tests {
             ]
         });
         let result = trim_native(body.clone(), &desc_only(100));
-        assert_eq!(result["tools"][0]["description"], body["tools"][0]["description"]);
+        assert_eq!(
+            result["tools"][0]["description"],
+            body["tools"][0]["description"]
+        );
     }
 
     /// Exactly at the boundary (== max_chars) is also left unchanged.
@@ -891,7 +936,10 @@ mod tests {
         assert_eq!(desc.chars().count(), 51);
         assert!(desc.ends_with('…'));
         // Verify it's valid UTF-8 by checking the String length in bytes is sensible.
-        assert!(desc.len() > 51, "Cyrillic chars are multi-byte, so byte len > char count");
+        assert!(
+            desc.len() > 51,
+            "Cyrillic chars are multi-byte, so byte len > char count"
+        );
 
         // Emoji variant
         let emoji = "🦀🎉🌟".repeat(30); // 90 chars, well over 50
@@ -927,7 +975,10 @@ mod tests {
         });
         let result = trim_native(body, &desc_only(100));
         // Top-level description unchanged (it was already short).
-        assert_eq!(result["tools"][0]["description"].as_str().unwrap(), "short top");
+        assert_eq!(
+            result["tools"][0]["description"].as_str().unwrap(),
+            "short top"
+        );
         // Nested description truncated.
         let nested_desc = result["tools"][0]["input_schema"]["properties"]["foo"]["description"]
             .as_str()
@@ -962,10 +1013,10 @@ mod tests {
             }]
         });
         let result = trim_native(body, &desc_only(50));
-        let deep_desc = result["tools"][0]["input_schema"]["properties"]["foo"]["items"]
-            ["description"]
-            .as_str()
-            .unwrap();
+        let deep_desc =
+            result["tools"][0]["input_schema"]["properties"]["foo"]["items"]["description"]
+                .as_str()
+                .unwrap();
         assert_eq!(deep_desc.chars().count(), 51);
         assert!(deep_desc.ends_with('…'));
         let content: String = deep_desc.chars().take(50).collect();
@@ -1013,18 +1064,29 @@ mod tests {
         });
         let knobs = result_only(100, 50);
         let result = trim_native(body, &knobs);
-        let compressed = result["messages"][0]["content"][0]["content"].as_str().unwrap();
+        let compressed = result["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
         // Must be shorter.
         assert!(
             compressed.chars().count() < big_text.chars().count(),
             "compressed should be shorter than original"
         );
         // Must contain the elision marker.
-        assert!(compressed.contains("...[elided"), "must contain elision marker");
+        assert!(
+            compressed.contains("...[elided"),
+            "must contain elision marker"
+        );
         // Must start with the head and end with the tail.
         let head: String = big_text.chars().take(100).collect();
-        let tail: String = big_text.chars().skip(big_text.chars().count() - 50).collect();
-        assert!(compressed.starts_with(&head), "must start with original head");
+        let tail: String = big_text
+            .chars()
+            .skip(big_text.chars().count() - 50)
+            .collect();
+        assert!(
+            compressed.starts_with(&head),
+            "must start with original head"
+        );
         assert!(compressed.ends_with(&tail), "must end with original tail");
     }
 
@@ -1045,7 +1107,9 @@ mod tests {
         // head=200, tail=200 — 100 chars fits inside.
         let knobs = result_only(200, 200);
         let result = trim_native(body, &knobs);
-        let val = result["messages"][0]["content"][0]["content"].as_str().unwrap();
+        let val = result["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
         assert_eq!(val, small_text, "small result must be left unchanged");
     }
 
@@ -1072,7 +1136,10 @@ mod tests {
         let text = result["messages"][0]["content"][0]["content"][0]["text"]
             .as_str()
             .unwrap();
-        assert!(text.len() < big_text.len(), "array-form text should be compressed");
+        assert!(
+            text.len() < big_text.len(),
+            "array-form text should be compressed"
+        );
         assert!(text.contains("...[elided"), "should contain elision marker");
     }
 
@@ -1093,7 +1160,9 @@ mod tests {
         });
         let knobs = result_only(100, 50);
         let result = trim_native(body, &knobs);
-        let input_val = result["messages"][0]["content"][0]["input"]["data"].as_str().unwrap();
+        let input_val = result["messages"][0]["content"][0]["input"]["data"]
+            .as_str()
+            .unwrap();
         assert_eq!(input_val, big_input, "tool_use input must not be touched");
     }
 
@@ -1349,16 +1418,31 @@ mod tests {
             .filter(|&c| {
                 matches!(
                     c,
-                    '\u{250C}' | '\u{2510}' | '\u{2514}' | '\u{2518}'
-                        | '\u{2554}' | '\u{2557}' | '\u{255A}' | '\u{255D}'
+                    '\u{250C}'
+                        | '\u{2510}'
+                        | '\u{2514}'
+                        | '\u{2518}'
+                        | '\u{2554}'
+                        | '\u{2557}'
+                        | '\u{255A}'
+                        | '\u{255D}'
                 )
             })
             .count();
         let density = (box_count + arrow_count) as f64 / total.max(1) as f64;
         // Sanity-check that our test data really is below all three routes.
-        assert!(arrow_count < 3, "test data must have < 3 arrows; got {arrow_count}");
-        assert!(corner_count < 4, "test data must have < 4 corners; got {corner_count}");
-        assert!(density < 0.02, "test data density must be < 2%; got {density:.4}");
+        assert!(
+            arrow_count < 3,
+            "test data must have < 3 arrows; got {arrow_count}"
+        );
+        assert!(
+            corner_count < 4,
+            "test data must have < 4 corners; got {corner_count}"
+        );
+        assert!(
+            density < 0.02,
+            "test data density must be < 2%; got {density:.4}"
+        );
         assert!(
             !tool_result_protected(output, None, true, 0.01),
             "cargo output with one stray unicode char must NOT be protected"
@@ -1411,10 +1495,16 @@ mod tests {
             .chars()
             .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
             .count();
-        assert!(arrow_count >= 3, "test data must have >= 3 arrows; got {arrow_count}");
+        assert!(
+            arrow_count >= 3,
+            "test data must have >= 3 arrows; got {arrow_count}"
+        );
         let total = text.chars().count();
         let density = arrow_count as f64 / total as f64;
-        assert!(density < 0.01, "test data density must be < 0.01; got {density:.6}");
+        assert!(
+            density < 0.01,
+            "test data density must be < 0.01; got {density:.6}"
+        );
         assert!(
             !tool_result_protected(&text, None, true, 0.01),
             "large text with 3 stray arrows must NOT be protected at default density gate"
@@ -1497,7 +1587,10 @@ mod tests {
             .chars()
             .filter(|&c| ('\u{2190}'..='\u{21FF}').contains(&c))
             .count();
-        assert!(arrow_count >= 3, "test data must have >= 3 arrows; got {arrow_count}");
+        assert!(
+            arrow_count >= 3,
+            "test data must have >= 3 arrows; got {arrow_count}"
+        );
         // Gate off (min=0.0): >= 3 arrows alone suffices → protected.
         assert!(
             tool_result_protected(&text, None, true, 0.0),
@@ -1578,7 +1671,9 @@ mod tests {
             ..Default::default()
         };
         let result = trim_native(body, &knobs);
-        let out = result["messages"][0]["content"][0]["content"].as_str().unwrap();
+        let out = result["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
         assert_eq!(out, diagram, "diagram block must be left byte-identical");
     }
 
@@ -1590,8 +1685,8 @@ mod tests {
     #[test]
     fn md_provenance_protects_via_tool_use_id() {
         // Plain markdown text — no fences, no box glyphs.
-        let md_content = "# Hello\n\nThis is plain markdown with no fences or diagrams.\n"
-            .repeat(50); // make it long enough to normally trigger head/tail
+        let md_content =
+            "# Hello\n\nThis is plain markdown with no fences or diagrams.\n".repeat(50); // make it long enough to normally trigger head/tail
 
         let body = json!({
             "messages": [
@@ -1623,8 +1718,13 @@ mod tests {
             ..Default::default()
         };
         let result = trim_native(body, &knobs);
-        let out = result["messages"][1]["content"][0]["content"].as_str().unwrap();
-        assert_eq!(out, md_content, "md-provenance block must be left byte-identical");
+        let out = result["messages"][1]["content"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            out, md_content,
+            "md-provenance block must be left byte-identical"
+        );
     }
 
     // ── integration: eligible block is ws-compressed ──────────────────────────
@@ -1643,7 +1743,7 @@ mod tests {
             + "\n\n\n\n\n\n"                                  // 6 blank lines (> max=5)
             + "    indented line\n"                           // 4 leading spaces (must survive)
             + "foo  bar  baz\n"                               // inner multi-spaces
-            + "tab\there\n";                                  // tab in non-leading pos (untouched)
+            + "tab\there\n"; // tab in non-leading pos (untouched)
 
         let body = json!({
             "messages": [{
@@ -1664,11 +1764,19 @@ mod tests {
             ..Default::default()
         };
         let result = trim_native(body, &knobs);
-        let out = result["messages"][0]["content"][0]["content"].as_str().unwrap();
+        let out = result["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
 
         // 1. Trailing spaces stripped.
-        assert!(!out.contains("line one   "), "trailing spaces should be stripped");
-        assert!(out.contains("line one\n"), "content of line one should survive");
+        assert!(
+            !out.contains("line one   "),
+            "trailing spaces should be stripped"
+        );
+        assert!(
+            out.contains("line one\n"),
+            "content of line one should survive"
+        );
 
         // 2. Blank-line run collapsed: 6 blank lines → 5.
         //    The original has 7 consecutive \n ("line two\n" + 6 blank \n).
@@ -1684,15 +1792,30 @@ mod tests {
         );
 
         // 3. Leading 4-space indent preserved.
-        assert!(out.contains("    indented line"), "4-space leading indent must survive");
+        assert!(
+            out.contains("    indented line"),
+            "4-space leading indent must survive"
+        );
 
         // 4. Inner multi-spaces collapsed.
-        assert!(!out.contains("foo  bar"), "double space in 'foo  bar' should be collapsed");
-        assert!(out.contains("foo bar"), "inner space should be collapsed to single");
-        assert!(!out.contains("bar  baz"), "double space in 'bar  baz' should be collapsed");
+        assert!(
+            !out.contains("foo  bar"),
+            "double space in 'foo  bar' should be collapsed"
+        );
+        assert!(
+            out.contains("foo bar"),
+            "inner space should be collapsed to single"
+        );
+        assert!(
+            !out.contains("bar  baz"),
+            "double space in 'bar  baz' should be collapsed"
+        );
 
         // 5. Tab in non-leading position is untouched.
-        assert!(out.contains("tab\there"), "tab in non-leading pos must survive");
+        assert!(
+            out.contains("tab\there"),
+            "tab in non-leading pos must survive"
+        );
     }
 
     // ── ws_enabled=false: no whitespace changes ───────────────────────────────
@@ -1721,7 +1844,9 @@ mod tests {
             ..Default::default()
         };
         let result = trim_native(body, &knobs);
-        let out = result["messages"][0]["content"][0]["content"].as_str().unwrap();
+        let out = result["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
         assert_eq!(out, input, "ws_enabled=false must not change whitespace");
     }
 
@@ -1794,7 +1919,7 @@ mod tests {
         let text = "line one\n".to_string()   // positions  0-8  (9 chars)
             + "line two\n"                    // positions  9-17 (9 chars)
             + &"A".repeat(8000)               // positions 18-8017
-            + "\nline last\n";                // positions 8018-8028 (11 chars)
+            + "\nline last\n"; // positions 8018-8028 (11 chars)
 
         let knobs = NativeKnobs {
             tool_result_head: 14,
@@ -1880,7 +2005,10 @@ mod tests {
 
         let id_a = extract_id(&r_a);
         let id_b = extract_id(&r_b);
-        assert_ne!(id_a, id_b, "different elided content must yield different id");
+        assert_ne!(
+            id_a, id_b,
+            "different elided content must yield different id"
+        );
     }
 
     // ── fenced code block protected ───────────────────────────────────────────
@@ -1908,8 +2036,13 @@ mod tests {
             ..Default::default() // fence_requires_code=true
         };
         let result = trim_native(body, &knobs);
-        let out = result["messages"][0]["content"][0]["content"].as_str().unwrap();
-        assert_eq!(out, fenced, "fenced real-code block must be left byte-identical");
+        let out = result["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            out, fenced,
+            "fenced real-code block must be left byte-identical"
+        );
     }
 
     /// A tool_result with a fenced JSON blob (no code keywords) is left
@@ -1918,16 +2051,18 @@ mod tests {
     #[test]
     fn fenced_json_block_legacy_vs_new() {
         let fenced = "Output:\n```json\n{\"key\": \"value\"}\n```\n".repeat(100);
-        let build_body = || json!({
-            "messages": [{
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "toolu_fence",
-                    "content": fenced.clone()
+        let build_body = || {
+            json!({
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_fence",
+                        "content": fenced.clone()
+                    }]
                 }]
-            }]
-        });
+            })
+        };
 
         // Legacy: fence alone protects.
         let legacy_knobs = NativeKnobs {
@@ -1937,8 +2072,13 @@ mod tests {
             ..Default::default()
         };
         let r_legacy = trim_native(build_body(), &legacy_knobs);
-        let out_legacy = r_legacy["messages"][0]["content"][0]["content"].as_str().unwrap();
-        assert_eq!(out_legacy, fenced, "fence_requires_code=false: JSON fence must be left byte-identical (legacy)");
+        let out_legacy = r_legacy["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            out_legacy, fenced,
+            "fence_requires_code=false: JSON fence must be left byte-identical (legacy)"
+        );
 
         // New default: fenced JSON is NOT protected → gets compressed.
         // Use min_elide=0 so any elision triggers the marker, regardless of absolute size.
@@ -1950,7 +2090,9 @@ mod tests {
             ..Default::default()
         };
         let r_new = trim_native(build_body(), &new_knobs);
-        let out_new = r_new["messages"][0]["content"][0]["content"].as_str().unwrap();
+        let out_new = r_new["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
         assert!(
             out_new.contains("...[elided"),
             "fence_requires_code=true: fenced JSON blob must be compressed (not protected)"
@@ -1990,25 +2132,43 @@ mod tests {
             ]
         });
 
-        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let knobs = NativeKnobs {
+            strip_thinking: true,
+            ..NativeKnobs::default()
+        };
         let result = trim_native(body, &knobs);
 
         // First assistant: thinking removed, tool_use kept.
         let first = &result["messages"][0]["content"];
-        let types0: Vec<&str> = first.as_array().unwrap()
+        let types0: Vec<&str> = first
+            .as_array()
+            .unwrap()
             .iter()
             .filter_map(|b| b["type"].as_str())
             .collect();
-        assert_eq!(types0, vec!["tool_use"], "first assistant must lose thinking, keep tool_use");
+        assert_eq!(
+            types0,
+            vec!["tool_use"],
+            "first assistant must lose thinking, keep tool_use"
+        );
 
         // Last (second) assistant: content unchanged — both thinking and tool_use present.
         let last = &result["messages"][2]["content"];
-        let types2: Vec<&str> = last.as_array().unwrap()
+        let types2: Vec<&str> = last
+            .as_array()
+            .unwrap()
             .iter()
             .filter_map(|b| b["type"].as_str())
             .collect();
-        assert_eq!(types2, vec!["thinking", "tool_use"], "last assistant must keep thinking untouched");
-        assert_eq!(last[0]["thinking"], "latest thoughts", "thinking content must be byte-identical");
+        assert_eq!(
+            types2,
+            vec!["thinking", "tool_use"],
+            "last assistant must keep thinking untouched"
+        );
+        assert_eq!(
+            last[0]["thinking"], "latest thoughts",
+            "thinking content must be byte-identical"
+        );
     }
 
     /// redacted_thinking in an old assistant is removed; in the last assistant it is preserved.
@@ -2037,12 +2197,17 @@ mod tests {
             ]
         });
 
-        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let knobs = NativeKnobs {
+            strip_thinking: true,
+            ..NativeKnobs::default()
+        };
         let result = trim_native(body, &knobs);
 
         // First assistant: redacted_thinking stripped, text kept.
         let first = &result["messages"][0]["content"];
-        let types: Vec<&str> = first.as_array().unwrap()
+        let types: Vec<&str> = first
+            .as_array()
+            .unwrap()
             .iter()
             .filter_map(|b| b["type"].as_str())
             .collect();
@@ -2050,11 +2215,17 @@ mod tests {
 
         // Last assistant: both blocks preserved.
         let last = &result["messages"][2]["content"];
-        let last_types: Vec<&str> = last.as_array().unwrap()
+        let last_types: Vec<&str> = last
+            .as_array()
+            .unwrap()
             .iter()
             .filter_map(|b| b["type"].as_str())
             .collect();
-        assert_eq!(last_types, vec!["redacted_thinking", "text"], "last assistant must be byte-identical");
+        assert_eq!(
+            last_types,
+            vec!["redacted_thinking", "text"],
+            "last assistant must be byte-identical"
+        );
         assert_eq!(last[0]["data"], "redacted latest");
     }
 
@@ -2089,18 +2260,37 @@ mod tests {
             ]
         });
 
-        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let knobs = NativeKnobs {
+            strip_thinking: true,
+            ..NativeKnobs::default()
+        };
         let result = trim_native(body, &knobs);
 
         // First assistant: stripped.
-        let first_types: Vec<&str> = result["messages"][0]["content"].as_array().unwrap()
-            .iter().filter_map(|b| b["type"].as_str()).collect();
-        assert_eq!(first_types, vec!["tool_use"], "early assistant thinking must be stripped");
+        let first_types: Vec<&str> = result["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        assert_eq!(
+            first_types,
+            vec!["tool_use"],
+            "early assistant thinking must be stripped"
+        );
 
         // Second (last) assistant (index 2): thinking kept.
-        let second_types: Vec<&str> = result["messages"][2]["content"].as_array().unwrap()
-            .iter().filter_map(|b| b["type"].as_str()).collect();
-        assert_eq!(second_types, vec!["thinking", "tool_use"], "last assistant must keep thinking");
+        let second_types: Vec<&str> = result["messages"][2]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        assert_eq!(
+            second_types,
+            vec!["thinking", "tool_use"],
+            "last assistant must keep thinking"
+        );
         assert_eq!(result["messages"][2]["content"][0]["thinking"], "middle");
     }
 
@@ -2123,9 +2313,15 @@ mod tests {
             ]
         });
 
-        let knobs = NativeKnobs { strip_thinking: false, ..NativeKnobs::default() };
+        let knobs = NativeKnobs {
+            strip_thinking: false,
+            ..NativeKnobs::default()
+        };
         let result = trim_native(body.clone(), &knobs);
-        assert_eq!(result["messages"], body["messages"], "strip_thinking=false must not change messages");
+        assert_eq!(
+            result["messages"], body["messages"],
+            "strip_thinking=false must not change messages"
+        );
     }
 
     /// Determinism: running strip_thinking twice produces identical results.
@@ -2155,7 +2351,10 @@ mod tests {
             ]
         });
 
-        let knobs = NativeKnobs { strip_thinking: true, ..NativeKnobs::default() };
+        let knobs = NativeKnobs {
+            strip_thinking: true,
+            ..NativeKnobs::default()
+        };
         let a = trim_native(body.clone(), &knobs);
         let b = trim_native(body, &knobs);
         assert_eq!(a, b, "strip_thinking must be deterministic");
@@ -2197,16 +2396,26 @@ mod tests {
         let result = trim_native_openai(body, &knobs);
 
         // Top-level description truncated.
-        let top_desc = result["tools"][0]["function"]["description"].as_str().unwrap();
-        assert_eq!(top_desc.chars().count(), 51, "top-level description must be truncated to 50+ellipsis");
+        let top_desc = result["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            top_desc.chars().count(),
+            51,
+            "top-level description must be truncated to 50+ellipsis"
+        );
         assert!(top_desc.ends_with('…'));
 
         // Nested parameter description truncated.
-        let nested_desc = result["tools"][0]["function"]["parameters"]["properties"]["path"]
-            ["description"]
-            .as_str()
-            .unwrap();
-        assert_eq!(nested_desc.chars().count(), 51, "nested description must be truncated to 50+ellipsis");
+        let nested_desc =
+            result["tools"][0]["function"]["parameters"]["properties"]["path"]["description"]
+                .as_str()
+                .unwrap();
+        assert_eq!(
+            nested_desc.chars().count(),
+            51,
+            "nested description must be truncated to 50+ellipsis"
+        );
         assert!(nested_desc.ends_with('…'));
     }
 
@@ -2245,11 +2454,17 @@ mod tests {
             big_out.chars().count() < big_text.chars().count(),
             "large tool message must be compressed"
         );
-        assert!(big_out.contains("...[elided"), "must contain elision marker");
+        assert!(
+            big_out.contains("...[elided"),
+            "must contain elision marker"
+        );
 
         // Small message: unchanged.
         let small_out = result["messages"][1]["content"].as_str().unwrap();
-        assert_eq!(small_out, small_text, "small tool message must be unchanged");
+        assert_eq!(
+            small_out, small_text,
+            "small tool message must be unchanged"
+        );
     }
 
     /// (oc) A role:tool message whose content is a fenced REAL code block is
@@ -2277,7 +2492,10 @@ mod tests {
         };
         let result_code = trim_native_openai(body_code, &knobs_default);
         let out_code = result_code["messages"][0]["content"].as_str().unwrap();
-        assert_eq!(out_code, fenced_code, "fenced real-code tool message must be left byte-identical");
+        assert_eq!(
+            out_code, fenced_code,
+            "fenced real-code tool message must be left byte-identical"
+        );
 
         // JSON fence: with fence_requires_code=false (legacy) → protected.
         let fenced_json = "```json\n{\"key\": \"value\"}\n```\n".repeat(200);
@@ -2297,7 +2515,10 @@ mod tests {
         };
         let result_legacy = trim_native_openai(body_json.clone(), &knobs_legacy);
         let out_legacy = result_legacy["messages"][0]["content"].as_str().unwrap();
-        assert_eq!(out_legacy, fenced_json, "fence_requires_code=false: fenced JSON must be left byte-identical");
+        assert_eq!(
+            out_legacy, fenced_json,
+            "fence_requires_code=false: fenced JSON must be left byte-identical"
+        );
 
         // JSON fence: with fence_requires_code=true (default) → compressed.
         let result_new = trim_native_openai(body_json, &knobs_default);

@@ -25,7 +25,9 @@ use std::path::PathBuf;
 
 fn arg(flag: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1).cloned())
+    a.iter()
+        .position(|x| x == flag)
+        .and_then(|i| a.get(i + 1).cloned())
 }
 fn has(flag: &str) -> bool {
     std::env::args().any(|x| x == flag)
@@ -59,12 +61,12 @@ fn main() {
                 ))
             })
             .unwrap();
-        println!("run_id           rows  seq_lo..hi   first_ts             last_ts              models");
+        println!(
+            "run_id           rows  seq_lo..hi   first_ts             last_ts              models"
+        );
         for row in rows {
             let (run, n, lo, hi, t0, t1, models) = row.unwrap();
-            println!(
-                "{run:<15}  {n:>4}  {lo:>4}..{hi:<4}  {t0:.19}  {t1:.19}  {models}"
-            );
+            println!("{run:<15}  {n:>4}  {lo:>4}..{hi:<4}  {t0:.19}  {t1:.19}  {models}");
         }
         return;
     }
@@ -104,7 +106,10 @@ fn main() {
     };
 
     let json = decompress_body(&body).expect("zstd decompress failed");
-    eprintln!("# run_id={run_id} seq={seq} decompressed={} bytes", json.len());
+    eprintln!(
+        "# run_id={run_id} seq={seq} decompressed={} bytes",
+        json.len()
+    );
 
     if has("--raw") {
         println!("{json}");
@@ -161,7 +166,11 @@ fn extract_tool_calls(v: &Value) -> Vec<(String, String)> {
         if let Some(tcs) = m.get("tool_calls").and_then(Value::as_array) {
             for tc in tcs {
                 if let Some(f) = tc.get("function") {
-                    let name = f.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+                    let name = f
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string();
                     let args = f.get("arguments").and_then(Value::as_str).unwrap_or("");
                     let pretty = serde_json::from_str::<Value>(args)
                         .ok()
@@ -175,7 +184,11 @@ fn extract_tool_calls(v: &Value) -> Vec<(String, String)> {
         if let Some(content) = m.get("content").and_then(Value::as_array) {
             for c in content {
                 if c.get("type").and_then(Value::as_str) == Some("tool_use") {
-                    let name = c.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+                    let name = c
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string();
                     let input = c.get("input").cloned().unwrap_or(Value::Null);
                     let pretty =
                         serde_json::to_string_pretty(&input).unwrap_or_else(|_| input.to_string());

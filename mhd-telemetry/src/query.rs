@@ -287,13 +287,11 @@ pub fn token_summary(db: &TelemetryDb, since: i64) -> TokenSummary {
 
     // Cache hit ratio
     if result.input_tokens > 0 {
-        result.cache_hit =
-            Some(result.cached_input_tokens as f64 / result.input_tokens as f64);
+        result.cache_hit = Some(result.cached_input_tokens as f64 / result.input_tokens as f64);
     }
 
     // Fresh input
-    result.fresh_input_tokens =
-        i64::max(result.input_tokens - result.cached_input_tokens, 0);
+    result.fresh_input_tokens = i64::max(result.input_tokens - result.cached_input_tokens, 0);
 
     result
 }
@@ -354,10 +352,8 @@ pub fn model_calls_list(
     };
 
     // Build params dynamically
-    let params: Vec<&dyn rusqlite::types::ToSql> = filter_params
-        .iter()
-        .map(|b| b.as_ref())
-        .collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        filter_params.iter().map(|b| b.as_ref()).collect();
 
     // We'll just use a simpler approach with two separate queries
     drop(stmt);
@@ -439,9 +435,9 @@ pub fn model_calls_list(
 /// Get distinct project names from imported sessions.
 pub fn list_projects(db: &TelemetryDb) -> Vec<String> {
     let conn = db.conn();
-    let mut stmt = match conn.prepare(
-        "SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL ORDER BY project",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL ORDER BY project")
+    {
         Ok(s) => s,
         Err(_) => return vec![],
     };
@@ -454,12 +450,8 @@ pub fn list_projects(db: &TelemetryDb) -> Vec<String> {
 /// Get the timestamp of the most recent sample.
 pub fn latest_sample_time(db: &TelemetryDb) -> Option<i64> {
     let conn = db.conn();
-    conn.query_row(
-        "SELECT MAX(event_at) FROM model_calls",
-        [],
-        |r| r.get(0),
-    )
-    .ok()
+    conn.query_row("SELECT MAX(event_at) FROM model_calls", [], |r| r.get(0))
+        .ok()
 }
 
 #[cfg(test)]

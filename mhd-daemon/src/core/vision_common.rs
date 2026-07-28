@@ -72,9 +72,7 @@ pub fn load_vision_endpoint(handle: &AppHandle) -> Result<VisionEndpoint, String
         .get(&model_ref.provider)
         .filter(|k| !k.is_empty())
         .map(|s| s.as_str())
-        .or_else(|| {
-            (!secrets.upstream_key.is_empty()).then_some(secrets.upstream_key.as_str())
-        })
+        .or_else(|| (!secrets.upstream_key.is_empty()).then_some(secrets.upstream_key.as_str()))
         .ok_or_else(|| "Vision provider API key is missing".to_string())?;
 
     Ok(VisionEndpoint {
@@ -136,14 +134,21 @@ pub fn send_and_copy(
     };
 
     let started = std::time::Instant::now();
-    let text = llm_proxy::vision::analyze_png_blocking(&client, &target, prompt, png).map_err(
-        |e| {
+    let text =
+        llm_proxy::vision::analyze_png_blocking(&client, &target, prompt, png).map_err(|e| {
             let duration_ms = started.elapsed().as_millis() as u64;
-            log_event(kind, seq, ep, &endpoint_url, None, Some(&e.to_string()), duration_ms);
+            log_event(
+                kind,
+                seq,
+                ep,
+                &endpoint_url,
+                None,
+                Some(&e.to_string()),
+                duration_ms,
+            );
             eprintln!("mhd: {}: request failed: {e}", kind.label());
             format!("Vision request failed: {e}")
-        },
-    )?;
+        })?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
     log_event(kind, seq, ep, &endpoint_url, Some(200), None, duration_ms);

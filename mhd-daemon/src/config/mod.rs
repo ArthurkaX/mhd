@@ -181,9 +181,9 @@ impl Default for LlmProxyConfig {
             retry_max_attempts: 3,
             retry_base_delay_ms: 500,
             retry_max_delay_ms: 8000,
-        throttle_enabled: false,
-        throttle_rate_per_sec: 10.0,
-        throttle_burst: 10.0,
+            throttle_enabled: false,
+            throttle_rate_per_sec: 10.0,
+            throttle_burst: 10.0,
         }
     }
 }
@@ -478,10 +478,7 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.trim_toolresult_head)
                 .unwrap_or(3000),
-            trim_head_haiku: settings
-                .as_ref()
-                .map(|s| s.trim_head_haiku)
-                .unwrap_or(3000),
+            trim_head_haiku: settings.as_ref().map(|s| s.trim_head_haiku).unwrap_or(3000),
             trim_head_harness: settings
                 .as_ref()
                 .map(|s| s.trim_head_harness)
@@ -510,18 +507,9 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.trim_arrow_density_min)
                 .unwrap_or(0.01),
-            corpus_max_rows: settings
-                .as_ref()
-                .map(|s| s.corpus_max_rows)
-                .unwrap_or(5000),
-            retry_enabled: settings
-                .as_ref()
-                .map(|s| s.retry_enabled)
-                .unwrap_or(false),
-            retry_max_attempts: settings
-                .as_ref()
-                .map(|s| s.retry_max_attempts)
-                .unwrap_or(3),
+            corpus_max_rows: settings.as_ref().map(|s| s.corpus_max_rows).unwrap_or(5000),
+            retry_enabled: settings.as_ref().map(|s| s.retry_enabled).unwrap_or(false),
+            retry_max_attempts: settings.as_ref().map(|s| s.retry_max_attempts).unwrap_or(3),
             retry_base_delay_ms: settings
                 .as_ref()
                 .map(|s| s.retry_base_delay_ms)
@@ -530,18 +518,15 @@ impl AppConfig {
                 .as_ref()
                 .map(|s| s.retry_max_delay_ms)
                 .unwrap_or(8000),
-        throttle_enabled: settings
-            .as_ref()
-            .map(|s| s.throttle_enabled)
-            .unwrap_or(false),
-        throttle_rate_per_sec: settings
-            .as_ref()
-            .map(|s| s.throttle_rate_per_sec)
-            .unwrap_or(10.0),
-        throttle_burst: settings
-            .as_ref()
-            .map(|s| s.throttle_burst)
-            .unwrap_or(10.0),
+            throttle_enabled: settings
+                .as_ref()
+                .map(|s| s.throttle_enabled)
+                .unwrap_or(false),
+            throttle_rate_per_sec: settings
+                .as_ref()
+                .map(|s| s.throttle_rate_per_sec)
+                .unwrap_or(10.0),
+            throttle_burst: settings.as_ref().map(|s| s.throttle_burst).unwrap_or(10.0),
         }
     }
 
@@ -801,7 +786,6 @@ impl AppConfig {
     pub fn llm_proxy(&self) -> &LlmProxyConfig {
         &self.llm_proxy
     }
-
 }
 
 fn parse_keycast_config(raw: Option<&self::raw::RawKeycast>) -> KeycastConfig {

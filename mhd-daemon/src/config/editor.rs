@@ -63,6 +63,7 @@ use crate::config::editor_layout::{
     editor_index_for_action_name,
 };
 // Re‑exports for backward compatibility (used by other modules)
+pub use crate::config::editor_head_tune;
 pub use crate::config::editor_hittest::hit_test_settings;
 pub use crate::config::editor_layout::{
     COMBO_HIT_HEIGHT, COMBO_POPUP_ITEM_HEIGHT, COMBO_POPUP_MAX_VISIBLE, FONT_BODY_SIZE,
@@ -73,15 +74,14 @@ pub use crate::config::editor_paint::{
     build_advanced_controls, build_general_controls, build_llm_proxy_controls,
     build_llm_trim_controls, build_shortcuts_controls, paint_page,
 };
-pub use crate::config::editor_head_tune;
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
-use crate::config::text_cursor;
 use crate::config::editor_state::{
     ButtonStyle, HEAD_SWEEP, HeadGroup, ParamEditCreateInfo, ProxyEditField, SettingsHit,
     SettingsPage, SettingsState, UIBinding, UiProvider, head_help_text,
 };
 pub use crate::config::editor_theme::draw_rounded_border_in_buffer;
 pub use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, to_utf16_z};
+use crate::config::text_cursor;
 
 const TAB_NAMES: &[&str] = &["General", "Shortcuts", "LLM Proxy", "LLM Trim", "Advanced"];
 const HEAD_TUNE_TIMER_ID: usize = 0xB0B0;
@@ -259,18 +259,34 @@ pub fn show_config_editor(handle: AppHandle) {
         trim_enabled: llm_proxy::config::load_settings()
             .map(|s| s.trim_enabled)
             .unwrap_or(false),
-        trim_tool_desc_chars: llm_proxy::config::load_settings().map(|s| s.trim_tool_desc_chars).unwrap_or(150),
-        trim_toolresult_head: llm_proxy::config::load_settings().map(|s| s.trim_toolresult_head).unwrap_or(3000),
-        trim_toolresult_tail: llm_proxy::config::load_settings().map(|s| s.trim_toolresult_tail).unwrap_or(1000),
-        trim_ws_enabled: llm_proxy::config::load_settings().map(|s| s.trim_ws_enabled).unwrap_or(false),
-        trim_strip_thinking: llm_proxy::config::load_settings().map(|s| s.trim_strip_thinking).unwrap_or(false),
-        trim_free_target: llm_proxy::config::load_settings().map(|s| s.trim_free_target).unwrap_or_default(),
-    trim_head_haiku: llm_proxy::config::load_settings().map(|s| s.trim_head_haiku).unwrap_or(3000),
-    trim_head_harness: llm_proxy::config::load_settings().map(|s| s.trim_head_harness).unwrap_or(3000),
-    head_items: Vec::new(),
-    head_dropdown: SearchDropdownState::default(),
-    head_open_group: None,
-    head_hover_idx: None,
+        trim_tool_desc_chars: llm_proxy::config::load_settings()
+            .map(|s| s.trim_tool_desc_chars)
+            .unwrap_or(150),
+        trim_toolresult_head: llm_proxy::config::load_settings()
+            .map(|s| s.trim_toolresult_head)
+            .unwrap_or(3000),
+        trim_toolresult_tail: llm_proxy::config::load_settings()
+            .map(|s| s.trim_toolresult_tail)
+            .unwrap_or(1000),
+        trim_ws_enabled: llm_proxy::config::load_settings()
+            .map(|s| s.trim_ws_enabled)
+            .unwrap_or(false),
+        trim_strip_thinking: llm_proxy::config::load_settings()
+            .map(|s| s.trim_strip_thinking)
+            .unwrap_or(false),
+        trim_free_target: llm_proxy::config::load_settings()
+            .map(|s| s.trim_free_target)
+            .unwrap_or_default(),
+        trim_head_haiku: llm_proxy::config::load_settings()
+            .map(|s| s.trim_head_haiku)
+            .unwrap_or(3000),
+        trim_head_harness: llm_proxy::config::load_settings()
+            .map(|s| s.trim_head_harness)
+            .unwrap_or(3000),
+        head_items: Vec::new(),
+        head_dropdown: SearchDropdownState::default(),
+        head_open_group: None,
+        head_hover_idx: None,
         vision_model: llm_proxy::config::load_settings()
             .ok()
             .and_then(|s| s.vision_model),
@@ -1749,16 +1765,19 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
 
-
                 // ── Head budget search dropdown hit test ─────────────────────
-                if state.head_dropdown.is_open
-                    && state.active_section == SettingsPage::LlmTrim
-                {
+                if state.head_dropdown.is_open && state.active_section == SettingsPage::LlmTrim {
                     let scale = state.layout.scale();
                     let (combo_y, combo_w) = match state.head_open_group {
-                        Some(HeadGroup::NativeBig) => (state.layout.llm_trim.row_a_y, state.layout.llm_trim.combo_w),
-                        Some(HeadGroup::NativeHaiku) => (state.layout.llm_trim.row_b_y, state.layout.llm_trim.combo_w),
-                        Some(HeadGroup::Harness) => (state.layout.llm_trim.row_c_y, state.layout.llm_trim.combo_w),
+                        Some(HeadGroup::NativeBig) => {
+                            (state.layout.llm_trim.row_a_y, state.layout.llm_trim.combo_w)
+                        }
+                        Some(HeadGroup::NativeHaiku) => {
+                            (state.layout.llm_trim.row_b_y, state.layout.llm_trim.combo_w)
+                        }
+                        Some(HeadGroup::Harness) => {
+                            (state.layout.llm_trim.row_c_y, state.layout.llm_trim.combo_w)
+                        }
                         None => (0, 0),
                     };
                     let combo_x = state.layout.win_w() - state.layout.pad() - combo_w;
@@ -1766,15 +1785,17 @@ unsafe extern "system" fn settings_wndproc(
                     let item_h = (24.0 * scale) as i32;
                     let search_h = (30.0 * scale) as i32;
                     let visible_rows = 8;
-                    let filtered_count = state
-                        .head_dropdown
-                        .filtered_count(&state.head_items);
+                    let filtered_count = state.head_dropdown.filtered_count(&state.head_items);
                     let max_visible = filtered_count.min(visible_rows);
                     let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
                     let dropdown_w = combo_w;
                     let footer_y = state.layout.win_h() - state.layout.footer_h();
                     let open_up = combo_y + combo_h + dropdown_h > footer_y;
-                    let dropdown_top = if open_up { combo_y - dropdown_h } else { combo_y + combo_h };
+                    let dropdown_top = if open_up {
+                        combo_y - dropdown_h
+                    } else {
+                        combo_y + combo_h
+                    };
 
                     let on_combo_button = y >= combo_y
                         && y < combo_y + combo_h
@@ -2038,7 +2059,9 @@ unsafe extern "system" fn settings_wndproc(
                         state.trim_enabled = !state.trim_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::HeadArrowNativeBig | SettingsHit::HeadArrowHaiku | SettingsHit::HeadArrowHarness => {
+                    SettingsHit::HeadArrowNativeBig
+                    | SettingsHit::HeadArrowHaiku
+                    | SettingsHit::HeadArrowHarness => {
                         close_kind_popup(state);
                         let group = match hit {
                             SettingsHit::HeadArrowNativeBig => HeadGroup::NativeBig,
@@ -2063,7 +2086,8 @@ unsafe extern "system" fn settings_wndproc(
                             HeadGroup::NativeHaiku => state.trim_head_haiku,
                             HeadGroup::Harness => state.trim_head_harness,
                         };
-                        let selected_id = HEAD_SWEEP.iter().position(|&v| v == cur_val).unwrap_or(4);
+                        let selected_id =
+                            HEAD_SWEEP.iter().position(|&v| v == cur_val).unwrap_or(4);
                         state.head_dropdown.open(&state.head_items, selected_id, 8);
                         state.head_hover_idx = None;
                         // Close other dropdowns
@@ -2169,9 +2193,11 @@ unsafe extern "system" fn settings_wndproc(
                             .position(|item| item.label == state.trim_free_target)
                             .unwrap_or(0);
 
-                        state
-                            .trim_free_target_dropdown
-                            .open(&state.trim_free_target_items, selected_id, 8);
+                        state.trim_free_target_dropdown.open(
+                            &state.trim_free_target_items,
+                            selected_id,
+                            8,
+                        );
                         // Close the other combos
                         state.combo_open.store(false, Ordering::SeqCst);
                         if let Some(popup) = state.combo_popup.take() {
@@ -2610,7 +2636,11 @@ unsafe extern "system" fn settings_wndproc(
                             let dropdown_h = search_h + (vis as i32) * item_h + 4;
                             let footer_y = lay.win_h() - lay.footer_h();
                             let open_up = combo_y + combo_h + dropdown_h > footer_y;
-                            let dropdown_top = if open_up { combo_y - dropdown_h } else { combo_y + combo_h };
+                            let dropdown_top = if open_up {
+                                combo_y - dropdown_h
+                            } else {
+                                combo_y + combo_h
+                            };
                             let list_top = dropdown_top + search_h;
                             let new_idx = if x >= combo_x
                                 && x < combo_x + combo_w
@@ -2718,15 +2748,12 @@ unsafe extern "system" fn settings_wndproc(
                     }
 
                     // Head budget search dropdown scroll
-                    if state.head_dropdown.is_open
-                        && state.active_section == SettingsPage::LlmTrim
+                    if state.head_dropdown.is_open && state.active_section == SettingsPage::LlmTrim
                     {
                         let delta_rows = if delta > 0 { -3 } else { 3 };
-                        state.head_dropdown.scroll_by(
-                            delta_rows,
-                            &state.head_items,
-                            8,
-                        );
+                        state
+                            .head_dropdown
+                            .scroll_by(delta_rows, &state.head_items, 8);
                         paint_settings(hwnd, state_ptr, &state.layout);
                         return LRESULT(0);
                     }
@@ -3096,15 +3123,13 @@ unsafe extern "system" fn settings_wndproc(
                     // Free/cheap trim target search dropdown keyboard handling
 
                     // Head budget search dropdown keyboard handling
-                    if state.head_dropdown.is_open
-                        && state.active_section == SettingsPage::LlmTrim
+                    if state.head_dropdown.is_open && state.active_section == SettingsPage::LlmTrim
                     {
                         let vk = wparam.0 as u32;
                         match vk {
                             0x0D => {
-                                let visible = state
-                                    .head_dropdown
-                                    .visible_items(&state.head_items, 8);
+                                let visible =
+                                    state.head_dropdown.visible_items(&state.head_items, 8);
                                 if let Some(first) = visible.first() {
                                     select_head(state, first.id);
                                     state.head_dropdown.close();
@@ -3120,41 +3145,23 @@ unsafe extern "system" fn settings_wndproc(
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x08 => {
-                                state
-                                    .head_dropdown
-                                    .backspace(&state.head_items, 8);
+                                state.head_dropdown.backspace(&state.head_items, 8);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x26 => {
-                                state.head_dropdown.scroll_by(
-                                    -1,
-                                    &state.head_items,
-                                    8,
-                                );
+                                state.head_dropdown.scroll_by(-1, &state.head_items, 8);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x28 => {
-                                state.head_dropdown.scroll_by(
-                                    1,
-                                    &state.head_items,
-                                    8,
-                                );
+                                state.head_dropdown.scroll_by(1, &state.head_items, 8);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x21 => {
-                                state.head_dropdown.scroll_by(
-                                    -8,
-                                    &state.head_items,
-                                    8,
-                                );
+                                state.head_dropdown.scroll_by(-8, &state.head_items, 8);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             0x22 => {
-                                state.head_dropdown.scroll_by(
-                                    8,
-                                    &state.head_items,
-                                    8,
-                                );
+                                state.head_dropdown.scroll_by(8, &state.head_items, 8);
                                 paint_settings(hwnd, state_ptr, &state.layout);
                             }
                             _ => {}
@@ -3298,16 +3305,11 @@ unsafe extern "system" fn settings_wndproc(
                     }
 
                     // Head budget search dropdown character input
-                    if state.head_dropdown.is_open
-                        && state.active_section == SettingsPage::LlmTrim
+                    if state.head_dropdown.is_open && state.active_section == SettingsPage::LlmTrim
                     {
                         let ch = (wparam.0 as u32) as u8 as char;
                         if ch.is_ascii_graphic() || ch == ' ' {
-                            state.head_dropdown.input_char(
-                                ch,
-                                &state.head_items,
-                                8,
-                            );
+                            state.head_dropdown.input_char(ch, &state.head_items, 8);
                             paint_settings(hwnd, state_ptr, &state.layout);
                         }
                         return LRESULT(0);
@@ -3329,17 +3331,17 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
 
-	WM_TIMER if wparam.0 == HEAD_TUNE_TIMER_ID => {
-	    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
-	    if !state_ptr.is_null() {
-	        let state = &*state_ptr;
-	        paint_settings(hwnd, state_ptr, &state.layout);
-	        if !editor_head_tune::is_running() {
-	            let _ = KillTimer(hwnd, HEAD_TUNE_TIMER_ID);
-	        }
-	    }
-	    LRESULT(0)
-	}
+            WM_TIMER if wparam.0 == HEAD_TUNE_TIMER_ID => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
+                if !state_ptr.is_null() {
+                    let state = &*state_ptr;
+                    paint_settings(hwnd, state_ptr, &state.layout);
+                    if !editor_head_tune::is_running() {
+                        let _ = KillTimer(hwnd, HEAD_TUNE_TIMER_ID);
+                    }
+                }
+                LRESULT(0)
+            }
 
             WM_DESTROY => {
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsState;
@@ -4570,16 +4572,18 @@ fn draw_head_dropdown(
     let item_h = (24.0 * scale) as i32;
     let search_h = (30.0 * scale) as i32;
     let visible_rows = 8;
-    let filtered_count = state
-        .head_dropdown
-        .filtered_count(&state.head_items);
+    let filtered_count = state.head_dropdown.filtered_count(&state.head_items);
     let max_visible = filtered_count.min(visible_rows);
     let dropdown_h = search_h + (max_visible as i32) * item_h + 4;
     let dropdown_w = combo_w;
     // Flip the dropdown above the row when it would collide with the footer.
     let footer_y = lay.win_h() - lay.footer_h();
     let open_up = combo_y + combo_h + dropdown_h > footer_y;
-    let dropdown_top = if open_up { combo_y - dropdown_h } else { combo_y + combo_h };
+    let dropdown_top = if open_up {
+        combo_y - dropdown_h
+    } else {
+        combo_y + combo_h
+    };
 
     let dropdown_rect = RECT {
         left: combo_x,
@@ -4591,12 +4595,21 @@ fn draw_head_dropdown(
     // Background
     let bg = theme.surface.blend_over(theme.background);
     draw_rounded_rect_in_buffer(
-        bits, lay.win_w(), lay.win_h(), dropdown_rect,
-        (4.0 * scale) as i32, bg,
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        bg,
     );
     draw_rounded_border_in_buffer(
-        bits, lay.win_w(), lay.win_h(), dropdown_rect,
-        (4.0 * scale) as i32, 1, theme.border,
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        dropdown_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
     );
 
     // Search field
@@ -4608,12 +4621,21 @@ fn draw_head_dropdown(
     };
     let search_bg = theme.background;
     draw_rounded_rect_in_buffer(
-        bits, lay.win_w(), lay.win_h(), search_rect,
-        (4.0 * scale) as i32, search_bg,
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        search_bg,
     );
     draw_rounded_border_in_buffer(
-        bits, lay.win_w(), lay.win_h(), search_rect,
-        (4.0 * scale) as i32, 1, theme.border,
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        search_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
     );
 
     unsafe {
@@ -4629,7 +4651,8 @@ fn draw_head_dropdown(
                 theme.text_muted
             } else {
                 theme.text
-            }.to_colorref(),
+            }
+            .to_colorref(),
         );
         let mut search_wz = to_utf16_z(search_text);
         let mut search_text_rc = RECT {
@@ -4639,7 +4662,9 @@ fn draw_head_dropdown(
             bottom: search_rect.bottom,
         };
         let _ = DrawTextW(
-            dib_dc, &mut search_wz, &mut search_text_rc,
+            dib_dc,
+            &mut search_wz,
+            &mut search_text_rc,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER,
         );
     }
@@ -4673,8 +4698,12 @@ fn draw_head_dropdown(
         let is_selected = item.label == format!("{}", current);
         if is_selected {
             draw_rounded_rect_in_buffer(
-                bits, lay.win_w(), lay.win_h(), item_rect,
-                (2.0 * scale) as i32, theme.selected,
+                bits,
+                lay.win_w(),
+                lay.win_h(),
+                item_rect,
+                (2.0 * scale) as i32,
+                theme.selected,
             );
         }
 
@@ -4689,33 +4718,93 @@ fn draw_head_dropdown(
                     // head value, coloured by risk zone
                     let _ = SetTextColor(dib_dc, v.color.to_colorref());
                     let mut head_wz = to_utf16_z(&item.label);
-                    let mut head_rc = RECT { left: col0, top: item_rect.top, right: col0 + head_w, bottom: item_rect.bottom };
-                    let _ = DrawTextW(dib_dc, &mut head_wz, &mut head_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    let mut head_rc = RECT {
+                        left: col0,
+                        top: item_rect.top,
+                        right: col0 + head_w,
+                        bottom: item_rect.bottom,
+                    };
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut head_wz,
+                        &mut head_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                    );
                     // trim%
                     let mut pct_wz = to_utf16_z(&v.pct);
-                    let mut pct_rc = RECT { left: col0 + head_w, top: item_rect.top, right: col0 + head_w + pct_w, bottom: item_rect.bottom };
-                    let _ = DrawTextW(dib_dc, &mut pct_wz, &mut pct_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    let mut pct_rc = RECT {
+                        left: col0 + head_w,
+                        top: item_rect.top,
+                        right: col0 + head_w + pct_w,
+                        bottom: item_rect.bottom,
+                    };
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut pct_wz,
+                        &mut pct_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                    );
                     // bar (squares)
                     let mut bar_wz = to_utf16_z(&v.bar);
-                    let mut bar_rc = RECT { left: col0 + head_w + pct_w, top: item_rect.top, right: col0 + head_w + pct_w + bar_w, bottom: item_rect.bottom };
-                    let _ = DrawTextW(dib_dc, &mut bar_wz, &mut bar_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    let mut bar_rc = RECT {
+                        left: col0 + head_w + pct_w,
+                        top: item_rect.top,
+                        right: col0 + head_w + pct_w + bar_w,
+                        bottom: item_rect.bottom,
+                    };
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut bar_wz,
+                        &mut bar_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                    );
                     // tags (base / rec), muted
                     let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
                     let mut tag_wz = to_utf16_z(&v.tags);
-                    let mut tag_rc = RECT { left: col0 + head_w + pct_w + bar_w, top: item_rect.top, right: item_rect.right - 4, bottom: item_rect.bottom };
-                    let _ = DrawTextW(dib_dc, &mut tag_wz, &mut tag_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    let mut tag_rc = RECT {
+                        left: col0 + head_w + pct_w + bar_w,
+                        top: item_rect.top,
+                        right: item_rect.right - 4,
+                        bottom: item_rect.bottom,
+                    };
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut tag_wz,
+                        &mut tag_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                    );
                 }
                 None => {
                     // Unmeasured: head value + canned help text.
                     let _ = SetTextColor(dib_dc, theme.text.to_colorref());
                     let mut head_wz = to_utf16_z(&item.label);
-                    let mut head_rc = RECT { left: col0, top: item_rect.top, right: col0 + head_w, bottom: item_rect.bottom };
-                    let _ = DrawTextW(dib_dc, &mut head_wz, &mut head_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    let mut head_rc = RECT {
+                        left: col0,
+                        top: item_rect.top,
+                        right: col0 + head_w,
+                        bottom: item_rect.bottom,
+                    };
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut head_wz,
+                        &mut head_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                    );
                     if let Some(desc) = &item.description {
                         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
                         let mut desc_wz = to_utf16_z(desc);
-                        let mut desc_rc = RECT { left: col0 + head_w, top: item_rect.top, right: item_rect.right - 4, bottom: item_rect.bottom };
-                        let _ = DrawTextW(dib_dc, &mut desc_wz, &mut desc_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                        let mut desc_rc = RECT {
+                            left: col0 + head_w,
+                            top: item_rect.top,
+                            right: item_rect.right - 4,
+                            bottom: item_rect.bottom,
+                        };
+                        let _ = DrawTextW(
+                            dib_dc,
+                            &mut desc_wz,
+                            &mut desc_rc,
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                        );
                     }
                 }
             }
@@ -4735,7 +4824,9 @@ fn draw_head_dropdown(
                 bottom: list_top + item_h,
             };
             let _ = DrawTextW(
-                dib_dc, &mut empty_wz, &mut empty_rc,
+                dib_dc,
+                &mut empty_wz,
+                &mut empty_rc,
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER,
             );
         }
@@ -4756,12 +4847,21 @@ fn draw_head_dropdown(
         bottom: dropdown_top + dropdown_h,
     };
     draw_rounded_rect_in_buffer(
-        bits, lay.win_w(), lay.win_h(), inset_rect,
-        (4.0 * scale) as i32, bg,
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        inset_rect,
+        (4.0 * scale) as i32,
+        bg,
     );
     draw_rounded_border_in_buffer(
-        bits, lay.win_w(), lay.win_h(), inset_rect,
-        (4.0 * scale) as i32, 1, theme.border,
+        bits,
+        lay.win_w(),
+        lay.win_h(),
+        inset_rect,
+        (4.0 * scale) as i32,
+        1,
+        theme.border,
     );
 
     // Which row does the inset describe: hovered row, else the selected value.
@@ -4792,11 +4892,20 @@ fn draw_head_dropdown(
             bottom: ty + (line_h + (10.0 * scale) as i32) / 2,
         };
         draw_rounded_rect_in_buffer(
-            bits, lay.win_w(), lay.win_h(), swatch, (2.0 * scale) as i32, zone_color,
+            bits,
+            lay.win_w(),
+            lay.win_h(),
+            swatch,
+            (2.0 * scale) as i32,
+            zone_color,
         );
         let _ = SelectObject(dib_dc, body_font);
         let _ = SetTextColor(dib_dc, zone_color.to_colorref());
-        let title = format!("{}  {}", hover_head, editor_head_tune::head_zone_label(hover_head));
+        let title = format!(
+            "{}  {}",
+            hover_head,
+            editor_head_tune::head_zone_label(hover_head)
+        );
         let mut title_wz = to_utf16_z(&title);
         let mut title_rc = RECT {
             left: inset_left + pad_in + (16.0 * scale) as i32,
@@ -4804,7 +4913,12 @@ fn draw_head_dropdown(
             right: inset_right - pad_in,
             bottom: ty + line_h,
         };
-        let _ = DrawTextW(dib_dc, &mut title_wz, &mut title_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut title_wz,
+            &mut title_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
         ty += line_h + (2.0 * scale) as i32;
 
         // Zone note (wraps across the inset width).
@@ -4818,7 +4932,9 @@ fn draw_head_dropdown(
             bottom: dropdown_top + dropdown_h - pad_in - line_h * 2,
         };
         let _ = DrawTextW(
-            dib_dc, &mut note_wz, &mut note_rc,
+            dib_dc,
+            &mut note_wz,
+            &mut note_rc,
             DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL,
         );
 
@@ -4838,7 +4954,12 @@ fn draw_head_dropdown(
             right: inset_right - pad_in,
             bottom: dropdown_top + dropdown_h - pad_in,
         };
-        let _ = DrawTextW(dib_dc, &mut det_wz, &mut det_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut det_wz,
+            &mut det_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 }
 

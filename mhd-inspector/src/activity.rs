@@ -45,7 +45,10 @@ pub fn show_activity(
                         ui.label(row.project.as_deref().unwrap_or("—"));
                         // Show short session ID
                         let short_sid = if row.session_id.len() > 12 {
-                            format!("..{}", &row.session_id[row.session_id.len().saturating_sub(10)..])
+                            format!(
+                                "..{}",
+                                &row.session_id[row.session_id.len().saturating_sub(10)..]
+                            )
                         } else {
                             row.session_id.clone()
                         };
@@ -57,7 +60,8 @@ pub fn show_activity(
                         ui.label(format_num(row.reasoning_tokens));
 
                         // Context %
-                        let ctx_pct = row.context_window
+                        let ctx_pct = row
+                            .context_window
                             .filter(|cw| *cw > 0)
                             .map(|cw| row.total_tokens as f64 / cw as f64 * 100.0)
                             .map(|p| format!("{:.0}%", p))

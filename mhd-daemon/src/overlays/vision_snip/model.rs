@@ -559,7 +559,8 @@ impl VisionSnipModel {
         }
         let old = ann.description.clone();
         if old != trimmed {
-            self.history.push(EditCommand::DescriptionEdited { label, old });
+            self.history
+                .push(EditCommand::DescriptionEdited { label, old });
             ann.description = trimmed;
         }
         Ok(())

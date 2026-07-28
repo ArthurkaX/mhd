@@ -6,8 +6,8 @@
 //! stages.  Launched from the [Bench] button in the Proxy Trace
 //! window.
 
-use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -20,7 +20,9 @@ use windows::core::PCWSTR;
 
 use crate::config::editor_search_dropdown::{SearchDropdownItem, SearchDropdownState};
 use crate::config::editor_state::ButtonStyle;
-use crate::config::editor_theme::{draw_button, draw_rounded_rect_in_buffer, draw_rounded_border_in_buffer};
+use crate::config::editor_theme::{
+    draw_button, draw_rounded_border_in_buffer, draw_rounded_rect_in_buffer,
+};
 use crate::core::native_theme::{Argb, NativeTheme};
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -35,8 +37,9 @@ const REFRESH_TIMER_ID: usize = 1;
 
 // ── Module-level statics ────────────────────────────────────────────
 
-static MEASURE_PROGRESS: std::sync::Mutex<Option<Arc<std::sync::Mutex<llm_proxy::measure::MeasureProgress>>>> =
-    std::sync::Mutex::new(None);
+static MEASURE_PROGRESS: std::sync::Mutex<
+    Option<Arc<std::sync::Mutex<llm_proxy::measure::MeasureProgress>>>,
+> = std::sync::Mutex::new(None);
 static MEASURE_THREAD_RUNNING: AtomicBool = AtomicBool::new(false);
 static CONFIRM_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CONFIRM_DECIDED: AtomicBool = AtomicBool::new(false);
@@ -71,16 +74,13 @@ pub fn show(theme: &NativeTheme) {
     // If a measure panel already exists (e.g. minimised via the minus
     // button), restore + foreground it instead of spawning a duplicate.
     let cls_name = crate::osd::to_utf16_z("mhd_measure_panel_cls");
-    if let Ok(existing) = unsafe { FindWindowW(PCWSTR::from_raw(cls_name.as_ptr()), PCWSTR::null()) } {
+    if let Ok(existing) =
+        unsafe { FindWindowW(PCWSTR::from_raw(cls_name.as_ptr()), PCWSTR::null()) }
+    {
         if !existing.is_invalid() {
             unsafe {
                 let _ = ShowWindow(existing, SW_RESTORE);
-                let _ = SetWindowPos(
-                    existing,
-                    HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE,
-                );
+                let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
                 let _ = SetForegroundWindow(existing);
             }
             return;
@@ -99,8 +99,9 @@ pub fn show(theme: &NativeTheme) {
     let theme_clone = theme.clone();
 
     // Build fresh progress state before spawning the thread.
-    let fresh_progress: Arc<std::sync::Mutex<llm_proxy::measure::MeasureProgress>> =
-        Arc::new(std::sync::Mutex::new(llm_proxy::measure::MeasureProgress::new()));
+    let fresh_progress: Arc<std::sync::Mutex<llm_proxy::measure::MeasureProgress>> = Arc::new(
+        std::sync::Mutex::new(llm_proxy::measure::MeasureProgress::new()),
+    );
     {
         let mut guard = MEASURE_PROGRESS.lock().unwrap();
         *guard = Some(fresh_progress);
@@ -145,8 +146,14 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
             PCWSTR::from_raw(cls_name.as_ptr()),
             PCWSTR::null(),
             WS_POPUP | WS_MINIMIZEBOX,
-            0, 0, win_w, win_h,
-            None, None, hinstance, None,
+            0,
+            0,
+            win_w,
+            win_h,
+            None,
+            None,
+            hinstance,
+            None,
         )
     }
     .ok();
@@ -178,8 +185,12 @@ fn panel_thread(event: SafeHandle, dying: Arc<AtomicBool>, theme: NativeTheme) {
 
     unsafe {
         let _ = SetWindowPos(
-            hwnd, HWND_TOPMOST,
-            pos_x, pos_y, win_w, win_h,
+            hwnd,
+            HWND_TOPMOST,
+            pos_x,
+            pos_y,
+            win_w,
+            win_h,
             SWP_SHOWWINDOW,
         );
     }
@@ -377,7 +388,11 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
 
     // ── Read progress snapshot ─────────────────────────────────
     let prog: Option<llm_proxy::measure::MeasureProgress> = {
-        MEASURE_PROGRESS.lock().unwrap().as_ref().map(|a| a.lock().unwrap().clone())
+        MEASURE_PROGRESS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.lock().unwrap().clone())
     };
     let prog = match prog {
         Some(p) => p,
@@ -390,7 +405,9 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             }
             frame.fix_gdi_alpha(theme.background);
             let mut wr = RECT::default();
-            unsafe { let _ = GetWindowRect(hwnd, &mut wr); }
+            unsafe {
+                let _ = GetWindowRect(hwnd, &mut wr);
+            }
             frame.present_layered(hwnd, wr.left, wr.top, 255);
             return;
         }
@@ -402,8 +419,17 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     match prog.phase {
         llm_proxy::measure::MeasurePhase::Idle | llm_proxy::measure::MeasurePhase::AwaitConfirm => {
             render_idle_confirm(
-                dib_dc, bits, hfont_small, theme, scale,
-                win_w, win_h, pad, content_y, row_h, &prog,
+                dib_dc,
+                bits,
+                hfont_small,
+                theme,
+                scale,
+                win_w,
+                win_h,
+                pad,
+                content_y,
+                row_h,
+                &prog,
             );
         }
         llm_proxy::measure::MeasurePhase::Preflight
@@ -413,20 +439,47 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         | llm_proxy::measure::MeasurePhase::RunNativeOff
         | llm_proxy::measure::MeasurePhase::Compare => {
             render_running(
-                dib_dc, bits, hfont_small, theme, scale,
-                win_w, win_h, pad, content_y, row_h, &prog,
+                dib_dc,
+                bits,
+                hfont_small,
+                theme,
+                scale,
+                win_w,
+                win_h,
+                pad,
+                content_y,
+                row_h,
+                &prog,
             );
         }
-    llm_proxy::measure::MeasurePhase::Done => {
+        llm_proxy::measure::MeasurePhase::Done => {
             render_done(
-                dib_dc, bits, hfont_small, theme, scale,
-                win_w, win_h, pad, content_y, row_h, &prog,
+                dib_dc,
+                bits,
+                hfont_small,
+                theme,
+                scale,
+                win_w,
+                win_h,
+                pad,
+                content_y,
+                row_h,
+                &prog,
             );
         }
         llm_proxy::measure::MeasurePhase::Error | llm_proxy::measure::MeasurePhase::Aborted => {
             render_error(
-                dib_dc, bits, hfont_small, theme, scale,
-                win_w, win_h, pad, content_y, row_h, &prog,
+                dib_dc,
+                bits,
+                hfont_small,
+                theme,
+                scale,
+                win_w,
+                win_h,
+                pad,
+                content_y,
+                row_h,
+                &prog,
             );
         }
     }
@@ -486,15 +539,26 @@ fn side_label_for(id: &str) -> String {
 }
 /// Build SearchDropdownItems from the cached (label,id) list. id index = item.id.
 fn side_dropdown_items(items: &[(String, String)]) -> Vec<SearchDropdownItem> {
-    items.iter().enumerate()
-        .map(|(i, (label, mid))| SearchDropdownItem::new(i, label.clone(), vec![mid.to_lowercase()]))
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, (label, mid))| {
+            SearchDropdownItem::new(i, label.clone(), vec![mid.to_lowercase()])
+        })
         .collect()
 }
 
 fn render_idle_confirm(
-    dib_dc: HDC, bits: *mut core::ffi::c_void,
-    hfont_small: HFONT, theme: &NativeTheme, scale: f32,
-    win_w: i32, win_h: i32, pad: i32, y0: i32, row_h: i32,
+    dib_dc: HDC,
+    bits: *mut core::ffi::c_void,
+    hfont_small: HFONT,
+    theme: &NativeTheme,
+    scale: f32,
+    win_w: i32,
+    win_h: i32,
+    pad: i32,
+    y0: i32,
+    row_h: i32,
     _prog: &llm_proxy::measure::MeasureProgress,
 ) {
     let indent = pad + (8.0 * scale) as i32;
@@ -504,7 +568,9 @@ fn render_idle_confirm(
         "Measures quota saved by running the same workload 3 ways:",
         "ECO (trim + offload), NATIVE ON (trim), NATIVE OFF (baseline).",
     ];
-    unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
     for (i, line) in desc_lines.iter().enumerate() {
         let mut wz = crate::osd::to_utf16_z(line);
         let mut rc = RECT {
@@ -514,7 +580,12 @@ fn render_idle_confirm(
             bottom: y0 + (i + 1) as i32 * row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut wz,
+                &mut rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 
@@ -524,7 +595,9 @@ fn render_idle_confirm(
         "  Method:        three warm-cache sessions, proxy-log usage".to_string(),
         "  Spends:        real quota (three agent sessions)".to_string(),
     ];
-    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
     for (i, line) in info_lines.iter().enumerate() {
         let mut wz = crate::osd::to_utf16_z(line);
         let mut rc = RECT {
@@ -534,7 +607,12 @@ fn render_idle_confirm(
             bottom: info_y + (i + 1) as i32 * row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut wz,
+                &mut rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 
@@ -546,7 +624,9 @@ fn render_idle_confirm(
     } else {
         format!("\u{2610} Offload subagents to side model (ECO arm)")
     };
-    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
     let mut cb_wz = crate::osd::to_utf16_z(&cb_text);
     let mut cb_rc = RECT {
         left: indent,
@@ -555,7 +635,12 @@ fn render_idle_confirm(
         bottom: checkbox_y + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut cb_wz, &mut cb_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut cb_wz,
+            &mut cb_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Side model combo field (only when offload subagents is checked)
@@ -580,8 +665,20 @@ fn render_idle_confirm(
             }
         };
         let radius = (4.0 * scale) as i32;
-        let field_rect = RECT { left: field_x, top: model_y, right: field_x + field_w, bottom: model_y + row_h };
-        draw_rounded_rect_in_buffer(bits, win_w, win_h, field_rect, radius, theme.surface.blend_over(theme.background));
+        let field_rect = RECT {
+            left: field_x,
+            top: model_y,
+            right: field_x + field_w,
+            bottom: model_y + row_h,
+        };
+        draw_rounded_rect_in_buffer(
+            bits,
+            win_w,
+            win_h,
+            field_rect,
+            radius,
+            theme.surface.blend_over(theme.background),
+        );
         draw_rounded_border_in_buffer(bits, win_w, win_h, field_rect, radius, 1, theme.border);
 
         let label_text = if side_model_str.is_empty() {
@@ -590,7 +687,15 @@ fn render_idle_confirm(
             side_label_for(&side_model_str)
         };
         unsafe {
-            let _ = SetTextColor(dib_dc, if side_model_str.is_empty() { theme.text_muted } else { theme.text }.to_colorref());
+            let _ = SetTextColor(
+                dib_dc,
+                if side_model_str.is_empty() {
+                    theme.text_muted
+                } else {
+                    theme.text
+                }
+                .to_colorref(),
+            );
         }
         let mut lbl_wz = crate::osd::to_utf16_z(&label_text);
         let mut lbl_rc = RECT {
@@ -600,9 +705,16 @@ fn render_idle_confirm(
             bottom: model_y + row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut lbl_wz, &mut lbl_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut lbl_wz,
+                &mut lbl_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
         }
-        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+        unsafe {
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        }
         let mut chev_wz = crate::osd::to_utf16_z("\u{25BE}");
         let mut chev_rc = RECT {
             left: field_x + field_w - 18,
@@ -611,13 +723,20 @@ fn render_idle_confirm(
             bottom: model_y + row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut chev_wz, &mut chev_rc, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut chev_wz,
+                &mut chev_rc,
+                DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 
     // Warning
     let warn_y = info_y + 7 * row_h + (4.0 * scale) as i32;
-    unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 235, 185, 90).to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, Argb::new(255, 235, 185, 90).to_colorref());
+    }
     let warn_lines = [
         "\u{26A0} This SPENDS real quota. Do not use this account for",
         "   anything else while the bench runs.",
@@ -634,7 +753,12 @@ fn render_idle_confirm(
             bottom: warn_y + (i + 1) as i32 * row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut wz,
+                &mut rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
     }
 
@@ -646,14 +770,34 @@ fn render_idle_confirm(
     let start_x = win_w / 2 + (4.0 * scale) as i32;
 
     draw_button(
-        dib_dc, bits, win_w, win_h,
-        cancel_x, btn_y, btn_w, btn_h,
-        "Cancel", theme, hfont_small, false, ButtonStyle::Secondary,
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        cancel_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        "Cancel",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Secondary,
     );
     draw_button(
-        dib_dc, bits, win_w, win_h,
-        start_x, btn_y, btn_w, btn_h,
-        "Start", theme, hfont_small, false, ButtonStyle::Success,
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        start_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        "Start",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Success,
     );
 
     // Inline side-model dropdown, drawn last so it overlays warning + buttons.
@@ -682,7 +826,14 @@ fn render_idle_confirm(
             bottom: dropdown_top + dropdown_h,
         };
         let radius = (4.0 * scale) as i32;
-        draw_rounded_rect_in_buffer(bits, win_w, win_h, dropdown_rect, radius, theme.surface.blend_over(theme.background));
+        draw_rounded_rect_in_buffer(
+            bits,
+            win_w,
+            win_h,
+            dropdown_rect,
+            radius,
+            theme.surface.blend_over(theme.background),
+        );
         draw_rounded_border_in_buffer(bits, win_w, win_h, dropdown_rect, radius, 1, theme.border);
 
         // Search field
@@ -696,8 +847,20 @@ fn render_idle_confirm(
         draw_rounded_border_in_buffer(bits, win_w, win_h, search_rect, radius, 1, theme.border);
         unsafe {
             let _ = SelectObject(dib_dc, hfont_small);
-            let search_text = if filter.is_empty() { "Search models\u{2026}".to_string() } else { filter.clone() };
-            let _ = SetTextColor(dib_dc, if filter.is_empty() { theme.text_muted } else { theme.text }.to_colorref());
+            let search_text = if filter.is_empty() {
+                "Search models\u{2026}".to_string()
+            } else {
+                filter.clone()
+            };
+            let _ = SetTextColor(
+                dib_dc,
+                if filter.is_empty() {
+                    theme.text_muted
+                } else {
+                    theme.text
+                }
+                .to_colorref(),
+            );
             let mut search_wz = crate::osd::to_utf16_z(&search_text);
             let mut search_text_rc = RECT {
                 left: search_rect.left + 4,
@@ -705,7 +868,12 @@ fn render_idle_confirm(
                 right: search_rect.right - 4,
                 bottom: search_rect.bottom,
             };
-            let _ = DrawTextW(dib_dc, &mut search_wz, &mut search_text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut search_wz,
+                &mut search_text_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         // Item rows
@@ -722,7 +890,12 @@ fn render_idle_confirm(
                     right: field_x + field_w - 4,
                     bottom: list_top + item_h,
                 };
-                let _ = DrawTextW(dib_dc, &mut empty_wz, &mut empty_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut empty_wz,
+                    &mut empty_rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
             }
         } else {
             for (i, (item_id, label)) in visible_labels.iter().enumerate() {
@@ -732,9 +905,19 @@ fn render_idle_confirm(
                     right: field_x + field_w - 4,
                     bottom: list_top + (i as i32 + 1) * item_h,
                 };
-                let is_selected = items.get(*item_id).map(|(_, mid)| *mid == current).unwrap_or(false);
+                let is_selected = items
+                    .get(*item_id)
+                    .map(|(_, mid)| *mid == current)
+                    .unwrap_or(false);
                 if is_selected {
-                    draw_rounded_rect_in_buffer(bits, win_w, win_h, item_rect, (2.0 * scale) as i32, theme.selected);
+                    draw_rounded_rect_in_buffer(
+                        bits,
+                        win_w,
+                        win_h,
+                        item_rect,
+                        (2.0 * scale) as i32,
+                        theme.selected,
+                    );
                 }
                 unsafe {
                     let _ = SelectObject(dib_dc, hfont_small);
@@ -746,7 +929,12 @@ fn render_idle_confirm(
                         right: item_rect.right - 4,
                         bottom: item_rect.bottom,
                     };
-                    let _ = DrawTextW(dib_dc, &mut label_wz, &mut label_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                    let _ = DrawTextW(
+                        dib_dc,
+                        &mut label_wz,
+                        &mut label_rc,
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                    );
                 }
             }
         }
@@ -754,48 +942,82 @@ fn render_idle_confirm(
 }
 
 fn render_running(
-    dib_dc: HDC, bits: *mut core::ffi::c_void,
-    hfont_small: HFONT, theme: &NativeTheme, scale: f32,
-    win_w: i32, win_h: i32, pad: i32, y0: i32, row_h: i32,
+    dib_dc: HDC,
+    bits: *mut core::ffi::c_void,
+    hfont_small: HFONT,
+    theme: &NativeTheme,
+    scale: f32,
+    win_w: i32,
+    win_h: i32,
+    pad: i32,
+    y0: i32,
+    row_h: i32,
     prog: &llm_proxy::measure::MeasureProgress,
 ) {
     let indent = pad + (8.0 * scale) as i32;
 
     // Subtitle
     let mut sub_wz = crate::osd::to_utf16_z("Trim Quota Bench — running");
-    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
     let mut sub_rc = RECT {
-        left: indent, top: y0, right: win_w - pad,
+        left: indent,
+        top: y0,
+        right: win_w - pad,
         bottom: y0 + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut sub_wz, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut sub_wz,
+            &mut sub_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Phase label
     let phase_label = phase_label_text(&prog.phase);
     let msg_y = y0 + row_h;
-    unsafe { let _ = SetTextColor(dib_dc, theme.accent.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.accent.to_colorref());
+    }
     let mut pl_wz = crate::osd::to_utf16_z(&phase_label);
     let mut pl_rc = RECT {
-        left: indent, top: msg_y, right: win_w - pad,
+        left: indent,
+        top: msg_y,
+        right: win_w - pad,
         bottom: msg_y + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut pl_wz, &mut pl_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut pl_wz,
+            &mut pl_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Message
     if !prog.message.is_empty() {
-        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+        unsafe {
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        }
         let mut mw = crate::osd::to_utf16_z(&prog.message);
         let msg_indent = indent + (8.0 * scale) as i32;
         let mut mr = RECT {
-            left: msg_indent, top: msg_y + row_h, right: win_w - pad,
+            left: msg_indent,
+            top: msg_y + row_h,
+            right: win_w - pad,
             bottom: msg_y + 2 * row_h,
         };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut mw, &mut mr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut mw,
+                &mut mr,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
         }
     }
 
@@ -815,60 +1037,101 @@ fn render_running(
         }
     }
 
-    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
 
     let eco_label = format!("ECO {}", arm_summary(&prog.eco));
     let mut ew = crate::osd::to_utf16_z(&eco_label);
     let mut er = RECT {
-        left: indent, top: arms_y, right: win_w - pad,
+        left: indent,
+        top: arms_y,
+        right: win_w - pad,
         bottom: arms_y + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut ew, &mut er, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut ew,
+            &mut er,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
     }
 
     let native_on_label = format!("NATIVE ON {}", arm_summary(&prog.native_on));
     let mut nw = crate::osd::to_utf16_z(&native_on_label);
     let mut nr = RECT {
-        left: indent, top: arms_y + row_h, right: win_w - pad,
+        left: indent,
+        top: arms_y + row_h,
+        right: win_w - pad,
         bottom: arms_y + 2 * row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut nw, &mut nr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut nw,
+            &mut nr,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
     }
 
     let native_off_label = format!("NATIVE OFF {}", arm_summary(&prog.native_off));
     let mut ow = crate::osd::to_utf16_z(&native_off_label);
     let mut or = RECT {
-        left: indent, top: arms_y + 2 * row_h, right: win_w - pad,
+        left: indent,
+        top: arms_y + 2 * row_h,
+        right: win_w - pad,
         bottom: arms_y + 3 * row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut ow, &mut or, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut ow,
+            &mut or,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
     }
 
     // Method note
     let spent_y = arms_y + 4 * row_h;
-    unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+    }
     let mut sw = crate::osd::to_utf16_z("Measuring real per-request usage from the proxy log.");
     let mut sr = RECT {
-        left: indent, top: spent_y, right: win_w - pad,
+        left: indent,
+        top: spent_y,
+        right: win_w - pad,
         bottom: spent_y + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut sw, &mut sr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut sw,
+            &mut sr,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Warning
     let caution_y = spent_y + row_h;
-    unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 235, 185, 90).to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, Argb::new(255, 235, 185, 90).to_colorref());
+    }
     let mut cw = crate::osd::to_utf16_z("\u{26A0} Don't touch this account while running.");
     let mut cr = RECT {
-        left: indent, top: caution_y, right: win_w - pad,
+        left: indent,
+        top: caution_y,
+        right: win_w - pad,
         bottom: caution_y + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut cw, &mut cr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut cw,
+            &mut cr,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Close button
@@ -878,28 +1141,54 @@ fn render_running(
     let close_x = win_w / 2 - btn_w / 2;
 
     draw_button(
-        dib_dc, bits, win_w, win_h,
-        close_x, btn_y, btn_w, btn_h,
-        "Close", theme, hfont_small, false, ButtonStyle::Secondary,
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        close_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        "Close",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Secondary,
     );
 }
 fn render_done(
-    dib_dc: HDC, bits: *mut core::ffi::c_void,
-    hfont_small: HFONT, theme: &NativeTheme, scale: f32,
-    win_w: i32, win_h: i32, pad: i32, y0: i32, row_h: i32,
+    dib_dc: HDC,
+    bits: *mut core::ffi::c_void,
+    hfont_small: HFONT,
+    theme: &NativeTheme,
+    scale: f32,
+    win_w: i32,
+    win_h: i32,
+    pad: i32,
+    y0: i32,
+    row_h: i32,
     prog: &llm_proxy::measure::MeasureProgress,
 ) {
     let indent = pad + (8.0 * scale) as i32;
 
     // Subtitle
     let mut sub_wz = crate::osd::to_utf16_z("Trim Quota Bench — result");
-    unsafe { let _ = SetTextColor(dib_dc, theme.text.to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, theme.text.to_colorref());
+    }
     let mut sub_rc = RECT {
-        left: indent, top: y0, right: win_w - pad,
+        left: indent,
+        top: y0,
+        right: win_w - pad,
         bottom: y0 + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut sub_wz, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut sub_wz,
+            &mut sub_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Result body — three-arm usage comparison from the proxy log.
@@ -914,28 +1203,93 @@ fn render_done(
     let mut draw_row = |label: &str, v1: String, v2: String, v3: String, color: Argb| {
         let ry = table_y + row_i * row_h;
         row_i += 1;
-        unsafe { let _ = SetTextColor(dib_dc, color.to_colorref()); }
-        for (text, x) in [(label, indent), (v1.as_str(), col1), (v2.as_str(), col2), (v3.as_str(), col3)] {
+        unsafe {
+            let _ = SetTextColor(dib_dc, color.to_colorref());
+        }
+        for (text, x) in [
+            (label, indent),
+            (v1.as_str(), col1),
+            (v2.as_str(), col2),
+            (v3.as_str(), col3),
+        ] {
             let mut wz = crate::osd::to_utf16_z(text);
-            let mut rc = RECT { left: x, top: ry, right: win_w - pad, bottom: ry + row_h };
+            let mut rc = RECT {
+                left: x,
+                top: ry,
+                right: win_w - pad,
+                bottom: ry + row_h,
+            };
             unsafe {
-                let _ = DrawTextW(dib_dc, &mut wz, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                let _ = DrawTextW(
+                    dib_dc,
+                    &mut wz,
+                    &mut rc,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                );
             }
         }
     };
 
-    draw_row("", "ECO".to_string(), "NAT ON".to_string(), "NAT OFF".to_string(), theme.text_muted);
+    draw_row(
+        "",
+        "ECO".to_string(),
+        "NAT ON".to_string(),
+        "NAT OFF".to_string(),
+        theme.text_muted,
+    );
     match r {
         Some(r) => {
-            draw_row("requests", r.eco.n_requests.to_string(), r.native_on.n_requests.to_string(), r.native_off.n_requests.to_string(), theme.text);
-            draw_row("input tok", fmt_tokens(r.eco.input_tokens), fmt_tokens(r.native_on.input_tokens), fmt_tokens(r.native_off.input_tokens), theme.text);
-            draw_row("cache create", fmt_tokens(r.eco.cache_creation_tokens), fmt_tokens(r.native_on.cache_creation_tokens), fmt_tokens(r.native_off.cache_creation_tokens), theme.text);
-            draw_row("cache read", fmt_tokens(r.eco.cache_read_tokens), fmt_tokens(r.native_on.cache_read_tokens), fmt_tokens(r.native_off.cache_read_tokens), theme.text);
-            draw_row("quota cost*", fmt_tokens(r.cost_eco), fmt_tokens(r.cost_native_on), fmt_tokens(r.cost_native_off), theme.text);
-            draw_row("time", format!("{:.0}s", r.eco.elapsed_ms as f64 / 1000.0), format!("{:.0}s", r.native_on.elapsed_ms as f64 / 1000.0), format!("{:.0}s", r.native_off.elapsed_ms as f64 / 1000.0), theme.text);
+            draw_row(
+                "requests",
+                r.eco.n_requests.to_string(),
+                r.native_on.n_requests.to_string(),
+                r.native_off.n_requests.to_string(),
+                theme.text,
+            );
+            draw_row(
+                "input tok",
+                fmt_tokens(r.eco.input_tokens),
+                fmt_tokens(r.native_on.input_tokens),
+                fmt_tokens(r.native_off.input_tokens),
+                theme.text,
+            );
+            draw_row(
+                "cache create",
+                fmt_tokens(r.eco.cache_creation_tokens),
+                fmt_tokens(r.native_on.cache_creation_tokens),
+                fmt_tokens(r.native_off.cache_creation_tokens),
+                theme.text,
+            );
+            draw_row(
+                "cache read",
+                fmt_tokens(r.eco.cache_read_tokens),
+                fmt_tokens(r.native_on.cache_read_tokens),
+                fmt_tokens(r.native_off.cache_read_tokens),
+                theme.text,
+            );
+            draw_row(
+                "quota cost*",
+                fmt_tokens(r.cost_eco),
+                fmt_tokens(r.cost_native_on),
+                fmt_tokens(r.cost_native_off),
+                theme.text,
+            );
+            draw_row(
+                "time",
+                format!("{:.0}s", r.eco.elapsed_ms as f64 / 1000.0),
+                format!("{:.0}s", r.native_on.elapsed_ms as f64 / 1000.0),
+                format!("{:.0}s", r.native_off.elapsed_ms as f64 / 1000.0),
+                theme.text,
+            );
         }
         None => {
-            draw_row("requests", "\u{2014}".to_string(), "\u{2014}".to_string(), "\u{2014}".to_string(), theme.text_muted);
+            draw_row(
+                "requests",
+                "\u{2014}".to_string(),
+                "\u{2014}".to_string(),
+                "\u{2014}".to_string(),
+                theme.text_muted,
+            );
         }
     }
 
@@ -954,38 +1308,81 @@ fn render_done(
 
     if let Some(r) = r {
         let v1_y = table_y + (row_i + 1) * row_h;
-        let native_text = format!("NATIVE trim saved: {:.1}%   {}", r.native_saved_pct, r.native_verdict);
-        unsafe { let _ = SetTextColor(dib_dc, verdict_color(&r.native_verdict).to_colorref()); }
-        let mut vw1_wz = crate::osd::to_utf16_z(&native_text);
-        let mut vw1_rc = RECT { left: indent, top: v1_y, right: win_w - pad, bottom: v1_y + row_h };
+        let native_text = format!(
+            "NATIVE trim saved: {:.1}%   {}",
+            r.native_saved_pct, r.native_verdict
+        );
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut vw1_wz, &mut vw1_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = SetTextColor(dib_dc, verdict_color(&r.native_verdict).to_colorref());
+        }
+        let mut vw1_wz = crate::osd::to_utf16_z(&native_text);
+        let mut vw1_rc = RECT {
+            left: indent,
+            top: v1_y,
+            right: win_w - pad,
+            bottom: v1_y + row_h,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut vw1_wz,
+                &mut vw1_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         let v2_y = v1_y + row_h;
-        let eco_text = format!("ECO saved (subscription): {:.1}%   {}", r.eco_saved_pct, r.eco_verdict);
-        unsafe { let _ = SetTextColor(dib_dc, verdict_color(&r.eco_verdict).to_colorref()); }
-        let mut vw2_wz = crate::osd::to_utf16_z(&eco_text);
-        let mut vw2_rc = RECT { left: indent, top: v2_y, right: win_w - pad, bottom: v2_y + row_h };
+        let eco_text = format!(
+            "ECO saved (subscription): {:.1}%   {}",
+            r.eco_saved_pct, r.eco_verdict
+        );
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut vw2_wz, &mut vw2_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = SetTextColor(dib_dc, verdict_color(&r.eco_verdict).to_colorref());
+        }
+        let mut vw2_wz = crate::osd::to_utf16_z(&eco_text);
+        let mut vw2_rc = RECT {
+            left: indent,
+            top: v2_y,
+            right: win_w - pad,
+            bottom: v2_y + row_h,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut vw2_wz,
+                &mut vw2_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         // Info note
         let note_y = v2_y + row_h;
-        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
+        unsafe {
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        }
         let mut note_wz = crate::osd::to_utf16_z(
             "* Anthropic quota only (input + 1.25x cc + 0.1x cr); side model excluded. ECO trades time for subscription.",
         );
-        let mut note_rc = RECT { left: indent, top: note_y, right: win_w - pad, bottom: note_y + row_h };
+        let mut note_rc = RECT {
+            left: indent,
+            top: note_y,
+            right: win_w - pad,
+            bottom: note_y + row_h,
+        };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = DrawTextW(
+                dib_dc,
+                &mut note_wz,
+                &mut note_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         // ── 5h quota-spend line ────────────────────────────────────────
         // Freeze the "after" utilization the first time we paint the Done screen.
         if !H5_AFTER_FROZEN.swap(true, Ordering::SeqCst) {
-            *H5_AFTER.lock().unwrap() = crate::core::llm_proxy::get_quota().and_then(|q| q.h5_utilization);
+            *H5_AFTER.lock().unwrap() =
+                crate::core::llm_proxy::get_quota().and_then(|q| q.h5_utilization);
         }
         let spend_y = note_y + row_h;
         let base = *H5_BASELINE.lock().unwrap();
@@ -997,25 +1394,45 @@ fn render_done(
                     (
                         format!(
                             "5h quota spend: +{:.1}% of window  ({:.0}% \u{2192} {:.0}%)",
-                            delta, b * 100.0, a * 100.0
+                            delta,
+                            b * 100.0,
+                            a * 100.0
                         ),
                         theme.text,
                     )
                 } else {
                     // Negative delta means the 5h window reset mid-run.
                     (
-                        format!("5h quota spend: window reset mid-run (now {:.0}%)", a * 100.0),
+                        format!(
+                            "5h quota spend: window reset mid-run (now {:.0}%)",
+                            a * 100.0
+                        ),
                         theme.text_muted,
                     )
                 }
             }
-            _ => ("5h quota spend: \u{2014} (no live quota headers)".to_string(), theme.text_muted),
+            _ => (
+                "5h quota spend: \u{2014} (no live quota headers)".to_string(),
+                theme.text_muted,
+            ),
         };
-        unsafe { let _ = SetTextColor(dib_dc, spend_color.to_colorref()); }
-        let mut spend_wz = crate::osd::to_utf16_z(&spend_text);
-        let mut spend_rc = RECT { left: indent, top: spend_y, right: win_w - pad, bottom: spend_y + row_h };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut spend_wz, &mut spend_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = SetTextColor(dib_dc, spend_color.to_colorref());
+        }
+        let mut spend_wz = crate::osd::to_utf16_z(&spend_text);
+        let mut spend_rc = RECT {
+            left: indent,
+            top: spend_y,
+            right: win_w - pad,
+            bottom: spend_y + row_h,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut spend_wz,
+                &mut spend_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         // Open ECO / Open NAT ON / Open NAT OFF buttons (three side by side above Close)
@@ -1028,19 +1445,49 @@ fn render_done(
         let open_y = note_y + 2 * row_h + (4.0 * scale) as i32;
 
         draw_button(
-            dib_dc, bits, win_w, win_h,
-            three_start_x, open_y, btn_w, btn_h,
-            "Open ECO", theme, hfont_small, false, ButtonStyle::Secondary,
+            dib_dc,
+            bits,
+            win_w,
+            win_h,
+            three_start_x,
+            open_y,
+            btn_w,
+            btn_h,
+            "Open ECO",
+            theme,
+            hfont_small,
+            false,
+            ButtonStyle::Secondary,
         );
         draw_button(
-            dib_dc, bits, win_w, win_h,
-            three_start_x + btn_w + btn_gap, open_y, btn_w, btn_h,
-            "Open NAT ON", theme, hfont_small, false, ButtonStyle::Secondary,
+            dib_dc,
+            bits,
+            win_w,
+            win_h,
+            three_start_x + btn_w + btn_gap,
+            open_y,
+            btn_w,
+            btn_h,
+            "Open NAT ON",
+            theme,
+            hfont_small,
+            false,
+            ButtonStyle::Secondary,
         );
         draw_button(
-            dib_dc, bits, win_w, win_h,
-            three_start_x + 2 * (btn_w + btn_gap), open_y, btn_w, btn_h,
-            "Open NAT OFF", theme, hfont_small, false, ButtonStyle::Secondary,
+            dib_dc,
+            bits,
+            win_w,
+            win_h,
+            three_start_x + 2 * (btn_w + btn_gap),
+            open_y,
+            btn_w,
+            btn_h,
+            "Open NAT OFF",
+            theme,
+            hfont_small,
+            false,
+            ButtonStyle::Secondary,
         );
 
         // Close button (pushed down below the open buttons)
@@ -1048,18 +1495,40 @@ fn render_done(
         let close_x = win_w / 2 - btn_w / 2;
 
         draw_button(
-            dib_dc, bits, win_w, win_h,
-            close_x, btn_y, btn_w, btn_h,
-            "Close", theme, hfont_small, false, ButtonStyle::Secondary,
+            dib_dc,
+            bits,
+            win_w,
+            win_h,
+            close_x,
+            btn_y,
+            btn_w,
+            btn_h,
+            "Close",
+            theme,
+            hfont_small,
+            false,
+            ButtonStyle::Secondary,
         );
     } else {
         // No result yet — show placeholder, just a Close button
         let note_y = table_y + (row_i + 2) * row_h;
-        unsafe { let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref()); }
-        let mut note_wz = crate::osd::to_utf16_z("Waiting for result...");
-        let mut note_rc = RECT { left: indent, top: note_y, right: win_w - pad, bottom: note_y + row_h };
         unsafe {
-            let _ = DrawTextW(dib_dc, &mut note_wz, &mut note_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
+        }
+        let mut note_wz = crate::osd::to_utf16_z("Waiting for result...");
+        let mut note_rc = RECT {
+            left: indent,
+            top: note_y,
+            right: win_w - pad,
+            bottom: note_y + row_h,
+        };
+        unsafe {
+            let _ = DrawTextW(
+                dib_dc,
+                &mut note_wz,
+                &mut note_rc,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
         }
 
         let btn_w = (80.0 * scale) as i32;
@@ -1068,43 +1537,78 @@ fn render_done(
         let close_x = win_w / 2 - btn_w / 2;
 
         draw_button(
-            dib_dc, bits, win_w, win_h,
-            close_x, btn_y, btn_w, btn_h,
-            "Close", theme, hfont_small, false, ButtonStyle::Secondary,
+            dib_dc,
+            bits,
+            win_w,
+            win_h,
+            close_x,
+            btn_y,
+            btn_w,
+            btn_h,
+            "Close",
+            theme,
+            hfont_small,
+            false,
+            ButtonStyle::Secondary,
         );
     }
 }
 
 fn render_error(
-    dib_dc: HDC, bits: *mut core::ffi::c_void,
-    hfont_small: HFONT, theme: &NativeTheme, scale: f32,
-    win_w: i32, win_h: i32, pad: i32, y0: i32, row_h: i32,
+    dib_dc: HDC,
+    bits: *mut core::ffi::c_void,
+    hfont_small: HFONT,
+    theme: &NativeTheme,
+    scale: f32,
+    win_w: i32,
+    win_h: i32,
+    pad: i32,
+    y0: i32,
+    row_h: i32,
     prog: &llm_proxy::measure::MeasureProgress,
 ) {
     let indent = pad + (8.0 * scale) as i32;
     let is_aborted = prog.phase == llm_proxy::measure::MeasurePhase::Aborted;
-    let subtitle = if is_aborted { "Trim Quota Bench — aborted" } else { "Trim Quota Bench — error" };
+    let subtitle = if is_aborted {
+        "Trim Quota Bench — aborted"
+    } else {
+        "Trim Quota Bench — error"
+    };
 
-    unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 235, 100, 100).to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, Argb::new(255, 235, 100, 100).to_colorref());
+    }
     let mut sub_wz = crate::osd::to_utf16_z(subtitle);
     let mut sub_rc = RECT {
-        left: indent, top: y0, right: win_w - pad,
+        left: indent,
+        top: y0,
+        right: win_w - pad,
         bottom: y0 + row_h,
     };
     unsafe {
-        let _ = DrawTextW(dib_dc, &mut sub_wz, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(
+            dib_dc,
+            &mut sub_wz,
+            &mut sub_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
     }
 
     // Error message with wrapping
     let err_text = if is_aborted {
         "The bench was cancelled by the user."
     } else {
-        prog.error.as_deref().unwrap_or("An unknown error occurred.")
+        prog.error
+            .as_deref()
+            .unwrap_or("An unknown error occurred.")
     };
-    unsafe { let _ = SetTextColor(dib_dc, Argb::new(255, 235, 100, 100).to_colorref()); }
+    unsafe {
+        let _ = SetTextColor(dib_dc, Argb::new(255, 235, 100, 100).to_colorref());
+    }
     let mut ew = crate::osd::to_utf16_z(err_text);
     let mut er = RECT {
-        left: indent, top: y0 + row_h + (4.0 * scale) as i32,
+        left: indent,
+        top: y0 + row_h + (4.0 * scale) as i32,
         right: win_w - pad,
         bottom: y0 + 6 * row_h,
     };
@@ -1119,9 +1623,19 @@ fn render_error(
     let close_x = win_w / 2 - btn_w / 2;
 
     draw_button(
-        dib_dc, bits, win_w, win_h,
-        close_x, btn_y, btn_w, btn_h,
-        "Close", theme, hfont_small, false, ButtonStyle::Secondary,
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        close_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        "Close",
+        theme,
+        hfont_small,
+        false,
+        ButtonStyle::Secondary,
     );
 }
 
@@ -1132,9 +1646,13 @@ fn phase_label_text(phase: &llm_proxy::measure::MeasurePhase) -> String {
     match phase {
         llm_proxy::measure::MeasurePhase::Preflight => "Preflight".to_string(),
         llm_proxy::measure::MeasurePhase::Snapshot => "Freezing system corpus".to_string(),
-        llm_proxy::measure::MeasurePhase::RunEco => "Running ECO (trim + offloaded subagents)".to_string(),
+        llm_proxy::measure::MeasurePhase::RunEco => {
+            "Running ECO (trim + offloaded subagents)".to_string()
+        }
         llm_proxy::measure::MeasurePhase::RunNativeOn => "Running NATIVE trim ON".to_string(),
-        llm_proxy::measure::MeasurePhase::RunNativeOff => "Running NATIVE baseline (trim OFF)".to_string(),
+        llm_proxy::measure::MeasurePhase::RunNativeOff => {
+            "Running NATIVE baseline (trim OFF)".to_string()
+        }
         llm_proxy::measure::MeasurePhase::Compare => "Comparing arms".to_string(),
         _ => format!("{:?}", phase),
     }
@@ -1271,179 +1789,208 @@ unsafe extern "system" fn panel_wndproc(
                 let sep_y = pad + (14.0 * scale) as i32 + 8;
                 let content_y = sep_y + (4.0 * scale) as i32;
 
-        let (phase, eco_transcript, native_on_transcript, native_off_transcript) = {
+                let (phase, eco_transcript, native_on_transcript, native_off_transcript) = {
                     let guard = MEASURE_PROGRESS.lock().unwrap();
-                    guard.as_ref().map(|a| {
-                        let p = a.lock().unwrap();
-            (p.phase.clone(), p.eco_transcript.clone(), p.native_on_transcript.clone(), p.native_off_transcript.clone())
-        }).unwrap_or((llm_proxy::measure::MeasurePhase::Idle, None, None, None))
+                    guard
+                        .as_ref()
+                        .map(|a| {
+                            let p = a.lock().unwrap();
+                            (
+                                p.phase.clone(),
+                                p.eco_transcript.clone(),
+                                p.native_on_transcript.clone(),
+                                p.native_off_transcript.clone(),
+                            )
+                        })
+                        .unwrap_or((llm_proxy::measure::MeasurePhase::Idle, None, None, None))
                 };
 
                 match phase {
-                    llm_proxy::measure::MeasurePhase::Idle | llm_proxy::measure::MeasurePhase::AwaitConfirm => {
-        // Checkbox for side-substitution toggle — match render_idle_confirm layout.
-        let info_y = content_y + 2 * row_h + (4.0 * scale) as i32;
-        let checkbox_y = info_y + 4 * row_h;
-        let indent = pad + (8.0 * scale) as i32;
-        let model_y = checkbox_y + row_h;
-        let field_w = (220.0 * scale) as i32;
-        let field_x = indent;
-        let visible_rows = 6usize;
+                    llm_proxy::measure::MeasurePhase::Idle
+                    | llm_proxy::measure::MeasurePhase::AwaitConfirm => {
+                        // Checkbox for side-substitution toggle — match render_idle_confirm layout.
+                        let info_y = content_y + 2 * row_h + (4.0 * scale) as i32;
+                        let checkbox_y = info_y + 4 * row_h;
+                        let indent = pad + (8.0 * scale) as i32;
+                        let model_y = checkbox_y + row_h;
+                        let field_w = (220.0 * scale) as i32;
+                        let field_x = indent;
+                        let visible_rows = 6usize;
 
-        // ── Inline dropdown hit-test (checked first, mirrors the vision combo) ──
-        let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
-        if SIDE_SUBSTITUTION.load(Ordering::Relaxed) && dropdown_open {
-            let search_h = (30.0 * scale) as i32;
-            let item_h = row_h;
-            let items = SIDE_ITEMS.lock().unwrap().clone();
-            let dd_items = side_dropdown_items(&items);
-            let dropdown_top = model_y + row_h;
-            let visible_count = {
-                let dd = SIDE_DROPDOWN.lock().unwrap();
-                dd.visible_items(&dd_items, visible_rows).len().max(1)
-            };
-            let dropdown_h = search_h + visible_count as i32 * item_h + 4;
+                        // ── Inline dropdown hit-test (checked first, mirrors the vision combo) ──
+                        let dropdown_open = SIDE_DROPDOWN.lock().unwrap().is_open;
+                        if SIDE_SUBSTITUTION.load(Ordering::Relaxed) && dropdown_open {
+                            let search_h = (30.0 * scale) as i32;
+                            let item_h = row_h;
+                            let items = SIDE_ITEMS.lock().unwrap().clone();
+                            let dd_items = side_dropdown_items(&items);
+                            let dropdown_top = model_y + row_h;
+                            let visible_count = {
+                                let dd = SIDE_DROPDOWN.lock().unwrap();
+                                dd.visible_items(&dd_items, visible_rows).len().max(1)
+                            };
+                            let dropdown_h = search_h + visible_count as i32 * item_h + 4;
 
-            let on_combo = x >= field_x && x < field_x + field_w && y >= model_y && y < model_y + row_h;
-            let on_search = x >= field_x && x < field_x + field_w
-                && y >= dropdown_top + 2 && y < dropdown_top + 2 + search_h;
-            let on_dropdown = x >= field_x && x < field_x + field_w
-                && y >= dropdown_top && y < dropdown_top + dropdown_h;
+                            let on_combo = x >= field_x
+                                && x < field_x + field_w
+                                && y >= model_y
+                                && y < model_y + row_h;
+                            let on_search = x >= field_x
+                                && x < field_x + field_w
+                                && y >= dropdown_top + 2
+                                && y < dropdown_top + 2 + search_h;
+                            let on_dropdown = x >= field_x
+                                && x < field_x + field_w
+                                && y >= dropdown_top
+                                && y < dropdown_top + dropdown_h;
 
-            if on_combo {
-                // fall through to the combo toggle below (which will close it)
-            } else if on_search {
-                return LRESULT(0); // keep open, typing filters
-            } else if on_dropdown {
-                let list_top = dropdown_top + 2 + search_h;
-                if y >= list_top {
-                    let row = (y - list_top) / item_h;
-                    let mut dd = SIDE_DROPDOWN.lock().unwrap();
-                    let visible = dd.visible_items(&dd_items, visible_rows);
-                    if let Some(item) = visible.get(row as usize) {
-                        if let Some((_, mid)) = items.get(item.id) {
-                            *SIDE_MODEL.lock().unwrap() = mid.clone();
+                            if on_combo {
+                                // fall through to the combo toggle below (which will close it)
+                            } else if on_search {
+                                return LRESULT(0); // keep open, typing filters
+                            } else if on_dropdown {
+                                let list_top = dropdown_top + 2 + search_h;
+                                if y >= list_top {
+                                    let row = (y - list_top) / item_h;
+                                    let mut dd = SIDE_DROPDOWN.lock().unwrap();
+                                    let visible = dd.visible_items(&dd_items, visible_rows);
+                                    if let Some(item) = visible.get(row as usize) {
+                                        if let Some((_, mid)) = items.get(item.id) {
+                                            *SIDE_MODEL.lock().unwrap() = mid.clone();
+                                        }
+                                    }
+                                    dd.close();
+                                }
+                                let _ = InvalidateRect(hwnd, None, false);
+                                return LRESULT(0);
+                            } else {
+                                SIDE_DROPDOWN.lock().unwrap().close();
+                                let _ = InvalidateRect(hwnd, None, false);
+                                return LRESULT(0);
+                            }
                         }
-                    }
-                    dd.close();
-                }
-                let _ = InvalidateRect(hwnd, None, false);
-                return LRESULT(0);
-            } else {
-                SIDE_DROPDOWN.lock().unwrap().close();
-                let _ = InvalidateRect(hwnd, None, false);
-                return LRESULT(0);
-            }
-        }
 
-        // Checkbox toggle
-        if x >= indent && x < win_w - pad
-            && y >= checkbox_y && y < checkbox_y + row_h
-        {
-            SIDE_SUBSTITUTION.fetch_xor(true, Ordering::Relaxed);
-            SIDE_DROPDOWN.lock().unwrap().close();
-            let _ = InvalidateRect(hwnd, None, false);
-            return LRESULT(0);
-        }
+                        // Checkbox toggle
+                        if x >= indent
+                            && x < win_w - pad
+                            && y >= checkbox_y
+                            && y < checkbox_y + row_h
+                        {
+                            SIDE_SUBSTITUTION.fetch_xor(true, Ordering::Relaxed);
+                            SIDE_DROPDOWN.lock().unwrap().close();
+                            let _ = InvalidateRect(hwnd, None, false);
+                            return LRESULT(0);
+                        }
 
-        // Combo field click: toggle the dropdown open/closed.
-        if SIDE_SUBSTITUTION.load(Ordering::Relaxed)
-        && x >= field_x && x < field_x + field_w
-        && y >= model_y && y < model_y + row_h
-        {
-            let mut dd = SIDE_DROPDOWN.lock().unwrap();
-            if dd.is_open {
-                dd.close();
-            } else {
-                let items = side_model_items();
-                let dd_items = side_dropdown_items(&items);
-                let current = SIDE_MODEL.lock().unwrap().clone();
-                let selected_idx = items.iter().position(|(_, mid)| *mid == current).unwrap_or(0);
-                *SIDE_ITEMS.lock().unwrap() = items;
-                dd.open(&dd_items, selected_idx, visible_rows);
-            }
-            drop(dd);
-            let _ = InvalidateRect(hwnd, None, false);
-            return LRESULT(0);
-        }
-        // Cancel / Start — match render_idle_confirm layout.
-        let warn_y = info_y + 7 * row_h + (4.0 * scale) as i32;
-        let btn_y = warn_y + 6 * row_h + (4.0 * scale) as i32;
+                        // Combo field click: toggle the dropdown open/closed.
+                        if SIDE_SUBSTITUTION.load(Ordering::Relaxed)
+                            && x >= field_x
+                            && x < field_x + field_w
+                            && y >= model_y
+                            && y < model_y + row_h
+                        {
+                            let mut dd = SIDE_DROPDOWN.lock().unwrap();
+                            if dd.is_open {
+                                dd.close();
+                            } else {
+                                let items = side_model_items();
+                                let dd_items = side_dropdown_items(&items);
+                                let current = SIDE_MODEL.lock().unwrap().clone();
+                                let selected_idx = items
+                                    .iter()
+                                    .position(|(_, mid)| *mid == current)
+                                    .unwrap_or(0);
+                                *SIDE_ITEMS.lock().unwrap() = items;
+                                dd.open(&dd_items, selected_idx, visible_rows);
+                            }
+                            drop(dd);
+                            let _ = InvalidateRect(hwnd, None, false);
+                            return LRESULT(0);
+                        }
+                        // Cancel / Start — match render_idle_confirm layout.
+                        let warn_y = info_y + 7 * row_h + (4.0 * scale) as i32;
+                        let btn_y = warn_y + 6 * row_h + (4.0 * scale) as i32;
                         let btn_w = (80.0 * scale) as i32;
                         let btn_h = (24.0 * scale) as i32;
                         let cancel_x = win_w / 2 - btn_w - (4.0 * scale) as i32;
                         let start_x = win_w / 2 + (4.0 * scale) as i32;
 
                         // Cancel
-                        if x >= cancel_x && x < cancel_x + btn_w
-                            && y >= btn_y && y < btn_y + btn_h
+                        if x >= cancel_x && x < cancel_x + btn_w && y >= btn_y && y < btn_y + btn_h
                         {
                             let _ = DestroyWindow(hwnd);
                             return LRESULT(0);
                         }
                         // Start
-                        if x >= start_x && x < start_x + btn_w
-                            && y >= btn_y && y < btn_y + btn_h
-                        {
+                        if x >= start_x && x < start_x + btn_w && y >= btn_y && y < btn_y + btn_h {
                             start_measurement();
                             return LRESULT(0);
                         }
                     }
-                    llm_proxy::measure::MeasurePhase::Error | llm_proxy::measure::MeasurePhase::Aborted => {
+                    llm_proxy::measure::MeasurePhase::Error
+                    | llm_proxy::measure::MeasurePhase::Aborted => {
                         let btn_w = (80.0 * scale) as i32;
                         let btn_h = (24.0 * scale) as i32;
                         let btn_y = content_y + 8 * row_h;
                         let close_x = win_w / 2 - btn_w / 2;
-                        if x >= close_x && x < close_x + btn_w
-                            && y >= btn_y && y < btn_y + btn_h
-                        {
+                        if x >= close_x && x < close_x + btn_w && y >= btn_y && y < btn_y + btn_h {
                             let _ = DestroyWindow(hwnd);
                             return LRESULT(0);
                         }
                     }
-    llm_proxy::measure::MeasurePhase::Done => {
-        // Mirror render_done layout exactly.
-        let table_y = content_y + row_h;
-        let note_y = table_y + 10 * row_h;
-        let open_y = note_y + 2 * row_h + (4.0 * scale) as i32;
-        let btn_w = (90.0 * scale) as i32;
-        let btn_h = (24.0 * scale) as i32;
-        let btn_gap = (8.0 * scale) as i32;
-        let three_btn_w = 3 * btn_w + 2 * btn_gap;
-        let three_start_x = (win_w - three_btn_w) / 2;
+                    llm_proxy::measure::MeasurePhase::Done => {
+                        // Mirror render_done layout exactly.
+                        let table_y = content_y + row_h;
+                        let note_y = table_y + 10 * row_h;
+                        let open_y = note_y + 2 * row_h + (4.0 * scale) as i32;
+                        let btn_w = (90.0 * scale) as i32;
+                        let btn_h = (24.0 * scale) as i32;
+                        let btn_gap = (8.0 * scale) as i32;
+                        let three_btn_w = 3 * btn_w + 2 * btn_gap;
+                        let three_start_x = (win_w - three_btn_w) / 2;
 
-        // Open ECO
-        if x >= three_start_x && x < three_start_x + btn_w
-            && y >= open_y && y < open_y + btn_h
-        {
-            if let Some(p) = &eco_transcript { open_path(p); }
-            return LRESULT(0);
-        }
-        // Open NAT ON
-        if x >= three_start_x + btn_w + btn_gap && x < three_start_x + btn_w + btn_gap + btn_w
-            && y >= open_y && y < open_y + btn_h
-        {
-            if let Some(p) = &native_on_transcript { open_path(p); }
-            return LRESULT(0);
-        }
-        // Open NAT OFF
-        if x >= three_start_x + 2 * (btn_w + btn_gap) && x < three_start_x + 2 * (btn_w + btn_gap) + btn_w
-            && y >= open_y && y < open_y + btn_h
-        {
-            if let Some(p) = &native_off_transcript { open_path(p); }
-            return LRESULT(0);
-        }
+                        // Open ECO
+                        if x >= three_start_x
+                            && x < three_start_x + btn_w
+                            && y >= open_y
+                            && y < open_y + btn_h
+                        {
+                            if let Some(p) = &eco_transcript {
+                                open_path(p);
+                            }
+                            return LRESULT(0);
+                        }
+                        // Open NAT ON
+                        if x >= three_start_x + btn_w + btn_gap
+                            && x < three_start_x + btn_w + btn_gap + btn_w
+                            && y >= open_y
+                            && y < open_y + btn_h
+                        {
+                            if let Some(p) = &native_on_transcript {
+                                open_path(p);
+                            }
+                            return LRESULT(0);
+                        }
+                        // Open NAT OFF
+                        if x >= three_start_x + 2 * (btn_w + btn_gap)
+                            && x < three_start_x + 2 * (btn_w + btn_gap) + btn_w
+                            && y >= open_y
+                            && y < open_y + btn_h
+                        {
+                            if let Some(p) = &native_off_transcript {
+                                open_path(p);
+                            }
+                            return LRESULT(0);
+                        }
 
-        // Close (pushed down below open buttons)
-        let btn_y = open_y + btn_h + (6.0 * scale) as i32;
-        let close_x = win_w / 2 - btn_w / 2;
-        if x >= close_x && x < close_x + btn_w
-            && y >= btn_y && y < btn_y + btn_h
-        {
-            let _ = DestroyWindow(hwnd);
-            return LRESULT(0);
-        }
-    }
+                        // Close (pushed down below open buttons)
+                        let btn_y = open_y + btn_h + (6.0 * scale) as i32;
+                        let close_x = win_w / 2 - btn_w / 2;
+                        if x >= close_x && x < close_x + btn_w && y >= btn_y && y < btn_y + btn_h {
+                            let _ = DestroyWindow(hwnd);
+                            return LRESULT(0);
+                        }
+                    }
                     _ => {
                         // Running phases
                         let msg_y = content_y + row_h;
@@ -1454,9 +2001,7 @@ unsafe extern "system" fn panel_wndproc(
                         let btn_w = (80.0 * scale) as i32;
                         let btn_h = (24.0 * scale) as i32;
                         let close_x = win_w / 2 - btn_w / 2;
-                        if x >= close_x && x < close_x + btn_w
-                            && y >= btn_y && y < btn_y + btn_h
-                        {
+                        if x >= close_x && x < close_x + btn_w && y >= btn_y && y < btn_y + btn_h {
                             let _ = DestroyWindow(hwnd);
                             return LRESULT(0);
                         }
@@ -1523,7 +2068,11 @@ unsafe extern "system" fn panel_wndproc(
                     let delta = ((wparam.0 >> 16) as i16) as i32;
                     let items = SIDE_ITEMS.lock().unwrap().clone();
                     let dd_items = side_dropdown_items(&items);
-                    SIDE_DROPDOWN.lock().unwrap().scroll_by(if delta > 0 { -1 } else { 1 }, &dd_items, 6);
+                    SIDE_DROPDOWN.lock().unwrap().scroll_by(
+                        if delta > 0 { -1 } else { 1 },
+                        &dd_items,
+                        6,
+                    );
                     let _ = InvalidateRect(hwnd, None, false);
                     return LRESULT(0);
                 }
@@ -1556,27 +2105,34 @@ fn start_measurement() {
     CONFIRM_DECIDED.store(false, Ordering::SeqCst);
     CONFIRM_PROCEED.store(true, Ordering::SeqCst); // GUI Start means "proceed"
     // Snapshot the live 5h quota window so the result screen can report real spend.
-    *H5_BASELINE.lock().unwrap() = crate::core::llm_proxy::get_quota().and_then(|q| q.h5_utilization);
+    *H5_BASELINE.lock().unwrap() =
+        crate::core::llm_proxy::get_quota().and_then(|q| q.h5_utilization);
     *H5_AFTER.lock().unwrap() = None;
     H5_AFTER_FROZEN.store(false, Ordering::SeqCst);
 
     let side_substitution = SIDE_SUBSTITUTION.load(Ordering::Relaxed);
     let side_model = {
         let m = SIDE_MODEL.lock().unwrap();
-        if m.is_empty() { "sva-opencode/deepseek-v4-flash".to_string() } else { m.clone() }
+        if m.is_empty() {
+            "sva-opencode/deepseek-v4-flash".to_string()
+        } else {
+            m.clone()
+        }
     };
 
-    std::thread::Builder::new().name("mhd-measure-run".into()).spawn(move || {
-        let cfg = llm_proxy::measure::MeasureConfig {
-            db_path: llm_proxy::config::config_dir().join("proxy.db"),
-            dry_run: false,
-            side_substitution,
-            side_model,
-        };
-        // Confirm closure: GUI already confirmed by pressing Start -> return true once.
-        let confirm: llm_proxy::measure::ConfirmFn = Box::new(|| true);
-        let _ = llm_proxy::measure::run_measurement(&cfg, &progress, confirm);
-        MEASURE_THREAD_RUNNING.store(false, Ordering::SeqCst);
-    }).ok();
+    std::thread::Builder::new()
+        .name("mhd-measure-run".into())
+        .spawn(move || {
+            let cfg = llm_proxy::measure::MeasureConfig {
+                db_path: llm_proxy::config::config_dir().join("proxy.db"),
+                dry_run: false,
+                side_substitution,
+                side_model,
+            };
+            // Confirm closure: GUI already confirmed by pressing Start -> return true once.
+            let confirm: llm_proxy::measure::ConfirmFn = Box::new(|| true);
+            let _ = llm_proxy::measure::run_measurement(&cfg, &progress, confirm);
+            MEASURE_THREAD_RUNNING.store(false, Ordering::SeqCst);
+        })
+        .ok();
 }
-

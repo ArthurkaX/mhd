@@ -106,7 +106,12 @@ impl DaemonControl for AppHandle {
 
         // Push runtime changes to the embedded proxy so they take effect on
         // the next request without a restart.
-        let proxy_cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).llm_proxy().clone();
+        let proxy_cfg = self
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .llm_proxy()
+            .clone();
         crate::llm_proxy::reload(&proxy_cfg);
 
         if !self.quiet {
@@ -147,7 +152,11 @@ impl DaemonControl for AppHandle {
     }
 
     fn active_scheme(&self) -> String {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).active_scheme().to_string()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_scheme()
+            .to_string()
     }
 
     fn lookup_trigger(&self, trigger: &Trigger) -> Option<Action> {
@@ -178,19 +187,35 @@ impl DaemonControl for AppHandle {
     }
 
     fn quicknote_config(&self) -> QuickNoteConfig {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).quicknote_config().clone()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .quicknote_config()
+            .clone()
     }
 
     fn draw_dir(&self) -> std::path::PathBuf {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).draw_dir().clone()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .draw_dir()
+            .clone()
     }
 
     fn keycast_config(&self) -> crate::overlays::keycast::KeycastConfig {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).keycast_config().clone()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keycast_config()
+            .clone()
     }
 
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).llm_proxy().clone()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .llm_proxy()
+            .clone()
     }
 }
 

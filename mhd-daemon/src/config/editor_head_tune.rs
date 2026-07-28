@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::config::editor_state::{HeadGroup, HEAD_SWEEP};
+use crate::config::editor_state::{HEAD_SWEEP, HeadGroup};
 use crate::core::native_theme::Argb;
 
 /// Minimum bodies in a bucket before we trust its numbers; below this we
@@ -37,8 +37,13 @@ pub struct HeadTuneProgress {
 
 impl HeadTuneProgress {
     fn fresh() -> Self {
-        Self { running: true, completed: false, error: None, done_buckets: 0,
-               results: [None, None, None] }
+        Self {
+            running: true,
+            completed: false,
+            error: None,
+            done_buckets: 0,
+            results: [None, None, None],
+        }
     }
 }
 
@@ -49,23 +54,34 @@ struct RunGuard;
 impl Drop for RunGuard {
     fn drop(&mut self) {
         if let Some(arc) = HEAD_TUNE.lock().unwrap().clone() {
-            if let Ok(mut p) = arc.lock() { p.running = false; p.completed = true; }
+            if let Ok(mut p) = arc.lock() {
+                p.running = false;
+                p.completed = true;
+            }
         }
         HEAD_TUNE_RUNNING.store(false, Ordering::SeqCst);
     }
 }
 
 /// True while a run is in flight.
-pub fn is_running() -> bool { HEAD_TUNE_RUNNING.load(Ordering::SeqCst) }
+pub fn is_running() -> bool {
+    HEAD_TUNE_RUNNING.load(Ordering::SeqCst)
+}
 
 /// Clone the current progress snapshot, if a run has ever started.
 pub fn snapshot() -> Option<HeadTuneProgress> {
-    HEAD_TUNE.lock().unwrap().clone().and_then(|arc| arc.lock().ok().map(|p| p.clone()))
+    HEAD_TUNE
+        .lock()
+        .unwrap()
+        .clone()
+        .and_then(|arc| arc.lock().ok().map(|p| p.clone()))
 }
 
 /// Start a background head sweep across the three buckets. No-op if already running.
 pub fn start() {
-    if HEAD_TUNE_RUNNING.swap(true, Ordering::SeqCst) { return; }
+    if HEAD_TUNE_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let arc = Arc::new(Mutex::new(HeadTuneProgress::fresh()));
     *HEAD_TUNE.lock().unwrap() = Some(arc.clone());
 
@@ -84,8 +100,14 @@ pub fn start() {
             for (idx, &bucket) in buckets.iter().enumerate() {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     llm_proxy::tune::run_bucket_tune(
-                        &db, &base, &sweep, 200, 120, bucket,
-                        llm_proxy::tune::SweepKnob::ToolResultHead, |_d, _t| {},
+                        &db,
+                        &base,
+                        &sweep,
+                        200,
+                        120,
+                        bucket,
+                        llm_proxy::tune::SweepKnob::ToolResultHead,
+                        |_d, _t| {},
                     )
                 }));
                 let out = match outcome {
@@ -101,7 +123,10 @@ pub fn start() {
                     }),
                     _ => None, // Ok(None), Err, or panic all collapse to "no data"
                 };
-                if let Ok(mut p) = arc.lock() { p.results[idx] = out; p.done_buckets = idx + 1; }
+                if let Ok(mut p) = arc.lock() {
+                    p.results[idx] = out;
+                    p.done_buckets = idx + 1;
+                }
             }
         })
         .ok();
@@ -212,11 +237,15 @@ pub fn head_row_view(group: HeadGroup, head: usize, current: usize) -> Option<He
 /// low-data note, or None to fall back to the canned help text.
 pub fn measured_group_line(group: HeadGroup) -> Option<String> {
     let snap = snapshot()?;
-    if snap.running { return Some("Calculating\u{2026}".to_string()); }
+    if snap.running {
+        return Some("Calculating\u{2026}".to_string());
+    }
     let out = snap.results[group_bucket_idx(group)].as_ref();
     match out {
         Some(o) if o.n_bodies >= MIN_BODIES => Some(format!(
-            "Tune: rec {} \u{00b7} {} (n={})", o.recommended, o.verdict, o.n_bodies)),
+            "Tune: rec {} \u{00b7} {} (n={})",
+            o.recommended, o.verdict, o.n_bodies
+        )),
         _ if snap.completed => Some("Not enough data yet \u{2014} keep capturing.".to_string()),
         _ => None,
     }

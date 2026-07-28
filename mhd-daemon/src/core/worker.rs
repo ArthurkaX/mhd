@@ -263,7 +263,10 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ToggleCodexWatcher => {
             let on = crate::core::codex_watcher::toggle();
             if !handle.quiet() {
-                println!("mhd: codex-watcher {}", if on { "started" } else { "stopped" });
+                println!(
+                    "mhd: codex-watcher {}",
+                    if on { "started" } else { "stopped" }
+                );
             }
         }
         Action::VisionScreenshot => {

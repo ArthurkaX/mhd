@@ -282,8 +282,8 @@ pub struct LlmTrimLayout {
     pub cheap_hdr_y: i32,  // "Cheapest / free model" sub-header
     pub free_y: i32,       // free-target combo row (KEEP name)
     pub row_h: i32,
-    pub combo_w: i32,      // free-target combo width (KEEP)
-    pub arrow_w: i32,      // width of the "→" value button
+    pub combo_w: i32, // free-target combo width (KEEP)
+    pub arrow_w: i32, // width of the "→" value button
 }
 fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
     let section_h = (20.0 * c.scale) as i32;
@@ -301,7 +301,14 @@ fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
     let cheap_hdr_y = row_c_y + group_stride + gap;
     let free_y = cheap_hdr_y + section_h + gap;
     LlmTrimLayout {
-        top_y, master_y, groups_hdr_y, row_a_y, row_b_y, row_c_y, cheap_hdr_y, free_y,
+        top_y,
+        master_y,
+        groups_hdr_y,
+        row_a_y,
+        row_b_y,
+        row_c_y,
+        cheap_hdr_y,
+        free_y,
         row_h,
         combo_w: (250.0 * c.scale) as i32,
         arrow_w: (90.0 * c.scale) as i32,

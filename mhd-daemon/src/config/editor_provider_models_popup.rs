@@ -697,8 +697,8 @@ unsafe fn paint_models_popup(hwnd: HWND, state_ptr: *mut ModelsPopupState) {
 
             // Draw cursor if editing
             if is_editing {
-                let prefix =
-                    &display_text[..crate::config::text_cursor::clamp(display_text, state.edit_cursor)];
+                let prefix = &display_text
+                    [..crate::config::text_cursor::clamp(display_text, state.edit_cursor)];
                 let prefix_wz: Vec<u16> = prefix.encode_utf16().collect();
                 let mut sz = SIZE::default();
                 let _ = GetTextExtentPoint32W(dib_dc, &prefix_wz, &mut sz);

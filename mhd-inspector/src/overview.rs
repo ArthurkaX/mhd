@@ -23,7 +23,13 @@ pub fn show_overview(
     // ── Data quality notice ──
     if let Some(imp) = import {
         if imp.skipped_rows > 0 {
-            ui.colored_label(egui::Color32::YELLOW, format!("Import partial: {} malformed rows skipped", imp.skipped_rows));
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                format!(
+                    "Import partial: {} malformed rows skipped",
+                    imp.skipped_rows
+                ),
+            );
         }
         if imp.sources_imported == 0 && imp.model_calls_added == 0 {
             ui.label("No new data found.");
@@ -46,13 +52,31 @@ pub fn show_overview(
     ui.add_space(8.0);
 
     // ── Token summary row ──
-    egui::Grid::new("token_cards").min_col_width(120.0).show(ui, |ui| {
-        card(ui, "Input tokens", &format_num(tokens.input_tokens));
-        card(ui, "Cached input", &format!("{} ({:.0}%)", format_num(tokens.cached_input_tokens), tokens.cache_hit.unwrap_or(0.0) * 100.0));
-        card(ui, "Output tokens", &format_num(tokens.output_tokens));
-        card(ui, "Reasoning", &format_num(tokens.reasoning_tokens));
-        card(ui, "Context hits", &format!("{} / {}", format_num(tokens.cached_input_tokens), format_num(tokens.input_tokens)));
-    });
+    egui::Grid::new("token_cards")
+        .min_col_width(120.0)
+        .show(ui, |ui| {
+            card(ui, "Input tokens", &format_num(tokens.input_tokens));
+            card(
+                ui,
+                "Cached input",
+                &format!(
+                    "{} ({:.0}%)",
+                    format_num(tokens.cached_input_tokens),
+                    tokens.cache_hit.unwrap_or(0.0) * 100.0
+                ),
+            );
+            card(ui, "Output tokens", &format_num(tokens.output_tokens));
+            card(ui, "Reasoning", &format_num(tokens.reasoning_tokens));
+            card(
+                ui,
+                "Context hits",
+                &format!(
+                    "{} / {}",
+                    format_num(tokens.cached_input_tokens),
+                    format_num(tokens.input_tokens)
+                ),
+            );
+        });
 
     ui.separator();
 
@@ -64,11 +88,24 @@ pub fn show_overview(
     }
 }
 
-fn show_window_cards(ui: &mut egui::Ui, label: &str, quota: &Option<Utilization>, slope: &SlopeProjection) {
+fn show_window_cards(
+    ui: &mut egui::Ui,
+    label: &str,
+    quota: &Option<Utilization>,
+    slope: &SlopeProjection,
+) {
     ui.vertical(|ui| {
         if let Some(q) = quota {
-            card(ui, &format!("Quota ({label})"), &format!("{:.1}%", q.used_percent));
-            card(ui, "Reset", &mhd_telemetry::query::time_to_reset(q.resets_at).unwrap_or_else(|| "—".into()));
+            card(
+                ui,
+                &format!("Quota ({label})"),
+                &format!("{:.1}%", q.used_percent),
+            );
+            card(
+                ui,
+                "Reset",
+                &mhd_telemetry::query::time_to_reset(q.resets_at).unwrap_or_else(|| "—".into()),
+            );
         } else {
             card(ui, &format!("Quota ({label})"), "—");
             card(ui, "Reset", "—");
@@ -102,7 +139,11 @@ fn card(ui: &mut egui::Ui, label: &str, value: &str) {
         .inner_margin(egui::Margin::symmetric(8.0, 4.0))
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(label).size(10.0).color(egui::Color32::GRAY));
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(10.0)
+                        .color(egui::Color32::GRAY),
+                );
                 ui.strong(egui::RichText::new(value).size(14.0));
             });
         });
@@ -132,10 +173,7 @@ fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Con
     let height = 200.0;
     let width = ui.available_width().max(200.0);
 
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(width, height),
-        egui::Sense::hover(),
-    );
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
 
     let painter = ui.painter_at(rect);
     let canvas_left = rect.min.x;
@@ -145,7 +183,10 @@ fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Con
     for pct in [0.0, 25.0, 50.0, 75.0, 100.0] {
         let y = canvas_bottom - (pct / range_pct * height as f64) as f32;
         painter.line_segment(
-            [egui::pos2(canvas_left, y), egui::pos2(canvas_left + width as f32, y)],
+            [
+                egui::pos2(canvas_left, y),
+                egui::pos2(canvas_left + width as f32, y),
+            ],
             egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
         );
         painter.text(
@@ -161,7 +202,8 @@ fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Con
     if display.len() >= 2 {
         let mut points: Vec<egui::Pos2> = Vec::with_capacity(display.len());
         for sample in display {
-            let x = canvas_left + ((sample.event_at - min_ts) as f64 / range_ts * width as f64) as f32;
+            let x =
+                canvas_left + ((sample.event_at - min_ts) as f64 / range_ts * width as f64) as f32;
             let y = canvas_bottom - (sample.used_percent / range_pct * height as f64) as f32;
             points.push(egui::pos2(x, y));
         }
@@ -177,7 +219,11 @@ fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Con
             let idx = idx.min(display.len() - 1);
             if let Some(sample) = display.get(idx) {
                 let tooltip_pos = egui::pos2(pos.x + 10.0, pos.y - 30.0);
-                let info = format!("{:.1}%\n{}", sample.used_percent, relative_time(sample.event_at));
+                let info = format!(
+                    "{:.1}%\n{}",
+                    sample.used_percent,
+                    relative_time(sample.event_at)
+                );
                 painter.text(
                     tooltip_pos,
                     egui::Align2::LEFT_TOP,
@@ -217,9 +263,16 @@ fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
     // Reset credits
     if let Some(rc) = &lq.reset_credits {
         if rc.available_count > 0 {
-            parts.push(format!("{} reset{} available", rc.available_count, if rc.available_count == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} reset{} available",
+                rc.available_count,
+                if rc.available_count == 1 { "" } else { "s" }
+            ));
             if let Some(expires) = rc.next_expires_at {
-                parts.push(format!("next expires {}", crate::app::relative_time(expires)));
+                parts.push(format!(
+                    "next expires {}",
+                    crate::app::relative_time(expires)
+                ));
             }
         }
     }
@@ -231,6 +284,9 @@ fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
     };
 
     ui.horizontal(|ui| {
-        ui.colored_label(egui::Color32::LIGHT_GREEN, egui::RichText::new(text).size(11.0));
+        ui.colored_label(
+            egui::Color32::LIGHT_GREEN,
+            egui::RichText::new(text).size(11.0),
+        );
     });
 }

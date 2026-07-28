@@ -11,7 +11,7 @@
 
 use llm_proxy::config::config_dir;
 use llm_proxy::native_trim::NativeKnobs;
-use llm_proxy::tune::{run_tune, TuneVerdict};
+use llm_proxy::tune::{TuneVerdict, run_tune};
 use std::path::PathBuf;
 
 /// Fixed sweep values (aggressive → conservative).
@@ -75,18 +75,21 @@ fn main() {
     eprintln!("Max bodies: {max_bodies}");
 
     let base = NativeKnobs::default();
-    match run_tune(&db_path, &base, DEFAULT_SWEEP, floor, max_bodies, |done, total| {
-        eprintln!("  sweep {done}/{total}...");
-    }) {
+    match run_tune(
+        &db_path,
+        &base,
+        DEFAULT_SWEEP,
+        floor,
+        max_bodies,
+        |done, total| {
+            eprintln!("  sweep {done}/{total}...");
+        },
+    ) {
         Ok(Some(result)) => {
             println!();
-            println!(
-                "═══════════════════════════════════════════════════════════════════════"
-            );
+            println!("═══════════════════════════════════════════════════════════════════════");
             println!("  Tune Advisor — tool_max_desc_chars sweep");
-            println!(
-                "═══════════════════════════════════════════════════════════════════════"
-            );
+            println!("═══════════════════════════════════════════════════════════════════════");
             println!(
                 "{:<12}  {:>10}  {:>12}  {:>14}",
                 "desc_chars", "avg_trim%", "n_trimmed", "fail_open_ok"
@@ -118,15 +121,11 @@ fn main() {
             );
             println!("  elapsed:    {}ms", result.elapsed_ms);
             let gloss = match result.verdict {
-                TuneVerdict::Worthwhile => {
-                    "a clear gain — applying the recommendation is advised."
-                }
+                TuneVerdict::Worthwhile => "a clear gain — applying the recommendation is advised.",
                 TuneVerdict::Marginal => {
                     "small gain, or only via an aggressive cut — keeping the current setting is reasonable."
                 }
-                TuneVerdict::NotWorth => {
-                    "current setting is near-optimal — no change recommended."
-                }
+                TuneVerdict::NotWorth => "current setting is near-optimal — no change recommended.",
             };
             println!("  verdict:    {:?}  — {gloss}", result.verdict);
             println!();

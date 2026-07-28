@@ -3,8 +3,8 @@
 //! Runs the JSONL import + live API fetch on a periodic timer inside the
 //! daemon process. Toggle on/off via tray or action binding.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mhd_telemetry::codex;
@@ -81,13 +81,21 @@ fn run_loop() {
             if let Ok(lq) = live::fetch_live_quota(&codex_home) {
                 if let Some(ref s) = lq.session {
                     let _ = telemetry_db.store_live_snapshot(
-                        "codex", "5h", 300, s.used_percent, s.resets_at,
+                        "codex",
+                        "5h",
+                        300,
+                        s.used_percent,
+                        s.resets_at,
                         lq.plan_type.as_deref(),
                     );
                 }
                 if let Some(ref w) = lq.weekly {
                     let _ = telemetry_db.store_live_snapshot(
-                        "codex", "7d", 10080, w.used_percent, w.resets_at,
+                        "codex",
+                        "7d",
+                        10080,
+                        w.used_percent,
+                        w.resets_at,
                         lq.plan_type.as_deref(),
                     );
                 }

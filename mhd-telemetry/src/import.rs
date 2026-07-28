@@ -48,10 +48,9 @@ pub fn run_import(db: &mut TelemetryDb, codex_home: &Path) -> ImportResult {
 
     for src in &sources {
         if let Err(e) = import_source(db, src, &mut result) {
-            result.errors.push(format!(
-                "{}: {e}",
-                src.canonical_path.display()
-            ));
+            result
+                .errors
+                .push(format!("{}: {e}", src.canonical_path.display()));
         }
     }
 
@@ -71,21 +70,25 @@ fn import_source(
     let (cursor_offset, cursor_size, cursor_has_data) = {
         let conn = db.conn();
 
-        let (offset, size): (i64, i64) = conn.prepare(
-            "SELECT last_offset, last_size FROM sources WHERE canonical_path = ?1"
-        ).and_then(|mut stmt| {
-            stmt.query_row(params![&canonical], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        let (offset, size): (i64, i64) = conn
+            .prepare("SELECT last_offset, last_size FROM sources WHERE canonical_path = ?1")
+            .and_then(|mut stmt| {
+                stmt.query_row(params![&canonical], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
             })
-        }).unwrap_or((0, 0));
+            .unwrap_or((0, 0));
 
         // Check if sessions exist for this source (determines cursor validity)
-        let has_data: bool = conn.query_row(
-            "SELECT COUNT(*) FROM sessions
+        let has_data: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions
              WHERE source_id = (SELECT id FROM sources WHERE canonical_path = ?1)",
-            params![&canonical],
-            |r| r.get::<_, i64>(0),
-        ).map(|c| c > 0).unwrap_or(false);
+                params![&canonical],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
 
         (offset, size, has_data)
     };

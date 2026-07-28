@@ -120,8 +120,8 @@ pub struct ResetCredits {
 /// auth is missing, network fails, or the response is malformed.
 pub fn fetch_live_quota(codex_home: &Path) -> Result<LiveQuota, String> {
     let auth_path = codex_home.join("auth.json");
-    let auth_data = std::fs::read_to_string(&auth_path)
-        .map_err(|e| format!("read auth.json: {e}"))?;
+    let auth_data =
+        std::fs::read_to_string(&auth_path).map_err(|e| format!("read auth.json: {e}"))?;
 
     let auth: CodexAuthFile =
         serde_json::from_str(&auth_data).map_err(|e| format!("parse auth.json: {e}"))?;
@@ -206,7 +206,11 @@ fn map_window(raw: &RawWindow, _window_kind: &str) -> Option<Utilization> {
     let resets_at = raw.reset_at.and_then(|r| {
         if r.is_finite() && r > 0.0 {
             // Codex returns reset_at as Unix seconds
-            Some(if r < 10_000_000_000.0 { r as i64 } else { (r / 1000.0) as i64 })
+            Some(if r < 10_000_000_000.0 {
+                r as i64
+            } else {
+                (r / 1000.0) as i64
+            })
         } else {
             None
         }
@@ -225,12 +229,20 @@ fn parse_timestamp(val: &Option<serde_json::Value>) -> Option<i64> {
     match v {
         serde_json::Value::Number(n) => {
             let ts = n.as_f64()?;
-            Some(if ts < 10_000_000_000.0 { ts as i64 } else { (ts / 1000.0) as i64 })
+            Some(if ts < 10_000_000_000.0 {
+                ts as i64
+            } else {
+                (ts / 1000.0) as i64
+            })
         }
         serde_json::Value::String(s) => {
             // Try numeric string first
             if let Ok(n) = s.parse::<f64>() {
-                return Some(if n < 10_000_000_000.0 { n as i64 } else { (n / 1000.0) as i64 });
+                return Some(if n < 10_000_000_000.0 {
+                    n as i64
+                } else {
+                    (n / 1000.0) as i64
+                });
             }
             None
         }

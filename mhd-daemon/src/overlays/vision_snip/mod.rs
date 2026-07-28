@@ -523,7 +523,12 @@ fn handler_mousemove(st: &mut SnipState, hwnd: HWND, x: i32, y: i32) {
 /// the full monitor while cropping, the crop rectangle otherwise.
 fn clamp_to_active_bounds(model: &VisionSnipModel, x: i32, y: i32) -> Point {
     let (min_x, min_y, max_x, max_y) = if model.active_tool == Tool::Crop {
-        (0, 0, model.monitor_width as i32 - 1, model.monitor_height as i32 - 1)
+        (
+            0,
+            0,
+            model.monitor_width as i32 - 1,
+            model.monitor_height as i32 - 1,
+        )
     } else {
         (
             model.crop.left.max(0),

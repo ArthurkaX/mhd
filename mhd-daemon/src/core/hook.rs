@@ -284,69 +284,70 @@ unsafe extern "system" fn keyboard_hook_proc(
     // into Windows — that is undefined behavior. `catch_unwind` degrades any
     // panic in dispatch/keycast to a safe pass-through for this single event.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    if n_code >= 0 {
-        // Lock-free access — OnceLock::get() is a simple pointer read.
-        let state = match HOOK_STATE.get() {
-            Some(s) => s,
-            None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
-        };
-        // If suspended, pass through everything
-        if state.suspended.load(Ordering::Acquire) {
-            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
-        }
-
-        let kb_struct = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
-        let vk = kb_struct.vkCode;
-        let flags = kb_struct.flags;
-
-        // Skip injected events to avoid infinite loops with our own SendInput
-        if unsafe { (flags & LLKHF_INJECTED).0 != 0 } {
-            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
-        }
-
-        let wparam = w_param.0 as u32;
-        let is_key_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
-        let is_key_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
-
-        // Report all non‑modifier key‑downs to blackbox (if active)
-        #[cfg(feature = "blackbox")]
-        if is_key_down && !is_modifier_vk(vk) {
-            use crate::blackbox::{self, BlackboxEvent, InputKind};
-            blackbox::send_event(BlackboxEvent::Input {
-                kind: InputKind::Keyboard,
-                ts: blackbox::epoch_secs(),
-            });
-        }
-
-        if is_key_down && !is_modifier_vk(vk) {
-            let modifiers = get_pressed_modifiers();
-            let trigger = Trigger {
-                modifiers,
-                key: PhysicalKey::Keyboard(vk as u8),
+        if n_code >= 0 {
+            // Lock-free access — OnceLock::get() is a simple pointer read.
+            let state = match HOOK_STATE.get() {
+                Some(s) => s,
+                None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
             };
+            // If suspended, pass through everything
+            if state.suspended.load(Ordering::Acquire) {
+                return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+            }
 
-            // Route printable single keystrokes (no modifiers) to the typing
-            // block; everything else (shortcuts, special keys) goes to the
-            // shortcut carousel.
-            if modifiers.0 == 0 {
-                if let Some(ch) = crate::keycast::resolve_vk_to_char(vk as u8) {
-                    crate::keycast::show_key(ch);
+            let kb_struct = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
+            let vk = kb_struct.vkCode;
+            let flags = kb_struct.flags;
+
+            // Skip injected events to avoid infinite loops with our own SendInput
+            if unsafe { (flags & LLKHF_INJECTED).0 != 0 } {
+                return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+            }
+
+            let wparam = w_param.0 as u32;
+            let is_key_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+            let is_key_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
+
+            // Report all non‑modifier key‑downs to blackbox (if active)
+            #[cfg(feature = "blackbox")]
+            if is_key_down && !is_modifier_vk(vk) {
+                use crate::blackbox::{self, BlackboxEvent, InputKind};
+                blackbox::send_event(BlackboxEvent::Input {
+                    kind: InputKind::Keyboard,
+                    ts: blackbox::epoch_secs(),
+                });
+            }
+
+            if is_key_down && !is_modifier_vk(vk) {
+                let modifiers = get_pressed_modifiers();
+                let trigger = Trigger {
+                    modifiers,
+                    key: PhysicalKey::Keyboard(vk as u8),
+                };
+
+                // Route printable single keystrokes (no modifiers) to the typing
+                // block; everything else (shortcuts, special keys) goes to the
+                // shortcut carousel.
+                if modifiers.0 == 0 {
+                    if let Some(ch) = crate::keycast::resolve_vk_to_char(vk as u8) {
+                        crate::keycast::show_key(ch);
+                    } else {
+                        crate::keycast::show_trigger(trigger);
+                    }
                 } else {
                     crate::keycast::show_trigger(trigger);
                 }
-            } else {
-                crate::keycast::show_trigger(trigger);
-            }
 
-            if dispatch_trigger(state, trigger) {
-                return LRESULT(1);
+                if dispatch_trigger(state, trigger) {
+                    return LRESULT(1);
+                }
+            } else if is_key_up && state.swallowed_keys[vk as usize].swap(false, Ordering::Acquire)
+            {
+                return LRESULT(1); // Swallow the key-up too
             }
-        } else if is_key_up && state.swallowed_keys[vk as usize].swap(false, Ordering::Acquire) {
-            return LRESULT(1); // Swallow the key-up too
         }
-    }
 
-    unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+        unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
     }));
     match result {
         Ok(lr) => lr,
@@ -369,140 +370,140 @@ unsafe extern "system" fn mouse_hook_proc(
 ) -> LRESULT {
     // See `keyboard_hook_proc`: a panic must not unwind across the FFI boundary.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    if n_code >= 0 {
-        // Lock-free access — OnceLock::get() is a simple pointer read.
-        let state = match HOOK_STATE.get() {
-            Some(s) => s,
-            None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
-        };
-        // If suspended, pass through everything
-        if state.suspended.load(Ordering::Acquire) {
-            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
-        }
+        if n_code >= 0 {
+            // Lock-free access — OnceLock::get() is a simple pointer read.
+            let state = match HOOK_STATE.get() {
+                Some(s) => s,
+                None => return unsafe { CallNextHookEx(None, n_code, w_param, l_param) },
+            };
+            // If suspended, pass through everything
+            if state.suspended.load(Ordering::Acquire) {
+                return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+            }
 
-        let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
-        let msg_type = w_param.0 as u32;
+            let ms_struct = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
+            let msg_type = w_param.0 as u32;
 
-        // Skip injected mouse events to avoid feedback loops with our own SendInput
-        if (ms_struct.flags & LLMHF_INJECTED) != 0 {
-            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
-        }
+            // Skip injected mouse events to avoid feedback loops with our own SendInput
+            if (ms_struct.flags & LLMHF_INJECTED) != 0 {
+                return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+            }
 
-        // Helper to send event to blackbox.
-        #[cfg(feature = "blackbox")]
-        let bb_input = |kind: crate::blackbox::InputKind| {
-            use crate::blackbox::{self, BlackboxEvent};
-            blackbox::send_event(BlackboxEvent::Input {
-                kind,
-                ts: blackbox::epoch_secs(),
-            });
-        };
+            // Helper to send event to blackbox.
+            #[cfg(feature = "blackbox")]
+            let bb_input = |kind: crate::blackbox::InputKind| {
+                use crate::blackbox::{self, BlackboxEvent};
+                blackbox::send_event(BlackboxEvent::Input {
+                    kind,
+                    ts: blackbox::epoch_secs(),
+                });
+            };
 
-        match msg_type {
-            WM_XBUTTONDOWN => {
-                crate::suspend::resume_if_window_at_point(ms_struct.pt);
-                let xbutton = (ms_struct.mouseData >> 16) as u8;
-                if xbutton == 1 || xbutton == 2 {
+            match msg_type {
+                WM_XBUTTONDOWN => {
+                    crate::suspend::resume_if_window_at_point(ms_struct.pt);
+                    let xbutton = (ms_struct.mouseData >> 16) as u8;
+                    if xbutton == 1 || xbutton == 2 {
+                        #[cfg(feature = "blackbox")]
+                        bb_input(crate::blackbox::InputKind::MouseButton);
+                        let modifiers = get_pressed_modifiers();
+                        let trigger = Trigger {
+                            modifiers,
+                            key: PhysicalKey::MouseButton(xbutton),
+                        };
+                        if dispatch_trigger(state, trigger) {
+                            return LRESULT(1);
+                        }
+                    }
+                }
+                WM_XBUTTONUP => {
+                    let xbutton = (ms_struct.mouseData >> 16) as u8;
+                    if xbutton == 1 || xbutton == 2 {
+                        let bit = mouse_btn_bit(xbutton);
+                        if state.swallowed_mouse.fetch_and(!bit, Ordering::Acquire) & bit != 0 {
+                            return LRESULT(1);
+                        }
+                    }
+                }
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+                    crate::suspend::resume_if_window_at_point(ms_struct.pt);
                     #[cfg(feature = "blackbox")]
                     bb_input(crate::blackbox::InputKind::MouseButton);
+                    let label = if msg_type == WM_LBUTTONDOWN {
+                        "Left Click"
+                    } else {
+                        "Right Click"
+                    };
+                    crate::keycast::show_mouse_button(label, get_pressed_modifiers());
+                }
+                WM_MBUTTONDOWN => {
+                    crate::suspend::resume_if_window_at_point(ms_struct.pt);
+                    #[cfg(feature = "blackbox")]
+                    bb_input(crate::blackbox::InputKind::MouseButton);
+                    crate::keycast::show_mouse_button("Middle Click", get_pressed_modifiers());
+                    // Middle button
                     let modifiers = get_pressed_modifiers();
                     let trigger = Trigger {
                         modifiers,
-                        key: PhysicalKey::MouseButton(xbutton),
+                        key: PhysicalKey::MouseButton(3),
                     };
                     if dispatch_trigger(state, trigger) {
                         return LRESULT(1);
                     }
                 }
-            }
-            WM_XBUTTONUP => {
-                let xbutton = (ms_struct.mouseData >> 16) as u8;
-                if xbutton == 1 || xbutton == 2 {
-                    let bit = mouse_btn_bit(xbutton);
+                WM_MBUTTONUP => {
+                    let bit = mouse_btn_bit(3);
                     if state.swallowed_mouse.fetch_and(!bit, Ordering::Acquire) & bit != 0 {
                         return LRESULT(1);
                     }
                 }
-            }
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
-                crate::suspend::resume_if_window_at_point(ms_struct.pt);
-                #[cfg(feature = "blackbox")]
-                bb_input(crate::blackbox::InputKind::MouseButton);
-                let label = if msg_type == WM_LBUTTONDOWN {
-                    "Left Click"
-                } else {
-                    "Right Click"
-                };
-                crate::keycast::show_mouse_button(label, get_pressed_modifiers());
-            }
-            WM_MBUTTONDOWN => {
-                crate::suspend::resume_if_window_at_point(ms_struct.pt);
-                #[cfg(feature = "blackbox")]
-                bb_input(crate::blackbox::InputKind::MouseButton);
-                crate::keycast::show_mouse_button("Middle Click", get_pressed_modifiers());
-                // Middle button
-                let modifiers = get_pressed_modifiers();
-                let trigger = Trigger {
-                    modifiers,
-                    key: PhysicalKey::MouseButton(3),
-                };
-                if dispatch_trigger(state, trigger) {
-                    return LRESULT(1);
-                }
-            }
-            WM_MBUTTONUP => {
-                let bit = mouse_btn_bit(3);
-                if state.swallowed_mouse.fetch_and(!bit, Ordering::Acquire) & bit != 0 {
-                    return LRESULT(1);
-                }
-            }
-            WM_MOUSEWHEEL => {
-                #[cfg(feature = "blackbox")]
-                bb_input(crate::blackbox::InputKind::Wheel);
-                // Delta is in MSLLHOOKSTRUCT.mouseData, NOT in wParam (for LL hooks)
-                let delta = wheel_delta(ms_struct.mouseData);
-                let key = if delta > 0 {
-                    PhysicalKey::WheelUp
-                } else {
-                    PhysicalKey::WheelDown
-                };
-                let modifiers = get_pressed_modifiers();
-                let trigger = Trigger { modifiers, key };
-                if dispatch_trigger(state, trigger) {
-                    return LRESULT(1);
-                }
-            }
-            WM_MOUSEHWHEEL => {
-                #[cfg(feature = "blackbox")]
-                bb_input(crate::blackbox::InputKind::Wheel);
-                let delta = wheel_delta(ms_struct.mouseData);
-                let key = if delta > 0 {
-                    PhysicalKey::WheelRight
-                } else {
-                    PhysicalKey::WheelLeft
-                };
-                let modifiers = get_pressed_modifiers();
-                let trigger = Trigger { modifiers, key };
-                if dispatch_trigger(state, trigger) {
-                    return LRESULT(1);
-                }
-            }
-            WM_MOUSEMOVE => {
-                #[cfg(feature = "blackbox")]
-                {
-                    let now_ms = unsafe { GetTickCount64() };
-                    let last = LAST_MOVE_FWD_MS.load(std::sync::atomic::Ordering::Relaxed);
-                    if now_ms.saturating_sub(last) >= 500 {
-                        LAST_MOVE_FWD_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
-                        bb_input(crate::blackbox::InputKind::Move);
+                WM_MOUSEWHEEL => {
+                    #[cfg(feature = "blackbox")]
+                    bb_input(crate::blackbox::InputKind::Wheel);
+                    // Delta is in MSLLHOOKSTRUCT.mouseData, NOT in wParam (for LL hooks)
+                    let delta = wheel_delta(ms_struct.mouseData);
+                    let key = if delta > 0 {
+                        PhysicalKey::WheelUp
+                    } else {
+                        PhysicalKey::WheelDown
+                    };
+                    let modifiers = get_pressed_modifiers();
+                    let trigger = Trigger { modifiers, key };
+                    if dispatch_trigger(state, trigger) {
+                        return LRESULT(1);
                     }
                 }
+                WM_MOUSEHWHEEL => {
+                    #[cfg(feature = "blackbox")]
+                    bb_input(crate::blackbox::InputKind::Wheel);
+                    let delta = wheel_delta(ms_struct.mouseData);
+                    let key = if delta > 0 {
+                        PhysicalKey::WheelRight
+                    } else {
+                        PhysicalKey::WheelLeft
+                    };
+                    let modifiers = get_pressed_modifiers();
+                    let trigger = Trigger { modifiers, key };
+                    if dispatch_trigger(state, trigger) {
+                        return LRESULT(1);
+                    }
+                }
+                WM_MOUSEMOVE => {
+                    #[cfg(feature = "blackbox")]
+                    {
+                        let now_ms = unsafe { GetTickCount64() };
+                        let last = LAST_MOVE_FWD_MS.load(std::sync::atomic::Ordering::Relaxed);
+                        if now_ms.saturating_sub(last) >= 500 {
+                            LAST_MOVE_FWD_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                            bb_input(crate::blackbox::InputKind::Move);
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
-    }
 
-    unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+        unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
     }));
     match result {
         Ok(lr) => lr,

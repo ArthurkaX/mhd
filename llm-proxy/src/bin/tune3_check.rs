@@ -11,7 +11,7 @@
 
 use llm_proxy::config::config_dir;
 use llm_proxy::native_trim::NativeKnobs;
-use llm_proxy::tune::{run_bucket_tune, Bucket, SweepKnob, TuneVerdict};
+use llm_proxy::tune::{Bucket, SweepKnob, TuneVerdict, run_bucket_tune};
 use std::path::{Path, PathBuf};
 
 /// Fixed sweep over tool_result_head (extended below 500 to expose the knee).
@@ -68,13 +68,7 @@ fn parse_args() -> (PathBuf, usize, usize) {
 
 // ── run one bucket ──────────────────────────────────────────────────────────
 
-fn run_one(
-    db_path: &Path,
-    base: &NativeKnobs,
-    floor: usize,
-    max_bodies: usize,
-    bucket: Bucket,
-) {
+fn run_one(db_path: &Path, base: &NativeKnobs, floor: usize, max_bodies: usize, bucket: Bucket) {
     let label = match bucket {
         Bucket::Native => "Native",
         Bucket::CcGateway => "CcGateway",
@@ -93,13 +87,9 @@ fn run_one(
     ) {
         Ok(Some(result)) => {
             println!();
-            println!(
-                "═══════════════════════════════════════════════════════════════════════"
-            );
+            println!("═══════════════════════════════════════════════════════════════════════");
             println!("  Bucket: {label} — tool_result_head sweep");
-            println!(
-                "═══════════════════════════════════════════════════════════════════════"
-            );
+            println!("═══════════════════════════════════════════════════════════════════════");
             println!(
                 "{:<12}  {:>10}  {:>12}  {:>14}",
                 "head_value", "avg_trim%", "n_trimmed", "fail_open_ok"
@@ -131,15 +121,11 @@ fn run_one(
             );
             println!("  elapsed:    {}ms", result.elapsed_ms);
             let gloss = match result.verdict {
-                TuneVerdict::Worthwhile => {
-                    "a clear gain — applying the recommendation is advised."
-                }
+                TuneVerdict::Worthwhile => "a clear gain — applying the recommendation is advised.",
                 TuneVerdict::Marginal => {
                     "small gain, or only via an aggressive cut — keeping the current setting is reasonable."
                 }
-                TuneVerdict::NotWorth => {
-                    "current setting is near-optimal — no change recommended."
-                }
+                TuneVerdict::NotWorth => "current setting is near-optimal — no change recommended.",
             };
             println!("  verdict:    {:?}  — {gloss}", result.verdict);
             println!();

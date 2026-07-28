@@ -22,8 +22,16 @@ use super::{InflightGuard, now_ms};
 
 /// Build a request to Anthropic with auth/version/beta headers forwarded from
 /// the incoming Claude Code request.
-async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap, streaming: bool) -> reqwest::RequestBuilder {
-    let client = if streaming { &state.http_stream } else { &state.http };
+async fn build_request(
+    state: &Arc<AppState>,
+    incoming: &HeaderMap,
+    streaming: bool,
+) -> reqwest::RequestBuilder {
+    let client = if streaming {
+        &state.http_stream
+    } else {
+        &state.http
+    };
     let mut req = client
         .post("https://api.anthropic.com/v1/messages")
         .header("content-type", "application/json");
@@ -37,7 +45,11 @@ async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap, streaming: b
         req = req.header("x-api-key", key);
     } else {
         // Fall back to the configured API key.
-        let api_key = state.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let api_key = state
+            .anthropic_key
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         req = req.header("x-api-key", api_key);
     }
 
@@ -60,18 +72,23 @@ async fn build_request(state: &Arc<AppState>, incoming: &HeaderMap, streaming: b
 /// Best-effort: never errors, never touches the body.
 fn record_quota_headers(state: &Arc<AppState>, headers: &reqwest::header::HeaderMap) {
     let get = |name: &str| -> Option<String> {
-        headers.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
     };
     let snap = crate::db_log::QuotaSnapshot {
-        h5_utilization: get("anthropic-ratelimit-unified-5h-utilization").and_then(|s| s.parse().ok()),
-        h5_status:      get("anthropic-ratelimit-unified-5h-status"),
-        h5_reset:       get("anthropic-ratelimit-unified-5h-reset").and_then(|s| s.parse().ok()),
-        d7_utilization: get("anthropic-ratelimit-unified-7d-utilization").and_then(|s| s.parse().ok()),
-        d7_status:      get("anthropic-ratelimit-unified-7d-status"),
-        d7_reset:       get("anthropic-ratelimit-unified-7d-reset").and_then(|s| s.parse().ok()),
+        h5_utilization: get("anthropic-ratelimit-unified-5h-utilization")
+            .and_then(|s| s.parse().ok()),
+        h5_status: get("anthropic-ratelimit-unified-5h-status"),
+        h5_reset: get("anthropic-ratelimit-unified-5h-reset").and_then(|s| s.parse().ok()),
+        d7_utilization: get("anthropic-ratelimit-unified-7d-utilization")
+            .and_then(|s| s.parse().ok()),
+        d7_status: get("anthropic-ratelimit-unified-7d-status"),
+        d7_reset: get("anthropic-ratelimit-unified-7d-reset").and_then(|s| s.parse().ok()),
         representative_claim: get("anthropic-ratelimit-unified-representative-claim"),
-        fallback_status:      get("anthropic-ratelimit-unified-fallback"),
-        overage_status:       get("anthropic-ratelimit-unified-overage-status"),
+        fallback_status: get("anthropic-ratelimit-unified-fallback"),
+        overage_status: get("anthropic-ratelimit-unified-overage-status"),
     };
     state.record_quota(snap);
 }
@@ -79,43 +96,55 @@ fn record_quota_headers(state: &Arc<AppState>, headers: &reqwest::header::Header
 /// Snapshot of the live-tunable retry knobs read once at the start of a
 /// request so the loop sees a consistent view for its whole duration.
 struct RetryKnobs {
- enabled: bool,
- max_attempts: usize,
- base_delay_ms: u64,
- max_delay_ms: u64,
+    enabled: bool,
+    max_attempts: usize,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
 }
 
 impl RetryKnobs {
- /// Read the four retry knobs from the shared state (poisoned-lock safe).
- fn read(state: &Arc<AppState>) -> Self {
- Self {
- enabled: *state.retry_enabled.read().unwrap_or_else(|e| e.into_inner()),
- max_attempts: *state.retry_max_attempts.read().unwrap_or_else(|e| e.into_inner()),
- base_delay_ms: *state.retry_base_delay_ms.read().unwrap_or_else(|e| e.into_inner()),
- max_delay_ms: *state.retry_max_delay_ms.read().unwrap_or_else(|e| e.into_inner()),
- }
- }
+    /// Read the four retry knobs from the shared state (poisoned-lock safe).
+    fn read(state: &Arc<AppState>) -> Self {
+        Self {
+            enabled: *state
+                .retry_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            max_attempts: *state
+                .retry_max_attempts
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            base_delay_ms: *state
+                .retry_base_delay_ms
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            max_delay_ms: *state
+                .retry_max_delay_ms
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+        }
+    }
 
- /// True if this status code is one we should retry (429 rate-limit or
- /// 529 overloaded_error). Other 4xx/5xx are NOT retried on the native path.
- fn is_retryable(status: u16) -> bool {
- status == 429 || status == 529
- }
+    /// True if this status code is one we should retry (429 rate-limit or
+    /// 529 overloaded_error). Other 4xx/5xx are NOT retried on the native path.
+    fn is_retryable(status: u16) -> bool {
+        status == 429 || status == 529
+    }
 
- /// Compute the backoff wait in ms for a given attempt index (0-based).
- /// Honors a `retry-after` response header (integer seconds) when present;
- /// otherwise uses exponential backoff `base_delay_ms << attempt`, capped at
- /// `max_delay_ms`. A tiny deterministic jitter (`req_id % 100` ms) is added
- /// to spread a thundering herd of parallel retries.
- fn wait_ms(&self, attempt: usize, headers: &reqwest::header::HeaderMap, req_id: u64) -> u64 {
- if let Some(ra) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
- if let Ok(secs) = ra.trim().parse::<u64>() {
- return secs.saturating_mul(1000).saturating_add(req_id % 100);
- }
- }
- let exp = self.base_delay_ms.saturating_mul(1u64 << attempt.min(31));
- exp.min(self.max_delay_ms).saturating_add(req_id % 100)
- }
+    /// Compute the backoff wait in ms for a given attempt index (0-based).
+    /// Honors a `retry-after` response header (integer seconds) when present;
+    /// otherwise uses exponential backoff `base_delay_ms << attempt`, capped at
+    /// `max_delay_ms`. A tiny deterministic jitter (`req_id % 100` ms) is added
+    /// to spread a thundering herd of parallel retries.
+    fn wait_ms(&self, attempt: usize, headers: &reqwest::header::HeaderMap, req_id: u64) -> u64 {
+        if let Some(ra) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
+            if let Ok(secs) = ra.trim().parse::<u64>() {
+                return secs.saturating_mul(1000).saturating_add(req_id % 100);
+            }
+        }
+        let exp = self.base_delay_ms.saturating_mul(1u64 << attempt.min(31));
+        exp.min(self.max_delay_ms).saturating_add(req_id % 100)
+    }
 }
 
 /// Non-streaming request — returns the parsed JSON body.
@@ -125,7 +154,11 @@ pub async fn send_request(
     payload: Value,
     incoming: &HeaderMap,
 ) -> Result<Value> {
-    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
+    let log = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_errors();
     let _guard = InflightGuard::new(state.clone(), req_id);
     let started = std::time::Instant::now();
     if log {
@@ -135,7 +168,11 @@ pub async fn send_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
+    let detailed = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} native REQ {}",
@@ -156,7 +193,11 @@ pub async fn send_request(
     // limit. Rate limiter (requests/sec), acquired once per request at send
     // time — NOT held for the request's duration. Probes draw from a separate
     // bucket so a salvo can't queue ahead of a real request.
-    if *state.throttle_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+    if *state
+        .throttle_enabled
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+    {
         if is_probe {
             state.throttle_probe_bucket.acquire().await;
         } else {
@@ -273,7 +314,9 @@ pub async fn send_request(
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64());
         let cache_creation = usage
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64());
@@ -325,7 +368,11 @@ pub async fn stream_request(
     payload: Value,
     incoming: &HeaderMap,
 ) -> Result<Body> {
-    let log = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_errors();
+    let log = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_errors();
     let guard = InflightGuard::new(state.clone(), req_id);
     let started = std::time::Instant::now();
     if log {
@@ -335,7 +382,11 @@ pub async fn stream_request(
             now_ms()
         ));
     }
-    let detailed = state.log_level.read().unwrap_or_else(|e| e.into_inner()).log_detailed();
+    let detailed = state
+        .log_level
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .log_detailed();
     if detailed {
         state.log_line(&format!(
             "{} #{req_id} native stream REQ {}",
@@ -356,7 +407,11 @@ pub async fn stream_request(
     // limit. Rate limiter (requests/sec), acquired once per request at send
     // time — NOT held for the request's duration. Probes draw from a separate
     // bucket so a salvo can't queue ahead of a real request.
-    if *state.throttle_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+    if *state
+        .throttle_enabled
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+    {
         if is_probe {
             state.throttle_probe_bucket.acquire().await;
         } else {

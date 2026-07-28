@@ -79,15 +79,18 @@ fn apply_pragmas(conn: &mut Connection) {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;"
-    ).ok();
+         PRAGMA foreign_keys = ON;",
+    )
+    .ok();
 }
 
 // ── Migrations ───────────────────────────────────────────────────────────
 
 /// Run all pending migrations inside one transaction.
 fn migrate(conn: &mut Connection) -> Result<(), TelemetryError> {
-    let current: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap_or(0);
+    let current: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap_or(0);
 
     if current >= SCHEMA_VERSION {
         return Ok(());
@@ -173,7 +176,7 @@ fn migrate(conn: &mut Connection) -> Result<(), TelemetryError> {
                 ON model_calls(session_id, event_at);
 
             CREATE INDEX idx_quota_provider_window_time
-                ON quota_samples(provider, window_kind, event_at);"
+                ON quota_samples(provider, window_kind, event_at);",
         )?;
     }
 
@@ -188,7 +191,7 @@ fn migrate(conn: &mut Connection) -> Result<(), TelemetryError> {
                 text        TEXT NOT NULL
             );
 
-            CREATE INDEX idx_notes_time ON notes(event_at);"
+            CREATE INDEX idx_notes_time ON notes(event_at);",
         )?;
     }
 
@@ -260,7 +263,15 @@ impl TelemetryDb {
              (provider, session_id, event_at, window_kind, window_minutes,
               used_percent, resets_at, plan_type, source_offset)
              VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, -1)",
-            params![provider, now, window_kind, window_minutes, used_percent, resets_at, plan_type],
+            params![
+                provider,
+                now,
+                window_kind,
+                window_minutes,
+                used_percent,
+                resets_at,
+                plan_type
+            ],
         )?;
         Ok(())
     }
@@ -276,7 +287,11 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_pragmas(&mut conn);
         migrate(&mut conn).unwrap();
-        assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -284,8 +299,12 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_pragmas(&mut conn);
         migrate(&mut conn).unwrap();
-        migrate(&mut conn).unwrap();  // second call must be a no-op
-        assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+        migrate(&mut conn).unwrap(); // second call must be a no-op
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -293,7 +312,13 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_pragmas(&mut conn);
         migrate(&mut conn).unwrap();
-        for table in &["sources", "sessions", "model_calls", "quota_samples", "notes"] {
+        for table in &[
+            "sources",
+            "sessions",
+            "model_calls",
+            "quota_samples",
+            "notes",
+        ] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -315,13 +340,15 @@ mod tests {
         db.insert_note(Some("codex"), Some("plus"), "Switching account")
             .unwrap();
 
-        let row: (String, String, String) = db.conn()
-            .query_row(
-                "SELECT provider, plan_type, text FROM notes",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+        let row: (String, String, String) = db
+            .conn()
+            .query_row("SELECT provider, plan_type, text FROM notes", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .unwrap();
-        assert_eq!(row, ("codex".into(), "plus".into(), "Switching account".into()));
+        assert_eq!(
+            row,
+            ("codex".into(), "plus".into(), "Switching account".into())
+        );
     }
 }

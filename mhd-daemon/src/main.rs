@@ -307,14 +307,18 @@ fn main() -> ExitCode {
         let watch_quiet = quiet;
 
         std::thread::spawn(move || {
-            use notify::{Config as WatchConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+            use notify::{
+                Config as WatchConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+            };
 
             let last_handled = AtomicI64::new(0);
             let (tx, rx) = std::sync::mpsc::channel();
             let tx2 = tx.clone();
 
             let mut watcher = match RecommendedWatcher::new(
-                move |res| { let _ = tx2.send(res); },
+                move |res| {
+                    let _ = tx2.send(res);
+                },
                 WatchConfig::default(),
             ) {
                 Ok(w) => w,
@@ -346,9 +350,10 @@ fn main() -> ExitCode {
                 };
 
                 // Only react to modify/create events whose path is settings.json.
-                let is_settings = ev.paths.iter().any(|p| {
-                    p.file_name().and_then(|n| n.to_str()) == Some("settings.json")
-                });
+                let is_settings = ev
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("settings.json"));
                 let is_write = matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_));
                 if !is_settings || !is_write {
                     continue;

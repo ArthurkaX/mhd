@@ -136,7 +136,11 @@ pub enum SettingsHit {
 
 /// Which head-budget group the shared head dropdown is editing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeadGroup { NativeBig, NativeHaiku, Harness }
+pub enum HeadGroup {
+    NativeBig,
+    NativeHaiku,
+    Harness,
+}
 
 /// Sweep of head-budget values for the head dropdown.
 pub const HEAD_SWEEP: [usize; 9] = [100, 200, 300, 500, 1000, 2000, 3000, 5000, 8000];
