@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use rusqlite::{Connection, OpenFlags, params};
 
 /// Current schema version stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Database configuration.
 pub struct TelemetryDb {
@@ -177,6 +177,21 @@ fn migrate(conn: &mut Connection) -> Result<(), TelemetryError> {
         )?;
     }
 
+    // v2: user-authored timeline markers (for example account / plan changes).
+    if current < 2 {
+        tx.execute_batch(
+            "CREATE TABLE notes (
+                id          INTEGER PRIMARY KEY,
+                event_at    INTEGER NOT NULL,
+                provider    TEXT,
+                plan_type   TEXT,
+                text        TEXT NOT NULL
+            );
+
+            CREATE INDEX idx_notes_time ON notes(event_at);"
+        )?;
+    }
+
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -200,6 +215,26 @@ impl TelemetryDb {
         self.conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap_or(0)
+    }
+
+    /// Add a user-authored marker to the telemetry timeline.
+    pub fn insert_note(
+        &self,
+        provider: Option<&str>,
+        plan_type: Option<&str>,
+        text: &str,
+    ) -> Result<(), TelemetryError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        self.conn.execute(
+            "INSERT INTO notes (event_at, provider, plan_type, text)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![now, provider, plan_type, text],
+        )?;
+        Ok(())
     }
 
     /// Store a live API snapshot into quota_samples.
@@ -258,7 +293,7 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_pragmas(&mut conn);
         migrate(&mut conn).unwrap();
-        for table in &["sources", "sessions", "model_calls", "quota_samples"] {
+        for table in &["sources", "sessions", "model_calls", "quota_samples", "notes"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -268,5 +303,25 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "table '{table}' should exist after migration");
         }
+    }
+
+    #[test]
+    fn test_insert_note() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&mut conn);
+        migrate(&mut conn).unwrap();
+        let db = TelemetryDb { conn };
+
+        db.insert_note(Some("codex"), Some("plus"), "Switching account")
+            .unwrap();
+
+        let row: (String, String, String) = db.conn()
+            .query_row(
+                "SELECT provider, plan_type, text FROM notes",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("codex".into(), "plus".into(), "Switching account".into()));
     }
 }

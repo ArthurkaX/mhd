@@ -34,6 +34,9 @@ pub struct MonitorApp {
     period: Period,
     last_refresh: Instant,
     status_message: String,
+    note_open: bool,
+    note_text: String,
+    note_status: Option<String>,
 
     // ── Telemetry ──
     db: Option<TelemetryDb>,
@@ -118,6 +121,9 @@ impl MonitorApp {
             period: Period::All,
             last_refresh: Instant::now(),
             status_message: String::new(),
+            note_open: false,
+            note_text: String::new(),
+            note_status: None,
             db,
             codex_home,
             import_result: None,
@@ -268,9 +274,69 @@ impl eframe::App for MonitorApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(&self.status_message);
+                    if ui.button("Note").clicked() {
+                        self.note_open = true;
+                        self.note_status = None;
+                    }
                 });
             });
         });
+
+        // ── Quick Note modal ──
+        if self.note_open {
+            let mut open = self.note_open;
+            let mut save = false;
+            let mut cancel = false;
+            egui::Window::new("Quick Note")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("Add a marker to the Codex quota timeline:");
+                    let edit = ui.add_sized(
+                        [360.0, 90.0],
+                        egui::TextEdit::multiline(&mut self.note_text)
+                            .hint_text("Changed account / upgraded to Pro…"),
+                    );
+                    edit.request_focus();
+                    if let Some(status) = &self.note_status {
+                        ui.colored_label(egui::Color32::LIGHT_RED, status);
+                    }
+                    ui.horizontal(|ui| {
+                        let can_save = !self.note_text.trim().is_empty();
+                        if ui.add_enabled(can_save, egui::Button::new("Save")).clicked() {
+                            save = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+
+            if save {
+                let plan = self.live_quota
+                    .as_ref()
+                    .and_then(|q| q.plan_type.as_deref());
+                match self.db.as_ref().ok_or("telemetry.db not available").and_then(|db| {
+                    db.insert_note(Some(&self.provider), plan, self.note_text.trim())
+                        .map_err(|_| "Could not save note")
+                }) {
+                    Ok(()) => {
+                        self.status_message = "Note saved".into();
+                        self.note_text.clear();
+                        self.note_status = None;
+                        open = false;
+                    }
+                    Err(message) => self.note_status = Some(message.into()),
+                }
+            }
+            if cancel {
+                self.note_text.clear();
+                self.note_status = None;
+                open = false;
+            }
+            self.note_open = open;
+        }
 
         // ── Tab bar ──
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
