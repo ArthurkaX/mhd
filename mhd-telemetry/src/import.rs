@@ -202,9 +202,18 @@ fn import_source(
                         result.sessions_added += 1;
                     }
                 }
+                CodexEvent::TurnContext { session_id, model } => {
+                    if !session_id.is_empty() && model.is_some() {
+                        tx.execute(
+                            "UPDATE sessions SET model = ?1 WHERE provider = ?2 AND external_id = ?3",
+                            params![model, provider, session_id],
+                        )?;
+                    }
+                }
                 CodexEvent::TokenCount {
                     session_id,
                     event_at,
+                    model,
                     input_tokens,
                     cached_input,
                     cache_write,
@@ -260,7 +269,7 @@ fn import_source(
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                             params![
                                 provider, sid, event_at, source_offset,
-                                None as Option<&str>, // model — not in token_count events
+                                model,
                                 context_window,
                                 input_tokens.unwrap_or(0),
                                 cached_input.unwrap_or(0),
@@ -272,6 +281,14 @@ fn import_source(
                             ],
                         )?;
                         result.model_calls_added += 1;
+                    } else if model.is_some() {
+                        // A one-time re-import after adding model support fills
+                        // legacy rows without overwriting an already recorded value.
+                        tx.execute(
+                            "UPDATE model_calls SET model = COALESCE(model, ?1) \
+                             WHERE session_id = ?2 AND source_offset = ?3",
+                            params![model, sid, source_offset],
+                        )?;
                     }
 
                     // ── Quota samples ──

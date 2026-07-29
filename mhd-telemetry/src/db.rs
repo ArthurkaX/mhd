@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use rusqlite::{Connection, OpenFlags, params};
 
 /// Current schema version stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Database configuration.
 pub struct TelemetryDb {
@@ -195,6 +195,12 @@ fn migrate(conn: &mut Connection) -> Result<(), TelemetryError> {
         )?;
     }
 
+    // v3: models are found in `turn_context`, not `token_count`. Replay the
+    // existing JSONL files once so legacy model_calls can be backfilled.
+    if current < 3 {
+        tx.execute("UPDATE sources SET last_offset = 0, last_size = 0", [])?;
+    }
+
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -305,6 +311,31 @@ mod tests {
                 .unwrap(),
             SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn test_v3_migration_replays_existing_sources_for_model_backfill() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&mut conn);
+        migrate(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO sources (provider, canonical_path, last_offset, last_size) \
+             VALUES ('codex', 'C:/rollout.jsonl', 123, 456)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let source: (i64, i64) = conn
+            .query_row(
+                "SELECT last_offset, last_size FROM sources WHERE canonical_path = 'C:/rollout.jsonl'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, (0, 0));
     }
 
     #[test]

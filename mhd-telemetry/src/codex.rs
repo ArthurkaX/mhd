@@ -33,9 +33,16 @@ pub enum CodexEvent {
         model: Option<String>,
         cli_version: Option<String>,
     },
+    /// Per-turn settings. Codex records the selected model here rather than
+    /// alongside the token count.
+    TurnContext {
+        session_id: String,
+        model: Option<String>,
+    },
     TokenCount {
         session_id: String,
         event_at: i64,
+        model: Option<String>,
         input_tokens: Option<i64>,
         cached_input: Option<i64>,
         cache_write: Option<i64>,
@@ -259,12 +266,30 @@ pub fn parse_rollout(path: &Path, start_offset: u64) -> std::io::Result<ParseRes
                     current_session_id.clone_from(session_id);
                 }
             }
+            CodexEvent::TurnContext { session_id, .. } => {
+                if session_id.is_empty() && !current_session_id.is_empty() {
+                    session_id.clone_from(&current_session_id);
+                }
+            }
             CodexEvent::TokenCount { session_id, .. } => {
                 if session_id.is_empty() && !current_session_id.is_empty() {
                     session_id.clone_from(&current_session_id);
                 }
             }
             CodexEvent::Other => {}
+        }
+    }
+
+    // The model is part of `turn_context`; apply it to all token-count events
+    // until Codex emits the next turn context.
+    let mut current_model = None;
+    for event in &mut events {
+        match event {
+            CodexEvent::TurnContext { model, .. } => current_model.clone_from(model),
+            CodexEvent::TokenCount { model, .. } if model.is_none() => {
+                model.clone_from(&current_model);
+            }
+            _ => {}
         }
     }
 
@@ -330,11 +355,23 @@ pub fn parse_event(line: &str) -> Result<CodexEvent, serde_json::Error> {
                 .map(String::from),
             project: None, // Codex format has no project field
             model: payload
-                .and_then(|p| p.get("model_provider"))
+                .and_then(|p| p.get("model"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
             cli_version: payload
                 .and_then(|p| p.get("cli_version"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        });
+    }
+
+    // ── turn_context → active model ──
+    if event_type == Some("turn_context") {
+        let payload = value.get("payload");
+        return Ok(CodexEvent::TurnContext {
+            session_id: String::new(),
+            model: payload
+                .and_then(|p| p.get("model"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
         });
@@ -362,6 +399,7 @@ pub fn parse_event(line: &str) -> Result<CodexEvent, serde_json::Error> {
             return Ok(CodexEvent::TokenCount {
                 session_id: String::new(),
                 event_at,
+                model: None,
                 input_tokens: last
                     .and_then(|v| v.get("input_tokens"))
                     .and_then(|v| v.as_i64()),
@@ -470,7 +508,7 @@ mod tests {
                 assert_eq!(session_id, "abc123");
                 // 2026-04-10T14:35:18Z = 20553 days * 86400 + 14*3600+35*60+18 = 1775831718
                 assert_eq!(started_at, Some(1775831718));
-                assert_eq!(model.as_deref(), Some("openai"));
+                assert!(model.is_none());
                 assert_eq!(cli_version.as_deref(), Some("0.119.0-alpha.11"));
                 assert_eq!(cwd.as_deref(), Some("/home/user/project"));
             }
@@ -634,6 +672,37 @@ mod tests {
                 other => panic!("expected TokenCount at {i}, got {other:?}"),
             }
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_rollout_applies_turn_context_model_to_token_counts() {
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join("mhd_test_rollout_model");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        let content = r#"{"timestamp":"2026-07-29T05:00:00Z","type":"session_meta","payload":{"id":"session-model","timestamp":"2026-07-29T05:00:00Z"}}
+{"timestamp":"2026-07-29T05:00:01Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-5.4-mini"}}
+{"timestamp":"2026-07-29T05:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100}}}}
+"#;
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(content.as_bytes())
+            .unwrap();
+
+        let result = parse_rollout(&path, 0).unwrap();
+        assert!(matches!(
+            &result.events[1],
+            CodexEvent::TurnContext { session_id, model }
+                if session_id == "session-model" && model.as_deref() == Some("gpt-5.4-mini")
+        ));
+        assert!(matches!(
+            &result.events[2],
+            CodexEvent::TokenCount { session_id, model, .. }
+                if session_id == "session-model" && model.as_deref() == Some("gpt-5.4-mini")
+        ));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

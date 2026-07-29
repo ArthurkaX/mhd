@@ -408,7 +408,7 @@ unsafe extern "system" fn wnd_proc(
                         crate::llm_proxy::toggle(&cfg);
                     }
                     CMD_CODEX_WATCHER_TOGGLE => {
-                        crate::core::codex_watcher::toggle();
+                        state.app.toggle_codex_watcher();
                     }
                     cmd if (CMD_POWER_PLAN_BASE..CMD_POWER_PLAN_BASE + 20).contains(&cmd) => {
                         let index = cmd - CMD_POWER_PLAN_BASE;

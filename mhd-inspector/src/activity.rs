@@ -34,6 +34,7 @@ pub fn show_activity(
                     ui.strong("Model");
                     ui.strong("Input");
                     ui.strong("Cached");
+                    ui.strong("Cache hit");
                     ui.strong("Output");
                     ui.strong("Reasoning");
                     ui.strong("Context %");
@@ -56,6 +57,15 @@ pub fn show_activity(
                         ui.label(row.model.as_deref().unwrap_or("—"));
                         ui.label(format_num(row.input_tokens));
                         ui.label(format_num(row.cached_input_tokens));
+                        let cache_hit = if row.input_tokens > 0 {
+                            format!(
+                                "{:.0}%",
+                                row.cached_input_tokens as f64 / row.input_tokens as f64 * 100.0
+                            )
+                        } else {
+                            "—".into()
+                        };
+                        ui.label(cache_hit);
                         ui.label(format_num(row.output_tokens));
                         ui.label(format_num(row.reasoning_tokens));
 

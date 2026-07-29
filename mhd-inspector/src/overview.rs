@@ -1,292 +1,245 @@
-//! Overview tab — quota cards and chart.
+//! Decision-focused quota overview.
 
 use eframe::egui;
 use mhd_telemetry::import::ImportResult;
 use mhd_telemetry::live;
-use mhd_telemetry::query::{QuotaSample, SlopeProjection, TokenSummary, Utilization};
+use mhd_telemetry::query::{QuotaSample, SlopeProjection, Utilization};
 
-use crate::app::relative_time;
-
-/// Render the Overview tab content.
+/// Render the main question: is the current budget likely to last until reset?
 pub fn show_overview(
     ui: &mut egui::Ui,
     quota_5h: &Option<Utilization>,
     quota_7d: &Option<Utilization>,
     slope_5h: &SlopeProjection,
     slope_7d: &SlopeProjection,
-    tokens: &TokenSummary,
     history: &[QuotaSample],
     import: &Option<ImportResult>,
     live: Option<&live::LiveQuota>,
-    ctx: &egui::Context,
+    _ctx: &egui::Context,
 ) {
-    // ── Data quality notice ──
-    if let Some(imp) = import {
-        if imp.skipped_rows > 0 {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                format!(
-                    "Import partial: {} malformed rows skipped",
-                    imp.skipped_rows
-                ),
-            );
-        }
-        if imp.sources_imported == 0 && imp.model_calls_added == 0 {
-            ui.label("No new data found.");
-        }
+    if let Some(imp) = import
+        && imp.skipped_rows > 0
+    {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            format!(
+                "Import partial: {} malformed rows skipped",
+                imp.skipped_rows
+            ),
+        );
     }
 
-    // ── Live data badge ──
     if let Some(lq) = live {
         show_live_badge(ui, lq);
-        ui.add_space(4.0);
+        ui.add_space(8.0);
     }
 
-    // ── Quota cards ──
-    ui.horizontal(|ui| {
-        show_window_cards(ui, "5h", quota_5h, slope_5h);
-        ui.separator();
-        show_window_cards(ui, "7d", quota_7d, slope_7d);
-    });
-
-    ui.add_space(8.0);
-
-    // ── Token summary row ──
-    egui::Grid::new("token_cards")
-        .min_col_width(120.0)
-        .show(ui, |ui| {
-            card(ui, "Input tokens", &format_num(tokens.input_tokens));
-            card(
-                ui,
-                "Cached input",
-                &format!(
-                    "{} ({:.0}%)",
-                    format_num(tokens.cached_input_tokens),
-                    tokens.cache_hit.unwrap_or(0.0) * 100.0
-                ),
-            );
-            card(ui, "Output tokens", &format_num(tokens.output_tokens));
-            card(ui, "Reasoning", &format_num(tokens.reasoning_tokens));
-            card(
-                ui,
-                "Context hits",
-                &format!(
-                    "{} / {}",
-                    format_num(tokens.cached_input_tokens),
-                    format_num(tokens.input_tokens)
-                ),
-            );
-        });
-
-    ui.separator();
-
-    // ── Quota chart ──
-    if history.is_empty() {
-        ui.label("No quota data available for charting.");
+    // Prefer the weekly window: it is the only real Codex budget on Pro 5x.
+    let (label, quota, slope) = if quota_7d.is_some() {
+        ("Weekly budget", quota_7d, slope_7d)
     } else {
-        show_quota_chart(ui, history, ctx);
-    }
-}
+        ("5-hour budget", quota_5h, slope_5h)
+    };
 
-fn show_window_cards(
-    ui: &mut egui::Ui,
-    label: &str,
-    quota: &Option<Utilization>,
-    slope: &SlopeProjection,
-) {
-    ui.vertical(|ui| {
-        if let Some(q) = quota {
-            card(
-                ui,
-                &format!("Quota ({label})"),
-                &format!("{:.1}%", q.used_percent),
-            );
-            card(
-                ui,
-                "Reset",
-                &mhd_telemetry::query::time_to_reset(q.resets_at).unwrap_or_else(|| "—".into()),
-            );
-        } else {
-            card(ui, &format!("Quota ({label})"), "—");
-            card(ui, "Reset", "—");
-        }
+    ui.heading("Will I make it to reset?");
+    ui.add_space(4.0);
 
-        if let Some(p) = &slope.projected_at_reset {
-            card(ui, &format!("Projected ({label})"), &format!("{:.1}%", p));
-        } else {
-            card(ui, &format!("Projected ({label})"), "—");
-        }
-
-        if let Some(e) = &slope.projected_exhaustion {
-            card(ui, "Exhaustion", e);
-        } else {
-            card(ui, "Exhaustion", "—");
-        }
-
-        if let Some(s) = slope.full_slope {
-            card(ui, &format!("Slope ({label})"), &format!("{:.1}%/h", s));
-        } else {
-            card(ui, &format!("Slope ({label})"), "—");
-        }
-    });
-}
-
-/// Render a colored card with label and value.
-fn card(ui: &mut egui::Ui, label: &str, value: &str) {
-    egui::Frame::none()
-        .fill(egui::Color32::from_gray(30))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
-        .show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(10.0)
-                        .color(egui::Color32::GRAY),
-                );
-                ui.strong(egui::RichText::new(value).size(14.0));
-            });
-        });
-    ui.end_row();
-}
-
-/// Simple quota chart using egui painting.
-fn show_quota_chart(ui: &mut egui::Ui, samples: &[QuotaSample], _ctx: &egui::Context) {
-    let Some(max_sample) = samples.iter().max_by_key(|s| s.used_percent as i64) else {
+    let Some(quota) = quota else {
+        ui.label("Waiting for live quota data…");
         return;
     };
-    let min_ts = samples.first().map(|s| s.event_at).unwrap_or(0);
-    let max_ts = samples.last().map(|s| s.event_at).unwrap_or(1);
-    let range_ts = (max_ts - min_ts).max(1) as f64;
-    let range_pct = (max_sample.used_percent).max(1.0);
 
-    // Downsample if needed
-    let display: &[QuotaSample] = if samples.len() > 5000 {
-        // Simple stride downsampling
-        let _stride = samples.len() / 5000;
-        // Return all for now — in real use this would be a filtered vec
-        samples
-    } else {
-        samples
+    let projection = slope.projected_at_reset;
+    let exhaustion = slope.projected_exhaustion.as_deref();
+    let (verdict, detail, color) = match (exhaustion, projection) {
+        (Some(when), _) => (
+            "Likely to run out",
+            format!("At the current pace, the budget is exhausted in {when}."),
+            egui::Color32::from_rgb(235, 94, 94),
+        ),
+        (None, Some(p)) if p >= 100.0 => (
+            "Likely to run out",
+            format!("Projection reaches {p:.0}% before reset."),
+            egui::Color32::from_rgb(235, 94, 94),
+        ),
+        (None, Some(p)) => (
+            "On pace",
+            format!("Projected to use {p:.0}% by reset."),
+            egui::Color32::from_rgb(82, 190, 120),
+        ),
+        _ => (
+            "Collecting data",
+            "A projection will appear after at least two samples in this window.".into(),
+            egui::Color32::from_rgb(220, 175, 70),
+        ),
     };
 
-    let height = 200.0;
-    let width = ui.available_width().max(200.0);
+    egui::Frame::none()
+        .fill(egui::Color32::from_gray(28))
+        .stroke(egui::Stroke::new(1.0, color))
+        .rounding(8.0)
+        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(verdict)
+                    .size(24.0)
+                    .strong()
+                    .color(color),
+            );
+            ui.label(detail);
+        });
 
+    ui.add_space(10.0);
+    ui.horizontal_wrapped(|ui| {
+        stat_card(ui, label, &format!("{:.1}% used", quota.used_percent));
+        stat_card(
+            ui,
+            "Remaining",
+            &format!("{:.1}%", (100.0 - quota.used_percent).max(0.0)),
+        );
+        stat_card(
+            ui,
+            "Reset",
+            &mhd_telemetry::query::time_to_reset(quota.resets_at).unwrap_or_else(|| "—".into()),
+        );
+        stat_card(
+            ui,
+            "Projected at reset",
+            &projection
+                .map(|p| format!("{p:.1}%"))
+                .unwrap_or_else(|| "—".into()),
+        );
+        stat_card(
+            ui,
+            "Current pace",
+            &slope
+                .full_slope
+                .map(|p| format!("{p:.1}% / h"))
+                .unwrap_or_else(|| "—".into()),
+        );
+    });
+
+    ui.add_space(12.0);
+    ui.strong(format!("{label} trajectory"));
+    if history.is_empty() {
+        ui.label("No quota samples yet. The chart fills as the watcher records live updates.");
+    } else {
+        show_budget_chart(ui, history, quota.resets_at, projection);
+    }
+}
+
+fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
+    egui::Frame::none()
+        .fill(egui::Color32::from_gray(30))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .size(10.0)
+                    .color(egui::Color32::GRAY),
+            );
+            ui.label(egui::RichText::new(value).size(16.0).strong());
+        });
+}
+
+fn show_budget_chart(
+    ui: &mut egui::Ui,
+    samples: &[QuotaSample],
+    resets_at: Option<i64>,
+    projection: Option<f64>,
+) {
+    let width = ui.available_width().max(320.0);
+    let height = 235.0;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-
     let painter = ui.painter_at(rect);
-    let canvas_left = rect.min.x;
-    let canvas_bottom = rect.max.y;
+    let left = rect.left() + 38.0;
+    let right = rect.right() - 12.0;
+    let top = rect.top() + 12.0;
+    let bottom = rect.bottom() - 26.0;
+    let first = samples.first().map(|s| s.event_at).unwrap_or(0);
+    let last = samples.last().map(|s| s.event_at).unwrap_or(first + 1);
+    let end = resets_at.filter(|reset| *reset > last).unwrap_or(last);
+    let start = resets_at
+        .map(|reset| reset.saturating_sub(7 * 24 * 3600))
+        .filter(|start| *start < end)
+        .unwrap_or(first);
+    let span = (end - start).max(1) as f32;
+    let x = |time: i64| left + (time.saturating_sub(start) as f32 / span) * (right - left);
+    let y = |pct: f64| bottom - (pct.clamp(0.0, 100.0) as f32 / 100.0) * (bottom - top);
 
-    // Draw grid lines
     for pct in [0.0, 25.0, 50.0, 75.0, 100.0] {
-        let y = canvas_bottom - (pct / range_pct * height as f64) as f32;
+        let py = y(pct);
         painter.line_segment(
-            [
-                egui::pos2(canvas_left, y),
-                egui::pos2(canvas_left + width, y),
-            ],
-            egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+            [egui::pos2(left, py), egui::pos2(right, py)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(55)),
         );
         painter.text(
-            egui::pos2(canvas_left - 5.0, y),
+            egui::pos2(left - 5.0, py),
             egui::Align2::RIGHT_CENTER,
-            format!("{:.0}%", pct),
+            format!("{pct:.0}%"),
             egui::FontId::proportional(10.0),
             egui::Color32::GRAY,
         );
     }
 
-    // Draw quota line
-    if display.len() >= 2 {
-        let mut points: Vec<egui::Pos2> = Vec::with_capacity(display.len());
-        for sample in display {
-            let x =
-                canvas_left + ((sample.event_at - min_ts) as f64 / range_ts * width as f64) as f32;
-            let y = canvas_bottom - (sample.used_percent / range_pct * height as f64) as f32;
-            points.push(egui::pos2(x, y));
-        }
+    if samples.len() >= 2 {
+        let points = samples
+            .iter()
+            .map(|sample| egui::pos2(x(sample.event_at), y(sample.used_percent)))
+            .collect();
         painter.add(egui::Shape::line(
             points,
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 255)),
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(88, 166, 255)),
         ));
-
-        // Hover inspection
-        if let Some(pos) = response.hover_pos() {
-            let rel_x = (pos.x - canvas_left) / width;
-            let idx = ((rel_x as f64) * (display.len() - 1) as f64) as usize;
-            let idx = idx.min(display.len() - 1);
-            if let Some(sample) = display.get(idx) {
-                let tooltip_pos = egui::pos2(pos.x + 10.0, pos.y - 30.0);
-                let info = format!(
-                    "{:.1}%\n{}",
-                    sample.used_percent,
-                    relative_time(sample.event_at)
-                );
-                painter.text(
-                    tooltip_pos,
-                    egui::Align2::LEFT_TOP,
-                    info,
-                    egui::FontId::proportional(12.0),
-                    egui::Color32::WHITE,
-                );
-            }
-        }
     }
 
-    // Y-axis label
-    painter.text(
-        egui::pos2(canvas_left, rect.min.y),
-        egui::Align2::LEFT_TOP,
-        "Usage %",
-        egui::FontId::proportional(10.0),
-        egui::Color32::GRAY,
-    );
-}
-
-fn format_num(n: i64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
-/// Show a small badge with plan type and reset credits from live data.
-fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
-    let plan = lq.plan_type.as_deref().unwrap_or("Codex");
-    let mut parts: Vec<String> = Vec::new();
-
-    // Reset credits
-    if let Some(rc) = &lq.reset_credits
-        && rc.available_count > 0
+    if let (Some(reset), Some(projected), Some(latest)) = (resets_at, projection, samples.last())
+        && reset > latest.event_at
     {
-        parts.push(format!(
-            "{} reset{} available",
-            rc.available_count,
-            if rc.available_count == 1 { "" } else { "s" }
-        ));
-        if let Some(expires) = rc.next_expires_at {
-            parts.push(format!(
-                "next expires {}",
-                crate::app::relative_time(expires)
-            ));
-        }
+        painter.line_segment(
+            [
+                egui::pos2(x(latest.event_at), y(latest.used_percent)),
+                egui::pos2(x(reset), y(projected)),
+            ],
+            egui::Stroke::new(1.5, egui::Color32::GRAY),
+        );
     }
 
-    let text = if parts.is_empty() {
-        format!("Live · {plan}")
-    } else {
-        format!("Live · {plan} · {}", parts.join(" · "))
-    };
-
-    ui.horizontal(|ui| {
-        ui.colored_label(
-            egui::Color32::LIGHT_GREEN,
-            egui::RichText::new(text).size(11.0),
+    if let Some(reset) = resets_at {
+        let rx = x(reset);
+        painter.line_segment(
+            [egui::pos2(rx, top), egui::pos2(rx, bottom)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 94, 94)),
         );
-    });
+        painter.text(
+            egui::pos2(rx, bottom + 8.0),
+            egui::Align2::CENTER_TOP,
+            "reset",
+            egui::FontId::proportional(10.0),
+            egui::Color32::from_rgb(235, 94, 94),
+        );
+    }
+
+    if let Some(pos) = response.hover_pos() {
+        let ratio = ((pos.x - left) / (right - left)).clamp(0.0, 1.0);
+        let idx = (ratio * (samples.len().saturating_sub(1)) as f32) as usize;
+        if let Some(sample) = samples.get(idx) {
+            painter.text(
+                egui::pos2(pos.x + 10.0, pos.y - 25.0),
+                egui::Align2::LEFT_TOP,
+                format!("{:.1}%", sample.used_percent),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+}
+
+fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
+    let plan = live::display_plan_type(lq.plan_type.as_deref());
+    ui.colored_label(
+        egui::Color32::LIGHT_GREEN,
+        egui::RichText::new(format!("Live · {plan}")).size(11.0),
+    );
 }

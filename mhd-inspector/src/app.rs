@@ -1,13 +1,13 @@
 //! LLM Monitor — tabbed window for observing LLM usage and agent activity.
 //!
-//! Tabs: Overview (quota + trajectory), Activity (model calls), Context Trim.
+//! Tabs: Progress (quota + trajectory) and Request history (model calls).
 
 use eframe::egui;
 use mhd_telemetry::codex;
 use mhd_telemetry::db::{self, TelemetryDb};
 use mhd_telemetry::import;
 use mhd_telemetry::live;
-use mhd_telemetry::query::{self, ActivityRow, QuotaSample, SlopeProjection, TokenSummary};
+use mhd_telemetry::query::{self, ActivityRow, QuotaSample, SlopeProjection};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -20,7 +20,6 @@ use crate::overview;
 enum Tab {
     Overview,
     Activity,
-    ContextTrim,
 }
 
 /// State for the complete LLM Monitor window.
@@ -49,7 +48,6 @@ pub struct MonitorApp {
     quota_7d: Option<query::Utilization>,
     slope_proj_5h: SlopeProjection,
     slope_proj_7d: SlopeProjection,
-    token_summary: TokenSummary,
     quota_history: Vec<QuotaSample>,
     live_quota: Option<live::LiveQuota>,
     last_live_refresh: Instant,
@@ -132,7 +130,6 @@ impl MonitorApp {
             quota_7d: None,
             slope_proj_5h: SlopeProjection::default(),
             slope_proj_7d: SlopeProjection::default(),
-            token_summary: TokenSummary::default(),
             quota_history: Vec::new(),
             live_quota: None,
             last_live_refresh: Instant::now() - Duration::from_secs(60), // prompt first refresh
@@ -158,9 +155,6 @@ impl MonitorApp {
         // Projects
         self.projects = query::list_projects(db);
 
-        // Token summary
-        self.token_summary = query::token_summary(db, since);
-
         // Quota — prefer live data, fall back to DB
         if let Some(ref lq) = self.live_quota {
             self.quota_5h = lq.session.clone().map(query::Utilization::from);
@@ -174,8 +168,19 @@ impl MonitorApp {
         self.slope_proj_5h = query::slope_and_projection(db, &self.provider, "5h");
         self.slope_proj_7d = query::slope_and_projection(db, &self.provider, "7d");
 
-        // Quota history for chart
-        self.quota_history = query::quota_samples(db, &self.provider, "5h", since);
+        // Chart the budget the account actually has. Pro 5x exposes a weekly
+        // window only, while other plans can still fall back to the 5h window.
+        let (window_kind, window_seconds, resets_at) = if let Some(weekly) = &self.quota_7d {
+            ("7d", 7 * 24 * 3600, weekly.resets_at)
+        } else if let Some(session) = &self.quota_5h {
+            ("5h", 5 * 3600, session.resets_at)
+        } else {
+            ("7d", 7 * 24 * 3600, None)
+        };
+        let chart_since = resets_at
+            .map(|reset| reset.saturating_sub(window_seconds))
+            .unwrap_or(since);
+        self.quota_history = query::quota_samples(db, &self.provider, window_kind, chart_since);
 
         // Activity rows
         self.activity_rows =
@@ -186,18 +191,15 @@ impl MonitorApp {
 
         // Status — prefer live data info when available
         self.status_message = if let Some(ref lq) = self.live_quota {
-            let plan = lq.plan_type.as_deref().unwrap_or("Codex");
-            let session = lq
-                .session
-                .as_ref()
-                .map(|u| format!("5h {:.0}%", u.used_percent))
-                .unwrap_or_default();
-            let weekly = lq
-                .weekly
-                .as_ref()
-                .map(|u| format!("7d {:.0}%", u.used_percent))
-                .unwrap_or_default();
-            format!("{plan} · {session} · {weekly}")
+            let plan = live::display_plan_type(lq.plan_type.as_deref());
+            let mut parts = vec![plan.to_string()];
+            if let Some(session) = &lq.session {
+                parts.push(format!("5h {:.0}%", session.used_percent));
+            }
+            if let Some(weekly) = &lq.weekly {
+                parts.push(format!("7d {:.0}%", weekly.used_percent));
+            }
+            parts.join(" · ")
         } else if let Some(latest_sample) = self.latest_sample {
             format!("Last sample: {}", relative_time(latest_sample))
         } else {
@@ -209,6 +211,7 @@ impl MonitorApp {
     fn refresh_live_quota(&mut self) {
         self.live_quota = live::fetch_live_quota(&self.codex_home).ok();
         self.last_live_refresh = Instant::now();
+        self.refresh_data();
     }
 
     /// Run an incremental import pass.
@@ -248,38 +251,38 @@ impl eframe::App for MonitorApp {
                     self.refresh_data();
                 }
 
-                ui.separator();
-
-                ui.label("Project:");
-                if ui
-                    .selectable_label(self.project_filter.is_none(), "All")
-                    .clicked()
-                {
-                    self.project_filter = None;
-                    self.refresh_data();
-                }
-                let projects_clone = self.projects.clone();
-                for p in &projects_clone {
-                    let is_selected = self.project_filter.as_deref() == Some(p);
-                    if ui.selectable_label(is_selected, p).clicked() {
-                        self.project_filter = Some(p.clone());
+                if self.active_tab == Tab::Activity {
+                    ui.separator();
+                    ui.label("Project:");
+                    if ui
+                        .selectable_label(self.project_filter.is_none(), "All")
+                        .clicked()
+                    {
+                        self.project_filter = None;
                         self.refresh_data();
                     }
-                }
+                    let projects_clone = self.projects.clone();
+                    for p in &projects_clone {
+                        let is_selected = self.project_filter.as_deref() == Some(p);
+                        if ui.selectable_label(is_selected, p).clicked() {
+                            self.project_filter = Some(p.clone());
+                            self.refresh_data();
+                        }
+                    }
 
-                ui.separator();
-
-                ui.label("Period:");
-                for p in &[
-                    Period::SixHours,
-                    Period::TwentyFourHours,
-                    Period::SevenDays,
-                    Period::CurrentCycle,
-                    Period::All,
-                ] {
-                    if ui.selectable_label(self.period == *p, p.label()).clicked() {
-                        self.period = *p;
-                        self.refresh_data();
+                    ui.separator();
+                    ui.label("Period:");
+                    for p in &[
+                        Period::SixHours,
+                        Period::TwentyFourHours,
+                        Period::SevenDays,
+                        Period::CurrentCycle,
+                        Period::All,
+                    ] {
+                        if ui.selectable_label(self.period == *p, p.label()).clicked() {
+                            self.period = *p;
+                            self.refresh_data();
+                        }
                     }
                 }
 
@@ -366,38 +369,33 @@ impl eframe::App for MonitorApp {
         // ── Tab bar ──
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_tab, Tab::Overview, "Overview");
-                ui.selectable_value(&mut self.active_tab, Tab::Activity, "Activity");
-                ui.selectable_value(&mut self.active_tab, Tab::ContextTrim, "Context Trim");
+                ui.selectable_value(&mut self.active_tab, Tab::Overview, "Progress");
+                ui.selectable_value(&mut self.active_tab, Tab::Activity, "Request history");
             });
         });
 
         // ── Tab content ──
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.active_tab {
-                Tab::Overview => {
-                    overview::show_overview(
-                        ui,
-                        &self.quota_5h,
-                        &self.quota_7d,
-                        &self.slope_proj_5h,
-                        &self.slope_proj_7d,
-                        &self.token_summary,
-                        &self.quota_history,
-                        &self.import_result,
-                        self.live_quota.as_ref(),
-                        ctx,
-                    );
-                }
-                Tab::Activity => {
-                    activity::show_activity(ui, &self.activity_rows, &self.projects, &self.project_filter);
-                }
-                Tab::ContextTrim => {
-                    // Embedded context trim — currently shown as placeholder
-                    // The standalone mode still works via the --db, --id, --run-id, --seq flags
-                    ui.heading("Context Trim");
-                    ui.label("Open a request from the proxy trace, or launch with --db / --id / --run-id --seq flags.");
-                }
+        egui::CentralPanel::default().show(ctx, |ui| match self.active_tab {
+            Tab::Overview => {
+                overview::show_overview(
+                    ui,
+                    &self.quota_5h,
+                    &self.quota_7d,
+                    &self.slope_proj_5h,
+                    &self.slope_proj_7d,
+                    &self.quota_history,
+                    &self.import_result,
+                    self.live_quota.as_ref(),
+                    ctx,
+                );
+            }
+            Tab::Activity => {
+                activity::show_activity(
+                    ui,
+                    &self.activity_rows,
+                    &self.projects,
+                    &self.project_filter,
+                );
             }
         });
 

@@ -56,16 +56,6 @@ pub fn stop() {
     println!("mhd: codex-watcher stopped");
 }
 
-/// Toggle the watcher on/off. Returns the new state.
-pub fn toggle() -> bool {
-    if is_running() {
-        stop();
-        false
-    } else {
-        start()
-    }
-}
-
 /// The watcher loop: import JSONL → fetch live API → store → sleep
 fn run_loop() {
     let db_path = db::default_db_path();

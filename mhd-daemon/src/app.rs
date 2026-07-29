@@ -41,6 +41,8 @@ pub trait DaemonControl: Send + Sync {
     /// Whether blackbox is currently running.
     #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool;
+    /// Toggle the Codex watcher and persist the new startup state.
+    fn toggle_codex_watcher(&self) -> bool;
     /// Quick Note config snapshot.
     fn quicknote_config(&self) -> QuickNoteConfig;
     /// Quick Draw save directory.
@@ -100,6 +102,20 @@ impl DaemonControl for AppHandle {
         {
             let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
             *config = new_config;
+        }
+
+        let watcher_enabled = self
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .codex_watcher
+            .enabled;
+        if watcher_enabled != crate::core::codex_watcher::is_running() {
+            if watcher_enabled {
+                crate::core::codex_watcher::start();
+            } else {
+                crate::core::codex_watcher::stop();
+            }
         }
 
         self.osd.set_theme(self.theme());
@@ -186,6 +202,41 @@ impl DaemonControl for AppHandle {
         crate::blackbox::is_logging()
     }
 
+    fn toggle_codex_watcher(&self) -> bool {
+        let enabled = !crate::core::codex_watcher::is_running();
+        let content = match std::fs::read_to_string(&self.config_path) {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("mhd: cannot persist codex-watcher state: {e}");
+                return !enabled;
+            }
+        };
+        let new_content = match update_codex_watcher_setting(&content, enabled) {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("mhd: cannot persist codex-watcher state: {e}");
+                return !enabled;
+            }
+        };
+        if let Err(e) = std::fs::write(&self.config_path, new_content) {
+            eprintln!("mhd: cannot persist codex-watcher state: {e}");
+            return !enabled;
+        }
+
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .codex_watcher
+            .enabled = enabled;
+
+        if enabled {
+            crate::core::codex_watcher::start()
+        } else {
+            crate::core::codex_watcher::stop();
+            false
+        }
+    }
+
     fn quicknote_config(&self) -> QuickNoteConfig {
         self.config
             .lock()
@@ -216,6 +267,94 @@ impl DaemonControl for AppHandle {
             .unwrap_or_else(|e| e.into_inner())
             .llm_proxy()
             .clone()
+    }
+}
+
+/// Update only `[codex_watcher].enabled`, preserving the rest of config.toml.
+fn update_codex_watcher_setting(content: &str, enabled: bool) -> Result<String, String> {
+    if !content.trim().is_empty() {
+        toml::from_str::<toml::Value>(content).map_err(|e| e.to_string())?;
+    }
+
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let section = lines
+        .iter()
+        .position(|line| line.trim() == "[codex_watcher]");
+
+    if let Some(section_idx) = section {
+        let section_end = lines
+            .iter()
+            .enumerate()
+            .skip(section_idx + 1)
+            .find(|(_, line)| {
+                let trimmed = line.trim();
+                trimmed.starts_with('[') && trimmed.ends_with(']')
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(lines.len());
+
+        let enabled_line = (section_idx + 1..section_end).find(|&idx| {
+            lines[idx]
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "enabled")
+        });
+
+        if let Some(idx) = enabled_line {
+            let indentation: String = lines[idx]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
+            let comment = lines[idx]
+                .split_once('=')
+                .and_then(|(_, value)| value.find('#').map(|pos| value[pos..].trim()));
+            lines[idx] = format!(
+                "{indentation}enabled = {enabled}{}",
+                comment.map(|c| format!(" {c}")).unwrap_or_default()
+            );
+        } else {
+            lines.insert(section_idx + 1, format!("enabled = {enabled}"));
+        }
+    } else {
+        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push("[codex_watcher]".to_string());
+        lines.push(format!("enabled = {enabled}"));
+    }
+
+    let mut updated = lines.join(newline);
+    updated.push_str(newline);
+    toml::from_str::<toml::Value>(&updated).map_err(|e| e.to_string())?;
+    Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_codex_watcher_setting;
+
+    #[test]
+    fn adds_missing_codex_watcher_section_without_changing_other_settings() {
+        let input = "theme = \"dark\"\n\n[[binding]]\ntrigger = \"f1\"\naction = \"note\"\n";
+        let updated = update_codex_watcher_setting(input, true).unwrap();
+
+        assert!(updated.contains("theme = \"dark\""));
+        assert!(updated.contains("[codex_watcher]\nenabled = true"));
+        assert!(updated.contains("[[binding]]"));
+    }
+
+    #[test]
+    fn updates_existing_codex_watcher_setting_and_preserves_comment() {
+        let input = "[codex_watcher]\r\nenabled = false # keep enabled\r\n\r\n[quicknote]\r\nenabled = true\r\n";
+        let updated = update_codex_watcher_setting(input, true).unwrap();
+
+        assert!(updated.contains("enabled = true # keep enabled"));
+        assert!(updated.contains("[quicknote]\r\nenabled = true"));
+        assert!(!updated.contains("enabled = false"));
     }
 }
 
