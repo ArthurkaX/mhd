@@ -1394,7 +1394,7 @@ pub fn build_llm_proxy_controls(lay: &Layout, state: &SettingsState) -> ControlL
                     text: String::new(),
                     placeholder: None,
                     font: FontChoice::Body,
-                    bg_color: bg_color,
+                    bg_color,
                     border_color: Argb::new(0, 0, 0, 0), // transparent border
                     text_color: theme_text(state),
                     hit: SettingsHit::ProviderRow(i),

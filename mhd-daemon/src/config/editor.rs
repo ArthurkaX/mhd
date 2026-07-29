@@ -994,10 +994,7 @@ fn page_control_content_height(state: &SettingsState, lay: &Layout) -> i32 {
                     - lay.content_y(),
             )
         }
-        SettingsPage::LlmTrim => {
-            let last_y = lay.llm_trim.free_y + 2 * lay.llm_trim.row_h - lay.content_y();
-            last_y
-        }
+        SettingsPage::LlmTrim => lay.llm_trim.free_y + 2 * lay.llm_trim.row_h - lay.content_y(),
     }
 }
 
@@ -1154,12 +1151,10 @@ fn run_vision_test(
         .get(&model_ref.provider)
         .filter(|k| !k.is_empty())
         .map(|s| s.as_str())
-        .or_else(|| {
-            if !secrets.upstream_key.is_empty() {
-                Some(secrets.upstream_key.as_str())
-            } else {
-                None
-            }
+        .or(if !secrets.upstream_key.is_empty() {
+            Some(secrets.upstream_key.as_str())
+        } else {
+            None
         })
         .ok_or_else(|| "API key is missing".to_string())?;
 
@@ -2121,7 +2116,7 @@ unsafe extern "system" fn settings_wndproc(
                         for p in &state.providers {
                             for m in &p.models {
                                 let display_name = if m.contains('/') {
-                                    m.split('/').last().unwrap_or(m).to_string()
+                                    m.rsplit('/').next().unwrap_or(m).to_string()
                                 } else {
                                     m.clone()
                                 };
@@ -3019,13 +3014,13 @@ unsafe extern "system" fn settings_wndproc(
                                     &state.theme_search_items,
                                     8,
                                 );
-                                if let Some(first) = visible.first() {
-                                    if first.id < state.theme_names.len() {
-                                        state.theme_sel = first.id;
-                                        apply_settings(state);
-                                        close_combo_popup(state);
-                                        paint_settings(hwnd, state_ptr, &state.layout);
-                                    }
+                                if let Some(first) = visible.first()
+                                    && first.id < state.theme_names.len()
+                                {
+                                    state.theme_sel = first.id;
+                                    apply_settings(state);
+                                    close_combo_popup(state);
+                                    paint_settings(hwnd, state_ptr, &state.layout);
                                 }
                             }
                             0x1B /* VK_ESCAPE */ => {
@@ -3363,13 +3358,13 @@ unsafe extern "system" fn settings_wndproc(
 fn select_vision_model(state: &mut SettingsState, item_id: usize) {
     if item_id == 0 {
         state.vision_model = None;
-    } else if let Some(item) = state.vision_model_items.get(item_id) {
-        if let Some((prov, model_name)) = item.label.split_once(" / ") {
-            state.vision_model = Some(llm_proxy::config::ModelRef {
-                provider: prov.to_string(),
-                model: model_name.to_string(),
-            });
-        }
+    } else if let Some(item) = state.vision_model_items.get(item_id)
+        && let Some((prov, model_name)) = item.label.split_once(" / ")
+    {
+        state.vision_model = Some(llm_proxy::config::ModelRef {
+            provider: prov.to_string(),
+            model: model_name.to_string(),
+        });
     }
 }
 
@@ -4992,8 +4987,8 @@ mod tests {
 
     #[test]
     fn all_editor_actions_resolve_by_name() {
-        for i in 0..EDITOR_ACTION_NAMES.len() {
-            assert_eq!(editor_action_desc(i).name, EDITOR_ACTION_NAMES[i]);
+        for (i, action_name) in EDITOR_ACTION_NAMES.iter().enumerate() {
+            assert_eq!(editor_action_desc(i).name, *action_name);
         }
     }
 

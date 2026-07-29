@@ -722,20 +722,20 @@ pub fn normalize_vision_endpoint(raw: &str) -> String {
     format!("{}/chat/completions", trimmed)
 }
 
-fn load_settings_from(dir: &PathBuf) -> anyhow::Result<Settings> {
+fn load_settings_from(dir: &Path) -> anyhow::Result<Settings> {
     let data = std::fs::read_to_string(settings_path(dir))?;
     let settings: Settings = serde_json::from_str(&data)?;
     Ok(settings)
 }
 
-fn persist_secrets(dir: &PathBuf, s: &Secrets) -> anyhow::Result<()> {
+fn persist_secrets(dir: &Path, s: &Secrets) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     let data = self::secrets::seal(s);
     std::fs::write(secrets_path(dir), data)?;
     Ok(())
 }
 
-fn load_secrets_from(dir: &PathBuf) -> anyhow::Result<Secrets> {
+fn load_secrets_from(dir: &Path) -> anyhow::Result<Secrets> {
     let data = std::fs::read(secrets_path(dir))?;
     self::secrets::unseal(&data).ok_or_else(|| anyhow::anyhow!("failed to decrypt secrets"))
 }

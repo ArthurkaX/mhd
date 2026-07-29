@@ -76,15 +76,14 @@ pub fn show(theme: &NativeTheme) {
     let cls_name = crate::osd::to_utf16_z("mhd_measure_panel_cls");
     if let Ok(existing) =
         unsafe { FindWindowW(PCWSTR::from_raw(cls_name.as_ptr()), PCWSTR::null()) }
+        && !existing.is_invalid()
     {
-        if !existing.is_invalid() {
-            unsafe {
-                let _ = ShowWindow(existing, SW_RESTORE);
-                let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-                let _ = SetForegroundWindow(existing);
-            }
-            return;
+        unsafe {
+            let _ = ShowWindow(existing, SW_RESTORE);
+            let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            let _ = SetForegroundWindow(existing);
         }
+        return;
     }
 
     let event = match unsafe { CreateEventW(None, false, false, None) } {
@@ -620,9 +619,9 @@ fn render_idle_confirm(
     let checked = SIDE_SUBSTITUTION.load(Ordering::Relaxed);
     let checkbox_y = info_y + 4 * row_h;
     let cb_text = if checked {
-        format!("\u{2611} Offload subagents to side model (ECO arm)")
+        "\u{2611} Offload subagents to side model (ECO arm)".to_string()
     } else {
-        format!("\u{2610} Offload subagents to side model (ECO arm)")
+        "\u{2610} Offload subagents to side model (ECO arm)".to_string()
     };
     unsafe {
         let _ = SetTextColor(dib_dc, theme.text.to_colorref());
@@ -1854,10 +1853,10 @@ unsafe extern "system" fn panel_wndproc(
                                     let row = (y - list_top) / item_h;
                                     let mut dd = SIDE_DROPDOWN.lock().unwrap();
                                     let visible = dd.visible_items(&dd_items, visible_rows);
-                                    if let Some(item) = visible.get(row as usize) {
-                                        if let Some((_, mid)) = items.get(item.id) {
-                                            *SIDE_MODEL.lock().unwrap() = mid.clone();
-                                        }
+                                    if let Some(item) = visible.get(row as usize)
+                                        && let Some((_, mid)) = items.get(item.id)
+                                    {
+                                        *SIDE_MODEL.lock().unwrap() = mid.clone();
                                     }
                                     dd.close();
                                 }

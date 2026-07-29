@@ -47,10 +47,10 @@ pub fn start() -> bool {
 pub fn stop() {
     RUNNING.store(false, Ordering::SeqCst);
 
-    if let Ok(mut guard) = THREAD.lock() {
-        if let Some(handle) = guard.take() {
-            let _ = handle.join();
-        }
+    if let Ok(mut guard) = THREAD.lock()
+        && let Some(handle) = guard.take()
+    {
+        let _ = handle.join();
     }
 
     println!("mhd: codex-watcher stopped");

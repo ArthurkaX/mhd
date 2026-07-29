@@ -263,7 +263,7 @@ pub fn resolve_vk_to_char(vk: u8) -> Option<String> {
             0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
         ];
         for &vk_mod in &mod_vks {
-            let down = (GetAsyncKeyState(vk_mod) as i16) < 0;
+            let down = GetAsyncKeyState(vk_mod) < 0;
             key_state[vk_mod as usize] = if down { 0x80 } else { 0 };
         }
 

@@ -26,7 +26,6 @@ use crate::config::path::home_dir;
 use crate::overlays::keycast::{KeycastConfig, KeycastPosition};
 use crate::overlays::note::QuickNoteConfig;
 use crate::trigger::parse_trigger;
-use llm_proxy;
 
 fn default_notes_dir() -> PathBuf {
     home_dir()
@@ -62,16 +61,10 @@ pub struct LlmModel {
 }
 
 /// Validated codex watcher config (from TOML).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CodexWatcherConfig {
     /// Enable the background Codex telemetry watcher.
     pub enabled: bool,
-}
-
-impl Default for CodexWatcherConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// Validated LLM proxy config (loaded from JSON files).
@@ -604,22 +597,23 @@ impl AppConfig {
             return;
         };
 
-        // Build settings
-        let mut settings = llm_proxy::config::Settings::default();
-        settings.enabled = lp.enabled.unwrap_or(false);
-        settings.port = lp.port.unwrap_or(3456);
-        settings.log_level = lp.log_level.unwrap_or_else(|| "none".to_string());
         let upstream_base_url = lp
             .endpoint
             .clone()
             .or_else(|| lp.provider.first().map(|p| p.endpoint.clone()));
-        if let Some(url) = upstream_base_url {
-            settings.upstream_base_url = url;
-        }
-        settings.opus_target = lp.opus.unwrap_or_else(|| "native".to_string());
-        settings.sonnet_target = lp.sonnet.unwrap_or_else(|| "native".to_string());
-        settings.haiku_target = lp.haiku.unwrap_or_else(|| "native".to_string());
-        settings.fable_target = lp.fable.unwrap_or_else(|| "native".to_string());
+        // Build settings
+        let settings = llm_proxy::config::Settings {
+            enabled: lp.enabled.unwrap_or(false),
+            port: lp.port.unwrap_or(3456),
+            upstream_base_url: upstream_base_url
+                .unwrap_or_else(|| llm_proxy::config::Settings::default().upstream_base_url),
+            log_level: lp.log_level.unwrap_or_else(|| "none".to_string()),
+            opus_target: lp.opus.unwrap_or_else(|| "native".to_string()),
+            sonnet_target: lp.sonnet.unwrap_or_else(|| "native".to_string()),
+            haiku_target: lp.haiku.unwrap_or_else(|| "native".to_string()),
+            fable_target: lp.fable.unwrap_or_else(|| "native".to_string()),
+            ..Default::default()
+        };
 
         // Build secrets
         let mut secrets = llm_proxy::config::Secrets::default();
@@ -638,21 +632,22 @@ impl AppConfig {
         }
 
         // Build providers (name + endpoint only, keys go to secrets)
-        let providers: Vec<llm_proxy::config::Provider> =
-            if lp.provider.is_empty() && lp.endpoint.is_some() {
-                vec![llm_proxy::config::Provider {
-                    name: "Default".into(),
-                    endpoint: lp.endpoint.unwrap(),
-                }]
-            } else {
-                lp.provider
-                    .into_iter()
-                    .map(|p| llm_proxy::config::Provider {
-                        name: p.name,
-                        endpoint: p.endpoint,
-                    })
-                    .collect()
-            };
+        let providers: Vec<llm_proxy::config::Provider> = if lp.provider.is_empty()
+            && let Some(endpoint) = lp.endpoint
+        {
+            vec![llm_proxy::config::Provider {
+                name: "Default".into(),
+                endpoint,
+            }]
+        } else {
+            lp.provider
+                .into_iter()
+                .map(|p| llm_proxy::config::Provider {
+                    name: p.name,
+                    endpoint: p.endpoint,
+                })
+                .collect()
+        };
 
         // Build models
         let default_provider = providers

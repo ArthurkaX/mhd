@@ -1533,9 +1533,7 @@ fn handle_monitor_timer(st: &mut PanelState) {
         let loads = compute_loads(prev, &curr_perf);
         // Match lengths to our core vectors
         let n = st.monitor.core_load.len().min(loads.len());
-        for i in 0..n {
-            st.monitor.core_load[i] = loads[i];
-        }
+        st.monitor.core_load[..n].copy_from_slice(&loads[..n]);
     }
 
     // Store current as previous for next tick
@@ -3827,7 +3825,7 @@ fn tcol(dc: HDC, color: Argb) {
     }
 }
 
-fn dw(dc: HDC, text: &mut Vec<u16>, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
+fn dw(dc: HDC, text: &mut [u16], rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
     unsafe {
         let _ = DrawTextW(dc, text, rc as *mut RECT, fmt);
     }

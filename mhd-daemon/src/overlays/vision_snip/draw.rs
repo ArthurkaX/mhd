@@ -236,8 +236,7 @@ fn draw_char<C: Canvas>(c: &mut C, x: i32, y: i32, ch: char, color: (u8, u8, u8,
     };
     let scale = (size / 5).max(1);
     // Glyph is 5 rows of 5 bits each; bit 4 (0b10000) is the leftmost column.
-    for row in 0..5usize {
-        let bits = glyph[row];
+    for (row, &bits) in glyph.iter().enumerate() {
         for col in 0..5usize {
             if (bits & (1 << (4 - col))) != 0 {
                 for sy in 0..scale {

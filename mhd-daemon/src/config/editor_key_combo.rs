@@ -73,10 +73,10 @@ impl KeyComboEditorState {
             .iter()
             .filter_map(|m| m.map(str::to_string))
             .collect();
-        if let Some(key) = &self.key {
-            if !key.is_empty() {
-                parts.push(key.clone());
-            }
+        if let Some(key) = &self.key
+            && !key.is_empty()
+        {
+            parts.push(key.clone());
         }
         if parts.is_empty() {
             "none".to_string()

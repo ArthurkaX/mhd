@@ -190,14 +190,14 @@ fn refresh_selection(state: &mut PanelState) {
                 .unwrap_or(0);
         }
     }
-    if let Some(free_target) = crate::llm_proxy::get_trim_free_target() {
-        if let Some(tier) = state.tiers.iter_mut().find(|t| t.slot == "free_target") {
-            tier.selected = tier
-                .options
-                .iter()
-                .position(|o| o.target == free_target)
-                .unwrap_or(0);
-        }
+    if let Some(free_target) = crate::llm_proxy::get_trim_free_target()
+        && let Some(tier) = state.tiers.iter_mut().find(|t| t.slot == "free_target")
+    {
+        tier.selected = tier
+            .options
+            .iter()
+            .position(|o| o.target == free_target)
+            .unwrap_or(0);
     }
 }
 

@@ -122,7 +122,7 @@ pub fn send_media_key(vk: u16) {
 
 /// Send a media key `count` times (for multi‑step volume/brightness).
 pub fn send_media_key_n(vk: u16, count: u32) {
-    let count = count.max(1).min(100);
+    let count = count.clamp(1, 100);
     let mut inputs = Vec::with_capacity((count * 2) as usize);
     for _ in 0..count {
         push_key_event(&mut inputs, vk, false);

@@ -1094,11 +1094,11 @@ fn paste_from_clipboard(text: &mut String, cursor: &mut usize) {
         }
         let buf = std::slice::from_raw_parts(ptr, 65536);
         let len = buf.iter().position(|&c| c == 0).unwrap_or(0);
-        if len > 0 {
-            if let Ok(s) = String::from_utf16(&buf[..len]) {
-                text.insert_str(*cursor, &s);
-                *cursor += s.len();
-            }
+        if len > 0
+            && let Ok(s) = String::from_utf16(&buf[..len])
+        {
+            text.insert_str(*cursor, &s);
+            *cursor += s.len();
         }
         let _ = GlobalUnlock(hglobal);
         let _ = CloseClipboard();

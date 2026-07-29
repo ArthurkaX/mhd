@@ -859,14 +859,14 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
                             let cursor_h = (20.0 * scale) as i32;
                             let cy = param_field_rect.top
                                 + (param_field_rect.bottom - param_field_rect.top - cursor_h) / 2;
-                            let mut cursor_rc = RECT {
+                            let cursor_rc = RECT {
                                 left: cursor_x,
                                 top: cy,
                                 right: cursor_x + ((1.0 * scale) as i32).max(1),
                                 bottom: cy + cursor_h,
                             };
                             let cursor_brush = CreateSolidBrush(theme.text.to_colorref());
-                            FillRect(dib_dc, &mut cursor_rc, cursor_brush);
+                            FillRect(dib_dc, &cursor_rc, cursor_brush);
                             let _ = DeleteObject(cursor_brush);
                         }
                     } else {
@@ -1069,186 +1069,185 @@ unsafe fn paint_binding_popup(hwnd: HWND, state_ptr: *mut BindingPopupState) {
         );
 
         // ── Trigger key dropdown, drawn above rows underneath ─────────────
-        if state.trigger_editor.dropdown.is_open {
-            if let Some(slot) = state.trigger_editor.open_slot {
-                let slot_rect = trigger_slot_rects(trigger_field_rect, scale)
-                    .into_iter()
-                    .find(|(candidate, _)| *candidate == slot)
-                    .map(|(_, rect)| rect)
-                    .unwrap_or(trigger_field_rect);
-                let key_items = state.trigger_editor.items_for_open_slot();
-                let item_h = (24.0 * scale) as i32;
-                let search_h = (30.0 * scale) as i32;
-                let visible_rows = key_dropdown_visible_rows();
-                let filtered_count = state.trigger_editor.dropdown.filtered_count(&key_items);
-                let visible_items = state
-                    .trigger_editor
-                    .dropdown
-                    .visible_items(&key_items, visible_rows);
-                let list_rows = visible_items.len().max(1);
-                let popup_rect = RECT {
-                    left: slot_rect.left,
-                    top: slot_rect.bottom,
-                    right: (slot_rect.left + (220.0 * scale) as i32).min(w - pad),
-                    bottom: slot_rect.bottom + search_h + list_rows as i32 * item_h,
-                };
-                let popup_bg = theme.surface.blend_over(theme.background);
-                draw_rounded_rect_in_buffer(bits, w, h, popup_rect, (4.0 * scale) as i32, popup_bg);
-                draw_rounded_border_in_buffer(
-                    bits,
-                    w,
-                    h,
-                    popup_rect,
-                    (4.0 * scale) as i32,
-                    1,
-                    theme.border,
-                );
+        if state.trigger_editor.dropdown.is_open
+            && let Some(slot) = state.trigger_editor.open_slot
+        {
+            let slot_rect = trigger_slot_rects(trigger_field_rect, scale)
+                .into_iter()
+                .find(|(candidate, _)| *candidate == slot)
+                .map(|(_, rect)| rect)
+                .unwrap_or(trigger_field_rect);
+            let key_items = state.trigger_editor.items_for_open_slot();
+            let item_h = (24.0 * scale) as i32;
+            let search_h = (30.0 * scale) as i32;
+            let visible_rows = key_dropdown_visible_rows();
+            let filtered_count = state.trigger_editor.dropdown.filtered_count(&key_items);
+            let visible_items = state
+                .trigger_editor
+                .dropdown
+                .visible_items(&key_items, visible_rows);
+            let list_rows = visible_items.len().max(1);
+            let popup_rect = RECT {
+                left: slot_rect.left,
+                top: slot_rect.bottom,
+                right: (slot_rect.left + (220.0 * scale) as i32).min(w - pad),
+                bottom: slot_rect.bottom + search_h + list_rows as i32 * item_h,
+            };
+            let popup_bg = theme.surface.blend_over(theme.background);
+            draw_rounded_rect_in_buffer(bits, w, h, popup_rect, (4.0 * scale) as i32, popup_bg);
+            draw_rounded_border_in_buffer(
+                bits,
+                w,
+                h,
+                popup_rect,
+                (4.0 * scale) as i32,
+                1,
+                theme.border,
+            );
 
-                let search_rect = RECT {
-                    left: popup_rect.left + (6.0 * scale) as i32,
-                    top: popup_rect.top + (5.0 * scale) as i32,
-                    right: popup_rect.right - (6.0 * scale) as i32,
-                    bottom: popup_rect.top + search_h - (5.0 * scale) as i32,
+            let search_rect = RECT {
+                left: popup_rect.left + (6.0 * scale) as i32,
+                top: popup_rect.top + (5.0 * scale) as i32,
+                right: popup_rect.right - (6.0 * scale) as i32,
+                bottom: popup_rect.top + search_h - (5.0 * scale) as i32,
+            };
+            draw_rounded_rect_in_buffer(
+                bits,
+                w,
+                h,
+                search_rect,
+                (4.0 * scale) as i32,
+                theme.background.blend_over(popup_bg),
+            );
+            draw_rounded_border_in_buffer(
+                bits,
+                w,
+                h,
+                search_rect,
+                (4.0 * scale) as i32,
+                1,
+                theme.border,
+            );
+
+            SelectObject(dib_dc, small_font);
+            let search_text = if state.trigger_editor.dropdown.filter.is_empty() {
+                "Search keys..."
+            } else {
+                state.trigger_editor.dropdown.filter.as_str()
+            };
+            SetTextColor(
+                dib_dc,
+                if state.trigger_editor.dropdown.filter.is_empty() {
+                    theme.text_muted
+                } else {
+                    theme.text
+                }
+                .to_colorref(),
+            );
+            let mut search_wz = to_utf16_z(search_text);
+            let mut search_text_rect = RECT {
+                left: search_rect.left + (7.0 * scale) as i32,
+                top: search_rect.top,
+                right: search_rect.right - (7.0 * scale) as i32,
+                bottom: search_rect.bottom,
+            };
+            DrawTextW(
+                dib_dc,
+                &mut search_wz,
+                &mut search_text_rect,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+
+            let list_top = popup_rect.top + search_h;
+            for (i, item) in visible_items.iter().enumerate() {
+                let item_rect = RECT {
+                    left: popup_rect.left,
+                    top: list_top + i as i32 * item_h,
+                    right: popup_rect.right,
+                    bottom: list_top + (i as i32 + 1) * item_h,
+                };
+                let is_hovered = state.hovered_target == BindingPopupHit::TriggerKeyItem(item.id);
+                if is_hovered {
+                    draw_rounded_rect_in_buffer(
+                        bits,
+                        w,
+                        h,
+                        item_rect,
+                        0,
+                        theme.hover.blend_over(popup_bg),
+                    );
+                }
+
+                SetTextColor(dib_dc, theme.text.to_colorref());
+                let mut item_wz = to_utf16_z(&item.label);
+                let mut item_text_rect = RECT {
+                    left: item_rect.left + (8.0 * scale) as i32,
+                    top: item_rect.top,
+                    right: item_rect.right - (8.0 * scale) as i32,
+                    bottom: item_rect.bottom,
+                };
+                DrawTextW(
+                    dib_dc,
+                    &mut item_wz,
+                    &mut item_text_rect,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
+
+            if visible_items.is_empty() {
+                let item_rect = RECT {
+                    left: popup_rect.left,
+                    top: list_top,
+                    right: popup_rect.right,
+                    bottom: list_top + item_h,
+                };
+                SetTextColor(dib_dc, theme.text_muted.to_colorref());
+                let mut item_wz = to_utf16_z("No keys found");
+                let mut item_text_rect = RECT {
+                    left: item_rect.left + (8.0 * scale) as i32,
+                    top: item_rect.top,
+                    right: item_rect.right - (8.0 * scale) as i32,
+                    bottom: item_rect.bottom,
+                };
+                DrawTextW(
+                    dib_dc,
+                    &mut item_wz,
+                    &mut item_text_rect,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+            }
+
+            if filtered_count > visible_rows {
+                let scroll_w = (4.0 * scale).max(3.0) as i32;
+                let track_rect = RECT {
+                    left: popup_rect.right - scroll_w - 2,
+                    top: list_top + 2,
+                    right: popup_rect.right - 2,
+                    bottom: popup_rect.bottom - 2,
                 };
                 draw_rounded_rect_in_buffer(
                     bits,
                     w,
                     h,
-                    search_rect,
-                    (4.0 * scale) as i32,
-                    theme.background.blend_over(popup_bg),
+                    track_rect,
+                    scroll_w / 2,
+                    theme.border.with_alpha(60),
                 );
-                draw_rounded_border_in_buffer(
-                    bits,
-                    w,
-                    h,
-                    search_rect,
-                    (4.0 * scale) as i32,
-                    1,
-                    theme.border,
-                );
-
-                SelectObject(dib_dc, small_font);
-                let search_text = if state.trigger_editor.dropdown.filter.is_empty() {
-                    "Search keys..."
-                } else {
-                    state.trigger_editor.dropdown.filter.as_str()
+                let travel = (track_rect.bottom - track_rect.top).max(1);
+                let thumb_h =
+                    ((visible_rows as f32 / filtered_count as f32) * travel as f32) as i32;
+                let thumb_h = thumb_h.max((16.0 * scale) as i32);
+                let max_scroll = filtered_count.saturating_sub(visible_rows).max(1);
+                let thumb_y = track_rect.top
+                    + ((state.trigger_editor.dropdown.scroll as f32 / max_scroll as f32)
+                        * (travel - thumb_h).max(0) as f32) as i32;
+                let thumb_rect = RECT {
+                    left: track_rect.left,
+                    top: thumb_y,
+                    right: track_rect.right,
+                    bottom: thumb_y + thumb_h,
                 };
-                SetTextColor(
-                    dib_dc,
-                    if state.trigger_editor.dropdown.filter.is_empty() {
-                        theme.text_muted
-                    } else {
-                        theme.text
-                    }
-                    .to_colorref(),
-                );
-                let mut search_wz = to_utf16_z(search_text);
-                let mut search_text_rect = RECT {
-                    left: search_rect.left + (7.0 * scale) as i32,
-                    top: search_rect.top,
-                    right: search_rect.right - (7.0 * scale) as i32,
-                    bottom: search_rect.bottom,
-                };
-                DrawTextW(
-                    dib_dc,
-                    &mut search_wz,
-                    &mut search_text_rect,
-                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-                );
-
-                let list_top = popup_rect.top + search_h;
-                for (i, item) in visible_items.iter().enumerate() {
-                    let item_rect = RECT {
-                        left: popup_rect.left,
-                        top: list_top + i as i32 * item_h,
-                        right: popup_rect.right,
-                        bottom: list_top + (i as i32 + 1) * item_h,
-                    };
-                    let is_hovered =
-                        state.hovered_target == BindingPopupHit::TriggerKeyItem(item.id);
-                    if is_hovered {
-                        draw_rounded_rect_in_buffer(
-                            bits,
-                            w,
-                            h,
-                            item_rect,
-                            0,
-                            theme.hover.blend_over(popup_bg),
-                        );
-                    }
-
-                    SetTextColor(dib_dc, theme.text.to_colorref());
-                    let mut item_wz = to_utf16_z(&item.label);
-                    let mut item_text_rect = RECT {
-                        left: item_rect.left + (8.0 * scale) as i32,
-                        top: item_rect.top,
-                        right: item_rect.right - (8.0 * scale) as i32,
-                        bottom: item_rect.bottom,
-                    };
-                    DrawTextW(
-                        dib_dc,
-                        &mut item_wz,
-                        &mut item_text_rect,
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-                    );
-                }
-
-                if visible_items.is_empty() {
-                    let item_rect = RECT {
-                        left: popup_rect.left,
-                        top: list_top,
-                        right: popup_rect.right,
-                        bottom: list_top + item_h,
-                    };
-                    SetTextColor(dib_dc, theme.text_muted.to_colorref());
-                    let mut item_wz = to_utf16_z("No keys found");
-                    let mut item_text_rect = RECT {
-                        left: item_rect.left + (8.0 * scale) as i32,
-                        top: item_rect.top,
-                        right: item_rect.right - (8.0 * scale) as i32,
-                        bottom: item_rect.bottom,
-                    };
-                    DrawTextW(
-                        dib_dc,
-                        &mut item_wz,
-                        &mut item_text_rect,
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-                    );
-                }
-
-                if filtered_count > visible_rows {
-                    let scroll_w = (4.0 * scale).max(3.0) as i32;
-                    let track_rect = RECT {
-                        left: popup_rect.right - scroll_w - 2,
-                        top: list_top + 2,
-                        right: popup_rect.right - 2,
-                        bottom: popup_rect.bottom - 2,
-                    };
-                    draw_rounded_rect_in_buffer(
-                        bits,
-                        w,
-                        h,
-                        track_rect,
-                        scroll_w / 2,
-                        theme.border.with_alpha(60),
-                    );
-                    let travel = (track_rect.bottom - track_rect.top).max(1);
-                    let thumb_h =
-                        ((visible_rows as f32 / filtered_count as f32) * travel as f32) as i32;
-                    let thumb_h = thumb_h.max((16.0 * scale) as i32);
-                    let max_scroll = filtered_count.saturating_sub(visible_rows).max(1);
-                    let thumb_y = track_rect.top
-                        + ((state.trigger_editor.dropdown.scroll as f32 / max_scroll as f32)
-                            * (travel - thumb_h).max(0) as f32) as i32;
-                    let thumb_rect = RECT {
-                        left: track_rect.left,
-                        top: thumb_y,
-                        right: track_rect.right,
-                        bottom: thumb_y + thumb_h,
-                    };
-                    draw_rounded_rect_in_buffer(bits, w, h, thumb_rect, scroll_w / 2, theme.hover);
-                }
+                draw_rounded_rect_in_buffer(bits, w, h, thumb_rect, scroll_w / 2, theme.hover);
             }
         }
 
@@ -2611,9 +2610,7 @@ fn hover_trigger_key_item(state: &BindingPopupState, x: i32, y: i32) -> Option<u
         bottom: trigger_label_y + field_h,
     };
 
-    let Some(slot) = state.trigger_editor.open_slot else {
-        return None;
-    };
+    let slot = state.trigger_editor.open_slot?;
     let slot_rect = trigger_slot_rects(trigger_field_rect, scale)
         .into_iter()
         .find(|(candidate, _)| *candidate == slot)
@@ -2670,9 +2667,7 @@ fn hover_param_key_item(state: &BindingPopupState, x: i32, y: i32) -> Option<usi
         bottom: param_label_y + field_h,
     };
 
-    let Some(slot) = state.param_editor.open_slot else {
-        return None;
-    };
+    let slot = state.param_editor.open_slot?;
     let slot_rect = trigger_slot_rects(param_key_field_rect, scale)
         .into_iter()
         .find(|(candidate, _)| *candidate == slot)

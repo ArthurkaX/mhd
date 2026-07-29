@@ -291,12 +291,7 @@ impl VisionSnipModel {
     /// Return the next available capital letter `A-Z`, or `None` if all are used.
     pub fn next_available_label(&self) -> Option<char> {
         let used: HashSet<char> = self.annotations.iter().map(|a| a.label).collect();
-        for c in 'A'..='Z' {
-            if !used.contains(&c) {
-                return Some(c);
-            }
-        }
-        None
+        ('A'..='Z').find(|&c| !used.contains(&c))
     }
 
     // ── Arrow singleton ──────────────────────────────────────────────

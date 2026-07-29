@@ -206,10 +206,10 @@ pub fn run_bench() -> Result<Option<llm_proxy::bench::BenchResult>, String> {
         };
         let knobs_json = serde_json::to_string(&knobs).unwrap_or_else(|_| "{}".to_string());
         // Re-acquire the control handle to record (don't hold the lock across the bench run).
-        if let Ok(guard) = CONTROL.lock() {
-            if let Some(c) = guard.as_ref() {
-                c.record_bench_run(result, headroom_pct, &knobs_json);
-            }
+        if let Ok(guard) = CONTROL.lock()
+            && let Some(c) = guard.as_ref()
+        {
+            c.record_bench_run(result, headroom_pct, &knobs_json);
         }
     }
     Ok(out)

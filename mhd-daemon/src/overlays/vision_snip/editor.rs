@@ -189,7 +189,9 @@ impl DescriptionEditor {
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
         }
         // Focus the edit control
-        Self::state(state_ptr).map(|s| unsafe { s.text_host.focus(hwnd) });
+        if let Some(s) = Self::state(state_ptr) {
+            unsafe { s.text_host.focus(hwnd) };
+        }
 
         Some(DescriptionEditor {
             hwnd,

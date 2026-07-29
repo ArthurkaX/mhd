@@ -198,11 +198,8 @@ impl MonitorApp {
                 .map(|u| format!("7d {:.0}%", u.used_percent))
                 .unwrap_or_default();
             format!("{plan} · {session} · {weekly}")
-        } else if self.latest_sample.is_some() {
-            format!(
-                "Last sample: {}",
-                relative_time(self.latest_sample.unwrap())
-            )
+        } else if let Some(latest_sample) = self.latest_sample {
+            format!("Last sample: {}", relative_time(latest_sample))
         } else {
             "No data imported yet".into()
         };

@@ -121,13 +121,13 @@ impl BreatheConfig {
 /// Returns None for unknown preset names.
 pub fn preset_config(name: &str) -> Option<BreatheConfig> {
     let (duration_min, inhale, exhale) = match name {
-        "balanced" => (10, 5, 5),
+        "balanced" => (10u32, 5, 5),
         "calm" => (15, 4, 6),
         "extended" => (20, 4, 6),
         _ => return None,
     };
     let cycle = inhale + exhale;
-    let duration_s = (duration_min * 60 + cycle - 1) / cycle * cycle; // round up
+    let duration_s = (duration_min * 60).div_ceil(cycle) * cycle; // round up
     Some(BreatheConfig {
         duration_s,
         inhale_s: inhale,
@@ -864,7 +864,7 @@ unsafe extern "system" fn daemon_wndproc(
             WM_BR_SELECT_PRESET => {
                 // Only meaningful while Idle — select or start the preset.
                 if st.phase == Phase::Idle {
-                    let preset_idx = wparam.0 as usize;
+                    let preset_idx = wparam.0;
                     let name = match preset_idx {
                         0 => "balanced",
                         1 => "calm",

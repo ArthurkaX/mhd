@@ -969,10 +969,8 @@ fn hit_test_models_popup(state: &ModelsPopupState, x: i32, y: i32) -> ModelsPopu
         let add_btn_y = list_content_top + total_rows * row_h - scroll_y;
 
         // Check add button
-        if y >= add_btn_y && y < add_btn_y + row_h {
-            if x >= pad && x < pad + (120.0 * scale) as i32 {
-                return ModelsPopupHit::AddBtn;
-            }
+        if y >= add_btn_y && y < add_btn_y + row_h && x >= pad && x < pad + (120.0 * scale) as i32 {
+            return ModelsPopupHit::AddBtn;
         }
 
         // Check each model row
@@ -1074,11 +1072,11 @@ fn paste_from_clipboard(text: &mut String, cursor: &mut usize) {
         }
         let buf = std::slice::from_raw_parts(ptr, 65536);
         let len = buf.iter().position(|&c| c == 0).unwrap_or(0);
-        if len > 0 {
-            if let Ok(s) = String::from_utf16(&buf[..len]) {
-                text.insert_str(*cursor, &s);
-                *cursor += s.len();
-            }
+        if len > 0
+            && let Ok(s) = String::from_utf16(&buf[..len])
+        {
+            text.insert_str(*cursor, &s);
+            *cursor += s.len();
         }
         let _ = GlobalUnlock(hglobal);
         let _ = CloseClipboard();
@@ -1331,10 +1329,10 @@ unsafe extern "system" fn models_popup_wndproc(
                             // Adjust editing_idx if needed
                             if state.editing_idx == Some(i) {
                                 state.editing_idx = None;
-                            } else if let Some(ei) = state.editing_idx {
-                                if ei > i {
-                                    state.editing_idx = Some(ei - 1);
-                                }
+                            } else if let Some(ei) = state.editing_idx
+                                && ei > i
+                            {
+                                state.editing_idx = Some(ei - 1);
                             }
                             paint_models_popup(hwnd, state_ptr);
                         }
@@ -1649,13 +1647,14 @@ unsafe extern "system" fn models_popup_wndproc(
                 let state = &mut *state_ptr;
                 if state.editing_idx.is_some() {
                     let ch = (wparam.0 as u32) as u16;
-                    if ch >= 0x20 && ch != 0x7F {
-                        if let Some(c) = char::from_u32(ch as u32) {
-                            state.edit_text.insert(state.edit_cursor, c);
-                            state.edit_cursor += c.len_utf8();
-                            paint_models_popup(hwnd, state_ptr);
-                            return LRESULT(0);
-                        }
+                    if ch >= 0x20
+                        && ch != 0x7F
+                        && let Some(c) = char::from_u32(ch as u32)
+                    {
+                        state.edit_text.insert(state.edit_cursor, c);
+                        state.edit_cursor += c.len_utf8();
+                        paint_models_popup(hwnd, state_ptr);
+                        return LRESULT(0);
                     }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)

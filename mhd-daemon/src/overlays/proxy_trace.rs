@@ -86,15 +86,14 @@ pub fn show(theme: &NativeTheme) {
     let cls_name = crate::osd::to_utf16_z("mhd_proxy_trace_cls");
     if let Ok(existing) =
         unsafe { FindWindowW(PCWSTR::from_raw(cls_name.as_ptr()), PCWSTR::null()) }
+        && !existing.is_invalid()
     {
-        if !existing.is_invalid() {
-            unsafe {
-                let _ = ShowWindow(existing, SW_RESTORE);
-                let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-                let _ = SetForegroundWindow(existing);
-            }
-            return;
+        unsafe {
+            let _ = ShowWindow(existing, SW_RESTORE);
+            let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            let _ = SetForegroundWindow(existing);
         }
+        return;
     }
 
     let event = match unsafe { CreateEventW(None, false, false, None) } {
@@ -752,8 +751,8 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                     j += 1;
                 }
                 run_len[i] = j - i;
-                for k in (i + 1)..j {
-                    skip[k] = true;
+                for item in skip.iter_mut().take(j).skip(i + 1) {
+                    *item = true;
                 }
                 i = j;
                 continue;
@@ -768,8 +767,8 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                     j += 1;
                 }
                 run_len[i] = j - i;
-                for k in (i + 1)..j {
-                    skip[k] = true;
+                for item in skip.iter_mut().take(j).skip(i + 1) {
+                    *item = true;
                 }
                 i = j;
             } else {
@@ -976,7 +975,7 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 Some(CacheState::Cold)
             } else {
                 // Prefix was seen before (or hash is unknown): classify by gap.
-                let expired = gap_secs_opt.map_or(true, |g| g > CACHE_TTL_SECS);
+                let expired = gap_secs_opt.is_none_or(|g| g > CACHE_TTL_SECS);
                 if expired {
                     Some(CacheState::Expired)
                 } else {
@@ -986,15 +985,11 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         } else {
             None
         };
-        let is_cold = cache_state
-            .as_ref()
-            .map_or(false, |s| *s == CacheState::Cold);
+        let is_cold = cache_state.as_ref().is_some_and(|s| *s == CacheState::Cold);
         let is_expired = cache_state
             .as_ref()
-            .map_or(false, |s| *s == CacheState::Expired);
-        let is_miss = cache_state
-            .as_ref()
-            .map_or(false, |s| *s == CacheState::Miss);
+            .is_some_and(|s| *s == CacheState::Expired);
+        let is_miss = cache_state.as_ref().is_some_and(|s| *s == CacheState::Miss);
 
         // ── Route column (col 1) ─────────────────────────────────
         // Downgraded: "{tier}→{eff}" in accent; otherwise "{tier}" in muted.

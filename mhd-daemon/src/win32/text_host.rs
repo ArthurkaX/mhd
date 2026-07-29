@@ -287,8 +287,9 @@ pub fn get_edit_text(hwnd: HWND) -> String {
 /// Steal keyboard focus for a child window, attaching input queues if
 /// the foreground window belongs to a different thread.
 ///
-/// SAFETY: `parent` and `child` must be valid HWNDs owned by the calling
-/// thread.
+/// # Safety
+///
+/// `parent` and `child` must be valid HWNDs owned by the calling thread.
 pub unsafe fn steal_focus(parent: HWND, child: HWND) {
     unsafe {
         let our_tid = GetCurrentThreadId();

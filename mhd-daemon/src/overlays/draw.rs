@@ -1240,7 +1240,7 @@ fn paint(hwnd: HWND, st: &State, s: f32) {
     let tby = (BTN_Y as f32 * s) as i32;
     let tool_names = ["✎", "□", "→", "◯", "⬠"];
 
-    for ti in 0..5 {
+    for (ti, tool_name) in tool_names.iter().enumerate() {
         let sel = match ti {
             0 => st.tool == Tool::Pencil,
             1 => st.tool == Tool::Rect,
@@ -1270,7 +1270,7 @@ fn paint(hwnd: HWND, st: &State, s: f32) {
         }
         dw(
             mem,
-            &mut to_utf16_z(tool_names[ti]),
+            &mut to_utf16_z(tool_name),
             &mut rct(left, tby, left + tbw, tby + tbh),
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
@@ -1283,8 +1283,7 @@ fn paint(hwnd: HWND, st: &State, s: f32) {
     let ccw = (COL_BTN_W as f32 * s) as i32;
     let ccbh = (14.0 * s) as i32;
     let cby = tby + (tbh - ccbh) / 2;
-    for ci in 0..5 {
-        let (r, g, b) = COLORS[ci];
+    for (ci, &(r, g, b)) in COLORS.iter().enumerate() {
         let color_val: u32 = (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
         let br = unsafe { CreateSolidBrush(COLORREF(color_val)) };
         let border = if ci == st.color_idx {
@@ -1776,7 +1775,7 @@ fn make_font(size: i32, s: f32) -> windows::Win32::Graphics::Gdi::HFONT {
     }
 }
 
-fn dw(dc: HDC, text: &mut Vec<u16>, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
+fn dw(dc: HDC, text: &mut [u16], rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
     unsafe {
         let _ = DrawTextW(dc, text, rc as *mut RECT, fmt);
     }

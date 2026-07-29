@@ -789,20 +789,20 @@ fn hit_timer(x: i32, y: i32, sc: f32) -> Option<(PowerOp, u32)> {
     let r1 = (TMR_ROW1_Y as f32 * sc) as i32;
     if y >= r1 && y < r1 + bh {
         let sx = (PAD as f32 * sc + TMR_LABEL_W as f32 * sc) as i32;
-        for i in 0..4 {
+        for (i, &val) in vals.iter().enumerate() {
             let bx = sx + i as i32 * (bw + gap);
             if x >= bx && x < bx + bw {
-                return Some((PowerOp::Sleep, vals[i]));
+                return Some((PowerOp::Sleep, val));
             }
         }
     }
     let r2 = (TMR_ROW2_Y as f32 * sc) as i32;
     if y >= r2 && y < r2 + bh {
         let sx = (PAD as f32 * sc + TMR_LABEL_W as f32 * sc) as i32;
-        for i in 0..4 {
+        for (i, &val) in vals.iter().enumerate() {
             let bx = sx + i as i32 * (bw + gap);
             if x >= bx && x < bx + bw {
-                return Some((PowerOp::Shutdown, vals[i]));
+                return Some((PowerOp::Shutdown, val));
             }
         }
     }
@@ -878,14 +878,14 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
     let gap = (AW_BTN_GAP as f32 * sc) as i32;
     let sx = (PAD as f32 * sc) as i32;
 
-    for i in 0..AW_COUNT {
+    for (i, name) in AWAKE_NAMES.iter().enumerate() {
         let bx = sx + i as i32 * (bw + gap);
         let (bc, tc) = (dim, dim.contrasting_text_color()); // no highlighting — user request
         fill_rect(mem, bx, by, bx + bw, by + bh, bc);
         tcol(mem, tc);
         dw(
             mem,
-            &mut to_utf16_z(AWAKE_NAMES[i]),
+            &mut to_utf16_z(name),
             &mut rct(bx, by, bx + bw, by + bh),
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
@@ -942,13 +942,13 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
     let abh = (ACT_BTN_H as f32 * sc) as i32;
     let agap = (ACT_BTN_GAP as f32 * sc) as i32;
     let albls = ["Sleep", "Shutdown", "Screen off"];
-    for i in 0..3 {
+    for (i, label) in albls.iter().enumerate() {
         let bx = sx + i as i32 * (abw + agap);
         fill_rect(mem, bx, aby, bx + abw, aby + abh, dim);
         tcol(mem, dim.contrasting_text_color());
         dw(
             mem,
-            &mut to_utf16_z(albls[i]),
+            &mut to_utf16_z(label),
             &mut rct(bx, aby, bx + abw, aby + abh),
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
@@ -977,13 +977,13 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
 
         // Timer buttons
         let tsx = sx + (TMR_LABEL_W as f32 * sc) as i32;
-        for bi in 0..4 {
+        for (bi, label) in tvals.iter().enumerate() {
             let bx = tsx + bi as i32 * (tbw + tgap);
             fill_rect(mem, bx, ry, bx + tbw, ry + tbh, dim);
             tcol(mem, dim.contrasting_text_color());
             dw(
                 mem,
-                &mut to_utf16_z(tvals[bi]),
+                &mut to_utf16_z(label),
                 &mut rct(bx, ry, bx + tbw, ry + tbh),
                 DT_CENTER | DT_SINGLELINE | DT_VCENTER,
             );
@@ -1169,7 +1169,7 @@ fn tcol(dc: HDC, color: Argb) {
     }
 }
 
-fn dw(dc: HDC, text: &mut Vec<u16>, rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
+fn dw(dc: HDC, text: &mut [u16], rc: &mut RECT, fmt: DRAW_TEXT_FORMAT) {
     unsafe {
         let _ = DrawTextW(dc, text, rc as *mut RECT, fmt);
     }

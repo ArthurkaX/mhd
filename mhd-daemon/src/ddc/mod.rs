@@ -1,4 +1,6 @@
 //! Monitor control via DDC/CI (dxva2.dll).
 
-pub mod ddc;
-pub use ddc::*;
+#[path = "ddc.rs"]
+mod backend;
+
+pub use backend::*;

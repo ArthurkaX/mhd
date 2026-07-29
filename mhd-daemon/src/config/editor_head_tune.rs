@@ -53,11 +53,11 @@ static HEAD_TUNE_RUNNING: AtomicBool = AtomicBool::new(false);
 struct RunGuard;
 impl Drop for RunGuard {
     fn drop(&mut self) {
-        if let Some(arc) = HEAD_TUNE.lock().unwrap().clone() {
-            if let Ok(mut p) = arc.lock() {
-                p.running = false;
-                p.completed = true;
-            }
+        if let Some(arc) = HEAD_TUNE.lock().unwrap().clone()
+            && let Ok(mut p) = arc.lock()
+        {
+            p.running = false;
+            p.completed = true;
         }
         HEAD_TUNE_RUNNING.store(false, Ordering::SeqCst);
     }

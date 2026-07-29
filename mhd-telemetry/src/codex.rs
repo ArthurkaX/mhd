@@ -44,7 +44,7 @@ pub enum CodexEvent {
         total_tokens: Option<i64>,
         cumulative_tokens: Option<i64>,
         context_window: Option<i64>,
-        rate_limits: Option<CodexRateLimits>,
+        rate_limits: Option<Box<CodexRateLimits>>,
         source_offset: i64,
     },
     /// Unknown or uninteresting event type — skipped.
@@ -357,7 +357,7 @@ pub fn parse_event(line: &str) -> Result<CodexEvent, serde_json::Error> {
             let total = info.and_then(|i| i.get("total_token_usage"));
 
             let rl = payload.and_then(|p| p.get("rate_limits"));
-            let rate_limits = rl.map(parse_rate_limits);
+            let rate_limits = rl.map(|limits| Box::new(parse_rate_limits(limits)));
 
             return Ok(CodexEvent::TokenCount {
                 session_id: String::new(),

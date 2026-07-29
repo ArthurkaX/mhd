@@ -109,15 +109,14 @@ pub fn show(theme: &NativeTheme) {
     let cls_name = crate::osd::to_utf16_z("mhd_tune_panel_cls");
     if let Ok(existing) =
         unsafe { FindWindowW(PCWSTR::from_raw(cls_name.as_ptr()), PCWSTR::null()) }
+        && !existing.is_invalid()
     {
-        if !existing.is_invalid() {
-            unsafe {
-                let _ = ShowWindow(existing, SW_RESTORE);
-                let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-                let _ = SetForegroundWindow(existing);
-            }
-            return;
+        unsafe {
+            let _ = ShowWindow(existing, SW_RESTORE);
+            let _ = SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            let _ = SetForegroundWindow(existing);
         }
+        return;
     }
 
     // Init selected head from current settings
@@ -671,17 +670,14 @@ fn render_running(
         );
     }
 
-    for bi in 0..3 {
+    for (bi, label) in BUCKET_LABELS.iter().enumerate() {
         let line_y = y0 + (1 + bi) as i32 * row_h;
         let text = if prog.results[bi].is_some() {
-            format!("{} completed", BUCKET_LABELS[bi])
+            format!("{label} completed")
         } else if bi == prog.current_bucket {
-            format!(
-                "{} {}/{}",
-                BUCKET_LABELS[bi], prog.bucket_done, prog.bucket_total
-            )
+            format!("{} {}/{}", label, prog.bucket_done, prog.bucket_total)
         } else {
-            format!("{} pending", BUCKET_LABELS[bi])
+            format!("{label} pending")
         };
 
         let color = if prog.results[bi].is_some() {
@@ -738,7 +734,7 @@ fn render_done(
 
     let mut section_y = y0;
 
-    for bi in 0..3 {
+    for (bi, label) in BUCKET_LABELS.iter().enumerate() {
         let Some(ref result) = prog.results[bi] else {
             continue;
         };
@@ -749,7 +745,7 @@ fn render_done(
             "Marginal" => Argb::new(255, 235, 185, 90),
             _ => theme.text_muted,
         };
-        let section_text = format!("{}  {}", BUCKET_LABELS[bi], result.verdict);
+        let section_text = format!("{label}  {}", result.verdict);
         unsafe {
             let _ = SelectObject(dib_dc, hfont_small);
             let _ = SetTextColor(dib_dc, verdict_color.to_colorref());
@@ -1138,8 +1134,8 @@ unsafe extern "system" fn panel_wndproc(
                     // Recalculate layout to match render_done.
                     // Scan through bucket sections to find y after all tables.
                     let mut scan_y = content_y;
-                    for bi in 0..3 {
-                        if results[bi] {
+                    for (bi, &has_result) in results.iter().enumerate() {
+                        if has_result {
                             // bucket section: header + sub-header + data rows
                             let n_points = {
                                 let guard = TUNE_PROGRESS.lock().unwrap();

@@ -167,7 +167,7 @@ fn execute_action(action: &Action, handle: &AppHandle) {
             let config = match preset.as_deref() {
                 Some("auto") | None => crate::overlays::breathe::auto_preset(),
                 Some(name) => crate::overlays::breathe::preset_config(name)
-                    .unwrap_or_else(|| crate::overlays::breathe::auto_preset()),
+                    .unwrap_or_else(crate::overlays::breathe::auto_preset),
             };
             crate::overlays::breathe::show(handle.theme(), config, bb);
         }

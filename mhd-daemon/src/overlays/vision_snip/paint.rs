@@ -224,9 +224,9 @@ fn darken_pixel(pixels: &mut [u32], y: i32, w: i32, x: i32) {
         return;
     }
     let px = pixels[idx];
-    let r = ((px >> 16) & 0xFF) as u32;
-    let g = ((px >> 8) & 0xFF) as u32;
-    let b = (px & 0xFF) as u32;
+    let r = (px >> 16) & 0xFF;
+    let g = (px >> 8) & 0xFF;
+    let b = px & 0xFF;
     let a = (px >> 24) & 0xFF;
     // 50% darken: divide each channel by 2
     let nr = r / 2;
@@ -453,8 +453,7 @@ fn draw_toolbar(
     let sw_gap = sc(SWATCH_GAP);
     let cby = tby + (tbh - sw) / 2;
 
-    for ci in 0..NUM_SWATCHES {
-        let color = &SWATCH_COLORS[ci];
+    for color in SWATCH_COLORS.iter().take(NUM_SWATCHES) {
         let (cr, cg, cb, _) = color.rgba();
         let colorref = COLORREF((cr as u32) | ((cg as u32) << 8) | ((cb as u32) << 16));
 

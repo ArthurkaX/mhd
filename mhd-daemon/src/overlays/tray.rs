@@ -295,13 +295,15 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_CREATE => {
             if let Some(state) = STATE.get() {
-                let mut nid = NOTIFYICONDATAW::default();
-                nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-                nid.hWnd = hwnd;
-                nid.uID = 1;
-                nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-                nid.uCallbackMessage = WM_TRAYICON;
-                nid.hIcon = load_tray_icon();
+                let mut nid = NOTIFYICONDATAW {
+                    cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                    hWnd: hwnd,
+                    uID: 1,
+                    uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+                    uCallbackMessage: WM_TRAYICON,
+                    hIcon: load_tray_icon(),
+                    ..Default::default()
+                };
 
                 let tip = if state.app.status() {
                     "mhd — running\0"
@@ -430,10 +432,12 @@ unsafe extern "system" fn wnd_proc(
 
         WM_DESTROY => {
             unsafe {
-                let mut nid = NOTIFYICONDATAW::default();
-                nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-                nid.hWnd = hwnd;
-                nid.uID = 1;
+                let nid = NOTIFYICONDATAW {
+                    cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                    hWnd: hwnd,
+                    uID: 1,
+                    ..Default::default()
+                };
                 let _ = Shell_NotifyIconW(NIM_DELETE, &nid as *const _ as *mut _);
             }
             unsafe { PostQuitMessage(0) };

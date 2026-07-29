@@ -145,10 +145,7 @@ fn run(
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: hinst,
-            hCursor: match LoadCursorW(None, IDC_ARROW) {
-                Ok(c) => c,
-                Err(_) => HCURSOR::default(),
-            },
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             lpszClassName: PCWSTR::from_raw(cls.as_ptr()),
             ..Default::default()
         };
@@ -285,7 +282,7 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             if (wp.0 & 0xFFFF) == 0 {
                 // WA_INACTIVE — only cancel if no editor is open
                 let has_editor =
-                    unsafe { state_unchecked(hwnd) }.map_or(false, |s| s.editor.is_some());
+                    unsafe { state_unchecked(hwnd) }.is_some_and(|s| s.editor.is_some());
                 if !has_editor {
                     if let Some(st) = unsafe { state_unchecked(hwnd) } {
                         send_cancel(st);
@@ -355,12 +352,12 @@ fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 if let Some(st) = state_unchecked(hwnd) {
                     if let Some(editor) = st.editor.take() {
                         let label = st.edit_label.take();
-                        if editor.was_applied() {
-                            if let Some(lbl) = label {
-                                let new_text = editor.get_text().trim().to_string();
-                                if !new_text.is_empty() {
-                                    let _ = st.model.edit_description(lbl, new_text);
-                                }
+                        if editor.was_applied()
+                            && let Some(lbl) = label
+                        {
+                            let new_text = editor.get_text().trim().to_string();
+                            if !new_text.is_empty() {
+                                let _ = st.model.edit_description(lbl, new_text);
                             }
                         }
                     }
@@ -681,11 +678,9 @@ fn handler_toolbar_action(st: &mut SnipState, hwnd: HWND, action: ToolbarAction)
 
 fn do_analyze(st: &mut SnipState, hwnd: HWND) {
     // 1. Commit pending
-    if st.model.pending.is_some() {
-        if st.model.commit_pending(String::new()).is_err() {
-            st.model.cancel_pending();
-            do_paint(st, hwnd);
-        }
+    if st.model.pending.is_some() && st.model.commit_pending(String::new()).is_err() {
+        st.model.cancel_pending();
+        do_paint(st, hwnd);
     }
 
     // 2. Validate (non-fatal)
@@ -721,10 +716,10 @@ fn do_analyze(st: &mut SnipState, hwnd: HWND) {
         })
         .collect();
 
-    if !local_anns.is_empty() {
-        if let Err(e) = output::render_annotations(&mut cropped, &local_anns) {
-            eprintln!("mhd: vision_snip render: {e}");
-        }
+    if !local_anns.is_empty()
+        && let Err(e) = output::render_annotations(&mut cropped, &local_anns)
+    {
+        eprintln!("mhd: vision_snip render: {e}");
     }
 
     // 5. Build the structured prompt (embeds annotation metadata).
