@@ -101,29 +101,6 @@ impl NativeKnobs {
 
 // ── protected content detector ────────────────────────────────────────────────
 
-/// Returns `true` when the tool_result block must be left completely untouched
-/// (no whitespace compression, no head/tail truncation).
-///
-/// Layered — any single layer returning `true` protects the whole block:
-///
-/// 1. **Provenance** — `src_ext` is the lowercased file extension of the file
-///    the tool_result came from (derived by the caller from the correlated
-///    `tool_use` block). Doc/art-prone extensions are always protected:
-///    `md`, `markdown`, `txt`, `rst`, `adoc`, `org`.
-/// 2. **Fenced code block** — `text.contains("```")` → protected.
-/// 3. **Diagram detection — density + structural glyphs.**
-///    An absolute glyph count ≥ 6 misfires on large files where a few unicode
-///    frame chars appear incidentally (stray `│` in comments, git/cargo output).
-///    A density + structural check separates genuine diagrams (small, glyph-dense,
-///    structured) from large text that merely contains a handful of drawing chars.
-///    Three routes to protection (any one suffices):
-///    - **Arrow-driven diagram:** `arrow_count ≥ 3` — arrows are rarely
-///      incidental in flow/control diagrams.
-///    - **Dense box diagram:** `box_count + arrow_count ≥ 6` AND glyph density
-///      `(count / total_chars) ≥ 2%` — a real grid is dense; a 50KB file with
-///      stray frames is well under this threshold.
-///    - **Cornered boxes:** `corner_count ≥ 4` (a closed box needs 4 corners)
-///      AND `box_count ≥ 8` (guards against coincidental corner chars in prose).
 /// Returns `true` if `text` looks like actual source code (not a JSON dump,
 /// log, or day-report). Used by Layer 2 when `fence_requires_code=true`.
 ///
@@ -180,6 +157,29 @@ fn looks_like_code(text: &str) -> bool {
     false
 }
 
+/// Returns `true` when the tool_result block must be left completely untouched
+/// (no whitespace compression, no head/tail truncation).
+///
+/// Layered — any single layer returning `true` protects the whole block:
+///
+/// 1. **Provenance** — `src_ext` is the lowercased file extension of the file
+///    the tool_result came from (derived by the caller from the correlated
+///    `tool_use` block). Doc/art-prone extensions are always protected:
+///    `md`, `markdown`, `txt`, `rst`, `adoc`, `org`.
+/// 2. **Fenced code block** — `text.contains("```")` → protected.
+/// 3. **Diagram detection — density + structural glyphs.**
+///    An absolute glyph count ≥ 6 misfires on large files where a few unicode
+///    frame chars appear incidentally (stray `│` in comments, git/cargo output).
+///    A density + structural check separates genuine diagrams (small, glyph-dense,
+///    structured) from large text that merely contains a handful of drawing chars.
+///    Three routes to protection (any one suffices):
+///    - **Arrow-driven diagram:** `arrow_count ≥ 3` — arrows are rarely
+///      incidental in flow/control diagrams.
+///    - **Dense box diagram:** `box_count + arrow_count ≥ 6` AND glyph density
+///      `(count / total_chars) ≥ 2%` — a real grid is dense; a 50KB file with
+///      stray frames is well under this threshold.
+///    - **Cornered boxes:** `corner_count ≥ 4` (a closed box needs 4 corners)
+///      AND `box_count ≥ 8` (guards against coincidental corner chars in prose).
 pub fn tool_result_protected(
     text: &str,
     src_ext: Option<&str>,
@@ -1731,6 +1731,7 @@ mod tests {
     ///   - more than 5 consecutive blank lines
     ///   - inner multi-spaces (2+ consecutive spaces not at line start)
     ///   - a line with 4 leading spaces (leading indent MUST be preserved)
+    ///
     /// should have those compressed when ws_enabled=true, and the leading
     /// indentation must be preserved.
     #[test]

@@ -13,7 +13,7 @@
 //! has a template to edit. If an old `config.toml` is found, it's migrated to
 //! the new format automatically.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -620,19 +620,19 @@ pub fn save(cfg: &Config) -> anyhow::Result<()> {
 
 // ── Per-file load/save helpers ────────────────────────────────────────
 
-fn settings_path(dir: &PathBuf) -> PathBuf {
+fn settings_path(dir: &Path) -> PathBuf {
     dir.join("settings.json")
 }
 
-fn secrets_path(dir: &PathBuf) -> PathBuf {
+fn secrets_path(dir: &Path) -> PathBuf {
     dir.join("secrets.json")
 }
 
-fn providers_path(dir: &PathBuf) -> PathBuf {
+fn providers_path(dir: &Path) -> PathBuf {
     dir.join("providers.json")
 }
 
-fn models_path(dir: &PathBuf) -> PathBuf {
+fn models_path(dir: &Path) -> PathBuf {
     dir.join("models.json")
 }
 

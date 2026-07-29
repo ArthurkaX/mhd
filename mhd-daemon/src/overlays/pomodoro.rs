@@ -2,18 +2,18 @@
 //!
 //! Architecture
 //! ────────────
-//! • **Daemon** (background thread, lives forever):
+//! - **Daemon** (background thread, lives forever):
 //!   - Has a hidden HWND + message loop for `SetTimer(1000)` ticks.
 //!   - Owns timer state (`Arc<Mutex<PomodoroState>>`).
 //!   - Receives commands (start/pause/stop/extend) from overlay via PostMessage.
 //!   - Posts `WM_POM_UPDATE` to the overlay HWND when state changes.
-//! • **Overlay** (thread‑per‑invocation, like QuickNote):
+//! - **Overlay** (thread‑per‑invocation, like QuickNote):
 //!   - Visible popup window with timer display + task name + buttons.
 //!   - Registers with daemon on open, unregisters on close.
 //!   - Sends commands to daemon hidden HWND.
 //!   - Repaints on `WM_POM_UPDATE`.
-//! • Second hotkey press closes the overlay window (daemon keeps running).
-//! • On completion: flash + beep, archived in blackbox.
+//! - Second hotkey press closes the overlay window (daemon keeps running).
+//! - On completion: flash + beep, archived in blackbox.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock, Mutex};

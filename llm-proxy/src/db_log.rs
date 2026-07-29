@@ -4,7 +4,7 @@
 //!
 //! - `events`   — generic one-off events: HANG, RAW text lines, vision, etc.
 //! - `requests` — one row per proxy request, updated twice: at arrival (routing
-//!                metadata + trim info) and at completion (token counts, status).
+//!   metadata + trim info) and at completion (token counts, status).
 //! - `notes`    — free-text user notes with timestamp.
 //!
 //! The old semi-structured approach of stuffing token/trim/cache data into the

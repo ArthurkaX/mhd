@@ -6,6 +6,7 @@
 //!     Pro/Max subscription), forward it verbatim — no API key needed.
 //!   - Otherwise fall back to the `anthropic_key` from config as `x-api-key`
 //!     (classic API-key users).
+//!
 //! Subscription auth also needs the `anthropic-beta` header forwarded, so we
 //! pass through any beta/version headers Claude Code sent.
 

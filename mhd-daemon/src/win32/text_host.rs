@@ -69,12 +69,12 @@ impl TextHost {
     /// * `kind`      — `TextHostKind::Edit` or `TextHostKind::RichEdit`.
     /// * `parent`    — owning window.
     /// * `edit_style` — additional control styles, e.g. `ES_MULTILINE | ES_AUTOVSCROLL`.
-    ///                   `WS_CHILD | WS_VISIBLE` is added automatically.
+    ///   `WS_CHILD | WS_VISIBLE` is added automatically.
     /// * `wndproc`   — subclass procedure for app‑specific key handling.
-    ///                  The old window proc is stored in `GWLP_USERDATA`.
+    ///   The old window proc is stored in `GWLP_USERDATA`.
     /// * `brush_color` — background colour passed to `CreateSolidBrush` for
-    ///                   `WM_CTLCOLOREDIT`. The caller's parent wndproc should
-    ///                   return this brush.
+    ///   `WM_CTLCOLOREDIT`. The caller's parent wndproc should
+    ///   return this brush.
     pub fn create(
         kind: TextHostKind,
         parent: HWND,

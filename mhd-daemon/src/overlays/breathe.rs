@@ -2,17 +2,17 @@
 //!
 //! Architecture
 //! ────────────
-//! • **Daemon** (background thread, lives forever):
+//! - **Daemon** (background thread, lives forever):
 //!   - Hidden HWND + message loop with `SetTimer(50ms)` for smooth animation.
 //!   - Owns breathing state (`Arc<Mutex<BreatheState>>`).
 //!   - Receives commands (start/pause/stop) from overlay via PostMessage.
 //!   - Posts `WM_BREATHE_UPDATE` to overlay HWND each tick.
-//! • **Overlay** (thread-per-invocation, like Pomodoro/QuickNote):
+//! - **Overlay** (thread-per-invocation, like Pomodoro/QuickNote):
 //!   - Visible popup window with sphere animation, phase label, progress, buttons.
 //!   - Registers with daemon on open, unregisters on close.
 //!   - Repaints on `WM_BREATHE_UPDATE`.
-//! • Second hotkey press closes the overlay window (daemon keeps running).
-//! • On completion: log to blackbox (silent — no audio cues).
+//! - Second hotkey press closes the overlay window (daemon keeps running).
+//! - On completion: log to blackbox (silent — no audio cues).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock, Mutex};
