@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::activity;
+use crate::anthropic_quota;
 use crate::overview;
 
 /// Tabs in the monitor window.
@@ -55,6 +56,11 @@ pub struct MonitorApp {
     // ── Activity data ──
     activity_rows: Vec<ActivityRow>,
     projects: Vec<String>,
+
+    // ── Anthropic quota (from proxy.db) ──
+    anthropic_quota: Option<anthropic_quota::AnthropicQuota>,
+    anthropic_history: Vec<anthropic_quota::QuotaPoint>,
+    last_anthropic_refresh: Instant,
 
     // ── Import thread ──
     #[allow(dead_code)]
@@ -135,6 +141,9 @@ impl MonitorApp {
             last_live_refresh: Instant::now() - Duration::from_secs(60), // prompt first refresh
             activity_rows: Vec::new(),
             projects: Vec::new(),
+            anthropic_quota: None,
+            anthropic_history: Vec::new(),
+            last_anthropic_refresh: Instant::now() - Duration::from_secs(60),
             import_tx,
             import_rx,
         };
@@ -189,21 +198,39 @@ impl MonitorApp {
         // Latest sample time
         self.latest_sample = query::latest_sample_time(db);
 
+        // Anthropic quota from proxy.db (refresh on the 10s cadence, not every refresh_data)
+        if self.last_anthropic_refresh.elapsed() >= Duration::from_secs(10) {
+            self.refresh_anthropic_quota();
+        }
+
         // Status — prefer live data info when available
-        self.status_message = if let Some(ref lq) = self.live_quota {
-            let plan = live::display_plan_type(lq.plan_type.as_deref());
-            let mut parts = vec![plan.to_string()];
-            if let Some(session) = &lq.session {
-                parts.push(format!("5h {:.0}%", session.used_percent));
+        self.status_message = {
+            let mut parts = Vec::new();
+            if let Some(ref lq) = self.live_quota {
+                let plan = live::display_plan_type(lq.plan_type.as_deref());
+                parts.push(plan.to_string());
+                if let Some(session) = &lq.session {
+                    parts.push(format!("5h {:.0}%", session.used_percent));
+                }
+                if let Some(weekly) = &lq.weekly {
+                    parts.push(format!("7d {:.0}%", weekly.used_percent));
+                }
+            } else if let Some(latest_sample) = self.latest_sample {
+                parts.push(format!("Last sample: {}", relative_time(latest_sample)));
+            } else {
+                parts.push("No data imported yet".into());
             }
-            if let Some(weekly) = &lq.weekly {
-                parts.push(format!("7d {:.0}%", weekly.used_percent));
+            if let Some(ref aq) = self.anthropic_quota {
+                let mut anthropic_parts = vec!["Anthropic".to_string()];
+                if let Some(h5) = aq.h5 {
+                    anthropic_parts.push(format!("5h {:.0}%", h5));
+                }
+                if let Some(d7) = aq.d7 {
+                    anthropic_parts.push(format!("7d {:.0}%", d7));
+                }
+                parts.push(anthropic_parts.join(" "));
             }
-            parts.join(" · ")
-        } else if let Some(latest_sample) = self.latest_sample {
-            format!("Last sample: {}", relative_time(latest_sample))
-        } else {
-            "No data imported yet".into()
+            parts.join(" | ")
         };
     }
 
@@ -212,6 +239,14 @@ impl MonitorApp {
         self.live_quota = live::fetch_live_quota(&self.codex_home).ok();
         self.last_live_refresh = Instant::now();
         self.refresh_data();
+    }
+
+    /// Read the latest Anthropic quota snapshot and sparkline history from proxy.db.
+    fn refresh_anthropic_quota(&mut self) {
+        let db_path = llm_proxy::config::config_dir().join("proxy.db");
+        self.anthropic_quota = anthropic_quota::read_latest(&db_path);
+        self.anthropic_history = anthropic_quota::read_history(&db_path, 500);
+        self.last_anthropic_refresh = Instant::now();
     }
 
     /// Run an incremental import pass.
@@ -242,12 +277,18 @@ impl eframe::App for MonitorApp {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Provider:");
-                // For V1 only "codex" is available
                 if ui
                     .selectable_label(self.provider == "codex", "Codex")
                     .clicked()
                 {
                     self.provider = "codex".to_string();
+                    self.refresh_data();
+                }
+                if ui
+                    .selectable_label(self.provider == "anthropic", "Anthropic")
+                    .clicked()
+                {
+                    self.provider = "anthropic".to_string();
                     self.refresh_data();
                 }
 
@@ -379,6 +420,7 @@ impl eframe::App for MonitorApp {
             Tab::Overview => {
                 overview::show_overview(
                     ui,
+                    &self.provider,
                     &self.quota_5h,
                     &self.quota_7d,
                     &self.slope_proj_5h,
@@ -386,6 +428,8 @@ impl eframe::App for MonitorApp {
                     &self.quota_history,
                     &self.import_result,
                     self.live_quota.as_ref(),
+                    self.anthropic_quota.as_ref(),
+                    &self.anthropic_history,
                     ctx,
                 );
             }

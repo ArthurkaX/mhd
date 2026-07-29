@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity;
+mod anthropic_quota;
 mod app;
 mod context_trim;
 mod overview;

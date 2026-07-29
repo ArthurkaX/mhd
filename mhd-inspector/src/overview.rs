@@ -5,9 +5,13 @@ use mhd_telemetry::import::ImportResult;
 use mhd_telemetry::live;
 use mhd_telemetry::query::{QuotaSample, SlopeProjection, Utilization};
 
+use crate::anthropic_quota::{AnthropicQuota, QuotaPoint, project_to_reset};
+
 /// Render the main question: is the current budget likely to last until reset?
+#[allow(clippy::too_many_arguments)]
 pub fn show_overview(
     ui: &mut egui::Ui,
+    provider: &str,
     quota_5h: &Option<Utilization>,
     quota_7d: &Option<Utilization>,
     slope_5h: &SlopeProjection,
@@ -15,6 +19,8 @@ pub fn show_overview(
     history: &[QuotaSample],
     import: &Option<ImportResult>,
     live: Option<&live::LiveQuota>,
+    anthropic: Option<&AnthropicQuota>,
+    anthropic_history: &[QuotaPoint],
     _ctx: &egui::Context,
 ) {
     if let Some(imp) = import
@@ -29,6 +35,15 @@ pub fn show_overview(
         );
     }
 
+    if provider == "anthropic" {
+        // ── Anthropic section ──
+        ui.heading(egui::RichText::new("Anthropic").strong().size(18.0));
+        show_anthropic_section(ui, anthropic, anthropic_history);
+        return;
+    }
+
+    // ── OpenAI (Codex) section ──
+    ui.heading(egui::RichText::new("OpenAI (Codex)").strong().size(18.0));
     if let Some(lq) = live {
         show_live_badge(ui, lq);
         ui.add_space(8.0);
@@ -242,4 +257,214 @@ fn show_live_badge(ui: &mut egui::Ui, lq: &live::LiveQuota) {
         egui::Color32::LIGHT_GREEN,
         egui::RichText::new(format!("Live · {plan}")).size(11.0),
     );
+}
+
+// ── Anthropic section ──────────────────────────────────────────────────────
+
+fn show_anthropic_section(
+    ui: &mut egui::Ui,
+    anthropic: Option<&AnthropicQuota>,
+    history: &[QuotaPoint],
+) {
+    let Some(aq) = anthropic else {
+        ui.label("Waiting for Anthropic quota data…");
+        return;
+    };
+
+    // Subtitle: live badge for Anthropic
+    ui.colored_label(
+        egui::Color32::LIGHT_GREEN,
+        egui::RichText::new("Live").size(11.0),
+    );
+    ui.add_space(4.0);
+
+    let has_data = aq.h5.is_some() || aq.d7.is_some();
+    if !has_data {
+        ui.label("No Anthropic quota fields recorded yet.");
+        return;
+    }
+
+    // Each reset drops utilization back to zero, so the raw history is a
+    // sawtooth across windows. Only points inside the CURRENT window may feed
+    // the polyline or the least-squares projection -- regressing across a
+    // reset boundary yields a meaningless slope.
+    let current_window = |reset: Option<i64>, window_seconds: i64| -> Vec<QuotaPoint> {
+        match reset {
+            Some(r) => history
+                .iter()
+                .copied()
+                .filter(|p| p.ts >= r - window_seconds)
+                .collect(),
+            None => history.to_vec(),
+        }
+    };
+    let h5_history = current_window(aq.h5_reset, 18000);
+    let d7_history = current_window(aq.d7_reset, 604800);
+
+    // Pre-compute projections for stat cards and charts
+    let h5_projection = aq
+        .h5_reset
+        .and_then(|reset| project_to_reset(&h5_history, |p| p.h5, reset));
+    let d7_projection = aq
+        .d7_reset
+        .and_then(|reset| project_to_reset(&d7_history, |p| p.d7, reset));
+
+    // Stat cards
+    ui.horizontal_wrapped(|ui| {
+        if let Some(h5) = aq.h5 {
+            stat_card(ui, "5h", &format!("{:.1}% used", h5));
+        }
+        if let Some(d7) = aq.d7 {
+            stat_card(ui, "7d", &format!("{:.1}% used", d7));
+        }
+        if let Some(reset) = aq.h5_reset {
+            stat_card(
+                ui,
+                "5h reset",
+                &mhd_telemetry::query::time_to_reset(Some(reset)).unwrap_or_else(|| "—".into()),
+            );
+        }
+        if let Some(reset) = aq.d7_reset {
+            stat_card(
+                ui,
+                "7d reset",
+                &mhd_telemetry::query::time_to_reset(Some(reset)).unwrap_or_else(|| "—".into()),
+            );
+        }
+        if let Some(p) = h5_projection {
+            stat_card(ui, "5h projected", &format!("{p:.1}%"));
+        }
+        if let Some(p) = d7_projection {
+            stat_card(ui, "7d projected", &format!("{p:.1}%"));
+        }
+    });
+
+    ui.add_space(10.0);
+
+    // Charts
+    let h5_points: Vec<(i64, f64)> = h5_history
+        .iter()
+        .filter_map(|p| p.h5.map(|v| (p.ts, v)))
+        .collect();
+    if !h5_points.is_empty() {
+        ui.strong("5h trajectory");
+        show_window_chart(
+            ui,
+            &h5_points,
+            aq.h5_reset,
+            18000,
+            h5_projection,
+            egui::Color32::from_rgb(88, 166, 255),
+        );
+        ui.add_space(10.0);
+    }
+
+    let d7_points: Vec<(i64, f64)> = d7_history
+        .iter()
+        .filter_map(|p| p.d7.map(|v| (p.ts, v)))
+        .collect();
+    if !d7_points.is_empty() {
+        ui.strong("7d trajectory");
+        show_window_chart(
+            ui,
+            &d7_points,
+            aq.d7_reset,
+            604800,
+            d7_projection,
+            egui::Color32::from_rgb(235, 94, 94),
+        );
+    }
+}
+
+fn show_window_chart(
+    ui: &mut egui::Ui,
+    points: &[(i64, f64)],
+    resets_at: Option<i64>,
+    window_seconds: i64,
+    projection: Option<f64>,
+    line_color: egui::Color32,
+) {
+    let width = ui.available_width().max(320.0);
+    let height = 180.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let left = rect.left() + 38.0;
+    let right = rect.right() - 12.0;
+    let top = rect.top() + 12.0;
+    let bottom = rect.bottom() - 26.0;
+    let first = points.first().map(|p| p.0).unwrap_or(0);
+    let last = points.last().map(|p| p.0).unwrap_or(first + 1);
+    let end = resets_at.filter(|reset| *reset > last).unwrap_or(last);
+    let start = resets_at
+        .map(|reset| reset.saturating_sub(window_seconds))
+        .filter(|start| *start < end)
+        .unwrap_or(first);
+    let span = (end - start).max(1) as f32;
+    let x = |time: i64| left + (time.saturating_sub(start) as f32 / span) * (right - left);
+    let y = |pct: f64| bottom - (pct.clamp(0.0, 100.0) as f32 / 100.0) * (bottom - top);
+
+    for pct in [0.0, 25.0, 50.0, 75.0, 100.0] {
+        let py = y(pct);
+        painter.line_segment(
+            [egui::pos2(left, py), egui::pos2(right, py)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(55)),
+        );
+        painter.text(
+            egui::pos2(left - 5.0, py),
+            egui::Align2::RIGHT_CENTER,
+            format!("{pct:.0}%"),
+            egui::FontId::proportional(10.0),
+            egui::Color32::GRAY,
+        );
+    }
+
+    if points.len() >= 2 {
+        let shape_points: Vec<egui::Pos2> =
+            points.iter().map(|p| egui::pos2(x(p.0), y(p.1))).collect();
+        painter.add(egui::Shape::line(
+            shape_points,
+            egui::Stroke::new(2.0, line_color),
+        ));
+    }
+
+    if let (Some(reset), Some(projected), Some(latest)) = (resets_at, projection, points.last())
+        && reset > latest.0
+    {
+        painter.line_segment(
+            [
+                egui::pos2(x(latest.0), y(latest.1)),
+                egui::pos2(x(reset), y(projected)),
+            ],
+            egui::Stroke::new(1.5, egui::Color32::GRAY),
+        );
+    }
+
+    if let Some(reset) = resets_at {
+        let rx = x(reset);
+        painter.line_segment(
+            [egui::pos2(rx, top), egui::pos2(rx, bottom)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 94, 94)),
+        );
+        painter.text(
+            egui::pos2(rx, bottom + 8.0),
+            egui::Align2::CENTER_TOP,
+            "reset",
+            egui::FontId::proportional(10.0),
+            egui::Color32::from_rgb(235, 94, 94),
+        );
+    }
+
+    if let Some(pos) = response.hover_pos() {
+        let ratio = ((pos.x - left) / (right - left)).clamp(0.0, 1.0);
+        let idx = (ratio * (points.len().saturating_sub(1)) as f32) as usize;
+        if let Some(sample) = points.get(idx) {
+            painter.text(
+                egui::pos2(pos.x + 10.0, pos.y - 25.0),
+                egui::Align2::LEFT_TOP,
+                format!("{:.1}%", sample.1),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
 }
