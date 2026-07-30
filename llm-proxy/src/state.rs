@@ -315,6 +315,12 @@ pub struct AppState {
     /// single poll.
     pub last_quota_poll: RwLock<Option<(crate::db_log::QuotaSnapshot, std::time::Instant)>>,
 
+    /// Master switch for the OAuth quota poller. Default false — the daemon
+    /// pushes the real value on proxy start (which may arrive after the watcher
+    /// has already started), so staying off until explicitly enabled is the
+    /// safe default.
+    pub quota_poll_enabled: RwLock<bool>,
+
     /// Stable id for this daemon run (epoch-millis at construction). Used to
     /// group all requests from one process lifetime in the `requests` table.
     pub run_id: u64,
@@ -408,6 +414,7 @@ impl AppState {
             trim_arrow_density_min: RwLock::new(cfg.trim_arrow_density_min),
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             corpus_max_rows: cfg.corpus_max_rows,
+            quota_poll_enabled: RwLock::new(false),
             last_quota: RwLock::new(None),
             last_quota_poll: RwLock::new(None),
             run_id,
@@ -838,6 +845,14 @@ impl AppState {
             db.insert_quota(self.run_id, &crate::providers::now_ms(), &snap);
         }
         *guard = Some((snap, now));
+    }
+
+    /// Whether the OAuth quota poller is currently enabled.
+    pub fn is_quota_poll_enabled(&self) -> bool {
+        *self
+            .quota_poll_enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Record a vision screenshot request into the ring buffer.

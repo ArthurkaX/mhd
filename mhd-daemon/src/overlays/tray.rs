@@ -45,7 +45,7 @@ const CMD_LLM_MODELS: usize = 11;
 const CMD_LLM_ACTIVITY: usize = 17;
 const CMD_PROXY_TRACE: usize = 12;
 const CMD_LLM_PROXY_TOGGLE: usize = 13;
-const CMD_CODEX_WATCHER_TOGGLE: usize = 18;
+const CMD_QUOTA_WATCHER_TOGGLE: usize = 18;
 const CMD_KEYCAST_TOGGLE: usize = 14;
 const CMD_BREATHE: usize = 15;
 const CMD_POWER_PLAN_BASE: usize = 100;
@@ -176,8 +176,8 @@ fn show_menu(hwnd: HWND) {
         };
         item(menu, llm_flags, CMD_LLM_PROXY_TOGGLE, "LLM Proxy on/off");
 
-        // Codex watcher on/off (checked when the background watcher is running).
-        let cw_running = crate::core::codex_watcher::is_running();
+        // Quota watcher on/off (checked when the background watcher is running).
+        let cw_running = crate::core::quota_watcher::is_running();
         let cw_flags = if cw_running {
             MF_BYPOSITION | MF_STRING | MF_CHECKED
         } else {
@@ -186,8 +186,8 @@ fn show_menu(hwnd: HWND) {
         item(
             menu,
             cw_flags,
-            CMD_CODEX_WATCHER_TOGGLE,
-            "Codex Watcher on/off",
+            CMD_QUOTA_WATCHER_TOGGLE,
+            "Quota Watcher on/off",
         );
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
@@ -407,8 +407,8 @@ unsafe extern "system" fn wnd_proc(
                         let cfg = state.app.llm_proxy_config();
                         crate::llm_proxy::toggle(&cfg);
                     }
-                    CMD_CODEX_WATCHER_TOGGLE => {
-                        state.app.toggle_codex_watcher();
+                    CMD_QUOTA_WATCHER_TOGGLE => {
+                        state.app.toggle_quota_watcher();
                     }
                     cmd if (CMD_POWER_PLAN_BASE..CMD_POWER_PLAN_BASE + 20).contains(&cmd) => {
                         let index = cmd - CMD_POWER_PLAN_BASE;

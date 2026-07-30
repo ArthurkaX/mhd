@@ -60,10 +60,10 @@ pub struct LlmModel {
     pub tags: Vec<String>,
 }
 
-/// Validated codex watcher config (from TOML).
+/// Validated quota watcher config (from TOML).
 #[derive(Debug, Clone, Default)]
-pub struct CodexWatcherConfig {
-    /// Enable the background Codex telemetry watcher.
+pub struct QuotaWatcherConfig {
+    /// Enable the background subscription-quota watcher.
     pub enabled: bool,
 }
 
@@ -219,8 +219,8 @@ pub struct AppConfig {
     pub power_plans: Vec<String>,
     /// LLM proxy integration config.
     pub llm_proxy: LlmProxyConfig,
-    /// Codex telemetry watcher config.
-    pub codex_watcher: CodexWatcherConfig,
+    /// Quota watcher config.
+    pub quota_watcher: QuotaWatcherConfig,
 }
 
 impl AppConfig {
@@ -375,9 +375,9 @@ impl AppConfig {
             // config directory. The old `[llm_proxy]` TOML section is migrated
             // automatically on first access.
             llm_proxy: Self::load_llm_proxy_from_json(content),
-            codex_watcher: CodexWatcherConfig {
+            quota_watcher: QuotaWatcherConfig {
                 enabled: raw
-                    .codex_watcher
+                    .quota_watcher
                     .as_ref()
                     .and_then(|c| c.enabled)
                     .unwrap_or(false),
@@ -1063,5 +1063,23 @@ action = "quit"
         // Test that unknown triggers return None
         let unknown = crate::trigger::parse_trigger("ctrl+alt+z").unwrap().trigger;
         assert!(cfg.lookup_trigger(&unknown).is_none());
+    }
+
+    // ── Codex → Quota backward compat ──────────────────────────────
+
+    #[test]
+    fn legacy_codex_watcher_section_parses_via_serde_alias() {
+        // Verify that the serde alias on raw.rs makes `[codex_watcher]` map to
+        // `quota_watcher` — existing config.toml files are accepted.
+        let toml = r#"
+[codex_watcher]
+enabled = true
+
+[[ binding ]]
+trigger = "ctrl+alt+1"
+action = "quit"
+        "#;
+        let cfg = parse(toml);
+        assert!(cfg.quota_watcher.enabled);
     }
 }

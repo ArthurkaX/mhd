@@ -1,7 +1,7 @@
 //! Core modules: hooks, action dispatch, platform glue, triggers, themes.
 
 pub mod action;
-pub mod codex_watcher;
+pub mod quota_watcher;
 pub mod hook;
 pub mod llm_proxy;
 pub mod native_theme;

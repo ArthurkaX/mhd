@@ -269,7 +269,27 @@ fn build_snapshot(resp: &OauthUsageResponse) -> QuotaSnapshot {
 
 // ── The fetch ────────────────────────────────────────────────────────────
 
-async fn poll_once(state: &Arc<AppState>, token: &str) -> Result<Option<u64>, String> {
+/// Result of a single OAuth usage endpoint call.
+///
+/// Why: using a typed enum rather than a plain `String` for the error case so
+/// the caller can distinguish auth failures (401/403) from transient errors
+/// without string-matching the error message — that would be fragile.
+#[derive(Debug)]
+enum PollOnceError {
+    /// HTTP 401 or 403 — OAuth credentials were rejected.
+    Auth,
+    /// All other failures: network, DNS, timeout, 5xx, parse error, etc.
+    Other(String),
+}
+
+/// Returns true when the HTTP status indicates an OAuth credential rejection
+/// (401 or 403), so the poller can suspend itself rather than retrying into a
+/// guaranteed failure every 5 minutes.
+fn is_auth_status(status: u16) -> bool {
+    status == 401 || status == 403
+}
+
+async fn poll_once(state: &Arc<AppState>, token: &str) -> Result<Option<u64>, PollOnceError> {
     let resp = state
         .http
         .get("https://api.anthropic.com/api/oauth/usage")
@@ -278,7 +298,7 @@ async fn poll_once(state: &Arc<AppState>, token: &str) -> Result<Option<u64>, St
         .header("User-Agent", "claude-code/2.1.0")
         .send()
         .await
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| PollOnceError::Other(format!("request failed: {e}")))?;
 
     let status = resp.status();
 
@@ -290,24 +310,28 @@ async fn poll_once(state: &Arc<AppState>, token: &str) -> Result<Option<u64>, St
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
         let _body = resp.text().await.unwrap_or_default();
-        // Log the 429 the first time it occurs (dedup is the caller's job).
-        // We return Retry-After as Ok so the err-msg dedup in the loop does
-        // not count this as a persistent failure.
         return Ok(retry_after);
     }
 
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {}", status.as_u16(), body));
+        let status_code = status.as_u16();
+        // Why: 401/403 means the OAuth credentials were rejected — retrying
+        // every 5 minutes is pointless and wasteful. Halt the poller until
+        // the user cycles the Quota Watcher toggle (which clears the flag).
+        if is_auth_status(status_code) {
+            return Err(PollOnceError::Auth);
+        }
+        return Err(PollOnceError::Other(format!("HTTP {status_code}: {body}")));
     }
 
     let body = resp
         .text()
         .await
-        .map_err(|e| format!("read body failed: {e}"))?;
+        .map_err(|e| PollOnceError::Other(format!("read body failed: {e}")))?;
 
     let parsed: OauthUsageResponse =
-        serde_json::from_str(&body).map_err(|e| format!("parse response failed: {e}"))?;
+        serde_json::from_str(&body).map_err(|e| PollOnceError::Other(format!("parse response failed: {e}")))?;
 
     let snap = build_snapshot(&parsed);
     state.record_quota_polled(snap);
@@ -339,15 +363,49 @@ pub(crate) async fn poll_loop(state: Arc<AppState>) {
 
     // Track the last error message to suppress repeated identical warnings.
     let mut last_err: Option<String> = None;
+    // Why: separate from last_err so a single network blip never kills polling
+    // until restart. Only 401/403 set this; it is cleared on re-enable so the
+    // user can cycle the Quota Watcher toggle to retry with fresh credentials.
+    let mut auth_failed: bool = false;
+    // Track the gate state so we only log on transitions (not every 300s tick).
+    let mut last_enabled: Option<bool> = None;
 
     loop {
         interval.tick().await;
 
+        // Read the gate flag — the daemon drives this from the Quota Watcher.
+        let enabled = state.is_quota_poll_enabled();
+
+        // Why: log only on transitions so a disabled poller doesn't produce
+        // one log line every 5 minutes forever.
+        match (last_enabled, enabled) {
+            (Some(false), true) => {
+                tracing::info!("mhd: quota poller enabled");
+                // Why: clear auth_failed on re-enable so cycling the toggle
+                // retries with freshly written credentials.
+                auth_failed = false;
+                last_err = None;
+            }
+            (Some(true), false) => {
+                tracing::info!("mhd: quota poller disabled");
+            }
+            _ => {}
+        }
+        last_enabled = Some(enabled);
+
+        if !enabled {
+            continue;
+        }
+
+        if auth_failed {
+            continue;
+        }
+
         // Read the token fresh each time so credential changes are picked up.
+        // Also clear stale error tracking: the auth state changed.
         let token = match read_oauth_token() {
             Some(t) => t,
             None => {
-                // Clear stale error tracking: the auth state changed.
                 last_err = None;
                 continue;
             }
@@ -363,10 +421,21 @@ pub(crate) async fn poll_loop(state: Arc<AppState>) {
             Ok(None) => {
                 last_err = None;
             }
-            Err(err_msg) => {
-                if last_err.as_deref() != Some(&err_msg) {
-                    tracing::warn!("mhd: quota poll error: {err_msg}");
-                    last_err = Some(err_msg);
+            Err(PollOnceError::Auth) => {
+                // Log once; subsequent ticks are silently skipped until the
+                // user re-enables the Quota Watcher.
+                if !auth_failed {
+                    tracing::warn!(
+                        "mhd: quota poll suspended — OAuth credentials rejected (401/403). \
+                         Resume by toggling Quota Watcher off and on again."
+                    );
+                    auth_failed = true;
+                }
+            }
+            Err(PollOnceError::Other(detail)) => {
+                if last_err.as_deref() != Some(&detail) {
+                    tracing::warn!("mhd: quota poll error: {detail}");
+                    last_err = Some(detail);
                 }
             }
         }
@@ -515,5 +584,42 @@ mod tests {
     fn test_normalize_numeric_boundary_below() {
         // Just below the threshold -> seconds.
         assert_eq!(normalize_numeric_ts(9_999_999_999.0), Some(9_999_999_999));
+    }
+
+    // ── Error classification ──────────────────────────────────────────
+
+    /// 401 must be classified as auth.
+    #[test]
+    fn test_is_auth_status_401() {
+        assert!(is_auth_status(401));
+    }
+
+    /// 403 must be classified as auth.
+    #[test]
+    fn test_is_auth_status_403() {
+        assert!(is_auth_status(403));
+    }
+
+    /// 429, 500, and other non-200 statuses must NOT be classified as auth.
+    #[test]
+    fn test_is_auth_status_non_auth() {
+        assert!(!is_auth_status(200));
+        assert!(!is_auth_status(429));
+        assert!(!is_auth_status(500));
+        assert!(!is_auth_status(503));
+        assert!(!is_auth_status(400));
+    }
+
+    /// PollOnceError::Auth is the auth variant — no string payload.
+    #[test]
+    fn test_poll_once_error_auth_variant() {
+        assert!(matches!(PollOnceError::Auth, PollOnceError::Auth));
+    }
+
+    /// PollOnceError::Other carries a detail string.
+    #[test]
+    fn test_poll_once_error_other_variant() {
+        let e = PollOnceError::Other("test".into());
+        assert!(matches!(&e, PollOnceError::Other(_)));
     }
 }

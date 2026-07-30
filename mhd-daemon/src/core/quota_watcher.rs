@@ -1,7 +1,9 @@
-//! Background Codex telemetry watcher.
+//! Provider-agnostic subscription-quota watcher.
 //!
-//! Runs the JSONL import + live API fetch on a periodic timer inside the
-//! daemon process. Toggle on/off via tray or action binding.
+//! Polls subscription quota windows (5h / 7d) on a periodic timer inside the
+//! daemon process. Currently imports Codex JSONL and fetches Codex live quota;
+//! the storage layer is provider-neutral (`store_live_snapshot` takes the
+//! provider as a string). Toggle on/off via tray or action binding.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +33,11 @@ pub fn start() -> bool {
 
     RUNNING.store(true, Ordering::SeqCst);
 
+    // Why: push the enabled state to the proxy's poller so it starts polling.
+    // If the proxy isn't running yet, this is a silent no-op; the proxy's own
+    // start() seeds the flag from is_running() when it comes up.
+    crate::core::llm_proxy::set_quota_poll_enabled(true);
+
     let handle = std::thread::spawn(move || {
         run_loop();
     });
@@ -39,7 +46,7 @@ pub fn start() -> bool {
         *guard = Some(handle);
     }
 
-    println!("mhd: codex-watcher started");
+    println!("mhd: quota-watcher started");
     true
 }
 
@@ -47,13 +54,17 @@ pub fn start() -> bool {
 pub fn stop() {
     RUNNING.store(false, Ordering::SeqCst);
 
+    // Why: push the disabled state to the proxy's poller so it stops polling.
+    // Silent no-op if the proxy isn't running.
+    crate::core::llm_proxy::set_quota_poll_enabled(false);
+
     if let Ok(mut guard) = THREAD.lock()
         && let Some(handle) = guard.take()
     {
         let _ = handle.join();
     }
 
-    println!("mhd: codex-watcher stopped");
+    println!("mhd: quota-watcher stopped");
 }
 
 /// The watcher loop: import JSONL → fetch live API → store → sleep

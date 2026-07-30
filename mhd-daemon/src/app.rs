@@ -41,8 +41,8 @@ pub trait DaemonControl: Send + Sync {
     /// Whether blackbox is currently running.
     #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool;
-    /// Toggle the Codex watcher and persist the new startup state.
-    fn toggle_codex_watcher(&self) -> bool;
+    /// Toggle the quota watcher and persist the new startup state.
+    fn toggle_quota_watcher(&self) -> bool;
     /// Quick Note config snapshot.
     fn quicknote_config(&self) -> QuickNoteConfig;
     /// Quick Draw save directory.
@@ -108,13 +108,13 @@ impl DaemonControl for AppHandle {
             .config
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .codex_watcher
+            .quota_watcher
             .enabled;
-        if watcher_enabled != crate::core::codex_watcher::is_running() {
+        if watcher_enabled != crate::core::quota_watcher::is_running() {
             if watcher_enabled {
-                crate::core::codex_watcher::start();
+                crate::core::quota_watcher::start();
             } else {
-                crate::core::codex_watcher::stop();
+                crate::core::quota_watcher::stop();
             }
         }
 
@@ -202,37 +202,37 @@ impl DaemonControl for AppHandle {
         crate::blackbox::is_logging()
     }
 
-    fn toggle_codex_watcher(&self) -> bool {
-        let enabled = !crate::core::codex_watcher::is_running();
+    fn toggle_quota_watcher(&self) -> bool {
+        let enabled = !crate::core::quota_watcher::is_running();
         let content = match std::fs::read_to_string(&self.config_path) {
             Ok(content) => content,
             Err(e) => {
-                eprintln!("mhd: cannot persist codex-watcher state: {e}");
+                eprintln!("mhd: cannot persist quota-watcher state: {e}");
                 return !enabled;
             }
         };
-        let new_content = match update_codex_watcher_setting(&content, enabled) {
+        let new_content = match update_quota_watcher_setting(&content, enabled) {
             Ok(content) => content,
             Err(e) => {
-                eprintln!("mhd: cannot persist codex-watcher state: {e}");
+                eprintln!("mhd: cannot persist quota-watcher state: {e}");
                 return !enabled;
             }
         };
         if let Err(e) = std::fs::write(&self.config_path, new_content) {
-            eprintln!("mhd: cannot persist codex-watcher state: {e}");
+            eprintln!("mhd: cannot persist quota-watcher state: {e}");
             return !enabled;
         }
 
         self.config
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .codex_watcher
+            .quota_watcher
             .enabled = enabled;
 
         if enabled {
-            crate::core::codex_watcher::start()
+            crate::core::quota_watcher::start()
         } else {
-            crate::core::codex_watcher::stop();
+            crate::core::quota_watcher::stop();
             false
         }
     }
@@ -270,8 +270,15 @@ impl DaemonControl for AppHandle {
     }
 }
 
-/// Update only `[codex_watcher].enabled`, preserving the rest of config.toml.
-fn update_codex_watcher_setting(content: &str, enabled: bool) -> Result<String, String> {
+/// Update only `[quota_watcher].enabled` (or legacy `[codex_watcher].enabled`),
+/// preserving the rest of config.toml.
+///
+/// # Why:
+/// Prefers the new `[quota_watcher]` section name but falls back to the legacy
+/// `[codex_watcher]` section — the user's existing section header is rewritten
+/// IN PLACE, never renamed behind their back, and a duplicate section is never
+/// created.
+fn update_quota_watcher_setting(content: &str, enabled: bool) -> Result<String, String> {
     if !content.trim().is_empty() {
         toml::from_str::<toml::Value>(content).map_err(|e| e.to_string())?;
     }
@@ -282,9 +289,12 @@ fn update_codex_watcher_setting(content: &str, enabled: bool) -> Result<String, 
         "\n"
     };
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+
+    // Try new section name first, then legacy.
     let section = lines
         .iter()
-        .position(|line| line.trim() == "[codex_watcher]");
+        .position(|line| line.trim() == "[quota_watcher]")
+        .or_else(|| lines.iter().position(|line| line.trim() == "[codex_watcher]"));
 
     if let Some(section_idx) = section {
         let section_end = lines
@@ -323,7 +333,7 @@ fn update_codex_watcher_setting(content: &str, enabled: bool) -> Result<String, 
         if lines.last().is_some_and(|line| !line.trim().is_empty()) {
             lines.push(String::new());
         }
-        lines.push("[codex_watcher]".to_string());
+        lines.push("[quota_watcher]".to_string());
         lines.push(format!("enabled = {enabled}"));
     }
 
@@ -335,26 +345,64 @@ fn update_codex_watcher_setting(content: &str, enabled: bool) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::update_codex_watcher_setting;
+    use super::update_quota_watcher_setting;
 
     #[test]
-    fn adds_missing_codex_watcher_section_without_changing_other_settings() {
+    fn adds_missing_quota_watcher_section_without_changing_other_settings() {
         let input = "theme = \"dark\"\n\n[[binding]]\ntrigger = \"f1\"\naction = \"note\"\n";
-        let updated = update_codex_watcher_setting(input, true).unwrap();
+        let updated = update_quota_watcher_setting(input, true).unwrap();
 
         assert!(updated.contains("theme = \"dark\""));
-        assert!(updated.contains("[codex_watcher]\nenabled = true"));
+        assert!(updated.contains("[quota_watcher]\nenabled = true"));
         assert!(updated.contains("[[binding]]"));
     }
 
     #[test]
-    fn updates_existing_codex_watcher_setting_and_preserves_comment() {
-        let input = "[codex_watcher]\r\nenabled = false # keep enabled\r\n\r\n[quicknote]\r\nenabled = true\r\n";
-        let updated = update_codex_watcher_setting(input, true).unwrap();
+    fn updates_existing_quota_watcher_section_and_preserves_comment() {
+        let input = "[quota_watcher]\r\nenabled = false # keep enabled\r\n\r\n[quicknote]\r\nenabled = true\r\n";
+        let updated = update_quota_watcher_setting(input, true).unwrap();
 
         assert!(updated.contains("enabled = true # keep enabled"));
         assert!(updated.contains("[quicknote]\r\nenabled = true"));
         assert!(!updated.contains("enabled = false"));
+    }
+
+    #[test]
+    fn updates_existing_legacy_codex_watcher_section_in_place() {
+        // Legacy [codex_watcher] section header is kept in place — not renamed.
+        let input = "[codex_watcher]\nenabled = false\n\n[quicknote]\nenabled = true\n";
+        let updated = update_quota_watcher_setting(input, true).unwrap();
+
+        // Section header stays legacy
+        assert!(updated.contains("[codex_watcher]"));
+        assert!(updated.contains("enabled = true"));
+        assert!(updated.contains("[quicknote]\nenabled = true"));
+        assert!(!updated.contains("[quota_watcher]"));
+        assert!(!updated.contains("enabled = false"));
+    }
+
+    #[test]
+    fn updates_existing_legacy_codex_watcher_preserves_comment() {
+        let input = "[codex_watcher]\r\nenabled = false # keep enabled\r\n\r\n[quicknote]\r\nenabled = true\r\n";
+        let updated = update_quota_watcher_setting(input, true).unwrap();
+
+        assert!(updated.contains("[codex_watcher]"));
+        assert!(updated.contains("enabled = true # keep enabled"));
+        assert!(updated.contains("[quicknote]\r\nenabled = true"));
+        assert!(!updated.contains("[quota_watcher]"));
+        assert!(!updated.contains("enabled = false"));
+    }
+
+    #[test]
+    fn adds_quota_watcher_when_neither_section_exists() {
+        let input = "theme = \"dark\"\nvolume_step = 2\n\n[[binding]]\ntrigger = \"f1\"\naction = \"note\"\n";
+        let updated = update_quota_watcher_setting(input, false).unwrap();
+
+        assert!(updated.contains("theme = \"dark\""));
+        assert!(updated.contains("volume_step = 2"));
+        assert!(updated.contains("[quota_watcher]\nenabled = false"));
+        assert!(updated.contains("[[binding]]"));
+        assert!(!updated.contains("[codex_watcher]"));
     }
 }
 
@@ -391,7 +439,7 @@ impl App {
 
         let native_theme = crate::native_theme::load_theme(app_config.theme.as_deref());
 
-        let codex_watcher_enabled = app_config.codex_watcher.enabled;
+        let quota_watcher_enabled = app_config.quota_watcher.enabled;
         let running = Arc::new(AtomicBool::new(true));
         let hook_thread_id = Arc::new(AtomicU32::new(0));
         let config = Arc::new(Mutex::new(app_config));
@@ -423,9 +471,9 @@ impl App {
             );
         }
 
-        // Auto-start codex watcher if enabled in config
-        if codex_watcher_enabled {
-            crate::core::codex_watcher::start();
+        // Auto-start quota watcher if enabled in config
+        if quota_watcher_enabled {
+            crate::core::quota_watcher::start();
         }
 
         Ok(App {

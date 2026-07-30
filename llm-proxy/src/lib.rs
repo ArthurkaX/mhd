@@ -389,6 +389,16 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Enable or disable the OAuth quota poller on the embedded state.
+    /// Driven at runtime by the daemon's Quota Watcher toggle.
+    pub fn set_quota_poll_enabled(&self, enabled: bool) {
+        *self
+            .state
+            .quota_poll_enabled
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
     /// Snapshot of recent routing decisions.
     pub fn trace(&self) -> Vec<TraceEntry> {
         self.state.trace_snapshot()

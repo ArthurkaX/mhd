@@ -260,11 +260,11 @@ fn execute_action(action: &Action, handle: &AppHandle) {
                 println!("mhd: llm-proxy {}", if on { "started" } else { "stopped" });
             }
         }
-        Action::ToggleCodexWatcher => {
-            let on = handle.toggle_codex_watcher();
+        Action::ToggleQuotaWatcher => {
+            let on = handle.toggle_quota_watcher();
             if !handle.quiet() {
                 println!(
-                    "mhd: codex-watcher {}",
+                    "mhd: quota-watcher {}",
                     if on { "started" } else { "stopped" }
                 );
             }

@@ -85,10 +85,13 @@ pub struct RawKeycast {
     pub typing_duration_ms: Option<u64>,
 }
 
-/// Raw TOML `[codex_watcher]` section.
+/// Raw TOML `[quota_watcher]` section.
+///
+/// Legacy `[codex_watcher]` is also accepted via serde alias for backward
+/// compatibility.
 #[derive(Debug, Deserialize)]
-pub struct RawCodexWatcher {
-    /// Enable the background Codex telemetry watcher. Default: `false`.
+pub struct RawQuotaWatcher {
+    /// Enable the background quota watcher. Default: `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -120,7 +123,8 @@ pub struct RawConfig {
     #[serde(default)]
     pub power_plans: Vec<String>,
     #[serde(default)]
-    pub codex_watcher: Option<RawCodexWatcher>,
+    #[serde(alias = "codex_watcher")]
+    pub quota_watcher: Option<RawQuotaWatcher>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }

@@ -83,8 +83,8 @@ pub enum Action {
     ShowLlmActivity,
     /// Toggle the llm-proxy process on/off.
     ToggleLlmProxy,
-    /// Toggle the Codex telemetry watcher on/off.
-    ToggleCodexWatcher,
+    /// Toggle the subscription-quota watcher on/off.
+    ToggleQuotaWatcher,
     /// Capture the foreground monitor, send to a vision LLM, copy result to clipboard.
     VisionScreenshot,
     /// Capture, crop, annotate, and analyze a screenshot interactively.
@@ -193,7 +193,9 @@ impl Action {
             "show_proxy_trace" => Ok(Action::ShowProxyTrace),
             "show_llm_activity" => Ok(Action::ShowLlmActivity),
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
-            "toggle_codex_watcher" => Ok(Action::ToggleCodexWatcher),
+            "toggle_quota_watcher" => Ok(Action::ToggleQuotaWatcher),
+            // Why: accept legacy key binding name for backward compatibility.
+            "toggle_codex_watcher" => Ok(Action::ToggleQuotaWatcher),
             "power_actions" => Ok(Action::PowerActions),
             "vision_screenshot" => Ok(Action::VisionScreenshot),
             "vision_snip" => Ok(Action::VisionSnip),
@@ -364,7 +366,7 @@ impl Action {
             Action::ShowProxyTrace => "show_proxy_trace",
             Action::ShowLlmActivity => "show_llm_activity",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
-            Action::ToggleCodexWatcher => "toggle_codex_watcher",
+            Action::ToggleQuotaWatcher => "toggle_quota_watcher",
             Action::VisionScreenshot => "vision_screenshot",
             Action::VisionSnip => "vision_snip",
             Action::Pomodoro => "pomodoro",
@@ -424,7 +426,7 @@ impl Action {
             | Action::ShowProxyTrace
             | Action::ShowLlmActivity
             | Action::ToggleLlmProxy
-            | Action::ToggleCodexWatcher
+            | Action::ToggleQuotaWatcher
             | Action::Pomodoro
             | Action::ToggleKeycast
             | Action::Breathe { .. }
@@ -747,9 +749,9 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
-        name: "toggle_codex_watcher",
-        label: "Toggle Codex Watcher",
-        description: "Enable or disable the background Codex telemetry import.",
+        name: "toggle_quota_watcher",
+        label: "Toggle Quota Watcher",
+        description: "Enable or disable the background subscription-quota import.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -1084,6 +1086,24 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_toggle_codex_watcher_still_parses() {
+        // Why: existing key bindings use the old name; must never break.
+        let fields = ActionRawFields {
+            keys: None,
+            command: None,
+            path: None,
+            target_scheme: None,
+            value: None,
+            code: None,
+            target: None,
+            preset: None,
+        };
+        let result = Action::from_raw("toggle_codex_watcher", fields);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Action::ToggleQuotaWatcher);
+    }
+
+    #[test]
     fn test_missing_required_field() {
         // replace_key without 'keys' field
         let fields = ActionRawFields {
@@ -1128,7 +1148,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(29)); // quit index in ALL_ACTIONS
+        assert_eq!(find_action_index("quit"), Some(30)); // quit index in ALL_ACTIONS
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

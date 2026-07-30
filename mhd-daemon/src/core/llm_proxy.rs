@@ -14,6 +14,7 @@ use llm_proxy::QuotaSnapshot;
 use llm_proxy::state::{TraceEntry, VisionTraceEntry};
 
 use crate::config::LlmProxyConfig;
+use crate::core::quota_watcher;
 
 /// The embedded proxy handle, present while the proxy is running.
 static CONTROL: Mutex<Option<ProxyControl>> = Mutex::new(None);
@@ -70,6 +71,14 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         Ok(control) => {
             LAST_PORT.store(cfg.port, Ordering::Relaxed);
             *guard = Some(control);
+
+            // Why: the quota watcher may have started before the proxy was
+            // running (on daemon boot in App::new). Its earlier call to
+            // set_quota_poll_enabled(true) would have hit a None guard and
+            // been silently dropped. Seeding the flag here closes that
+            // ordering gap.
+            set_quota_poll_enabled(quota_watcher::is_running());
+
             true
         }
         Err(e) => {
@@ -296,6 +305,14 @@ pub fn is_trim_enabled() -> bool {
         .as_ref()
         .map(|c| c.is_trim_enabled())
         .unwrap_or(false)
+}
+
+/// Enable or disable the OAuth quota poller on the embedded proxy.
+/// Silent no-op when the proxy is not running.
+pub fn set_quota_poll_enabled(enabled: bool) {
+    if let Some(c) = CONTROL.lock().unwrap().as_ref() {
+        c.set_quota_poll_enabled(enabled);
+    }
 }
 
 /// Current free/cheap-tier target string ("" if unset), or None if the proxy is off.
