@@ -90,6 +90,10 @@ fn record_quota_headers(state: &Arc<AppState>, headers: &reqwest::header::Header
         representative_claim: get("anthropic-ratelimit-unified-representative-claim"),
         fallback_status: get("anthropic-ratelimit-unified-fallback"),
         overage_status: get("anthropic-ratelimit-unified-overage-status"),
+        // Response headers carry no Fable window.
+        fable_utilization: None,
+        fable_reset: None,
+        source: Some("headers".to_string()),
     };
     state.record_quota(snap);
 }

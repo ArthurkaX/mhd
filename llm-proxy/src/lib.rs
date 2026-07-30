@@ -11,6 +11,7 @@ pub mod db_log;
 pub mod handlers;
 pub mod measure;
 pub mod native_trim;
+pub mod oauth_usage;
 pub mod prefix;
 pub mod providers;
 pub mod state;
@@ -531,7 +532,17 @@ pub fn start_embedded_with(
                 };
                 let _ = ready_tx.send(Ok(()));
 
+                let poll_state = server_state.clone();
                 let app = build_router(server_state);
+
+                // Background poller for Anthropic OAuth usage endpoint.
+                // Runs on the proxy's own tokio runtime, fetching quota data
+                // every 5 minutes and writing it to proxy.db. Silently skips
+                // when OAuth credentials are absent (API-key billing).
+                tokio::spawn(async move {
+                    crate::oauth_usage::poll_loop(poll_state).await;
+                });
+
                 let _ = axum::serve(listener, app)
                     .with_graceful_shutdown(async move {
                         let _ = shutdown_rx.await;

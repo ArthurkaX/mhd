@@ -308,6 +308,13 @@ pub struct AppState {
     /// minimum interval, keeping the quota table a sparse time-series.
     pub last_quota: RwLock<Option<(crate::db_log::QuotaSnapshot, std::time::Instant)>>,
 
+    /// Last polled quota snapshot WRITTEN to the DB, with the instant it was
+    /// written. Separate from `last_quota` because the header path and the
+    /// OAuth poller populate different fields — sharing a slot would flip
+    /// status fields Some↔None on every alternation and write a row every
+    /// single poll.
+    pub last_quota_poll: RwLock<Option<(crate::db_log::QuotaSnapshot, std::time::Instant)>>,
+
     /// Stable id for this daemon run (epoch-millis at construction). Used to
     /// group all requests from one process lifetime in the `requests` table.
     pub run_id: u64,
@@ -319,21 +326,24 @@ pub struct AppState {
     pub prefix_tracker: crate::prefix::PrefixTracker,
 }
 
-/// Material change = utilization moved >=0.01 on either window, OR any status /
+/// Whether a utilisation value moved by >=0.01 (the epsilon for dedup).
+/// Shared by the header path and the OAuth poller.
+fn utilization_moved(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => (x - y).abs() >= 0.01,
+        (None, None) => false,
+        _ => true,
+    }
+}
+
+/// Material change = utilisation moved >=0.01 on either window, OR any status /
 /// representative_claim string changed.
 fn quota_material_change(
     prev: &crate::db_log::QuotaSnapshot,
     next: &crate::db_log::QuotaSnapshot,
 ) -> bool {
-    fn util_jumped(a: Option<f64>, b: Option<f64>) -> bool {
-        match (a, b) {
-            (Some(x), Some(y)) => (x - y).abs() >= 0.01,
-            (None, None) => false,
-            _ => true,
-        }
-    }
-    util_jumped(prev.h5_utilization, next.h5_utilization)
-        || util_jumped(prev.d7_utilization, next.d7_utilization)
+    utilization_moved(prev.h5_utilization, next.h5_utilization)
+        || utilization_moved(prev.d7_utilization, next.d7_utilization)
         || prev.h5_status != next.h5_status
         || prev.d7_status != next.d7_status
         || prev.representative_claim != next.representative_claim
@@ -399,6 +409,7 @@ impl AppState {
             corpus_capture_enabled: RwLock::new(cfg.corpus_capture),
             corpus_max_rows: cfg.corpus_max_rows,
             last_quota: RwLock::new(None),
+            last_quota_poll: RwLock::new(None),
             run_id,
         })
     }
@@ -766,6 +777,54 @@ impl AppState {
             None => true,
             Some((prev, at)) => {
                 quota_material_change(prev, &snap)
+                    || now.duration_since(*at) >= std::time::Duration::from_secs(60)
+            }
+        };
+        if !should_write {
+            return;
+        }
+
+        if let Ok(db_guard) = self.db_log.lock()
+            && let Some(ref db) = *db_guard
+        {
+            db.insert_quota(self.run_id, &crate::providers::now_ms(), &snap);
+        }
+        *guard = Some((snap, now));
+    }
+
+    /// Persist a polled (OAuth endpoint) quota snapshot to the `quota` table.
+    ///
+    /// Separate from `record_quota` because the polled snapshot only has
+    /// h5/d7/fable utilisation + reset (no status/claim fields). Sharing
+    /// `last_quota` would flip those status fields Some<->None on every
+    /// alternation and write a row on every single poll.
+    ///
+    /// Guards: skip when all three utilizations are `None`, when db logging
+    /// is disabled, when none of the three moved by >=0.01, and when <60s
+    /// have elapsed since the last write. First write always goes through.
+    pub fn record_quota_polled(&self, snap: crate::db_log::QuotaSnapshot) {
+        // Skip empty snapshots (no h5, d7, AND no fable utilization).
+        if snap.h5_utilization.is_none()
+            && snap.d7_utilization.is_none()
+            && snap.fable_utilization.is_none()
+        {
+            return;
+        }
+        if !self.is_db_log_enabled() {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let mut guard = self
+            .last_quota_poll
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let should_write = match guard.as_ref() {
+            None => true,
+            Some((prev, at)) => {
+                utilization_moved(prev.h5_utilization, snap.h5_utilization)
+                    || utilization_moved(prev.d7_utilization, snap.d7_utilization)
+                    || utilization_moved(prev.fable_utilization, snap.fable_utilization)
                     || now.duration_since(*at) >= std::time::Duration::from_secs(60)
             }
         };

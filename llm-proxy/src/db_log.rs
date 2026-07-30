@@ -151,6 +151,13 @@ pub struct QuotaSnapshot {
     pub representative_claim: Option<String>,
     pub fallback_status: Option<String>,
     pub overage_status: Option<String>,
+    /// Fable-tier utilization fraction (0..1). Populated by the OAuth poller,
+    /// always None from the response-header path.
+    pub fable_utilization: Option<f64>,
+    /// Unix epoch seconds when the Fable window resets.
+    pub fable_reset: Option<i64>,
+    /// Which code path produced this snapshot: "headers" or "oauth".
+    pub source: Option<String>,
 }
 
 /// Wraps a SQLite connection.
@@ -305,7 +312,10 @@ impl DbLog {
                 d7_reset             INTEGER,
                 representative_claim TEXT,
                 fallback_status      TEXT,
-                overage_status       TEXT
+                overage_status       TEXT,
+                fable_utilization    REAL,
+                fable_reset          INTEGER,
+                source               TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_quota_run ON quota(run_id, id);
 
@@ -373,6 +383,9 @@ impl DbLog {
         // harmless error, so re-running them every open costs a few microseconds and makes
         // the schema self-healing regardless of what the version claims.
         for stmt in [
+            "ALTER TABLE quota ADD COLUMN fable_utilization REAL",
+            "ALTER TABLE quota ADD COLUMN fable_reset INTEGER",
+            "ALTER TABLE quota ADD COLUMN source TEXT",
             "ALTER TABLE requests ADD COLUMN user_agent TEXT",
             "ALTER TABLE requests ADD COLUMN upstream_model TEXT",
             "ALTER TABLE requests ADD COLUMN client_run_id TEXT",
@@ -404,7 +417,7 @@ impl DbLog {
             eprintln!("mhd: proxy.db: idx_requests_client_run not created: {e}");
         }
         // Only now, with the schema actually in place, record the version.
-        conn.pragma_update(None, "user_version", 4)?;
+        conn.pragma_update(None, "user_version", 5)?;
         Ok(Self {
             conn: Mutex::new(conn),
             corpus_max_rows,
@@ -670,8 +683,9 @@ impl DbLog {
             let _ = conn.execute(
                 "INSERT INTO quota (ts, run_id, h5_utilization, h5_status, h5_reset,
                                     d7_utilization, d7_status, d7_reset, representative_claim,
-                                    fallback_status, overage_status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                    fallback_status, overage_status,
+                                    fable_utilization, fable_reset, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 rusqlite::params![
                     ts,
                     run_id as i64,
@@ -684,6 +698,9 @@ impl DbLog {
                     q.representative_claim,
                     q.fallback_status,
                     q.overage_status,
+                    q.fable_utilization,
+                    q.fable_reset,
+                    q.source,
                 ],
             );
         }
