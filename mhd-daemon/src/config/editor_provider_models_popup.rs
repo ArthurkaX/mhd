@@ -1450,9 +1450,38 @@ unsafe extern "system" fn models_popup_wndproc(
                     let result_ptr = lparam.0 as *mut Vec<String>;
                     if !result_ptr.is_null() {
                         let fetched = Box::from_raw(result_ptr);
+                        // Preserve existing selection and test results; new models start unselected.
+                        let old_selected: std::collections::HashSet<String> = state
+                            .models
+                            .iter()
+                            .zip(state.model_selected.iter())
+                            .filter(|(_, sel)| **sel)
+                            .map(|(id, _)| id.clone())
+                            .collect();
+                        let old_results: std::collections::HashMap<String, Option<bool>> =
+                            state
+                                .models
+                                .iter()
+                                .zip(state.model_test_results.iter())
+                                .map(|(id, tr)| (id.clone(), *tr))
+                                .collect();
+
                         state.models = *fetched.clone();
-                        state.model_selected = (0..state.models.len()).map(|_| true).collect();
-                        state.model_test_results = (0..state.models.len()).map(|_| None).collect();
+                        state.model_selected = state
+                            .models
+                            .iter()
+                            .map(|m| old_selected.contains(m))
+                            .collect();
+                        state.model_test_results = state
+                            .models
+                            .iter()
+                            .map(|m| {
+                                old_results
+                                    .get(m)
+                                    .copied()
+                                    .unwrap_or(None)
+                            })
+                            .collect();
                         // Reset scroll position
                         state.content_scroll_y = 0;
                     }
