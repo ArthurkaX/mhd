@@ -60,7 +60,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 /// A single structured log event written to the SQLite database.
 #[derive(Debug, Clone, Default)]
@@ -158,6 +158,39 @@ pub struct QuotaSnapshot {
     pub fable_reset: Option<i64>,
     /// Which code path produced this snapshot: "headers" or "oauth".
     pub source: Option<String>,
+}
+
+/// Load the most recent quota snapshot persisted by the proxy.
+///
+/// This is deliberately usable without a running proxy so small status UIs can
+/// still show the last known Anthropic quota after the proxy has been stopped.
+pub fn read_latest_quota(db_path: &Path) -> Option<QuotaSnapshot> {
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    conn.query_row(
+        "SELECT h5_utilization, h5_status, h5_reset,
+                d7_utilization, d7_status, d7_reset,
+                representative_claim, fallback_status, overage_status,
+                fable_utilization, fable_reset, source
+         FROM quota ORDER BY id DESC LIMIT 1",
+        [],
+        |row| {
+            Ok(QuotaSnapshot {
+                h5_utilization: row.get(0).ok().flatten(),
+                h5_status: row.get(1).ok().flatten(),
+                h5_reset: row.get(2).ok().flatten(),
+                d7_utilization: row.get(3).ok().flatten(),
+                d7_status: row.get(4).ok().flatten(),
+                d7_reset: row.get(5).ok().flatten(),
+                representative_claim: row.get(6).ok().flatten(),
+                fallback_status: row.get(7).ok().flatten(),
+                overage_status: row.get(8).ok().flatten(),
+                fable_utilization: row.get(9).ok().flatten(),
+                fable_reset: row.get(10).ok().flatten(),
+                source: row.get(11).ok().flatten(),
+            })
+        },
+    )
+    .ok()
 }
 
 /// Wraps a SQLite connection.

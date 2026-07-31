@@ -11,7 +11,8 @@ use std::time::Duration;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -19,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadImageW, MF_BYPOSITION, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
     MF_STRING, MSG, PostQuitMessage, RegisterClassW, SetForegroundWindow, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, TrackPopupMenu, TranslateMessage, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    WM_MOUSEMOVE, WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
@@ -294,7 +295,7 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
-            if let Some(state) = STATE.get() {
+            if STATE.get().is_some() {
                 let mut nid = NOTIFYICONDATAW {
                     cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
                     hWnd: hwnd,
@@ -305,16 +306,7 @@ unsafe extern "system" fn wnd_proc(
                     ..Default::default()
                 };
 
-                let tip = if state.app.status() {
-                    "mhd — running\0"
-                } else {
-                    "mhd — stopped\0"
-                };
-                let wt: Vec<u16> = tip.encode_utf16().collect();
-                let mut ta = [0u16; 128];
-                let len = wt.len().min(127);
-                ta[..len].copy_from_slice(&wt[..len]);
-                nid.szTip = ta;
+                nid.szTip = tray_tip_text();
 
                 unsafe {
                     let _ = Shell_NotifyIconW(NIM_ADD, &nid as *const _ as *mut _);
@@ -327,6 +319,8 @@ unsafe extern "system" fn wnd_proc(
         WM_TRAYICON => {
             if lparam.0 == WM_RBUTTONUP as isize {
                 show_menu(hwnd);
+            } else if lparam.0 == WM_MOUSEMOVE as isize {
+                update_tray_tip(hwnd);
             }
             LRESULT(0)
         }
@@ -445,6 +439,31 @@ unsafe extern "system" fn wnd_proc(
         }
 
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Build the fixed-size UTF-16 buffer required by `NOTIFYICONDATAW::szTip`.
+fn tray_tip_text() -> [u16; 128] {
+    let text = crate::overlays::quota_pace::tray_tooltip();
+    let encoded: Vec<u16> = text.encode_utf16().collect();
+    let mut out = [0u16; 128];
+    let len = encoded.len().min(out.len() - 1);
+    out[..len].copy_from_slice(&encoded[..len]);
+    out
+}
+
+/// Refresh the system tooltip just before Windows displays it on hover.
+fn update_tray_tip(hwnd: HWND) {
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_TIP,
+        ..Default::default()
+    };
+    nid.szTip = tray_tip_text();
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid as *const _ as *mut _);
     }
 }
 

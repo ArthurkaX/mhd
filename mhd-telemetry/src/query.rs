@@ -61,6 +61,9 @@ pub fn current_utilization(
 // ── Time to reset ───────────────────────────────────────────────────────
 
 /// Format seconds as a human duration, or return None if `resets_at` is absent.
+/// - ≥1 day: days + hours (e.g. "6d 1h")
+/// - ≥1 hour: hours + minutes (e.g. "23h 38m")
+/// - <1 hour: just minutes (e.g. "45m")
 pub fn time_to_reset(resets_at: Option<i64>) -> Option<String> {
     let at = resets_at?;
     let now = std::time::SystemTime::now()
@@ -71,9 +74,12 @@ pub fn time_to_reset(resets_at: Option<i64>) -> Option<String> {
     if remaining <= 0 {
         return Some("resetting...".into());
     }
-    let hours = remaining / 3600;
+    let days = remaining / 86400;
+    let hours = (remaining % 86400) / 3600;
     let minutes = (remaining % 3600) / 60;
-    Some(if hours > 0 {
+    Some(if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
         format!("{hours}h {minutes}m")
     } else {
         format!("{minutes}m")

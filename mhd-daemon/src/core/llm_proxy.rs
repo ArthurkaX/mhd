@@ -70,14 +70,17 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
     match llm_proxy::start_embedded_with(pcfg, cfg.port, false, &cfg.bind_address) {
         Ok(control) => {
             LAST_PORT.store(cfg.port, Ordering::Relaxed);
-            *guard = Some(control);
 
             // Why: the quota watcher may have started before the proxy was
             // running (on daemon boot in App::new). Its earlier call to
             // set_quota_poll_enabled(true) would have hit a None guard and
             // been silently dropped. Seeding the flag here closes that
-            // ordering gap.
-            set_quota_poll_enabled(quota_watcher::is_running());
+            // ordering gap. Do this through the newly-created control before
+            // publishing it: `guard` already holds CONTROL, so routing through
+            // `set_quota_poll_enabled` here would attempt to lock CONTROL
+            // again and deadlock every proxy start.
+            control.set_quota_poll_enabled(quota_watcher::is_running());
+            *guard = Some(control);
 
             true
         }
