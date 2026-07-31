@@ -57,6 +57,10 @@ pub enum Action {
     ToggleThrottleOnBlur,
     /// Show the Power Control overlay (awake/sleep/shutdown).
     PowerActions,
+    /// Put the computer to sleep immediately.
+    Sleep,
+    /// Hibernate the computer immediately.
+    Hibernate,
     /// Show the Quick Draw overlay (drawing tools).
     QuickDraw,
     /// Show the Quick Note overlay (text note).
@@ -197,6 +201,8 @@ impl Action {
             // Why: accept legacy key binding name for backward compatibility.
             "toggle_codex_watcher" => Ok(Action::ToggleQuotaWatcher),
             "power_actions" => Ok(Action::PowerActions),
+            "sleep" => Ok(Action::Sleep),
+            "hibernate" => Ok(Action::Hibernate),
             "vision_screenshot" => Ok(Action::VisionScreenshot),
             "vision_snip" => Ok(Action::VisionSnip),
             "quit" => Ok(Action::Quit),
@@ -358,6 +364,8 @@ impl Action {
             Action::ToggleSuspendOnBlur => "toggle_suspend_on_blur",
             Action::ToggleThrottleOnBlur => "toggle_throttle_on_blur",
             Action::PowerActions => "power_actions",
+            Action::Sleep => "sleep",
+            Action::Hibernate => "hibernate",
             Action::QuickDraw => "quick_draw",
             Action::QuickNote => "quick_note",
             Action::SwitchPowerPlan { .. } => "switch_power_plan",
@@ -418,6 +426,8 @@ impl Action {
             | Action::ToggleSuspendOnBlur
             | Action::ToggleThrottleOnBlur
             | Action::PowerActions
+            | Action::Sleep
+            | Action::Hibernate
             | Action::QuickDraw
             | Action::QuickNote
             | Action::SwitchPowerPlan { .. }
@@ -677,6 +687,22 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::PowerAction,
     },
     ActionDescriptor {
+        name: "sleep",
+        label: "Sleep",
+        description: "Put the computer to sleep immediately.",
+        category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "hibernate",
+        label: "Hibernate",
+        description: "Hibernate the computer immediately.",
+        category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
         name: "quick_draw",
         label: "Quick Draw",
         description: "Open the quick drawing/screenshot overlay.",
@@ -854,6 +880,8 @@ mod tests {
             Action::ToggleSuspendOnBlur,
             Action::ToggleThrottleOnBlur,
             Action::PowerActions,
+            Action::Sleep,
+            Action::Hibernate,
             Action::QuickDraw,
             Action::QuickNote,
             Action::SwitchPowerPlan {
@@ -1148,7 +1176,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(30)); // quit index in ALL_ACTIONS
+        assert_eq!(find_action_index("quit"), Some(32)); // quit index in ALL_ACTIONS
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

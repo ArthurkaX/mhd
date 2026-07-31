@@ -526,6 +526,8 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 | `toggle_suspend_on_blur` | - | Suspend the focused process when it loses focus. |
 | `toggle_throttle_on_blur` | - | Apply Windows power throttling and one-CPU affinity when a process loses focus. |
 | `power_actions` | - | Open the power actions panel. |
+| `sleep` | - | Put the computer to sleep immediately. |
+| `hibernate` | - | Hibernate the computer immediately. |
 | `switch_power_plan` | `target` | Switch to a named power plan or `next`. |
 | `show_cpu_panel` | - | Open the CPU power plan panel. |
 | `quit` | - | Shut mHD down cleanly. |

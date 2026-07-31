@@ -71,6 +71,8 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "toggle_suspend_on_blur",
     "toggle_throttle_on_blur",
     "power_actions",
+    "sleep",
+    "hibernate",
     "quick_draw",
     "quick_note",
     "pomodoro",

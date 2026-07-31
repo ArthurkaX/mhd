@@ -119,6 +119,12 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::PowerActions => {
             power::show(handle.theme());
         }
+        Action::Sleep => {
+            power::sleep_now();
+        }
+        Action::Hibernate => {
+            power::hibernate_now();
+        }
         Action::QuickDraw => {
             crate::overlays::draw::show(handle.theme(), handle.draw_dir());
         }

@@ -97,6 +97,7 @@ enum AwakeMode {
 #[derive(Clone, Copy, PartialEq)]
 enum PowerOp {
     Sleep,
+    Hibernate,
     Shutdown,
     TurnOffScreen,
 }
@@ -411,6 +412,9 @@ fn exec(op: PowerOp) {
         PowerOp::Sleep => unsafe {
             let _ = SetSuspendState(false, false, false);
         },
+        PowerOp::Hibernate => unsafe {
+            let _ = SetSuspendState(true, false, false);
+        },
         PowerOp::Shutdown => unsafe {
             let _ = ExitWindowsEx(EWX_SHUTDOWN, SHUTDOWN_REASON(0));
         },
@@ -426,6 +430,16 @@ fn exec(op: PowerOp) {
             }
         }
     }
+}
+
+/// Suspend the machine immediately, bypassing the overlay countdown.
+pub fn sleep_now() {
+    exec(PowerOp::Sleep);
+}
+
+/// Hibernate the machine immediately, bypassing the overlay countdown.
+pub fn hibernate_now() {
+    exec(PowerOp::Hibernate);
 }
 
 // ── Countdown window ──────────────────────────────────────────────────
@@ -997,6 +1011,7 @@ fn paint_main(hwnd: HWND, st: &State, w: i32, h: i32, sc: f32) {
         let rem = p.at_sec.saturating_sub(now_secs());
         let opn = match p.op {
             PowerOp::Sleep => "Sleep",
+            PowerOp::Hibernate => "Hibernate",
             PowerOp::Shutdown => "Shutdown",
             PowerOp::TurnOffScreen => "Screen off",
         };
@@ -1085,6 +1100,7 @@ fn paint_cd(hwnd: HWND, op: PowerOp, secs: u32, sc: f32) {
 
     let opn = match op {
         PowerOp::Sleep => "Sleep",
+        PowerOp::Hibernate => "Hibernate",
         PowerOp::Shutdown => "Shutdown",
         PowerOp::TurnOffScreen => "Screen off",
     };
