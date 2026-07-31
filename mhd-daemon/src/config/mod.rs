@@ -217,6 +217,12 @@ pub struct AppConfig {
     pub keycast: KeycastConfig,
     /// Ordered list of power plan names for rotation.
     pub power_plans: Vec<String>,
+    /// Maximum processor state (percent) used by quiet mode.
+    pub quiet_cpu_max: u32,
+    /// Whether quiet mode applies EcoQoS to background processes.
+    pub quiet_eco_qos: bool,
+    /// Executable names quiet mode leaves at normal QoS.
+    pub quiet_exclude: Vec<String>,
     /// LLM proxy integration config.
     pub llm_proxy: LlmProxyConfig,
     /// Quota watcher config.
@@ -371,6 +377,9 @@ impl AppConfig {
             keycast: parse_keycast_config(raw.keycast.as_ref()),
             autostart: raw.autostart.unwrap_or(false),
             power_plans: raw.power_plans,
+            quiet_cpu_max: raw.quiet_cpu_max.unwrap_or(30).clamp(5, 100),
+            quiet_eco_qos: raw.quiet_eco_qos.unwrap_or(true),
+            quiet_exclude: raw.quiet_exclude,
             // LLM proxy config is now stored in JSON files under the proxy's
             // config directory. The old `[llm_proxy]` TOML section is migrated
             // automatically on first access.

@@ -47,6 +47,7 @@ const CMD_LLM_ACTIVITY: usize = 17;
 const CMD_PROXY_TRACE: usize = 12;
 const CMD_LLM_PROXY_TOGGLE: usize = 13;
 const CMD_QUOTA_WATCHER_TOGGLE: usize = 18;
+const CMD_QUIET_TOGGLE: usize = 19;
 const CMD_KEYCAST_TOGGLE: usize = 14;
 const CMD_BREATHE: usize = 15;
 const CMD_POWER_PLAN_BASE: usize = 100;
@@ -230,6 +231,12 @@ fn show_menu(hwnd: HWND) {
             MF_BYPOSITION | MF_STRING
         };
         item(menu, keycast_flags, CMD_KEYCAST_TOGGLE, "KeyCast on/off");
+        let quiet_flags = if crate::overlays::quiet::is_active() {
+            MF_BYPOSITION | MF_STRING | MF_CHECKED
+        } else {
+            MF_BYPOSITION | MF_STRING
+        };
+        item(menu, quiet_flags, CMD_QUIET_TOGGLE, "Quiet Mode on/off");
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
@@ -378,6 +385,9 @@ unsafe extern "system" fn wnd_proc(
                             .app
                             .osd
                             .show_notify(format!("KeyCast {}", if on { "on" } else { "off" }), 900);
+                    }
+                    CMD_QUIET_TOGGLE => {
+                        crate::overlays::quiet::toggle(&state.app.quiet_config(), &state.app.osd);
                     }
                     CMD_EDIT_CONFIG => {
                         crate::config::editor::show_config_editor(state.app.clone());

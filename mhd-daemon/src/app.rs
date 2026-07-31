@@ -51,6 +51,8 @@ pub trait DaemonControl: Send + Sync {
     fn keycast_config(&self) -> crate::overlays::keycast::KeycastConfig;
     /// LLM proxy config snapshot.
     fn llm_proxy_config(&self) -> crate::config::LlmProxyConfig;
+    /// Snapshot of the quiet-mode settings.
+    fn quiet_config(&self) -> crate::overlays::quiet::QuietConfig;
 }
 
 /// Wrapper to make HWND Send+Sync safe.
@@ -267,6 +269,15 @@ impl DaemonControl for AppHandle {
             .unwrap_or_else(|e| e.into_inner())
             .llm_proxy()
             .clone()
+    }
+
+    fn quiet_config(&self) -> crate::overlays::quiet::QuietConfig {
+        let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        crate::overlays::quiet::QuietConfig {
+            cpu_max: cfg.quiet_cpu_max,
+            eco_qos: cfg.quiet_eco_qos,
+            exclude: cfg.quiet_exclude.clone(),
+        }
     }
 }
 
@@ -548,6 +559,11 @@ impl App {
         if let Some(mut bb) = self.blackbox.lock().unwrap().take() {
             bb.shutdown();
         }
+
+        // Leaving quiet mode on would leave the system on the `mhd Quiet`
+        // power scheme with processes still EcoQoS-throttled after the daemon
+        // exits — always restore.
+        crate::overlays::quiet::deactivate();
 
         result
     }

@@ -119,6 +119,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::PowerActions => {
             power::show(handle.theme());
         }
+        Action::ToggleQuietMode => {
+            crate::overlays::quiet::toggle(&handle.quiet_config(), &handle.osd);
+        }
         Action::Sleep => {
             power::sleep_now();
         }

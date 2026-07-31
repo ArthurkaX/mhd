@@ -73,6 +73,7 @@ pub const EDITOR_ACTION_NAMES: &[&str] = &[
     "power_actions",
     "sleep",
     "hibernate",
+    "toggle_quiet_mode",
     "quick_draw",
     "quick_note",
     "pomodoro",

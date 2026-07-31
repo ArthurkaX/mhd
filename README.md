@@ -273,6 +273,8 @@ mHD includes actions for:
 
 These actions are intended for people who want a small, direct utility layer rather than a large automation suite.
 
+**Quiet mode** (`toggle_quiet_mode`) is a single hotkey that turns the display off, switches to a dedicated `mhd Quiet` power scheme (CPU capped to `quiet_cpu_max`, turbo off, passive cooling), applies EcoQoS to background processes, and keeps the machine awake so work continues. Any mouse or keyboard input exits the mode and restores the previous scheme. The behaviour is tuned with three config keys: `quiet_cpu_max` (default 30), `quiet_eco_qos` (default true), and `quiet_exclude` (exe names left at normal QoS).
+
 ### Utility overlays
 
 The included overlays are:
@@ -528,6 +530,7 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 | `power_actions` | - | Open the power actions panel. |
 | `sleep` | - | Put the computer to sleep immediately. |
 | `hibernate` | - | Hibernate the computer immediately. |
+| `toggle_quiet_mode` | - | Display off, CPU capped, machine keeps running. |
 | `switch_power_plan` | `target` | Switch to a named power plan or `next`. |
 | `show_cpu_panel` | - | Open the CPU power plan panel. |
 | `quit` | - | Shut mHD down cleanly. |

@@ -204,7 +204,7 @@ fn set_background_limits(target: &mut TargetProcess, enabled: bool) -> windows::
     }
 }
 
-unsafe fn apply_throttling_state(
+pub(crate) unsafe fn apply_throttling_state(
     handle: HANDLE,
     mask: u32,
     enabled: bool,

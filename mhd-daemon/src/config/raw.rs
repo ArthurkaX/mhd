@@ -122,6 +122,15 @@ pub struct RawConfig {
     /// Ordered list of power plan names for `switch_power_plan` with target="next".
     #[serde(default)]
     pub power_plans: Vec<String>,
+    /// Maximum processor state (percent) applied while quiet mode is active.
+    #[serde(default)]
+    pub quiet_cpu_max: Option<u32>,
+    /// Apply EcoQoS to background processes while quiet mode is active.
+    #[serde(default)]
+    pub quiet_eco_qos: Option<bool>,
+    /// Executable names kept at normal QoS while quiet mode is active.
+    #[serde(default)]
+    pub quiet_exclude: Vec<String>,
     #[serde(default)]
     #[serde(alias = "codex_watcher")]
     pub quota_watcher: Option<RawQuotaWatcher>,

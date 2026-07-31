@@ -13,6 +13,7 @@ pub mod note;
 pub mod pomodoro;
 pub mod power;
 pub mod proxy_trace;
+pub mod quiet;
 pub mod quota_pace;
 pub mod suspend;
 pub mod throttle;

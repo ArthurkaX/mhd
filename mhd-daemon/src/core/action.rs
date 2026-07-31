@@ -57,6 +57,8 @@ pub enum Action {
     ToggleThrottleOnBlur,
     /// Show the Power Control overlay (awake/sleep/shutdown).
     PowerActions,
+    /// Toggle quiet mode: display off, CPU capped, machine keeps running.
+    ToggleQuietMode,
     /// Put the computer to sleep immediately.
     Sleep,
     /// Hibernate the computer immediately.
@@ -201,6 +203,7 @@ impl Action {
             // Why: accept legacy key binding name for backward compatibility.
             "toggle_codex_watcher" => Ok(Action::ToggleQuotaWatcher),
             "power_actions" => Ok(Action::PowerActions),
+            "toggle_quiet_mode" => Ok(Action::ToggleQuietMode),
             "sleep" => Ok(Action::Sleep),
             "hibernate" => Ok(Action::Hibernate),
             "vision_screenshot" => Ok(Action::VisionScreenshot),
@@ -364,6 +367,7 @@ impl Action {
             Action::ToggleSuspendOnBlur => "toggle_suspend_on_blur",
             Action::ToggleThrottleOnBlur => "toggle_throttle_on_blur",
             Action::PowerActions => "power_actions",
+            Action::ToggleQuietMode => "toggle_quiet_mode",
             Action::Sleep => "sleep",
             Action::Hibernate => "hibernate",
             Action::QuickDraw => "quick_draw",
@@ -426,6 +430,7 @@ impl Action {
             | Action::ToggleSuspendOnBlur
             | Action::ToggleThrottleOnBlur
             | Action::PowerActions
+            | Action::ToggleQuietMode
             | Action::Sleep
             | Action::Hibernate
             | Action::QuickDraw
@@ -703,6 +708,14 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
         param_schema: ActionParamSchema::None,
     },
     ActionDescriptor {
+        name: "toggle_quiet_mode",
+        label: "Quiet Mode",
+        description: "Display off, CPU capped, machine keeps running.",
+        category: ActionCategory::System,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
         name: "quick_draw",
         label: "Quick Draw",
         description: "Open the quick drawing/screenshot overlay.",
@@ -880,6 +893,7 @@ mod tests {
             Action::ToggleSuspendOnBlur,
             Action::ToggleThrottleOnBlur,
             Action::PowerActions,
+            Action::ToggleQuietMode,
             Action::Sleep,
             Action::Hibernate,
             Action::QuickDraw,
@@ -1176,7 +1190,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(32)); // quit index in ALL_ACTIONS
+        assert_eq!(find_action_index("quit"), Some(33)); // quit index in ALL_ACTIONS
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

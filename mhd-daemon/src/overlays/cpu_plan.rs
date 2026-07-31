@@ -78,7 +78,8 @@ const RADIUS: i32 = 8;
 const TIMER_MONITOR: usize = 1;
 
 // ── GUIDs for processor power settings ───────────────────────────────
-const GUID_PROCESSOR_SUBGROUP: GUID = GUID::from_u128(0x54533251_82be_4824_96c1_47b60b740d00);
+pub(crate) const GUID_PROCESSOR_SUBGROUP: GUID =
+    GUID::from_u128(0x54533251_82be_4824_96c1_47b60b740d00);
 const GUID_PARKING_MIN: GUID = GUID::from_u128(0x0cc5b647_c1df_4637_891a_dec35c318583);
 const GUID_PARKING_MAX: GUID = GUID::from_u128(0xea062031_0e34_4ff1_9b6d_eb1059334028);
 // Minimum processor performance state (% of max frequency the CPU can drop to)
@@ -86,13 +87,17 @@ const GUID_MIN_PROC_STATE: GUID = GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d
 const GUID_MIN_PROC_STATE_CLASS1: GUID = GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d0929964d);
 const GUID_MIN_PROC_STATE_CLASS2: GUID = GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d0929964e);
 // Maximum processor performance state (% of max frequency the CPU can go to)
-const GUID_MAX_PROC_STATE: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ec);
-const GUID_MAX_PROC_STATE_CLASS1: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ed);
-const GUID_MAX_PROC_STATE_CLASS2: GUID = GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ee);
+pub(crate) const GUID_MAX_PROC_STATE: GUID =
+    GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ec);
+pub(crate) const GUID_MAX_PROC_STATE_CLASS1: GUID =
+    GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ed);
+pub(crate) const GUID_MAX_PROC_STATE_CLASS2: GUID =
+    GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ee);
 // Processor performance autonomous mode — 0=disabled, 1=enabled.
 const GUID_PERF_AUTONOMOUS_MODE: GUID = GUID::from_u128(0x8baa4a8a_14c6_4451_8e8b_14bdbd197537);
 // Processor performance boost mode — 0=disabled, 1=enabled, 2=aggressive, etc.
-const GUID_PERF_BOOST_MODE: GUID = GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
+pub(crate) const GUID_PERF_BOOST_MODE: GUID =
+    GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
 // Processor performance increase policy — 0=Ideal (gradual), 2=Rocket (instant max).
 const GUID_INCREASE_POLICY: GUID = GUID::from_u128(0x465e1f50_b610_473a_ab58_00d1077dc418);
 // Heterogeneous processor scheduling policy — 0=All, 2=PreferPerf, 4=PreferEff, 5=Auto.
@@ -100,7 +105,8 @@ const GUID_HETEROGENEOUS_POLICY: GUID = GUID::from_u128(0x7f2f5cfa_f10c_4823_b5e
 // Performance state of parked cores — 0=NoPref, 1=Deepest, 2=Lightest.
 const GUID_PARKED_CORE_PERF: GUID = GUID::from_u128(0x447235c7_6a8d_4cc0_8e24_9eaf70b96e2b);
 // System cooling policy — 0=Passive (reduce freq), 1=Active (spin fans).
-const GUID_COOLING_POLICY: GUID = GUID::from_u128(0x94d3a615_a899_4ac5_ae2b_e4d8f634367f);
+pub(crate) const GUID_COOLING_POLICY: GUID =
+    GUID::from_u128(0x94d3a615_a899_4ac5_ae2b_e4d8f634367f);
 
 // ── Win32 error constant ─────────────────────────────────────────────
 const ERROR_NO_MORE_ITEMS: u32 = 259;
@@ -825,7 +831,7 @@ pub fn get_active_scheme_guid() -> GUID {
     GUID::default()
 }
 
-fn set_active_scheme(guid: GUID) {
+pub(crate) fn set_active_scheme(guid: GUID) {
     unsafe {
         let _ = PowerSetActiveScheme(None, Some(&guid as *const GUID));
     }
@@ -859,7 +865,7 @@ fn read_dc_value(scheme: &GUID, sub: &GUID, setting: &GUID) -> u32 {
     }
 }
 
-fn write_ac_value(scheme: &GUID, sub: &GUID, setting: &GUID, value: u32) {
+pub(crate) fn write_ac_value(scheme: &GUID, sub: &GUID, setting: &GUID, value: u32) {
     unsafe {
         let _ = PowerWriteACValueIndex(
             None,
@@ -871,7 +877,7 @@ fn write_ac_value(scheme: &GUID, sub: &GUID, setting: &GUID, value: u32) {
     }
 }
 
-fn write_dc_value(scheme: &GUID, sub: &GUID, setting: &GUID, value: u32) {
+pub(crate) fn write_dc_value(scheme: &GUID, sub: &GUID, setting: &GUID, value: u32) {
     unsafe {
         let _ = PowerWriteDCValueIndex(
             None,
