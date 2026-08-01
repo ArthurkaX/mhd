@@ -22,6 +22,10 @@ name = "prefix_check"
 path = "src/bin/prefix_check.rs"
 
 [[bin]]
+name = "cache_bench"
+path = "src/bin/cache_bench.rs"
+
+[[bin]]
 name = "tune_check"
 path = "src/bin/tune_check.rs"
 
@@ -32,6 +36,10 @@ path = "src/bin/tune3_check.rs"
 [[bin]]
 name = "dump_body"
 path = "src/bin/dump_body.rs"
+
+[[bin]]
+name = "read_lifecycle_probe"
+path = "src/bin/read_lifecycle_probe.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }

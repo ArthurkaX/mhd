@@ -128,7 +128,7 @@ pub fn digest_openai(payload: &Value) -> Vec<Part> {
 
 /// Bytes shared by the leading parts of two digests. Stops at the first part
 /// that differs in either hash or length.
-fn shared_prefix_chars(prev: &[Part], cur: &[Part]) -> u64 {
+pub(crate) fn shared_prefix_chars(prev: &[Part], cur: &[Part]) -> u64 {
     prev.iter()
         .zip(cur.iter())
         .take_while(|(a, b)| a == b)

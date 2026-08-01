@@ -1,4 +1,4 @@
-//! Clean-room native trim engine (side artifact — NOT wired to the live path).
+//! Clean-room native trim engine — wired into the live request path.
 //!
 //! v2 levers:
 //! - Truncate every `"description"` string value (anywhere inside each
@@ -352,13 +352,38 @@ fn collapse_inner_spaces(line: &str) -> String {
 
 // ── provenance map builder ────────────────────────────────────────────────────
 
+/// Provenance info captured from a single `tool_use` block, keyed by
+/// `tool_use_id`. The extension (`ext`) drives the existing protection gate;
+/// the remaining fields are captured now for a planned Read-lifecycle
+/// classification feature and are not yet used by any trim logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolUseInfo {
+    /// Tool name, e.g. "Read", "Edit", "Write". Empty string when absent.
+    pub name: String,
+    /// Lowercased file extension derived from `input.file_path` (or `input.path`)
+    /// via [`std::path::Path::extension`]. `None` when no path is present or the
+    /// path has no extension. Computed exactly as before — unchanged behavior.
+    pub ext: Option<String>,
+    /// Raw `input.file_path` / `input.path` value, whitespace-trimmed and with
+    /// separators normalized to `/` so `a\b\c.rs` and `a/b/c.rs` compare equal.
+    /// Never canonicalized against the real filesystem.
+    pub file_path: Option<String>,
+    /// `input.offset` when present.
+    pub offset: Option<u64>,
+    /// `input.limit` when present.
+    pub limit: Option<u64>,
+}
+
 /// Scan all messages for `tool_use` blocks and build a map of
-/// `tool_use_id → Option<lowercased_file_extension>`.
+/// `tool_use_id → ToolUseInfo`.
 ///
 /// The extension is derived from the `file_path` (or `path`) field inside the
-/// tool_use's `input` object using [`std::path::Path::extension`]. If no path
-/// is present (or the path has no extension), the value is `None`.
-fn build_id_to_ext(messages: &[Value]) -> HashMap<String, Option<String>> {
+/// tool_use's `input` object using [`std::path::Path::extension`]; if no path
+/// is present (or the path has no extension), `ext` is `None`. The tool `name`
+/// is captured, the raw path is recorded (whitespace-trimmed and
+/// separator-normalized so `\` and `/` compare equal), and `offset`/`limit`
+/// are captured when present.
+pub(crate) fn build_id_to_tool_info(messages: &[Value]) -> HashMap<String, ToolUseInfo> {
     let mut map = HashMap::new();
     for msg in messages {
         let Some(content) = msg.get("content").and_then(|c| c.as_array()) else {
@@ -372,17 +397,37 @@ fn build_id_to_ext(messages: &[Value]) -> HashMap<String, Option<String>> {
             let Some(id) = b.get("id").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let ext = b.get("input").and_then(|inp| {
-                let obj = inp.as_object()?;
-                let path_str = obj
-                    .get("file_path")
-                    .or_else(|| obj.get("path"))
-                    .and_then(|p| p.as_str())?;
-                let ext_os = std::path::Path::new(path_str).extension()?;
+            let name = b
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let input = b.get("input").and_then(|inp| inp.as_object());
+            let path_str = input
+                .and_then(|obj| obj.get("file_path").or_else(|| obj.get("path")))
+                .and_then(|p| p.as_str());
+            let ext = path_str.and_then(|p| {
+                let ext_os = std::path::Path::new(p).extension()?;
                 let ext_str = ext_os.to_str()?;
                 Some(ext_str.to_ascii_lowercase())
             });
-            map.insert(id.to_string(), ext);
+            let file_path = path_str.map(|p| p.trim().replace('\\', "/"));
+            let offset = input
+                .and_then(|obj| obj.get("offset"))
+                .and_then(|v| v.as_u64());
+            let limit = input
+                .and_then(|obj| obj.get("limit"))
+                .and_then(|v| v.as_u64());
+            map.insert(
+                id.to_string(),
+                ToolUseInfo {
+                    name,
+                    ext,
+                    file_path,
+                    offset,
+                    limit,
+                },
+            );
         }
     }
     map
@@ -391,7 +436,7 @@ fn build_id_to_ext(messages: &[Value]) -> HashMap<String, Option<String>> {
 // ── tool_result compressor ────────────────────────────────────────────────────
 
 /// Walk a message's content array; for each `tool_result` block:
-/// - Look up provenance (file extension) via `id_to_ext`.
+/// - Look up provenance (file extension) via `id_to_info`.
 /// - Run `tool_result_protected` on the combined text.
 /// - **If protected** → skip entirely (leave byte-identical).
 /// - **If not protected** → apply whitespace ops (when enabled), then
@@ -402,7 +447,7 @@ fn build_id_to_ext(messages: &[Value]) -> HashMap<String, Option<String>> {
 fn compress_tool_results(
     msg: &mut Value,
     knobs: &NativeKnobs,
-    id_to_ext: &HashMap<String, Option<String>>,
+    id_to_info: &HashMap<String, ToolUseInfo>,
 ) {
     let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
         return;
@@ -421,7 +466,9 @@ fn compress_tool_results(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let src_ext: Option<&str> = id_to_ext.get(&tool_use_id).and_then(|opt| opt.as_deref());
+        let src_ext: Option<&str> = id_to_info
+            .get(&tool_use_id)
+            .and_then(|info| info.ext.as_deref());
 
         // Determine whether the block is protected.
         let fence_requires_code = knobs.tool_result_fence_requires_code;
@@ -653,7 +700,8 @@ fn strip_old_thinking(messages: &mut [Value]) {
 ///
 /// 1. Truncates tool descriptions (top-level + nested) inside `tools[]`.
 /// 2. Builds a provenance map: scans all messages for `tool_use` blocks and
-///    records `tool_use_id → Option<file_extension>`.
+///    records `tool_use_id → ToolUseInfo` (tool name, file extension, raw
+///    path, offset/limit).
 /// 3. Compresses large `tool_result` content blocks inside `messages[]`,
 ///    skipping any block detected as protected (diagrams, markdown, code fences).
 ///
@@ -670,8 +718,8 @@ pub fn trim_native(mut body: Value, knobs: &NativeKnobs) -> Value {
             truncate_descriptions(tool, knobs.tool_max_desc_chars);
         }
     }
-    // 2) Build tool_use_id → file_ext provenance map (immutable pass).
-    let id_to_ext: HashMap<String, Option<String>> = build_id_to_ext(
+    // 2) Build tool_use_id → ToolUseInfo provenance map (immutable pass).
+    let id_to_info: HashMap<String, ToolUseInfo> = build_id_to_tool_info(
         obj.get("messages")
             .and_then(|m| m.as_array())
             .map(|v| v.as_slice())
@@ -680,7 +728,7 @@ pub fn trim_native(mut body: Value, knobs: &NativeKnobs) -> Value {
     // 3) Large tool_result blocks (mutable pass, protection-gated).
     if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for msg in messages.iter_mut() {
-            compress_tool_results(msg, knobs, &id_to_ext);
+            compress_tool_results(msg, knobs, &id_to_info);
         }
     }
     // 4) Strip thinking/redacted_thinking from old assistant turns (optional).
@@ -1216,13 +1264,30 @@ mod tests {
         }
     }
 
-    /// Layer 1: an unprotected extension (log, rs, py, …) is not a match.
+    /// Layer 1: extensions genuinely absent from the match arms are not protected.
     #[test]
-    fn protected_layer1_non_doc_ext_not_protected() {
-        for ext in &["log", "rs", "py", "json", "toml", "sh"] {
+    fn protected_layer1_unlisted_ext_not_protected() {
+        for ext in &["log", "env", "cfg", "lock"] {
             assert!(
                 !tool_result_protected("hello world no fences no glyphs", Some(ext), true, 0.01),
                 "extension {ext} should NOT be protected by layer 1"
+            );
+        }
+    }
+
+    /// Layer 1: code and config extensions ARE protected.
+    ///
+    /// The model needs exact bytes to match `old_string` in Edit calls; eliding
+    /// these files made it invent `old_string` values from trimmed content and
+    /// caused mass Edit failures. They must never be elided.
+    #[test]
+    fn protected_layer1_code_exts_protected() {
+        for ext in &[
+            "py", "rs", "go", "ts", "js", "sh", "json", "toml", "yaml", "md",
+        ] {
+            assert!(
+                tool_result_protected("hello world", Some(ext), true, 0.01),
+                "extension {ext} should be protected by layer 1"
             );
         }
     }
@@ -2693,5 +2758,153 @@ mod tests {
             tool_result_protected(&plain_md, Some("md"), false, 0.01),
             "md provenance must be protected when fence_requires_code=false"
         );
+    }
+
+    // ── build_id_to_tool_info: provenance map captures name/path/ext/offset/limit ─
+
+    /// The tool_use `name` is captured in the map value.
+    #[test]
+    fn tool_info_captures_name() {
+        let body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tu_read",
+                    "name": "Read",
+                    "input": { "file_path": "/src/main.rs", "offset": 1, "limit": 200 }
+                }]
+            }]
+        });
+        let map = build_id_to_tool_info(body["messages"].as_array().unwrap());
+        let info = map.get("tu_read").expect("tool_use id must be present");
+        assert_eq!(info.name, "Read");
+    }
+
+    /// `file_path` is captured and normalized so `\` and `/` compare equal.
+    #[test]
+    fn tool_info_normalizes_file_path_separators() {
+        let body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_backslash",
+                        "name": "Read",
+                        "input": { "file_path": "a\\b\\c.rs" }
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tu_slash",
+                        "name": "Read",
+                        "input": { "file_path": "a/b/c.rs" }
+                    }
+                ]
+            }]
+        });
+        let map = build_id_to_tool_info(body["messages"].as_array().unwrap());
+        let bs = map.get("tu_backslash").expect("backslash id present");
+        let sl = map.get("tu_slash").expect("slash id present");
+        assert_eq!(
+            bs.file_path, sl.file_path,
+            "separator-normalized paths must compare equal"
+        );
+        assert_eq!(bs.file_path.as_deref(), Some("a/b/c.rs"));
+        assert_eq!(sl.file_path.as_deref(), Some("a/b/c.rs"));
+    }
+
+    /// `file_path` is whitespace-trimmed before being stored.
+    #[test]
+    fn tool_info_trims_file_path() {
+        let body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tu_trim",
+                    "name": "Read",
+                    "input": { "path": "  src\\main.rs  " }
+                }]
+            }]
+        });
+        let map = build_id_to_tool_info(body["messages"].as_array().unwrap());
+        let info = map.get("tu_trim").expect("tool_use id must be present");
+        assert_eq!(info.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(info.name, "Read");
+    }
+
+    /// `offset`/`limit` are captured when present and `None` when absent.
+    #[test]
+    fn tool_info_captures_offset_limit() {
+        let body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_with",
+                        "name": "Read",
+                        "input": { "file_path": "a.rs", "offset": 10, "limit": 50 }
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tu_without",
+                        "name": "Write",
+                        "input": { "file_path": "b.rs" }
+                    }
+                ]
+            }]
+        });
+        let map = build_id_to_tool_info(body["messages"].as_array().unwrap());
+        let with = map.get("tu_with").expect("offset/limit id present");
+        assert_eq!(with.offset, Some(10));
+        assert_eq!(with.limit, Some(50));
+        assert_eq!(with.name, "Read");
+        let without = map.get("tu_without").expect("no-offset id present");
+        assert_eq!(without.offset, None);
+        assert_eq!(without.limit, None);
+        assert_eq!(without.name, "Write");
+    }
+
+    /// `ext` is still derived exactly as before from `file_path`/`path`.
+    #[test]
+    fn tool_info_derives_ext() {
+        let body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_rs",
+                        "name": "Read",
+                        "input": { "file_path": "/proj/src/lib.rs" }
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tu_py",
+                        "name": "Read",
+                        "input": { "path": "C:\\code\\app\\main.py" }
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tu_md",
+                        "name": "Read",
+                        "input": { "file_path": "docs/README.MD" }
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tu_none",
+                        "name": "bash",
+                        "input": {}
+                    }
+                ]
+            }]
+        });
+        let map = build_id_to_tool_info(body["messages"].as_array().unwrap());
+        assert_eq!(map.get("tu_rs").unwrap().ext.as_deref(), Some("rs"));
+        assert_eq!(map.get("tu_py").unwrap().ext.as_deref(), Some("py"));
+        assert_eq!(map.get("tu_md").unwrap().ext.as_deref(), Some("md"));
+        assert_eq!(map.get("tu_none").unwrap().ext, None);
     }
 }

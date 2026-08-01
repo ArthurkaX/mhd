@@ -6,6 +6,7 @@
 //! directly on the shared [`AppState`] — no self-HTTP needed.
 
 pub mod bench;
+pub mod cache_bench;
 pub mod config;
 pub mod db_log;
 pub mod handlers;
@@ -14,6 +15,7 @@ pub mod native_trim;
 pub mod oauth_usage;
 pub mod prefix;
 pub mod providers;
+pub mod read_lifecycle;
 pub mod state;
 pub mod throttle;
 pub mod transform;
