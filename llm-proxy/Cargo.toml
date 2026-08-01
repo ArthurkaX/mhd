@@ -41,6 +41,10 @@ path = "src/bin/dump_body.rs"
 name = "read_lifecycle_probe"
 path = "src/bin/read_lifecycle_probe.rs"
 
+[[bin]]
+name = "content_mix"
+path = "src/bin/content_mix.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 reqwest = { workspace = true, features = ["stream", "blocking"] }

@@ -8,6 +8,7 @@
 pub mod bench;
 pub mod cache_bench;
 pub mod config;
+pub mod content_mix;
 pub mod db_log;
 pub mod handlers;
 pub mod measure;
