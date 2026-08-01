@@ -5,15 +5,16 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::providers;
-use crate::state::{AppState, Target, Tier, TraceEntry};
+use crate::state::{AppState, CodexTarget, Target, Tier, TraceEntry};
 
 /// Read the `x-client-run-id` header a harness may send to identify its session.
 ///
@@ -640,7 +641,22 @@ pub async fn post_chat_completions(
 }
 
 /// Handler for `GET /v1/models` — list available models in OpenAI format.
-pub async fn get_models() -> Json<Value> {
+pub async fn get_models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, AppError> {
+    if crate::providers::codex::is_codex_request(&headers, uri.query()) {
+        return Ok(crate::providers::codex::forward(
+            &state,
+            axum::http::Method::GET,
+            uri.path(),
+            uri.query(),
+            &headers,
+            bytes::Bytes::new(),
+        )
+        .await?);
+    }
     let models = crate::config::load_models().unwrap_or_default();
     let data: Vec<Value> = models
         .into_iter()
@@ -656,10 +672,50 @@ pub async fn get_models() -> Json<Value> {
             entry
         })
         .collect();
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "object": "list",
         "data": data,
     }))
+    .into_response())
+}
+
+/// Native Codex Responses HTTPS fallback. The request body is forwarded as raw
+/// bytes because Codex sends zstd-compressed JSON and expects SSE framing.
+pub async fn post_codex_responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    // Capture the decoded native wire request only when the existing explicit
+    // corpus-capture setting is enabled. The raw OAuth header is never stored.
+    if let Ok(payload) = crate::providers::codex::decode_request(&headers, &body) {
+        let req_id = state.next_req_id();
+        let model = payload.get("model").and_then(Value::as_str);
+        state.capture_request_body(req_id, model, "codex", &payload);
+    }
+    match state.codex_target() {
+        CodexTarget::Native => {}
+        CodexTarget::Model(model) => {
+            return Ok(crate::providers::codex::forward_side(&state, &headers, body, &model).await?);
+        }
+    }
+    Ok(crate::providers::codex::forward(
+        &state,
+        axum::http::Method::POST,
+        uri.path(),
+        uri.query(),
+        &headers,
+        body,
+    )
+    .await?)
+}
+
+/// Codex first attempts a WebSocket upgrade. We intentionally return a quick
+/// 404 so the supported HTTPS/SSE fallback is selected; no OAuth is sent to a
+/// different destination and no fake WebSocket framing is attempted.
+pub async fn get_codex_websocket_fallback() -> StatusCode {
+    StatusCode::NOT_FOUND
 }
 
 // ─── Model switching endpoints ───────────────────────────────────────
@@ -697,12 +753,15 @@ pub async fn set_model(
         "sonnet" => cfg_before.sonnet_target,
         "haiku" => cfg_before.haiku_target,
         "fable" => cfg_before.fable_target,
+        "codex" => cfg_before.codex_target.clone(),
         _ => String::new(),
     };
 
-    if !state.set_target(&slot, target.clone()) {
+    if slot == "codex" {
+        state.set_codex_target(CodexTarget::parse(&body.id));
+    } else if !state.set_target(&slot, target.clone()) {
         return Err(AppError::bad_request(format!(
-            "Unknown slot '{slot}'. Use: opus, sonnet, haiku, fable"
+            "Unknown slot '{slot}'. Use: opus, sonnet, haiku, fable, codex"
         )));
     }
 
@@ -710,7 +769,7 @@ pub async fn set_model(
     state.log_event(crate::db_log::LogEvent {
         seq: 0,
         event_type: "MODEL_SWITCH".to_string(),
-        target: Some(target.as_str().to_string()),
+        target: Some(if slot == "codex" { body.id.clone() } else { target.as_str().to_string() }),
         model: Some(slot.clone()),
         reason: Some(format!(
             "slot={} {} -> {}",
@@ -726,10 +785,15 @@ pub async fn set_model(
         tracing::warn!("Failed to persist config: {e}");
     }
 
+    let effective_target = if slot == "codex" {
+        state.codex_target().as_str().to_string()
+    } else {
+        target.as_str().to_string()
+    };
     Ok(Json(serde_json::json!({
         "status": "ok",
         "slot": slot,
-        "target": target.as_str(),
+        "target": effective_target,
     })))
 }
 
@@ -740,6 +804,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<Value> {
         "sonnet": state.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
         "haiku": state.haiku_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
         "fable": state.fable_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "codex": state.codex_target().as_str(),
         "upstream_base_url": *state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()),
         "anthropic_key_set": !state.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
         "upstream_key_set": !state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).is_empty(),

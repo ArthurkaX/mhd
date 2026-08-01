@@ -42,6 +42,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         sonnet_target: cfg.sonnet.clone(),
         haiku_target: cfg.haiku.clone(),
         fable_target: cfg.fable.clone(),
+        codex_target: "native".to_string(),
         log_level: cfg.log_level.clone(),
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
         sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,

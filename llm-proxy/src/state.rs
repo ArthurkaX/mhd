@@ -103,6 +103,27 @@ pub enum Target {
     Model(String),
 }
 
+/// Codex route target. Kept separate from Claude tier routing because Codex
+/// uses the Responses API and has a native ChatGPT OAuth branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexTarget {
+    Native,
+    Model(String),
+}
+
+impl CodexTarget {
+    pub fn parse(s: &str) -> Self {
+        if s.eq_ignore_ascii_case(NATIVE) || s.is_empty() {
+            Self::Native
+        } else {
+            Self::Model(s.to_string())
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        match self { Self::Native => NATIVE, Self::Model(id) => id }
+    }
+}
+
 /// A single proxy routing decision recorded for the live trace overlay.
 #[derive(Debug, Clone)]
 pub struct TraceEntry {
@@ -210,6 +231,7 @@ pub struct AppState {
     pub sonnet_target: RwLock<Target>,
     pub haiku_target: RwLock<Target>,
     pub fable_target: RwLock<Target>,
+    pub codex_target: RwLock<CodexTarget>,
     pub log_level: RwLock<DebugLevel>,
     /// Opus downgrade when no thinking.
     pub opus_downgrade_enabled: RwLock<bool>,
@@ -370,15 +392,18 @@ impl AppState {
             sonnet_target: RwLock::new(Target::parse(&cfg.sonnet_target)),
             haiku_target: RwLock::new(Target::parse(&cfg.haiku_target)),
             fable_target: RwLock::new(Target::parse(&cfg.fable_target)),
+            codex_target: RwLock::new(CodexTarget::parse(&cfg.codex_target)),
             log_level: RwLock::new(DebugLevel::parse(&cfg.log_level)),
             opus_downgrade_enabled: RwLock::new(cfg.opus_downgrade_enabled),
             sonnet_downgrade_enabled: RwLock::new(cfg.sonnet_downgrade_enabled),
             http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(120))
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("Failed to build HTTP client"),
             http_stream: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .read_timeout(std::time::Duration::from_secs(120))
                 .build()
@@ -945,6 +970,14 @@ impl AppState {
         true
     }
 
+    pub fn codex_target(&self) -> CodexTarget {
+        self.codex_target.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_codex_target(&self, target: CodexTarget) {
+        *self.codex_target.write().unwrap_or_else(|e| e.into_inner()) = target;
+    }
+
     /// Snapshot current state back into a Config (for persisting changes).
     pub fn to_config(&self) -> Config {
         Config {
@@ -987,6 +1020,7 @@ impl AppState {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_str()
                 .to_string(),
+            codex_target: self.codex_target().as_str().to_string(),
             log_level: self
                 .log_level
                 .read()

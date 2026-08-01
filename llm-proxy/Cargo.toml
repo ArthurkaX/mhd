@@ -45,6 +45,10 @@ path = "src/bin/read_lifecycle_probe.rs"
 name = "content_mix"
 path = "src/bin/content_mix.rs"
 
+[[bin]]
+name = "codex_wire_probe"
+path = "src/bin/codex_wire_probe.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 reqwest = { workspace = true, features = ["stream", "blocking"] }

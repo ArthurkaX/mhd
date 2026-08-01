@@ -63,6 +63,10 @@ pub struct Settings {
     #[serde(default = "default_fable_target")]
     pub fable_target: String,
 
+    /// Codex Responses route: `native` or provider/model id.
+    #[serde(default = "default_codex_target")]
+    pub codex_target: String,
+
     /// Debug log level: "none", "minimal", "maximal".
     #[serde(default = "default_log_level")]
     pub log_level: String,
@@ -200,6 +204,7 @@ impl Default for Settings {
             sonnet_target: default_sonnet_target(),
             haiku_target: default_haiku_target(),
             fable_target: default_fable_target(),
+            codex_target: default_codex_target(),
             log_level: default_log_level(),
             bind_ip: default_bind_ip(),
             opus_downgrade_enabled: false,
@@ -280,6 +285,7 @@ pub struct Config {
     pub haiku_target: String,
     /// Routing target for `fable`.
     pub fable_target: String,
+    pub codex_target: String,
     /// Debug log level.
     pub log_level: String,
     /// Opus downgrade when no thinking.
@@ -342,6 +348,7 @@ impl Config {
             sonnet_target: settings.sonnet_target.clone(),
             haiku_target: settings.haiku_target.clone(),
             fable_target: settings.fable_target.clone(),
+            codex_target: settings.codex_target.clone(),
             log_level: settings.log_level.clone(),
             opus_downgrade_enabled: settings.opus_downgrade_enabled,
             sonnet_downgrade_enabled: settings.sonnet_downgrade_enabled,
@@ -379,6 +386,7 @@ impl Config {
             sonnet_target: self.sonnet_target.clone(),
             haiku_target: self.haiku_target.clone(),
             fable_target: self.fable_target.clone(),
+            codex_target: self.codex_target.clone(),
             log_level: self.log_level.clone(),
             bind_ip: String::new(),
             opus_downgrade_enabled: self.opus_downgrade_enabled,
@@ -464,6 +472,10 @@ fn default_haiku_target() -> String {
 }
 
 fn default_fable_target() -> String {
+    "native".to_string()
+}
+
+fn default_codex_target() -> String {
     "native".to_string()
 }
 
@@ -607,6 +619,7 @@ pub fn save(cfg: &Config) -> anyhow::Result<()> {
     settings.sonnet_target = cfg.sonnet_target.clone();
     settings.haiku_target = cfg.haiku_target.clone();
     settings.fable_target = cfg.fable_target.clone();
+    settings.codex_target = cfg.codex_target.clone();
     settings.log_level = cfg.log_level.clone();
     settings.opus_downgrade_enabled = cfg.opus_downgrade_enabled;
     settings.sonnet_downgrade_enabled = cfg.sonnet_downgrade_enabled;

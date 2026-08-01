@@ -37,7 +37,7 @@ pub use config::{
     normalize_vision_endpoint, resolve_model_endpoint,
 };
 pub use db_log::{LogEvent, QuotaSnapshot};
-pub use state::{AppState, Target, Tier, TraceEntry, VisionTraceEntry};
+pub use state::{AppState, CodexTarget, Target, Tier, TraceEntry, VisionTraceEntry};
 
 /// Build the Axum router for a given shared state.
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -46,6 +46,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/chat/completions",
             post(handlers::post_chat_completions),
+        )
+        .route(
+            "/v1/responses",
+            post(handlers::post_codex_responses).get(handlers::get_codex_websocket_fallback),
         )
         .route("/v1/models", get(handlers::get_models))
         .route("/set_model/{slot}", post(handlers::set_model))
@@ -109,6 +113,19 @@ impl ProxyControl {
             tracing::warn!("failed to persist proxy config: {e}");
         }
         ok
+    }
+
+    /// Set the dedicated Codex Responses route. `native` keeps ChatGPT OAuth;
+    /// any other value is a provider/model id and uses the mHD gateway key.
+    pub fn set_codex_target(&self, target: &str) {
+        self.state.set_codex_target(CodexTarget::parse(target));
+        if self.persist && let Err(e) = config::save(&self.state.to_config()) {
+            tracing::warn!("failed to persist Codex target: {e}");
+        }
+    }
+
+    pub fn codex_target(&self) -> String {
+        self.state.codex_target().as_str().to_string()
     }
 
     /// Current (opus, sonnet, haiku, fable) targets.
