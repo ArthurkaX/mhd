@@ -30,17 +30,15 @@ fn tray_tooltip_line(card: &QuotaCard) -> String {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let seconds_left = reset.saturating_sub(now).max(0);
-    let days_left = seconds_left as f64 / 86_400.0;
-    let today = if days_left > 0.01 {
-        (100.0 - used).clamp(0.0, 100.0) / days_left
-    } else {
-        0.0
-    };
+    // Deviation from a uniform-consumption line stretched across the 7-day
+    // window: +N = ahead (overspending), -N = behind (slack left).
+    let elapsed_frac = (1.0 - (seconds_left as f64 / (7.0 * 86_400.0))).clamp(0.0, 1.0);
+    let pace = used - elapsed_frac * 100.0;
     let until_reset =
         mhd_telemetry::query::time_to_reset(Some(reset)).unwrap_or_else(|| "unknown".into());
     format!(
-        "{}: spent 7d {:.0}% · today ~{:.0}% · reset {}",
-        card.name, used, today, until_reset
+        "{}: spent 7d {:.0}% · pace {:+.0} · reset {}",
+        card.name, used, pace, until_reset
     )
 }
 
