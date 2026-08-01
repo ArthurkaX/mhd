@@ -70,10 +70,7 @@ pub(crate) fn rfc3339_to_epoch(s: &str) -> Option<i64> {
     if pos < b.len() {
         if b[pos] == b'Z' {
             // UTC, offset stays zero.
-        } else if (b[pos] == b'+' || b[pos] == b'-')
-            && pos + 6 <= b.len()
-            && b[pos + 3] == b':'
-        {
+        } else if (b[pos] == b'+' || b[pos] == b'-') && pos + 6 <= b.len() && b[pos + 3] == b':' {
             let sign: i64 = if b[pos] == b'-' { -1 } else { 1 };
             let tz_part = &s[pos + 1..];
             let tz_h: i64 = tz_part[..2].parse().ok()?;
@@ -124,10 +121,7 @@ fn read_oauth_token() -> Option<String> {
     let path = home.join(".claude").join(".credentials.json");
     let content = std::fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let token = parsed
-        .get("claudeAiOauth")?
-        .get("accessToken")?
-        .as_str()?;
+    let token = parsed.get("claudeAiOauth")?.get("accessToken")?.as_str()?;
     if token.is_empty() {
         return None;
     }
@@ -330,8 +324,8 @@ async fn poll_once(state: &Arc<AppState>, token: &str) -> Result<Option<u64>, Po
         .await
         .map_err(|e| PollOnceError::Other(format!("read body failed: {e}")))?;
 
-    let parsed: OauthUsageResponse =
-        serde_json::from_str(&body).map_err(|e| PollOnceError::Other(format!("parse response failed: {e}")))?;
+    let parsed: OauthUsageResponse = serde_json::from_str(&body)
+        .map_err(|e| PollOnceError::Other(format!("parse response failed: {e}")))?;
 
     let snap = build_snapshot(&parsed);
     state.record_quota_polled(snap);
@@ -492,7 +486,8 @@ mod tests {
     }
 
     /// Positive offset: +05:00 means local is 5 hours ahead of UTC.
-    #[test]    fn test_rfc3339_positive_offset() {
+    #[test]
+    fn test_rfc3339_positive_offset() {
         // 2026-07-30T17:00:00+05:00 = 2026-07-30T12:00:00Z
         assert_eq!(
             rfc3339_to_epoch("2026-07-30T17:00:00+05:00"),
@@ -528,10 +523,7 @@ mod tests {
         // 19723 * 86400 = 1704067200
         // Jan 1 to Feb 29 = 31 (Jan) + 29 (Feb) - 1 = 59 days
         // 19723 + 59 = 19782. 19782 * 86400 = 1709164800. Correct!
-        assert_eq!(
-            rfc3339_to_epoch("2024-02-29T00:00:00Z"),
-            Some(1709164800)
-        );
+        assert_eq!(rfc3339_to_epoch("2024-02-29T00:00:00Z"), Some(1709164800));
     }
 
     /// Malformed: missing T separator.
@@ -567,10 +559,7 @@ mod tests {
 
     #[test]
     fn test_normalize_numeric_milliseconds() {
-        assert_eq!(
-            normalize_numeric_ts(1785412800000.0),
-            Some(1785412800)
-        );
+        assert_eq!(normalize_numeric_ts(1785412800000.0), Some(1785412800));
     }
 
     #[test]
