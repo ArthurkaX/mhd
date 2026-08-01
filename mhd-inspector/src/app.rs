@@ -15,12 +15,29 @@ use std::time::{Duration, Instant};
 use crate::activity;
 use crate::anthropic_quota;
 use crate::overview;
+use crate::timefmt;
 
 /// Tabs in the monitor window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Overview,
     Activity,
+}
+
+/// Chart span: the decision view (current cycle) or several cycles back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartRange {
+    Cycle,
+    History,
+}
+
+impl ChartRange {
+    fn label(&self) -> &str {
+        match self {
+            ChartRange::Cycle => "Cycle",
+            ChartRange::History => "History",
+        }
+    }
 }
 
 /// State for the complete LLM Monitor window.
@@ -32,6 +49,7 @@ pub struct MonitorApp {
     provider: String,
     project_filter: Option<String>,
     period: Period,
+    chart_range: ChartRange,
     last_refresh: Instant,
     status_message: String,
     note_open: bool,
@@ -50,6 +68,8 @@ pub struct MonitorApp {
     slope_proj_5h: SlopeProjection,
     slope_proj_7d: SlopeProjection,
     quota_history: Vec<QuotaSample>,
+    quota_cycle_starts: Vec<i64>,
+    local_offset: i64,
     live_quota: Option<live::LiveQuota>,
     last_live_refresh: Instant,
 
@@ -123,6 +143,7 @@ impl MonitorApp {
             provider: "codex".to_string(),
             project_filter: None,
             period: Period::All,
+            chart_range: ChartRange::Cycle,
             last_refresh: Instant::now(),
             status_message: String::new(),
             note_open: false,
@@ -137,6 +158,8 @@ impl MonitorApp {
             slope_proj_5h: SlopeProjection::default(),
             slope_proj_7d: SlopeProjection::default(),
             quota_history: Vec::new(),
+            quota_cycle_starts: Vec::new(),
+            local_offset: timefmt::local_offset_seconds(),
             live_quota: None,
             last_live_refresh: Instant::now() - Duration::from_secs(60), // prompt first refresh
             activity_rows: Vec::new(),
@@ -158,8 +181,6 @@ impl MonitorApp {
             self.status_message = "telemetry.db not available".into();
             return;
         };
-
-        let since = self.period.since_epoch();
 
         // Projects
         self.projects = query::list_projects(db);
@@ -186,10 +207,35 @@ impl MonitorApp {
         } else {
             ("7d", 7 * 24 * 3600, None)
         };
-        let chart_since = resets_at
-            .map(|reset| reset.saturating_sub(window_seconds))
-            .unwrap_or(since);
+        let current_cycle_since = query::current_cycle_start(db, &self.provider, window_kind)
+            .unwrap_or_else(|| {
+                resets_at
+                    .map(|reset| reset.saturating_sub(window_seconds))
+                    .unwrap_or(0)
+            });
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        // History spans four cycles so past resets are visible on the X axis.
+        let history_since = now - window_seconds * 4;
+        let chart_since = if self.chart_range == ChartRange::History {
+            history_since
+        } else {
+            resets_at
+                .map(|reset| reset.saturating_sub(window_seconds))
+                .unwrap_or(current_cycle_since)
+        };
         self.quota_history = query::quota_samples(db, &self.provider, window_kind, chart_since);
+        self.quota_cycle_starts = query::cycle_boundaries(db, &self.provider, window_kind);
+
+        // "Current cycle" follows the same provider-reported quota window as
+        // the progress chart, rather than silently meaning all history.
+        let since = if self.period == Period::CurrentCycle {
+            current_cycle_since
+        } else {
+            self.period.since_epoch()
+        };
 
         // Activity rows
         self.activity_rows =
@@ -245,7 +291,17 @@ impl MonitorApp {
     fn refresh_anthropic_quota(&mut self) {
         let db_path = llm_proxy::config::config_dir().join("proxy.db");
         self.anthropic_quota = anthropic_quota::read_latest(&db_path);
-        self.anthropic_history = anthropic_quota::read_history(&db_path, 500);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        // Bounding the query by time keeps the 10s refresh affordable; history
+        // needs four cycles back, the decision view only a week.
+        let (since, limit) = match self.chart_range {
+            ChartRange::History => (now - 28 * 24 * 3600, 20000),
+            ChartRange::Cycle => (now - 8 * 24 * 3600, 5000),
+        };
+        self.anthropic_history = anthropic_quota::read_history_since(&db_path, since, limit);
         self.last_anthropic_refresh = Instant::now();
     }
 
@@ -322,6 +378,20 @@ impl eframe::App for MonitorApp {
                     ] {
                         if ui.selectable_label(self.period == *p, p.label()).clicked() {
                             self.period = *p;
+                            self.refresh_data();
+                        }
+                    }
+                }
+
+                if self.active_tab == Tab::Overview {
+                    ui.separator();
+                    ui.label("Range:");
+                    for variant in [ChartRange::Cycle, ChartRange::History] {
+                        if ui
+                            .selectable_label(self.chart_range == variant, variant.label())
+                            .clicked()
+                        {
+                            self.chart_range = variant;
                             self.refresh_data();
                         }
                     }
@@ -430,6 +500,11 @@ impl eframe::App for MonitorApp {
                     self.live_quota.as_ref(),
                     self.anthropic_quota.as_ref(),
                     &self.anthropic_history,
+                    &self.quota_cycle_starts,
+                    overview::ChartOpts {
+                        local_offset: self.local_offset,
+                        history: self.chart_range == ChartRange::History,
+                    },
                     ctx,
                 );
             }

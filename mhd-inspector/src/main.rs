@@ -11,6 +11,7 @@ mod anthropic_quota;
 mod app;
 mod context_trim;
 mod overview;
+mod timefmt;
 
 use std::path::PathBuf;
 

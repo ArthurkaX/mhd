@@ -121,6 +121,104 @@ pub fn quota_samples(
     .collect()
 }
 
+/// Return the event time of the first sample of each newly observed quota
+/// cycle, oldest first.
+///
+/// A new cycle starts at a sample when the provider advanced `resets_at` by
+/// more than 60 seconds, or when reported utilization dropped by more than
+/// one percent relative to the previous sample.  The oldest sample is merely
+/// where recording began, not a boundary, so a table with no detected reset
+/// yields an empty vector.
+pub fn cycle_boundaries(db: &TelemetryDb, provider: &str, window_kind: &str) -> Vec<i64> {
+    let conn = db.conn();
+    let mut stmt = match conn.prepare(
+        "SELECT event_at, used_percent, resets_at
+         FROM quota_samples
+         WHERE provider = ?1 AND window_kind = ?2 AND used_percent IS NOT NULL
+         ORDER BY event_at ASC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let samples: Vec<(i64, f64, Option<i64>)> = match stmt
+        .query_map(params![provider, window_kind], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => return Vec::new(),
+    };
+
+    let mut boundaries = Vec::new();
+    for pair in samples.windows(2) {
+        let previous = pair[0];
+        let current = pair[1];
+        let reset_advanced = matches!(
+            (previous.2, current.2),
+            (Some(before), Some(after)) if after > before + 60
+        );
+        // One percent avoids splitting a cycle because of harmless rounding.
+        let utilization_dropped = current.1 + 1.0 < previous.1;
+        if reset_advanced || utilization_dropped {
+            boundaries.push(current.0);
+        }
+    }
+    boundaries
+}
+
+/// Event time of the earliest recorded sample for a provider and window kind.
+fn first_sample_event_at(db: &TelemetryDb, provider: &str, window_kind: &str) -> Option<i64> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT event_at
+         FROM quota_samples
+         WHERE provider = ?1 AND window_kind = ?2 AND used_percent IS NOT NULL
+         ORDER BY event_at ASC
+         LIMIT 1",
+        params![provider, window_kind],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// Return the beginning of the current quota cycle, when it can be inferred
+/// from recorded quota samples.
+///
+/// `resets_at` is supplied by the provider and may move, so it is not treated
+/// as a calendar-week boundary.  A new cycle is observed either when the
+/// provider advances its reset timestamp or when reported utilization drops.
+/// If no reset has been observed yet, the advertised window length provides a
+/// conservative lower bound for the currently active window.
+pub fn current_cycle_start(db: &TelemetryDb, provider: &str, window_kind: &str) -> Option<i64> {
+    // The most recent detected boundary anchors the active window; before any
+    // reset the first recorded sample is the earliest possible start.
+    let observed_start = match cycle_boundaries(db, provider, window_kind).last() {
+        Some(t) => *t,
+        None => first_sample_event_at(db, provider, window_kind)?,
+    };
+
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT resets_at, window_minutes
+             FROM quota_samples
+             WHERE provider = ?1 AND window_kind = ?2 AND used_percent IS NOT NULL
+             ORDER BY event_at DESC
+             LIMIT 1",
+        )
+        .ok()?;
+    let latest = stmt
+        .query_row(params![provider, window_kind], |row| {
+            Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?))
+        })
+        .ok()?;
+
+    let advertised_start = match latest {
+        (Some(reset), Some(minutes)) if minutes > 0 => reset.saturating_sub(minutes * 60),
+        _ => i64::MIN,
+    };
+    Some(observed_start.max(advertised_start))
+}
+
 // ── Slopes and projections ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -166,9 +264,9 @@ pub fn slope_and_projection(
         return result;
     }
 
-    // Find the most recent reset boundary
-    let last_reset = samples.iter().rev().find_map(|(_, _, r)| *r);
-    let cycle_start = last_reset.unwrap_or(0);
+    // Keep only the current observed/provider-advertised quota cycle.
+    let cycle_start = current_cycle_start(db, provider, window_kind).unwrap_or(0);
+    let current_reset = samples.iter().rev().find_map(|(_, _, r)| *r);
 
     // Samples within the current cycle
     let cycle_samples: Vec<_> = samples
@@ -212,7 +310,7 @@ pub fn slope_and_projection(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    if let (Some(resets_at), Some(full_slope)) = (last_reset, result.full_slope)
+    if let (Some(resets_at), Some(full_slope)) = (current_reset, result.full_slope)
         && full_slope > 0.0
     {
         let hours_until = (resets_at - now) as f64 / 3600.0;
@@ -226,10 +324,16 @@ pub fn slope_and_projection(
                 let exhaustion_time = now + (hours_to_100 * 3600.0) as i64;
                 let hours = exhaustion_time.saturating_sub(now) / 3600;
                 let minutes = (exhaustion_time.saturating_sub(now) % 3600) / 60;
-                if hours > 0 {
-                    result.projected_exhaustion = Some(format!("~{hours}h {minutes}m"));
-                } else {
-                    result.projected_exhaustion = Some(format!("~{minutes}m"));
+                // An exhaustion estimate after the provider's next reset is
+                // not a risk for this quota cycle.  Keep the reset projection
+                // (for example, "64.8% by reset") but do not label it as an
+                // impending exhaustion.
+                if exhaustion_time <= resets_at {
+                    if hours > 0 {
+                        result.projected_exhaustion = Some(format!("~{hours}h {minutes}m"));
+                    } else {
+                        result.projected_exhaustion = Some(format!("~{minutes}m"));
+                    }
                 }
             }
         }
@@ -525,6 +629,92 @@ mod tests {
         assert!(sp.full_slope.is_some());
         // 25-10=15 over 1000s = ~54 %/hour
         assert!(sp.full_slope.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn current_cycle_uses_provider_window_and_detects_reset() {
+        let db = test_db("current_cycle.db");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let reset = now + 3_600;
+        db.conn().execute_batch(&format!(
+            "INSERT INTO quota_samples (provider, event_at, window_kind, window_minutes, used_percent, resets_at, source_offset) VALUES
+             ('codex', {}, '7d', 10080, 80.0, {}, 1),
+             ('codex', {}, '7d', 10080, 5.0, {}, 2),
+             ('codex', {}, '7d', 10080, 15.0, {}, 3);",
+            now - 700_000, reset - 604_800, now - 1_800, reset, now - 900, reset
+        )).unwrap();
+
+        assert_eq!(current_cycle_start(&db, "codex", "7d"), Some(now - 1_800));
+        let projection = slope_and_projection(&db, "codex", "7d");
+        assert!(projection.full_slope.is_some());
+        assert!(projection.projected_at_reset.is_some());
+        assert!(projection.projected_exhaustion.is_none());
+    }
+
+    #[test]
+    fn cycle_boundaries_empty_when_utilization_only_rises() {
+        let db = test_db("cycle_boundaries_rising.db");
+        db.conn().execute_batch(
+            "INSERT INTO quota_samples (provider, event_at, window_kind, window_minutes, used_percent, resets_at, source_offset) VALUES
+             ('codex', 1000, '5h', 300, 10.0, NULL, 1),
+             ('codex', 2000, '5h', 300, 20.0, NULL, 2),
+             ('codex', 3000, '5h', 300, 30.0, NULL, 3);",
+        )
+        .unwrap();
+        assert!(cycle_boundaries(&db, "codex", "5h").is_empty());
+    }
+
+    #[test]
+    fn cycle_boundaries_one_on_utilization_drop() {
+        let db = test_db("cycle_boundaries_drop.db");
+        db.conn().execute_batch(
+            "INSERT INTO quota_samples (provider, event_at, window_kind, window_minutes, used_percent, resets_at, source_offset) VALUES
+             ('codex', 1000, '5h', 300, 50.0, NULL, 1),
+             ('codex', 2000, '5h', 300, 10.0, NULL, 2),
+             ('codex', 3000, '5h', 300, 20.0, NULL, 3);",
+        )
+        .unwrap();
+        assert_eq!(cycle_boundaries(&db, "codex", "5h"), vec![2000]);
+    }
+
+    #[test]
+    fn cycle_boundaries_one_on_reset_advance() {
+        let db = test_db("cycle_boundaries_reset.db");
+        db.conn().execute_batch(
+            "INSERT INTO quota_samples (provider, event_at, window_kind, window_minutes, used_percent, resets_at, source_offset) VALUES
+             ('codex', 1000, '5h', 300, 10.0, 1000, 1),
+             ('codex', 2000, '5h', 300, 20.0, 2000, 2);",
+        )
+        .unwrap();
+        assert_eq!(cycle_boundaries(&db, "codex", "5h"), vec![2000]);
+    }
+
+    #[test]
+    fn cycle_boundaries_two_across_two_cycles() {
+        let db = test_db("cycle_boundaries_two.db");
+        db.conn().execute_batch(
+            "INSERT INTO quota_samples (provider, event_at, window_kind, window_minutes, used_percent, resets_at, source_offset) VALUES
+             ('codex', 1000, '5h', 300, 50.0, NULL, 1),
+             ('codex', 2000, '5h', 300, 10.0, NULL, 2),
+             ('codex', 3000, '5h', 300, 20.0, NULL, 3),
+             ('codex', 4000, '5h', 300, 5.0, NULL, 4);",
+        )
+        .unwrap();
+        assert_eq!(cycle_boundaries(&db, "codex", "5h"), vec![2000, 4000]);
+    }
+
+    #[test]
+    fn cycle_boundaries_empty_for_unknown_provider() {
+        let db = test_db("cycle_boundaries_unknown.db");
+        db.conn().execute_batch(
+            "INSERT INTO quota_samples (provider, event_at, window_kind, window_minutes, used_percent, resets_at, source_offset) VALUES
+             ('codex', 1000, '5h', 300, 10.0, NULL, 1);",
+        )
+        .unwrap();
+        assert!(cycle_boundaries(&db, "nope", "5h").is_empty());
     }
 
     #[test]

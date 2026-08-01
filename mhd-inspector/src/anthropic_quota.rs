@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 
 /// Latest Anthropic quota snapshot from proxy.db.
 #[derive(Debug, Clone)]
@@ -56,21 +56,26 @@ pub fn read_latest(db_path: &Path) -> Option<AnthropicQuota> {
     .ok()
 }
 
-/// Read recent quota history (last `limit` rows) for sparkline rendering.
-pub fn read_history(db_path: &Path, limit: usize) -> Vec<QuotaPoint> {
+/// Read quota history with a lower time bound (UTC epoch seconds): the newest
+/// `limit` rows at or after `since`, returned oldest-first.  The `ts` column is
+/// TEXT, so the filter uses SQLite's own `strftime` parser rather than
+/// formatting the bound in Rust.
+pub fn read_history_since(db_path: &Path, since: i64, limit: usize) -> Vec<QuotaPoint> {
     let Some(conn) = open_readonly(db_path) else {
         return Vec::new();
     };
-    let sql = format!(
+    let mut stmt = match conn.prepare(
         "SELECT ts, h5_utilization, d7_utilization
-         FROM (SELECT id, ts, h5_utilization, d7_utilization FROM quota ORDER BY id DESC LIMIT {limit})
-         ORDER BY id ASC"
-    );
-    let mut stmt = match conn.prepare(&sql) {
+         FROM (SELECT id, ts, h5_utilization, d7_utilization
+               FROM quota
+               WHERE CAST(strftime('%s', ts) AS INTEGER) >= ?1
+               ORDER BY id DESC LIMIT ?2)
+         ORDER BY id ASC",
+    ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![since, limit as i64], |row| {
         let ts_str: String = row.get(0)?;
         Ok(parse_ts(&ts_str).map(|ts| QuotaPoint {
             ts,
@@ -151,6 +156,29 @@ pub fn project_to_reset(
     Some(projected.max(last_value).clamp(0.0, 200.0))
 }
 
+/// Detect quota window resets in a history series: the `ts` of every point
+/// whose field dropped by more than one percent relative to the previous
+/// point that carried a value.  Points with no value are skipped, never read
+/// as a drop, and the first point is never a boundary.  Mirrors the
+/// mhd-telemetry cycle rule; proxy.db's `quota` table exposes no reset
+/// timestamp in this history query, so a value drop is the only signal.
+pub fn cycle_boundaries(points: &[QuotaPoint], field: fn(&QuotaPoint) -> Option<f64>) -> Vec<i64> {
+    let mut boundaries = Vec::new();
+    let mut previous: Option<f64> = None;
+    for point in points {
+        let Some(value) = field(point) else {
+            continue;
+        };
+        if let Some(before) = previous {
+            if before - value > 1.0 {
+                boundaries.push(point.ts);
+            }
+        }
+        previous = Some(value);
+    }
+    boundaries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +195,101 @@ mod tests {
         assert_eq!(parse_ts(""), None);
         assert_eq!(parse_ts("short"), None);
         assert_eq!(parse_ts("2026-07-29"), None); // missing time portion
+    }
+
+    #[test]
+    fn test_cycle_boundaries_rising_only() {
+        let points = [
+            QuotaPoint {
+                ts: 1000,
+                h5: Some(10.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 2000,
+                h5: Some(20.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 3000,
+                h5: Some(30.0),
+                d7: None,
+            },
+        ];
+        assert!(cycle_boundaries(&points, |p| p.h5).is_empty());
+    }
+
+    #[test]
+    fn test_cycle_boundaries_one_drop() {
+        let points = [
+            QuotaPoint {
+                ts: 1000,
+                h5: Some(50.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 2000,
+                h5: Some(10.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 3000,
+                h5: Some(20.0),
+                d7: None,
+            },
+        ];
+        assert_eq!(cycle_boundaries(&points, |p| p.h5), vec![2000]);
+    }
+
+    #[test]
+    fn test_cycle_boundaries_none_gaps_skipped() {
+        // The `None` at 2000 is skipped, not treated as a drop to zero; the
+        // reset is measured against the previous valued point (50.0 -> 10.0).
+        let points = [
+            QuotaPoint {
+                ts: 1000,
+                h5: Some(50.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 2000,
+                h5: None,
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 3000,
+                h5: Some(10.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 4000,
+                h5: Some(20.0),
+                d7: None,
+            },
+        ];
+        assert_eq!(cycle_boundaries(&points, |p| p.h5), vec![3000]);
+    }
+
+    #[test]
+    fn test_cycle_boundaries_sub_one_wobble_is_not_boundary() {
+        let points = [
+            QuotaPoint {
+                ts: 1000,
+                h5: Some(50.0),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 2000,
+                h5: Some(49.5),
+                d7: None,
+            },
+            QuotaPoint {
+                ts: 3000,
+                h5: Some(49.8),
+                d7: None,
+            },
+        ];
+        assert!(cycle_boundaries(&points, |p| p.h5).is_empty());
     }
 }
 

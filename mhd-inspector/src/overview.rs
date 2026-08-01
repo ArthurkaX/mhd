@@ -5,7 +5,17 @@ use mhd_telemetry::import::ImportResult;
 use mhd_telemetry::live;
 use mhd_telemetry::query::{QuotaSample, SlopeProjection, Utilization};
 
-use crate::anthropic_quota::{AnthropicQuota, QuotaPoint, project_to_reset};
+use crate::anthropic_quota::{AnthropicQuota, QuotaPoint, cycle_boundaries, project_to_reset};
+use crate::timefmt;
+
+/// Axis options shared by both charts.
+#[derive(Clone, Copy)]
+pub struct ChartOpts {
+    /// Seconds to add to a UTC timestamp to get local wall-clock time.
+    pub local_offset: i64,
+    /// Span several cycles instead of clamping the view to the current one.
+    pub history: bool,
+}
 
 /// Render the main question: is the current budget likely to last until reset?
 #[allow(clippy::too_many_arguments)]
@@ -21,6 +31,8 @@ pub fn show_overview(
     live: Option<&live::LiveQuota>,
     anthropic: Option<&AnthropicQuota>,
     anthropic_history: &[QuotaPoint],
+    cycle_starts: &[i64],
+    opts: ChartOpts,
     _ctx: &egui::Context,
 ) {
     if let Some(imp) = import
@@ -38,7 +50,7 @@ pub fn show_overview(
     if provider == "anthropic" {
         // ── Anthropic section ──
         ui.heading(egui::RichText::new("Anthropic").strong().size(18.0));
-        show_anthropic_section(ui, anthropic, anthropic_history);
+        show_anthropic_section(ui, anthropic, anthropic_history, opts);
         return;
     }
 
@@ -50,10 +62,10 @@ pub fn show_overview(
     }
 
     // Prefer the weekly window: it is the only real Codex budget on Pro 5x.
-    let (label, quota, slope) = if quota_7d.is_some() {
-        ("Weekly budget", quota_7d, slope_7d)
+    let (label, quota, slope, nominal_window) = if quota_7d.is_some() {
+        ("Weekly budget", quota_7d, slope_7d, 7 * 24 * 3600)
     } else {
-        ("5-hour budget", quota_5h, slope_5h)
+        ("5-hour budget", quota_5h, slope_5h, 5 * 3600)
     };
 
     ui.heading("Will I make it to reset?");
@@ -63,6 +75,12 @@ pub fn show_overview(
         ui.label("Waiting for live quota data…");
         return;
     };
+
+    // The provider reports its own window length; the nominal one is a fallback.
+    let window_seconds = quota
+        .window_minutes
+        .map(|m| m * 60)
+        .unwrap_or(nominal_window);
 
     let projection = slope.projected_at_reset;
     let exhaustion = slope.projected_exhaustion.as_deref();
@@ -139,7 +157,15 @@ pub fn show_overview(
     if history.is_empty() {
         ui.label("No quota samples yet. The chart fills as the watcher records live updates.");
     } else {
-        show_budget_chart(ui, history, quota.resets_at, projection);
+        show_budget_chart(
+            ui,
+            history,
+            quota.resets_at,
+            window_seconds,
+            projection,
+            cycle_starts,
+            opts,
+        );
     }
 }
 
@@ -162,7 +188,10 @@ fn show_budget_chart(
     ui: &mut egui::Ui,
     samples: &[QuotaSample],
     resets_at: Option<i64>,
+    window_seconds: i64,
     projection: Option<f64>,
+    cycle_starts: &[i64],
+    opts: ChartOpts,
 ) {
     let width = ui.available_width().max(320.0);
     let height = 235.0;
@@ -174,11 +203,19 @@ fn show_budget_chart(
     let bottom = rect.bottom() - 26.0;
     let first = samples.first().map(|s| s.event_at).unwrap_or(0);
     let last = samples.last().map(|s| s.event_at).unwrap_or(first + 1);
-    let end = resets_at.filter(|reset| *reset > last).unwrap_or(last);
-    let start = resets_at
-        .map(|reset| reset.saturating_sub(7 * 24 * 3600))
-        .filter(|start| *start < end)
-        .unwrap_or(first);
+    // History mode spans the data so past resets stay visible; the decision
+    // view clamps to the current cycle starting one window before reset.
+    let (start, end) = if opts.history {
+        let end = last.max(resets_at.unwrap_or(last));
+        (first, if end <= first { first + 1 } else { end })
+    } else {
+        let end = resets_at.filter(|reset| *reset > last).unwrap_or(last);
+        let start = resets_at
+            .map(|reset| reset.saturating_sub(window_seconds))
+            .filter(|start| *start < end)
+            .unwrap_or(first);
+        (start, end)
+    };
     let span = (end - start).max(1) as f32;
     let x = |time: i64| left + (time.saturating_sub(start) as f32 / span) * (right - left);
     let y = |pct: f64| bottom - (pct.clamp(0.0, 100.0) as f32 / 100.0) * (bottom - top);
@@ -198,15 +235,65 @@ fn show_budget_chart(
         );
     }
 
+    // Time axis on round local boundaries; skip a label where it would crowd
+    // the reset marker, but keep its gridline.
+    let step = timefmt::axis_step_seconds(end - start);
+    let shifted = start + opts.local_offset;
+    let mut t = (shifted.div_euclid(step) + 1) * step - opts.local_offset;
+    let mut ticks = 0;
+    while t <= end && ticks < 64 {
+        let tx = x(t);
+        painter.line_segment(
+            [egui::pos2(tx, top), egui::pos2(tx, bottom)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(42)),
+        );
+        if !resets_at.is_some_and(|reset| (x(reset) - tx).abs() < 40.0) {
+            painter.text(
+                egui::pos2(tx, bottom + 8.0),
+                egui::Align2::CENTER_TOP,
+                timefmt::axis_label(t, opts.local_offset, end - start),
+                egui::FontId::proportional(9.0),
+                egui::Color32::GRAY,
+            );
+        }
+        t += step;
+        ticks += 1;
+    }
+
+    // Past resets read weaker than the red future-reset line.
+    for &boundary in cycle_starts {
+        if boundary >= start && boundary <= end {
+            let bx = x(boundary);
+            painter.line_segment(
+                [egui::pos2(bx, top), egui::pos2(bx, bottom)],
+                egui::Stroke::new(1.0, egui::Color32::from_gray(85)),
+            );
+        }
+    }
+
     if samples.len() >= 2 {
-        let points = samples
-            .iter()
-            .map(|sample| egui::pos2(x(sample.event_at), y(sample.used_percent)))
-            .collect();
-        painter.add(egui::Shape::line(
-            points,
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(88, 166, 255)),
-        ));
+        let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(88, 166, 255));
+        // Split at cycle boundaries: a straight line across a reset draws a
+        // bogus diagonal between two different cycles.
+        let mut boundary_idx = 0;
+        let mut segment: Vec<egui::Pos2> = Vec::new();
+        for sample in samples {
+            if boundary_idx < cycle_starts.len() && sample.event_at >= cycle_starts[boundary_idx] {
+                while boundary_idx < cycle_starts.len()
+                    && sample.event_at >= cycle_starts[boundary_idx]
+                {
+                    boundary_idx += 1;
+                }
+                if segment.len() >= 2 {
+                    painter.add(egui::Shape::line(segment, stroke));
+                }
+                segment = Vec::new();
+            }
+            segment.push(egui::pos2(x(sample.event_at), y(sample.used_percent)));
+        }
+        if segment.len() >= 2 {
+            painter.add(egui::Shape::line(segment, stroke));
+        }
     }
 
     if let (Some(reset), Some(projected), Some(latest)) = (resets_at, projection, samples.last())
@@ -227,23 +314,56 @@ fn show_budget_chart(
             [egui::pos2(rx, top), egui::pos2(rx, bottom)],
             egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 94, 94)),
         );
+        // The dated stamp is wide, so anchor it right-aligned near the edge.
+        let anchor = if rx > right - 70.0 {
+            egui::Align2::RIGHT_TOP
+        } else {
+            egui::Align2::CENTER_TOP
+        };
         painter.text(
             egui::pos2(rx, bottom + 8.0),
-            egui::Align2::CENTER_TOP,
-            "reset",
+            anchor,
+            format!("reset · {}", timefmt::stamp(reset, opts.local_offset)),
             egui::FontId::proportional(10.0),
             egui::Color32::from_rgb(235, 94, 94),
         );
     }
 
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if start <= now && now <= end {
+        let nx = x(now);
+        painter.line_segment(
+            [egui::pos2(nx, top), egui::pos2(nx, bottom)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 200, 255)),
+        );
+        painter.text(
+            egui::pos2(nx, rect.top()),
+            egui::Align2::CENTER_TOP,
+            "now",
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_rgb(120, 200, 255),
+        );
+    }
+
     if let Some(pos) = response.hover_pos() {
-        let ratio = ((pos.x - left) / (right - left)).clamp(0.0, 1.0);
-        let idx = (ratio * (samples.len().saturating_sub(1)) as f32) as usize;
-        if let Some(sample) = samples.get(idx) {
+        // Nearest-sample tooltip: ratio-to-index is wrong whenever the data
+        // does not fill the plot width, which history mode widens further.
+        if let Some((ts, pct)) = samples
+            .iter()
+            .min_by(|a, b| {
+                (x(a.event_at) - pos.x)
+                    .abs()
+                    .total_cmp(&(x(b.event_at) - pos.x).abs())
+            })
+            .map(|s| (s.event_at, s.used_percent))
+        {
             painter.text(
                 egui::pos2(pos.x + 10.0, pos.y - 25.0),
                 egui::Align2::LEFT_TOP,
-                format!("{:.1}%", sample.used_percent),
+                format!("{} · {:.1}%", timefmt::stamp(ts, opts.local_offset), pct),
                 egui::FontId::proportional(12.0),
                 egui::Color32::WHITE,
             );
@@ -265,6 +385,7 @@ fn show_anthropic_section(
     ui: &mut egui::Ui,
     anthropic: Option<&AnthropicQuota>,
     history: &[QuotaPoint],
+    opts: ChartOpts,
 ) {
     let Some(aq) = anthropic else {
         ui.label("Waiting for Anthropic quota data…");
@@ -286,8 +407,9 @@ fn show_anthropic_section(
 
     // Each reset drops utilization back to zero, so the raw history is a
     // sawtooth across windows. Only points inside the CURRENT window may feed
-    // the polyline or the least-squares projection -- regressing across a
-    // reset boundary yields a meaningless slope.
+    // the least-squares projection -- regressing across a reset boundary
+    // yields a meaningless slope; the cycle view slices the polyline the same
+    // way, while history mode deliberately draws the whole sawtooth.
     let current_window = |reset: Option<i64>, window_seconds: i64| -> Vec<QuotaPoint> {
         match reset {
             Some(r) => history
@@ -341,8 +463,11 @@ fn show_anthropic_section(
 
     ui.add_space(10.0);
 
-    // Charts
-    let h5_points: Vec<(i64, f64)> = h5_history
+    // Charts. History mode feeds the full sawtooth across resets (the
+    // projections above stay anchored in the current window); the decision
+    // view keeps the sliced current cycle.
+    let h5_series: &[QuotaPoint] = if opts.history { history } else { &h5_history };
+    let h5_points: Vec<(i64, f64)> = h5_series
         .iter()
         .filter_map(|p| p.h5.map(|v| (p.ts, v)))
         .collect();
@@ -355,11 +480,14 @@ fn show_anthropic_section(
             18000,
             h5_projection,
             egui::Color32::from_rgb(88, 166, 255),
+            &cycle_boundaries(h5_series, |p| p.h5),
+            opts,
         );
         ui.add_space(10.0);
     }
 
-    let d7_points: Vec<(i64, f64)> = d7_history
+    let d7_series: &[QuotaPoint] = if opts.history { history } else { &d7_history };
+    let d7_points: Vec<(i64, f64)> = d7_series
         .iter()
         .filter_map(|p| p.d7.map(|v| (p.ts, v)))
         .collect();
@@ -372,10 +500,13 @@ fn show_anthropic_section(
             604800,
             d7_projection,
             egui::Color32::from_rgb(235, 94, 94),
+            &cycle_boundaries(d7_series, |p| p.d7),
+            opts,
         );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_window_chart(
     ui: &mut egui::Ui,
     points: &[(i64, f64)],
@@ -383,6 +514,8 @@ fn show_window_chart(
     window_seconds: i64,
     projection: Option<f64>,
     line_color: egui::Color32,
+    cycle_starts: &[i64],
+    opts: ChartOpts,
 ) {
     let width = ui.available_width().max(320.0);
     let height = 180.0;
@@ -394,11 +527,19 @@ fn show_window_chart(
     let bottom = rect.bottom() - 26.0;
     let first = points.first().map(|p| p.0).unwrap_or(0);
     let last = points.last().map(|p| p.0).unwrap_or(first + 1);
-    let end = resets_at.filter(|reset| *reset > last).unwrap_or(last);
-    let start = resets_at
-        .map(|reset| reset.saturating_sub(window_seconds))
-        .filter(|start| *start < end)
-        .unwrap_or(first);
+    // History mode spans the data so past resets stay visible; the decision
+    // view clamps to the current cycle starting one window before reset.
+    let (start, end) = if opts.history {
+        let end = last.max(resets_at.unwrap_or(last));
+        (first, if end <= first { first + 1 } else { end })
+    } else {
+        let end = resets_at.filter(|reset| *reset > last).unwrap_or(last);
+        let start = resets_at
+            .map(|reset| reset.saturating_sub(window_seconds))
+            .filter(|start| *start < end)
+            .unwrap_or(first);
+        (start, end)
+    };
     let span = (end - start).max(1) as f32;
     let x = |time: i64| left + (time.saturating_sub(start) as f32 / span) * (right - left);
     let y = |pct: f64| bottom - (pct.clamp(0.0, 100.0) as f32 / 100.0) * (bottom - top);
@@ -418,13 +559,63 @@ fn show_window_chart(
         );
     }
 
+    // Time axis on round local boundaries; skip a label where it would crowd
+    // the reset marker, but keep its gridline.
+    let step = timefmt::axis_step_seconds(end - start);
+    let shifted = start + opts.local_offset;
+    let mut t = (shifted.div_euclid(step) + 1) * step - opts.local_offset;
+    let mut ticks = 0;
+    while t <= end && ticks < 64 {
+        let tx = x(t);
+        painter.line_segment(
+            [egui::pos2(tx, top), egui::pos2(tx, bottom)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(42)),
+        );
+        if !resets_at.is_some_and(|reset| (x(reset) - tx).abs() < 40.0) {
+            painter.text(
+                egui::pos2(tx, bottom + 8.0),
+                egui::Align2::CENTER_TOP,
+                timefmt::axis_label(t, opts.local_offset, end - start),
+                egui::FontId::proportional(9.0),
+                egui::Color32::GRAY,
+            );
+        }
+        t += step;
+        ticks += 1;
+    }
+
+    // Past resets read weaker than the red future-reset line.
+    for &boundary in cycle_starts {
+        if boundary >= start && boundary <= end {
+            let bx = x(boundary);
+            painter.line_segment(
+                [egui::pos2(bx, top), egui::pos2(bx, bottom)],
+                egui::Stroke::new(1.0, egui::Color32::from_gray(85)),
+            );
+        }
+    }
+
     if points.len() >= 2 {
-        let shape_points: Vec<egui::Pos2> =
-            points.iter().map(|p| egui::pos2(x(p.0), y(p.1))).collect();
-        painter.add(egui::Shape::line(
-            shape_points,
-            egui::Stroke::new(2.0, line_color),
-        ));
+        let stroke = egui::Stroke::new(2.0, line_color);
+        // Split at cycle boundaries: a straight line across a reset draws a
+        // bogus diagonal between two different cycles.
+        let mut boundary_idx = 0;
+        let mut segment: Vec<egui::Pos2> = Vec::new();
+        for &(ts, pct) in points {
+            if boundary_idx < cycle_starts.len() && ts >= cycle_starts[boundary_idx] {
+                while boundary_idx < cycle_starts.len() && ts >= cycle_starts[boundary_idx] {
+                    boundary_idx += 1;
+                }
+                if segment.len() >= 2 {
+                    painter.add(egui::Shape::line(segment, stroke));
+                }
+                segment = Vec::new();
+            }
+            segment.push(egui::pos2(x(ts), y(pct)));
+        }
+        if segment.len() >= 2 {
+            painter.add(egui::Shape::line(segment, stroke));
+        }
     }
 
     if let (Some(reset), Some(projected), Some(latest)) = (resets_at, projection, points.last())
@@ -445,23 +636,52 @@ fn show_window_chart(
             [egui::pos2(rx, top), egui::pos2(rx, bottom)],
             egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 94, 94)),
         );
+        // The dated stamp is wide, so anchor it right-aligned near the edge.
+        let anchor = if rx > right - 70.0 {
+            egui::Align2::RIGHT_TOP
+        } else {
+            egui::Align2::CENTER_TOP
+        };
         painter.text(
             egui::pos2(rx, bottom + 8.0),
-            egui::Align2::CENTER_TOP,
-            "reset",
+            anchor,
+            format!("reset · {}", timefmt::stamp(reset, opts.local_offset)),
             egui::FontId::proportional(10.0),
             egui::Color32::from_rgb(235, 94, 94),
         );
     }
 
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if start <= now && now <= end {
+        let nx = x(now);
+        painter.line_segment(
+            [egui::pos2(nx, top), egui::pos2(nx, bottom)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 200, 255)),
+        );
+        painter.text(
+            egui::pos2(nx, rect.top()),
+            egui::Align2::CENTER_TOP,
+            "now",
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_rgb(120, 200, 255),
+        );
+    }
+
     if let Some(pos) = response.hover_pos() {
-        let ratio = ((pos.x - left) / (right - left)).clamp(0.0, 1.0);
-        let idx = (ratio * (points.len().saturating_sub(1)) as f32) as usize;
-        if let Some(sample) = points.get(idx) {
+        // Nearest-sample tooltip: ratio-to-index is wrong whenever the data
+        // does not fill the plot width, which history mode widens further.
+        if let Some((ts, pct)) = points
+            .iter()
+            .min_by(|a, b| (x(a.0) - pos.x).abs().total_cmp(&(x(b.0) - pos.x).abs()))
+            .map(|p| (p.0, p.1))
+        {
             painter.text(
                 egui::pos2(pos.x + 10.0, pos.y - 25.0),
                 egui::Align2::LEFT_TOP,
-                format!("{:.1}%", sample.1),
+                format!("{} · {:.1}%", timefmt::stamp(ts, opts.local_offset), pct),
                 egui::FontId::proportional(12.0),
                 egui::Color32::WHITE,
             );
