@@ -1655,13 +1655,14 @@ unsafe extern "system" fn panel_wndproc(
                     return LRESULT(0);
                 }
                 // Check client-filter chip — cycles All → Claude Code → Codex → OpenAI.
-                if let Ok(rect) = FILTER_CHIP_RECT.lock()
-                    && let Some((fx, fy, fw, fh)) = *rect
-                    && x >= fx
-                    && x < fx + fw
-                    && y >= fy
-                    && y < fy + fh
-                {
+                let filter_chip_clicked = FILTER_CHIP_RECT
+                    .lock()
+                    .ok()
+                    .and_then(|rect| *rect)
+                    .is_some_and(|(fx, fy, fw, fh)| {
+                        x >= fx && x < fx + fw && y >= fy && y < fy + fh
+                    });
+                if filter_chip_clicked {
                     let cur = CLIENT_FILTER.load(Ordering::Relaxed);
                     // -1 (All) → 0 (Claude Code) → 1 (Codex) → 2 (OpenAI) → -1.
                     CLIENT_FILTER.store(if cur >= 2 { -1 } else { cur + 1 }, Ordering::Relaxed);
