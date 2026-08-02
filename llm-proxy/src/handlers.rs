@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::providers;
-use crate::state::{AppState, CodexTarget, Target, Tier, TraceEntry};
+use crate::state::{AppState, ClientKind, CodexTarget, Target, Tier, TraceEntry, WireApi};
 
 /// Read the `x-client-run-id` header a harness may send to identify its session.
 ///
@@ -144,6 +144,12 @@ pub async fn post_messages(
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<Response, AppError> {
+    // A disabled client means the user does not use that client at all, so mHD
+    // should do no work for it — a resource switch, not an access-control
+    // feature. Refuse before any body parsing or upstream work.
+    if !state.client_enabled(ClientKind::ClaudeCode) {
+        return Err(AppError::disabled_client(ClientKind::ClaudeCode));
+    }
     let model = payload
         .get("model")
         .and_then(|m| m.as_str())
@@ -268,7 +274,7 @@ pub async fn post_messages(
     let mut trim_preset_str = String::new();
     let mut trim_config_json = String::new();
     let mut trim_stages_json = String::new();
-    let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+    let payload = if state.trim_enabled_for(ClientKind::ClaudeCode) {
         // Read live-tunable native engine knobs.
         let native_knobs = crate::native_trim::NativeKnobs {
             tool_max_desc_chars: *state
@@ -390,8 +396,10 @@ pub async fn post_messages(
     let downgraded = effective_tier != tier;
     state.push_trace(TraceEntry {
         seq: req_id,
-        tier,
-        effective_tier,
+        client: ClientKind::ClaudeCode,
+        wire_api: WireApi::AnthropicMessages,
+        tier: Some(tier),
+        effective_tier: Some(effective_tier),
         target: target.as_str().to_string(),
         model: model.clone(),
         downgraded,
@@ -433,7 +441,7 @@ pub async fn post_messages(
             .header("content-type", "text/event-stream")
             .header("cache-control", "no-cache")
             .body(body)
-            .map_err(|e| AppError(e.into()));
+            .map_err(AppError::from);
     }
 
     let response = match &target {
@@ -450,17 +458,26 @@ pub async fn post_messages(
 /// the upstream gateway (for OpenAI-native clients like Zed).
 ///
 /// Supports non-streaming and streaming responses. Trim (native compression)
-/// is applied under the same single `state.trim_enabled` flag that governs the
-/// `/v1/messages` path.
+/// is applied under the OpenAI client's own `trim_openai_enabled` switch —
+/// independent of Claude Code's `trim_enabled` (see
+/// [`crate::state::AppState::trim_enabled_for`]).
 ///
-/// The request is recorded in the Proxy Trace ring buffer as a `Tier::OpenAi`
-/// passthrough (model + trim stats now, token usage filled from the upstream
-/// response), so OpenAI clients appear alongside Claude Code traffic.
+/// The request is recorded in the Proxy Trace ring buffer as an OpenAI
+/// passthrough: `client = OpenAi`, `wire_api = ChatCompletions`, and `tier =
+/// None` — the tier axis only ever means "class of Claude model", which does
+/// not apply to non-Claude clients. Model + trim stats are recorded now, token
+/// usage is filled from the upstream response, so OpenAI clients appear
+/// alongside Claude Code traffic.
 pub async fn post_chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<Response, AppError> {
+    // Same gate as `/v1/messages`: a disabled client is a resource switch, not
+    // access control — mHD does no work for a client the user does not use.
+    if !state.client_enabled(ClientKind::OpenAi) {
+        return Err(AppError::disabled_client(ClientKind::OpenAi));
+    }
     let req_id = state.next_req_id();
     let user_agent = headers
         .get("user-agent")
@@ -482,7 +499,9 @@ pub async fn post_chat_completions(
     state.capture_request_body(req_id, Some(&model), "openai", &payload);
 
     // ── Trim hook ───────────────────────────────────────────────────
-    // Same single flag as the /v1/messages path.
+    // The OpenAI client's own trim switch (`trim_openai_enabled`) — flipping
+    // Claude Code's `trim_enabled` no longer moves this path (see
+    // `trim_enabled_for`).
     // Trim metadata rides on the requests DB row — no separate TRIM event needed.
     // Digest the untouched body first — see the /v1/messages path.
     let pre_trim_digest = if state.is_db_log_enabled() {
@@ -496,7 +515,7 @@ pub async fn post_chat_completions(
     let mut trim_preset_str = String::new();
     let mut trim_config_json = String::new();
     let mut trim_stages_json = String::new();
-    let payload = if *state.trim_enabled.read().unwrap_or_else(|e| e.into_inner()) {
+    let payload = if state.trim_enabled_for(ClientKind::OpenAi) {
         // Read live-tunable native engine knobs (same reads as post_messages;
         // strip_thinking is irrelevant for OpenAI shape — set false).
         let native_knobs = crate::native_trim::NativeKnobs {
@@ -597,12 +616,15 @@ pub async fn post_chat_completions(
     };
 
     // Record this passthrough in the trace ring buffer (and proxy.db requests row).
+    // client = OpenAi, wire_api = ChatCompletions, tier = None (no Claude tier axis).
     // Tokens are 0 here and get filled from the upstream response usage (see `*_raw_openai`).
     // prefix_hash is 0 for OpenAI passthrough (no Anthropic-style system/tools prefix).
     state.push_trace(TraceEntry {
         seq: req_id,
-        tier: Tier::OpenAi,
-        effective_tier: Tier::OpenAi,
+        client: ClientKind::OpenAi,
+        wire_api: WireApi::ChatCompletions,
+        tier: None,
+        effective_tier: None,
         target: model.clone(),
         model: model.clone(),
         downgraded: false,
@@ -633,7 +655,7 @@ pub async fn post_chat_completions(
             .header("content-type", "text/event-stream")
             .header("cache-control", "no-cache")
             .body(body)
-            .map_err(|e| AppError(e.into()));
+            .map_err(AppError::from);
     }
 
     let resp = providers::upstream::send_raw_openai(&state, req_id, payload).await?;
@@ -681,39 +703,140 @@ pub async fn get_models(
 
 /// Native Codex Responses HTTPS fallback. The request body is forwarded as raw
 /// bytes because Codex sends zstd-compressed JSON and expects SSE framing.
+///
+/// For a long time this was the only ingress route that never called
+/// `push_trace`, which is why Codex traffic was invisible in the Proxy Trace
+/// overlay. It now records a Codex/Responses entry on the same `next_req_id`
+/// sequence as every other route.
 pub async fn post_codex_responses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     uri: Uri,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    // A disabled client means the user does not use that client at all, so mHD
+    // should do no work for it — a resource switch, not an access-control
+    // feature. Refuse before any body parsing or upstream work. The WebSocket
+    // fallback still answers 404 regardless (see `get_codex_websocket_fallback`).
+    if !state.client_enabled(ClientKind::Codex) {
+        return Err(AppError::disabled_client(ClientKind::Codex));
+    }
+
+    let req_id = state.next_req_id();
+    let started_ms = crate::providers::now_unix_ms();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let client_run_id = client_run_id(&headers);
+
     // Capture the decoded native wire request only when the existing explicit
     // corpus-capture setting is enabled. The raw OAuth header is never stored.
+    let mut model_opt: Option<String> = None;
     if let Ok(payload) = crate::providers::codex::decode_request(&headers, &body) {
-        let req_id = state.next_req_id();
-        let model = payload.get("model").and_then(Value::as_str);
-        state.capture_request_body(req_id, model, "codex", &payload);
+        model_opt = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        state.capture_request_body(req_id, model_opt.as_deref(), "codex", &payload);
     }
-    match state.codex_target() {
-        CodexTarget::Native => {}
-        CodexTarget::Model(model) => {
-            return Ok(crate::providers::codex::forward_side(&state, &headers, body, &model).await?);
+    let model = model_opt.unwrap_or_default();
+
+    // Record the request before forwarding so in-flight Codex requests are
+    // visible in the trace. `tier`/`effective_tier` are None — Codex is not a
+    // Claude tier. Responses-aware trim is not implemented, so the trim fields
+    // are false/zeros. `status` lands just below once the upstream responds.
+    let target = state.codex_target();
+    state.push_trace(TraceEntry {
+        seq: req_id,
+        client: ClientKind::Codex,
+        wire_api: WireApi::Responses,
+        tier: None,
+        effective_tier: None,
+        target: target.as_str().to_string(),
+        model: model.clone(),
+        downgraded: false,
+        reason: String::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
+        trim_applied: false,
+        trim_tokens_before: 0,
+        trim_tokens_after: 0,
+        trim_preset: String::new(),
+        trim_config_json: String::new(),
+        trim_stages_json: String::new(),
+        started_ms,
+        prefix_hash: 0,
+        status: None,
+        is_probe: false,
+        user_agent,
+        client_run_id,
+        prefix: crate::prefix::PrefixStats::default(),
+    });
+
+    // Forward the raw bytes. The upstream status and the wall duration are
+    // known as soon as response headers arrive, so fill the trace entry then.
+    // Token usage stays unrecorded: it rides inside the terminal
+    // `response.completed` SSE event, which is only observable at end-of-stream,
+    // and the native Codex path deliberately forwards bytes without parsing SSE
+    // (see `providers/codex.rs`). Wrapping the stream to scan for it would
+    // restructure that path, so it is deferred — the stream stays incremental.
+    let result = match &target {
+        CodexTarget::Native => {
+            crate::providers::codex::forward(
+                &state,
+                axum::http::Method::POST,
+                uri.path(),
+                uri.query(),
+                &headers,
+                body,
+            )
+            .await
         }
-    }
-    Ok(crate::providers::codex::forward(
-        &state,
-        axum::http::Method::POST,
-        uri.path(),
-        uri.query(),
-        &headers,
-        body,
-    )
-    .await?)
+        CodexTarget::Model(model) => {
+            crate::providers::codex::forward_side(&state, &headers, body, model).await
+        }
+    };
+    let resp = match result {
+        Ok(resp) => resp,
+        Err(err) => {
+            // The upstream never answered — close the request row so it does
+            // not dangle (mirrors the failure path in the provider modules).
+            state.mark_request_failed(
+                req_id,
+                Some(crate::providers::now_unix_ms().saturating_sub(started_ms)),
+                None,
+                &err.to_string(),
+                "CODEX_ERR",
+            );
+            return Err(AppError::from(err));
+        }
+    };
+    let status = resp.status().as_u16();
+    let duration_ms = crate::providers::now_unix_ms().saturating_sub(started_ms);
+    state.update_trace_tokens(
+        req_id,
+        0,
+        0,
+        None,
+        None,
+        Some(duration_ms),
+        Some(status),
+        None,
+    );
+    Ok(resp)
 }
 
 /// Codex first attempts a WebSocket upgrade. We intentionally return a quick
 /// 404 so the supported HTTPS/SSE fallback is selected; no OAuth is sent to a
 /// different destination and no fake WebSocket framing is attempted.
+///
+/// This stays a plain 404 even when the Codex client is disabled — no
+/// `client_enabled` gate here. Codex treats the 404 as the signal to fall back
+/// to HTTPS/SSE, so answering 503 would change its retry behaviour and strand
+/// it instead of routing it to the working path.
 pub async fn get_codex_websocket_fallback() -> StatusCode {
     StatusCode::NOT_FOUND
 }
@@ -769,7 +892,11 @@ pub async fn set_model(
     state.log_event(crate::db_log::LogEvent {
         seq: 0,
         event_type: "MODEL_SWITCH".to_string(),
-        target: Some(if slot == "codex" { body.id.clone() } else { target.as_str().to_string() }),
+        target: Some(if slot == "codex" {
+            body.id.clone()
+        } else {
+            target.as_str().to_string()
+        }),
         model: Some(slot.clone()),
         reason: Some(format!(
             "slot={} {} -> {}",
@@ -873,26 +1000,162 @@ pub async fn health() -> Json<Value> {
 // ─── Error handling ──────────────────────────────────────────────────
 
 /// Wrapper error type that renders as an HTTP error response.
-pub struct AppError(anyhow::Error);
+///
+/// Carries the HTTP status and the `error.type` string so the single renderer
+/// below can express both the generic 502 `proxy_error` shape and
+/// intentionally-shaped responses like the disabled-client 503. One renderer
+/// means the exact wire shape lives in exactly one place.
+pub struct AppError {
+    err: anyhow::Error,
+    status: StatusCode,
+    error_type: &'static str,
+}
 
 impl AppError {
     pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self(anyhow::anyhow!(msg.into()))
+        Self {
+            err: anyhow::anyhow!(msg.into()),
+            status: StatusCode::BAD_GATEWAY,
+            error_type: "proxy_error",
+        }
+    }
+
+    /// A 503 `mhd_client_disabled` — ingress refused for a client the user does
+    /// not use. This is a resource switch (mHD does no work for a client that
+    /// is switched off), not an access-control feature.
+    pub fn disabled_client(client: ClientKind) -> Self {
+        Self {
+            err: anyhow::anyhow!(format!(
+                "mHD proxy is disabled for client '{}'",
+                client.slot()
+            )),
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            error_type: "mhd_client_disabled",
+        }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let msg = format!("{}", self.0);
+        let msg = format!("{}", self.err);
         let body = serde_json::json!({
-            "error": { "type": "proxy_error", "message": msg }
+            "error": { "type": self.error_type, "message": msg }
         });
-        (StatusCode::BAD_GATEWAY, Json(body)).into_response()
+        (self.status, Json(body)).into_response()
     }
 }
 
 impl<E: Into<anyhow::Error>> From<E> for AppError {
     fn from(err: E) -> Self {
-        Self(err.into())
+        Self {
+            err: err.into(),
+            status: StatusCode::BAD_GATEWAY,
+            error_type: "proxy_error",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// Drain a response body (from an `AppError` render) into its JSON value.
+    async fn error_body(resp: Response) -> Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .expect("read error body");
+        serde_json::from_slice(&bytes).expect("error body is JSON")
+    }
+
+    /// The disabled-client gate must refuse each ingress route with a 503
+    /// `mhd_client_disabled` carrying the client's slot — before any body
+    /// parsing or upstream work happens.
+    #[tokio::test]
+    async fn disabled_client_gate_returns_503_with_slot() {
+        let state = AppState::from_config(&Config::default());
+        let expected = |slot: &str| {
+            serde_json::json!({
+                "error": {
+                    "type": "mhd_client_disabled",
+                    "message": format!("mHD proxy is disabled for client '{slot}'"),
+                }
+            })
+        };
+
+        // Claude Code route (`/v1/messages`).
+        state.set_client_enabled(ClientKind::ClaudeCode, false);
+        let resp = post_messages(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(serde_json::json!({})),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_body(resp).await, expected("claude_code"));
+
+        // OpenAI-compatible route (`/v1/chat/completions`).
+        state.set_client_enabled(ClientKind::OpenAi, false);
+        let resp = post_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(serde_json::json!({})),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_body(resp).await, expected("openai"));
+
+        // Codex route (`POST /v1/responses`).
+        state.set_client_enabled(ClientKind::Codex, false);
+        let resp = post_codex_responses(
+            State(state.clone()),
+            HeaderMap::new(),
+            Uri::from_static("/v1/responses"),
+            Bytes::new(),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_body(resp).await, expected("codex"));
+    }
+
+    /// With Codex enabled the gate must NOT fire, and the request must still be
+    /// recorded in the trace as a Codex/Responses entry with no Claude tier.
+    ///
+    /// The side-target path is chosen with an empty body: `decode_request`
+    /// fails on empty bytes, so `forward_side` bails before any network I/O —
+    /// the trace entry is pushed before forwarding and survives the failure.
+    #[tokio::test]
+    async fn enabled_codex_path_is_not_gated_and_records_trace_entry() {
+        let state = AppState::from_config(&Config::default());
+        assert!(state.client_enabled(ClientKind::Codex));
+
+        state.set_codex_target(CodexTarget::Model("test-side-model".to_string()));
+        let err = post_codex_responses(
+            State(state.clone()),
+            HeaderMap::new(),
+            Uri::from_static("/v1/responses"),
+            Bytes::new(),
+        )
+        .await
+        .unwrap_err();
+        // The gate did NOT fire: the request proceeded into forwarding and
+        // failed there, so this is the generic 502, never the 503 gate.
+        assert_eq!(err.into_response().status(), StatusCode::BAD_GATEWAY);
+
+        let snapshot = state.trace_snapshot();
+        let entry = snapshot.last().expect("codex request recorded in trace");
+        assert_eq!(entry.client, ClientKind::Codex);
+        assert_eq!(entry.wire_api, WireApi::Responses);
+        assert_eq!(entry.tier, None);
+        assert_eq!(entry.effective_tier, None);
+        assert_eq!(entry.target, "test-side-model");
+        assert!(!entry.downgraded);
+        assert!(!entry.trim_applied);
     }
 }

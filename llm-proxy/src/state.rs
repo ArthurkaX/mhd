@@ -4,18 +4,16 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::config::Config;
 
-/// Which tier an incoming request belongs to — one of the four Claude tiers,
-/// or `OpenAi` for a raw `/v1/chat/completions` passthrough (Zed and other
-/// OpenAI-native clients). The `OpenAi` variant carries no routing/downgrade
-/// semantics; it exists only so passthrough requests show up in the trace.
+/// Which tier an incoming request belongs to — one of the four Claude model
+/// classes. The client axis (Claude Code vs Codex vs OpenAI) is tracked
+/// separately via [`ClientKind`]; this enum only ever means "class of Claude
+/// model", so it is `None` for requests from non-Claude clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     Opus,
     Sonnet,
     Haiku,
     Fable,
-    /// Raw OpenAI-compatible passthrough (no Claude tier / no downgrade logic).
-    OpenAi,
 }
 
 impl Tier {
@@ -40,7 +38,71 @@ impl Tier {
             Self::Sonnet => "sonnet",
             Self::Haiku => "haiku",
             Self::Fable => "fable",
+        }
+    }
+}
+
+/// Which client family a request came from. Determined at ingress from the
+/// route it arrived on, never guessed from the model id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    ClaudeCode,
+    Codex,
+    OpenAi,
+}
+
+impl ClientKind {
+    /// Stable identifier used in config keys and the `client` DB column.
+    pub fn slot(&self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
             Self::OpenAi => "openai",
+        }
+    }
+
+    /// Parse a slot string (case-insensitive). Accepts the values returned by
+    /// [`slot`](Self::slot); anything else — including empty — is rejected.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "claude_code" => Some(Self::ClaudeCode),
+            "codex" => Some(Self::Codex),
+            "openai" => Some(Self::OpenAi),
+            _ => None,
+        }
+    }
+
+    /// Human-readable name for menus and the trace overlay.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+            Self::OpenAi => "OpenAI",
+        }
+    }
+
+    /// All variants, for iterating menus/settings.
+    pub fn all() -> [ClientKind; 3] {
+        [Self::ClaudeCode, Self::Codex, Self::OpenAi]
+    }
+}
+
+/// The wire protocol a request arrived on. Separate from [`ClientKind`]
+/// because one client family can in principle speak more than one protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireApi {
+    AnthropicMessages,
+    ChatCompletions,
+    Responses,
+}
+
+impl WireApi {
+    /// Stable identifier used in the `wire_api` DB column.
+    pub fn slot(&self) -> &'static str {
+        match self {
+            Self::AnthropicMessages => "anthropic_messages",
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
         }
     }
 }
@@ -120,7 +182,10 @@ impl CodexTarget {
         }
     }
     pub fn as_str(&self) -> &str {
-        match self { Self::Native => NATIVE, Self::Model(id) => id }
+        match self {
+            Self::Native => NATIVE,
+            Self::Model(id) => id,
+        }
     }
 }
 
@@ -128,8 +193,16 @@ impl CodexTarget {
 #[derive(Debug, Clone)]
 pub struct TraceEntry {
     pub seq: u64,
-    pub tier: Tier,
-    pub effective_tier: Tier,
+    /// Client family this request came from (Claude Code, Codex, OpenAI).
+    pub client: ClientKind,
+    /// Wire protocol the request arrived on (Anthropic Messages, Chat
+    /// Completions, or Responses).
+    pub wire_api: WireApi,
+    /// Resolved Claude tier. `None` for requests from non-Claude clients —
+    /// the tier axis only means "class of Claude model" and does not apply.
+    pub tier: Option<Tier>,
+    /// Tier actually routed after downgrade. `None` for non-Claude clients.
+    pub effective_tier: Option<Tier>,
     pub target: String,
     pub model: String,
     pub downgraded: bool,
@@ -263,6 +336,30 @@ pub struct AppState {
 
     /// Master switch for native request compression.
     pub trim_enabled: RwLock<bool>,
+
+    /// Per-client master switch for Claude Code. When false the Claude Code
+    /// ingress route is refused and its background usage polling is skipped —
+    /// the point is to stop mhd doing work for a client the user does not use
+    /// at all.
+    pub client_claude_code_enabled: RwLock<bool>,
+
+    /// Per-client master switch for Codex. See
+    /// [`Self::client_claude_code_enabled`].
+    pub client_codex_enabled: RwLock<bool>,
+
+    /// Per-client master switch for OpenAI-compatible clients. See
+    /// [`Self::client_claude_code_enabled`].
+    pub client_openai_enabled: RwLock<bool>,
+
+    /// Codex trim switch. Trim for the Responses wire API is NOT implemented
+    /// yet, so this gates nothing today; it exists so the client axis is
+    /// complete and the engine can be added behind it without a UI change.
+    pub trim_codex_enabled: RwLock<bool>,
+
+    /// OpenAI-compatible client trim switch. Independent of `trim_enabled`;
+    /// resolved once from settings at Config-build time (see
+    /// [`crate::config::Settings::trim_openai`]).
+    pub trim_openai_enabled: RwLock<bool>,
 
     /// Max Unicode chars per tool description (native engine knob).
     pub trim_tool_desc_chars: RwLock<usize>,
@@ -415,6 +512,11 @@ impl AppState {
             vision_trace: RwLock::new(VecDeque::with_capacity(MAX_VISION_TRACE_ENTRIES)),
             session_last_ts: RwLock::new(HashMap::new()),
             trim_enabled: RwLock::new(cfg.trim_enabled),
+            client_claude_code_enabled: RwLock::new(cfg.client_claude_code_enabled),
+            client_codex_enabled: RwLock::new(cfg.client_codex_enabled),
+            client_openai_enabled: RwLock::new(cfg.client_openai_enabled),
+            trim_codex_enabled: RwLock::new(cfg.trim_codex_enabled),
+            trim_openai_enabled: RwLock::new(cfg.trim_openai_enabled),
             trim_tool_desc_chars: RwLock::new(cfg.trim_tool_desc_chars),
             trim_toolresult_head: RwLock::new(cfg.trim_toolresult_head),
             trim_head_haiku: RwLock::new(cfg.trim_head_haiku),
@@ -542,8 +644,10 @@ impl AppState {
                 run_id: self.run_id,
                 seq: entry.seq,
                 ts_start: crate::providers::now_ms(),
-                tier: Some(entry.tier.slot().to_string()),
-                effective_tier: Some(entry.effective_tier.slot().to_string()),
+                client: Some(entry.client.slot().to_string()),
+                wire_api: Some(entry.wire_api.slot().to_string()),
+                tier: entry.tier.map(|t| t.slot().to_string()),
+                effective_tier: entry.effective_tier.map(|t| t.slot().to_string()),
                 target: Some(entry.target.clone()),
                 model: Some(entry.model.clone()),
                 downgraded: entry.downgraded,
@@ -946,9 +1050,6 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
-            // OpenAI passthrough is never routed through tier targets; this
-            // arm only satisfies exhaustiveness and is never reached.
-            Tier::OpenAi => Target::Native,
         }
     }
 
@@ -971,11 +1072,58 @@ impl AppState {
     }
 
     pub fn codex_target(&self) -> CodexTarget {
-        self.codex_target.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.codex_target
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn set_codex_target(&self, target: CodexTarget) {
         *self.codex_target.write().unwrap_or_else(|e| e.into_inner()) = target;
+    }
+
+    /// Whether a given client's ingress is currently enabled.
+    pub fn client_enabled(&self, client: ClientKind) -> bool {
+        let lock = match client {
+            ClientKind::ClaudeCode => &self.client_claude_code_enabled,
+            ClientKind::Codex => &self.client_codex_enabled,
+            ClientKind::OpenAi => &self.client_openai_enabled,
+        };
+        *lock.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Enable or disable a client's ingress.
+    pub fn set_client_enabled(&self, client: ClientKind, on: bool) {
+        let lock = match client {
+            ClientKind::ClaudeCode => &self.client_claude_code_enabled,
+            ClientKind::Codex => &self.client_codex_enabled,
+            ClientKind::OpenAi => &self.client_openai_enabled,
+        };
+        *lock.write().unwrap_or_else(|e| e.into_inner()) = on;
+    }
+
+    /// Trim switch for a client. Each `ClientKind` has its own independent
+    /// flag: Claude Code uses the `trim_enabled` master (kept under that name
+    /// so existing settings.json files keep working), OpenAI uses
+    /// `trim_openai_enabled`, Codex uses `trim_codex_enabled`.
+    pub fn trim_enabled_for(&self, client: ClientKind) -> bool {
+        let lock = match client {
+            ClientKind::ClaudeCode => &self.trim_enabled,
+            ClientKind::Codex => &self.trim_codex_enabled,
+            ClientKind::OpenAi => &self.trim_openai_enabled,
+        };
+        *lock.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Set a client's trim switch. Writes only that client's flag — the other
+    /// two are never touched, which is the whole point of the per-client split.
+    pub fn set_trim_enabled_for(&self, client: ClientKind, on: bool) {
+        let lock = match client {
+            ClientKind::ClaudeCode => &self.trim_enabled,
+            ClientKind::Codex => &self.trim_codex_enabled,
+            ClientKind::OpenAi => &self.trim_openai_enabled,
+        };
+        *lock.write().unwrap_or_else(|e| e.into_inner()) = on;
     }
 
     /// Snapshot current state back into a Config (for persisting changes).
@@ -1036,6 +1184,26 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|e| e.into_inner()),
             trim_enabled: *self.trim_enabled.read().unwrap_or_else(|e| e.into_inner()),
+            client_claude_code_enabled: *self
+                .client_claude_code_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            client_codex_enabled: *self
+                .client_codex_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            client_openai_enabled: *self
+                .client_openai_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_codex_enabled: *self
+                .trim_codex_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+            trim_openai_enabled: *self
+                .trim_openai_enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
             corpus_capture: *self
                 .corpus_capture_enabled
                 .read()
@@ -1109,5 +1277,112 @@ impl AppState {
                 .unwrap_or_else(|e| e.into_inner()),
             corpus_max_rows: self.corpus_max_rows,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_kind_slot_round_trips_parse() {
+        for kind in ClientKind::all() {
+            assert_eq!(ClientKind::parse(kind.slot()), Some(kind));
+        }
+        // Parse is case-insensitive and whitespace-tolerant.
+        assert_eq!(
+            ClientKind::parse("CLAUDE_CODE"),
+            Some(ClientKind::ClaudeCode)
+        );
+        assert_eq!(ClientKind::parse(" Codex "), Some(ClientKind::Codex));
+    }
+
+    #[test]
+    fn client_kind_parse_rejects_garbage() {
+        assert_eq!(ClientKind::parse(""), None);
+        assert_eq!(ClientKind::parse("claude"), None);
+        assert_eq!(ClientKind::parse("anthropic"), None);
+        assert_eq!(ClientKind::parse("openai-messages"), None);
+        assert_eq!(ClientKind::parse("gpt-5"), None);
+    }
+
+    #[test]
+    fn client_kind_slots_are_stable() {
+        assert_eq!(ClientKind::ClaudeCode.slot(), "claude_code");
+        assert_eq!(ClientKind::Codex.slot(), "codex");
+        assert_eq!(ClientKind::OpenAi.slot(), "openai");
+        assert_eq!(ClientKind::all().len(), 3);
+        assert_eq!(ClientKind::ClaudeCode.label(), "Claude Code");
+        assert_eq!(ClientKind::Codex.label(), "Codex");
+        assert_eq!(ClientKind::OpenAi.label(), "OpenAI");
+    }
+
+    #[test]
+    fn wire_api_slots() {
+        assert_eq!(WireApi::AnthropicMessages.slot(), "anthropic_messages");
+        assert_eq!(WireApi::ChatCompletions.slot(), "chat_completions");
+        assert_eq!(WireApi::Responses.slot(), "responses");
+    }
+
+    #[test]
+    fn trim_enabled_for_returns_independent_flags() {
+        let state = AppState::from_config(&Config::default());
+        // Each client starts from its own flag. Defaults are all off.
+        for client in ClientKind::all() {
+            assert!(!state.trim_enabled_for(client));
+        }
+        // The returned flag is exactly the one set for that client, never a
+        // shared master.
+        state.set_trim_enabled_for(ClientKind::ClaudeCode, true);
+        state.set_trim_enabled_for(ClientKind::Codex, true);
+        state.set_trim_enabled_for(ClientKind::OpenAi, true);
+        for client in ClientKind::all() {
+            assert!(state.trim_enabled_for(client));
+        }
+        state.set_trim_enabled_for(ClientKind::ClaudeCode, false);
+        assert!(!state.trim_enabled_for(ClientKind::ClaudeCode));
+        assert!(state.trim_enabled_for(ClientKind::Codex));
+        assert!(state.trim_enabled_for(ClientKind::OpenAi));
+    }
+
+    #[test]
+    fn set_trim_enabled_for_does_not_disturb_other_clients() {
+        let state = AppState::from_config(&Config::default());
+        // Give every client a distinct starting state.
+        state.set_trim_enabled_for(ClientKind::ClaudeCode, true);
+        state.set_trim_enabled_for(ClientKind::Codex, false);
+        state.set_trim_enabled_for(ClientKind::OpenAi, true);
+
+        // Flipping ONE client leaves the other two exactly as they were.
+        state.set_trim_enabled_for(ClientKind::Codex, true);
+        assert!(state.trim_enabled_for(ClientKind::ClaudeCode));
+        assert!(state.trim_enabled_for(ClientKind::Codex));
+        assert!(state.trim_enabled_for(ClientKind::OpenAi));
+
+        state.set_trim_enabled_for(ClientKind::ClaudeCode, false);
+        assert!(!state.trim_enabled_for(ClientKind::ClaudeCode));
+        assert!(state.trim_enabled_for(ClientKind::Codex));
+        assert!(state.trim_enabled_for(ClientKind::OpenAi));
+
+        state.set_trim_enabled_for(ClientKind::OpenAi, false);
+        assert!(!state.trim_enabled_for(ClientKind::ClaudeCode));
+        assert!(state.trim_enabled_for(ClientKind::Codex));
+        assert!(!state.trim_enabled_for(ClientKind::OpenAi));
+    }
+
+    #[test]
+    fn client_enabled_round_trips() {
+        let state = AppState::from_config(&Config::default());
+        // All three default on — a false default would kill existing routes
+        // for users whose settings.json predates these keys.
+        for client in ClientKind::all() {
+            assert!(state.client_enabled(client));
+        }
+        state.set_client_enabled(ClientKind::Codex, false);
+        assert!(!state.client_enabled(ClientKind::Codex));
+        assert!(state.client_enabled(ClientKind::ClaudeCode));
+        assert!(state.client_enabled(ClientKind::OpenAi));
+        state.set_client_enabled(ClientKind::Codex, true);
+        assert!(state.client_enabled(ClientKind::Codex));
     }
 }

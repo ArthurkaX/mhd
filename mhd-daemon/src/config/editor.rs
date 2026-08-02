@@ -259,6 +259,12 @@ pub fn show_config_editor(handle: AppHandle) {
         trim_enabled: llm_proxy::config::load_settings()
             .map(|s| s.trim_enabled)
             .unwrap_or(false),
+        trim_openai_enabled: llm_proxy::config::load_settings()
+            .map(|s| s.trim_openai())
+            .unwrap_or(false),
+        trim_codex_enabled: llm_proxy::config::load_settings()
+            .map(|s| s.trim_codex_enabled)
+            .unwrap_or(false),
         trim_tool_desc_chars: llm_proxy::config::load_settings()
             .map(|s| s.trim_tool_desc_chars)
             .unwrap_or(150),
@@ -1371,6 +1377,10 @@ fn apply_settings(state: &mut SettingsState) {
             settings.opus_downgrade_enabled = state.opus_downgrade_enabled;
             settings.sonnet_downgrade_enabled = state.sonnet_downgrade_enabled;
             settings.trim_enabled = state.trim_enabled;
+            settings.trim_openai_enabled = Some(state.trim_openai_enabled);
+            // Codex has no trim engine yet; write the stored value back
+            // unchanged so saving this page never clobbers it.
+            settings.trim_codex_enabled = state.trim_codex_enabled;
             settings.trim_tool_desc_chars = state.trim_tool_desc_chars;
             settings.trim_toolresult_head = state.trim_toolresult_head;
             settings.trim_head_haiku = state.trim_head_haiku;
@@ -2050,8 +2060,12 @@ unsafe extern "system" fn settings_wndproc(
                         state.sonnet_downgrade_enabled = !state.sonnet_downgrade_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
-                    SettingsHit::TrimToggle => {
+                    SettingsHit::TrimClaudeCodeToggle => {
                         state.trim_enabled = !state.trim_enabled;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
+                    SettingsHit::TrimOpenAiToggle => {
+                        state.trim_openai_enabled = !state.trim_openai_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
                     SettingsHit::HeadArrowNativeBig

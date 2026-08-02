@@ -24,6 +24,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
+use llm_proxy::ClientKind;
+
 use crate::app::{AppHandle, DaemonControl};
 use crate::cpu_plan;
 use crate::draw;
@@ -45,11 +47,16 @@ const CMD_CPU_PANEL: usize = 10;
 const CMD_LLM_MODELS: usize = 11;
 const CMD_LLM_ACTIVITY: usize = 17;
 const CMD_PROXY_TRACE: usize = 12;
-const CMD_LLM_PROXY_TOGGLE: usize = 13;
-const CMD_QUOTA_WATCHER_TOGGLE: usize = 18;
 const CMD_QUIET_TOGGLE: usize = 19;
 const CMD_KEYCAST_TOGGLE: usize = 14;
 const CMD_BREATHE: usize = 15;
+// Per-client switches. IDs 13 (CMD_LLM_PROXY_TOGGLE), 18
+// (CMD_QUOTA_WATCHER_TOGGLE), 21 (CMD_TRIM_CLAUDE_CODE) and 23
+// (CMD_TRIM_CODEX) were freed — the trim toggles moved to Settings -> LLM Trim —
+// and are deliberately NOT reused for a different meaning.
+const CMD_CLIENT_CLAUDE_CODE: usize = 20;
+const CMD_CLIENT_CODEX: usize = 22;
+const CMD_CLIENT_OPENAI: usize = 24;
 const CMD_POWER_PLAN_BASE: usize = 100;
 const CMD_ABOUT: usize = 7;
 const CMD_QUIT: usize = 8;
@@ -169,28 +176,42 @@ fn show_menu(hwnd: HWND) {
             item(menu, bb_flags, CMD_BLACKBOX_TOGGLE, "Blackbox on/off");
         }
 
-        // LLM proxy on/off (checked when the embedded proxy is running).
-        let llm_running = crate::llm_proxy::is_running();
-        let llm_flags = if llm_running {
-            MF_BYPOSITION | MF_STRING | MF_CHECKED
-        } else {
-            MF_BYPOSITION | MF_STRING
-        };
-        item(menu, llm_flags, CMD_LLM_PROXY_TOGGLE, "LLM Proxy on/off");
+        item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
-        // Quota watcher on/off (checked when the background watcher is running).
-        let cw_running = crate::core::quota_watcher::is_running();
-        let cw_flags = if cw_running {
+        // ── Per-client switches ────────────────────────────────
+        // One switch per client covers both its route and its background usage
+        // polling — mhd does no work for a client the user does not use. The
+        // OpenAI switch covers Zed / opencode / pi. Trim toggles live on the
+        // Settings -> LLM Trim page, not here.
+
+        let claude_proxy = crate::llm_proxy::client_enabled(ClientKind::ClaudeCode);
+        let claude_proxy_flags = if claude_proxy {
             MF_BYPOSITION | MF_STRING | MF_CHECKED
         } else {
             MF_BYPOSITION | MF_STRING
         };
         item(
             menu,
-            cw_flags,
-            CMD_QUOTA_WATCHER_TOGGLE,
-            "Quota Watcher on/off",
+            claude_proxy_flags,
+            CMD_CLIENT_CLAUDE_CODE,
+            "Claude Code: proxy",
         );
+
+        let codex_proxy = crate::llm_proxy::client_enabled(ClientKind::Codex);
+        let codex_proxy_flags = if codex_proxy {
+            MF_BYPOSITION | MF_STRING | MF_CHECKED
+        } else {
+            MF_BYPOSITION | MF_STRING
+        };
+        item(menu, codex_proxy_flags, CMD_CLIENT_CODEX, "Codex: proxy");
+
+        let openai_proxy = crate::llm_proxy::client_enabled(ClientKind::OpenAi);
+        let openai_proxy_flags = if openai_proxy {
+            MF_BYPOSITION | MF_STRING | MF_CHECKED
+        } else {
+            MF_BYPOSITION | MF_STRING
+        };
+        item(menu, openai_proxy_flags, CMD_CLIENT_OPENAI, "OpenAI: proxy");
 
         item(menu, MF_BYPOSITION | MF_SEPARATOR, 0, "");
 
@@ -407,12 +428,17 @@ unsafe extern "system" fn wnd_proc(
                     CMD_PROXY_TRACE => {
                         crate::overlays::proxy_trace::show(&state.app.theme());
                     }
-                    CMD_LLM_PROXY_TOGGLE => {
-                        let cfg = state.app.llm_proxy_config();
-                        crate::llm_proxy::toggle(&cfg);
+                    CMD_CLIENT_CLAUDE_CODE => {
+                        let on = !crate::llm_proxy::client_enabled(ClientKind::ClaudeCode);
+                        state.app.set_client_enabled(ClientKind::ClaudeCode, on);
                     }
-                    CMD_QUOTA_WATCHER_TOGGLE => {
-                        state.app.toggle_quota_watcher();
+                    CMD_CLIENT_CODEX => {
+                        let on = !crate::llm_proxy::client_enabled(ClientKind::Codex);
+                        state.app.set_client_enabled(ClientKind::Codex, on);
+                    }
+                    CMD_CLIENT_OPENAI => {
+                        let on = !crate::llm_proxy::client_enabled(ClientKind::OpenAi);
+                        state.app.set_client_enabled(ClientKind::OpenAi, on);
                     }
                     cmd if (CMD_POWER_PLAN_BASE..CMD_POWER_PLAN_BASE + 20).contains(&cmd) => {
                         let index = cmd - CMD_POWER_PLAN_BASE;

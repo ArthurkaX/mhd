@@ -120,8 +120,10 @@ pub enum SettingsHit {
     VisionTestBtn,
     /// Vision prompt edit button.
     VisionPromptBtn,
-    /// Trim (request compression) toggle.
-    TrimToggle,
+    /// Claude Code trim (request compression) toggle.
+    TrimClaudeCodeToggle,
+    /// OpenAI-compatible client trim toggle.
+    TrimOpenAiToggle,
     /// Free/cheap model selector dropdown.
     TrimFreeTargetCombo,
     /// Head-budget arrow button for Native-big group.
@@ -321,6 +323,14 @@ pub struct SettingsState {
     pub vision_test_running: bool,
     /// Enable native request compression.
     pub trim_enabled: bool,
+    /// Enable native request compression for OpenAI-compatible clients.
+    /// Loaded through `Settings::trim_openai()` so an absent settings.json key
+    /// resolves to `trim_enabled`, matching live behaviour.
+    pub trim_openai_enabled: bool,
+    /// Enable native request compression for Codex (Responses API). No trim
+    /// engine exists for that wire API yet, so this gates nothing today; the
+    /// checkbox reflects the stored value and is not interactive.
+    pub trim_codex_enabled: bool,
     /// Tool description max chars for trim.
     pub trim_tool_desc_chars: usize,
     /// Tool result head chars for trim.

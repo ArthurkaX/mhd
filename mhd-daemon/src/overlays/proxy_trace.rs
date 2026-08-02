@@ -1,12 +1,18 @@
 //! Real-time proxy trace overlay.
 //!
 //! Shows recent routing decisions made by the embedded LLM proxy in a small
-//! transparent window. Each row is one request: original tier, effective tier,
-//! target model, and a "downgraded" badge.
+//! transparent window. Each row is one request: client family (Claude Code /
+//! Codex / OpenAI), original tier, effective tier, target model, and a
+//! "downgraded" badge. A filter chip on the summary line narrows the table to
+//! one client.
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+// NOTE: leading `::` reaches the external `llm_proxy` crate; the bare
+// `llm_proxy` name in this file is the daemon's wrapper module (see main.rs).
+use ::llm_proxy::state::{ClientKind, TraceEntry, WireApi};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -42,6 +48,16 @@ static TRACE_SCROLL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 /// Lets WM_LBUTTONDOWN map a Y coordinate back to the request under it.
 static ROW_HITS: Mutex<Vec<(i32, i32, u64)>> = Mutex::new(Vec::new());
 
+/// Active client filter for the trace list: -1 = all clients, otherwise the
+/// index into `ClientKind::all()` (0 = Claude Code, 1 = Codex, 2 = OpenAI).
+/// Cycled by the filter chip on the summary row; persists across paints.
+static CLIENT_FILTER: AtomicI32 = AtomicI32::new(-1);
+
+/// Click hit-rect for the client-filter chip, rebuilt every paint. Lets the
+/// click handlers map a click to the filter toggle without recomputing the
+/// whole header layout (mirrors ROW_HITS).
+static FILTER_CHIP_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+
 fn fmt_tokens(n: u64) -> String {
     if n == 0 {
         "\u{2014}".to_string() // em dash
@@ -53,6 +69,25 @@ fn fmt_tokens(n: u64) -> String {
         format!("{:.1}k", n as f64 / 1000.0)
     } else {
         n.to_string()
+    }
+}
+
+/// Route-column text. Claude Code rows render their tier — "Tier" when plain,
+/// "Tier→Tier" when downgraded. Rows from non-Claude clients (Codex, OpenAI
+/// passthrough) have no Claude tier at all; `None` must never render a
+/// fabricated tier (upstream used to map unknown models to "Sonnet"), so they
+/// show the routing target instead — an empty cell is better than a wrong one.
+fn route_text(e: &TraceEntry) -> String {
+    if e.downgraded {
+        match (e.tier, e.effective_tier) {
+            (Some(from), Some(to)) => format!("{:?}\u{2192}{:?}", from, to),
+            _ => e.target.clone(),
+        }
+    } else {
+        match e.tier {
+            Some(tier) => format!("{:?}", tier),
+            None => e.target.clone(),
+        }
     }
 }
 
@@ -511,6 +546,21 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     let trace = llm_proxy::get_trace();
     let total_cw = win_w - pad * 2;
 
+    // Client filter: which client family the table shows. -1 = all; otherwise
+    // an index into ClientKind::all(). Applied to the whole snapshot before the
+    // summary stats and the newest-max_rows window, so a Codex filter shows
+    // Codex numbers alone (trim/cache averages included).
+    let filter_kind = CLIENT_FILTER.load(Ordering::Relaxed);
+    let filtered_trace: Vec<_> = trace
+        .iter()
+        .filter(|e| {
+            filter_kind < 0
+                || ClientKind::all()
+                    .get(filter_kind as usize)
+                    .is_some_and(|k| *k == e.client)
+        })
+        .collect();
+
     // ── Summary line ─────────────────────────────────────────────
     let summary_y = sep_y + (4.0 * scale) as i32;
     unsafe {
@@ -518,36 +568,42 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
     {
-        let n = trace.len();
+        let n = filtered_trace.len();
         // Trim avg: average saved% over entries that had trim applied with savings.
-        let (trim_count, trim_sum) = trace.iter().fold((0usize, 0.0f64), |(cnt, sum), e| {
-            if e.trim_applied && e.trim_tokens_before > 0 {
-                let saved = e.trim_tokens_before.saturating_sub(e.trim_tokens_after);
-                if saved > 0 {
-                    let pct = saved as f64 / e.trim_tokens_before as f64 * 100.0;
-                    (cnt + 1, sum + pct)
-                } else {
-                    (cnt, sum)
-                }
-            } else {
-                (cnt, sum)
-            }
-        });
+        let (trim_count, trim_sum) =
+            filtered_trace
+                .iter()
+                .fold((0usize, 0.0f64), |(cnt, sum), e| {
+                    if e.trim_applied && e.trim_tokens_before > 0 {
+                        let saved = e.trim_tokens_before.saturating_sub(e.trim_tokens_after);
+                        if saved > 0 {
+                            let pct = saved as f64 / e.trim_tokens_before as f64 * 100.0;
+                            (cnt + 1, sum + pct)
+                        } else {
+                            (cnt, sum)
+                        }
+                    } else {
+                        (cnt, sum)
+                    }
+                });
         // Cache-hit avg: average cache_read/total_prompt% over sizeable requests.
         // Requests whose route reported no cache field are skipped entirely —
         // averaging them in as 0% would drag the number down with non-evidence.
-        let (cache_count, cache_sum) = trace.iter().fold((0usize, 0.0f64), |(cnt, sum), e| {
-            let Some(cr) = e.cache_read_tokens else {
-                return (cnt, sum);
-            };
-            let total = e.input_tokens + cr + e.cache_creation_tokens.unwrap_or(0);
-            if total >= 1024 {
-                let ratio = cr as f64 / total as f64 * 100.0;
-                (cnt + 1, sum + ratio)
-            } else {
-                (cnt, sum)
-            }
-        });
+        let (cache_count, cache_sum) =
+            filtered_trace
+                .iter()
+                .fold((0usize, 0.0f64), |(cnt, sum), e| {
+                    let Some(cr) = e.cache_read_tokens else {
+                        return (cnt, sum);
+                    };
+                    let total = e.input_tokens + cr + e.cache_creation_tokens.unwrap_or(0);
+                    if total >= 1024 {
+                        let ratio = cr as f64 / total as f64 * 100.0;
+                        (cnt + 1, sum + ratio)
+                    } else {
+                        (cnt, sum)
+                    }
+                });
         let trim_avg = if trim_count > 0 {
             format!("{:.0}%", trim_sum / trim_count as f64)
         } else {
@@ -577,6 +633,47 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
             );
         }
+    }
+
+    // ── Client filter chip ────────────────────────────────────────
+    // A small cycle button on the right of the summary line. Clicking it steps
+    // All → Claude Code → Codex → OpenAI so the table can be narrowed to one
+    // client (e.g. Codex traffic alone). The hit rect is stashed for the click
+    // handlers, mirroring ROW_HITS; the button sits in the caption band, so
+    // WM_NCHITTEST exempts it explicitly.
+    let chip_label = if filter_kind < 0 {
+        "All".to_string()
+    } else {
+        ClientKind::all()
+            .get(filter_kind as usize)
+            .map(|k| k.label().to_string())
+            .unwrap_or_else(|| "All".to_string())
+    };
+    let chip_w = (((chip_label.chars().count() as f32) * 6.5 + 18.0) * scale) as i32;
+    let chip_h = (20.0 * scale) as i32;
+    let chip_x = win_w - pad - chip_w;
+    let chip_y = summary_y + (row_h - chip_h) / 2;
+    draw_button(
+        dib_dc,
+        bits,
+        win_w,
+        win_h,
+        chip_x,
+        chip_y,
+        chip_w,
+        chip_h,
+        &chip_label,
+        theme,
+        hfont_small,
+        false,
+        if filter_kind < 0 {
+            ButtonStyle::Secondary
+        } else {
+            ButtonStyle::Primary
+        },
+    );
+    if let Ok(mut r) = FILTER_CHIP_RECT.lock() {
+        *r = Some((chip_x, chip_y, chip_w, chip_h));
     }
 
     // ── Quota line ───────────────────────────────────────────────
@@ -661,17 +758,20 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
     }
 
-    // Columns: #  Route  Target  In  Out  Cache  Trim
+    // Columns: #  Client  Route  Target  In  Out  Cache  Trim
     let col_widths = [
         (32.0 * scale) as i32, // # (~32px)
+        (78.0 * scale) as i32, // Client (~78px — fits "Claude Code")
         (95.0 * scale) as i32, // Route (~95px — fits "Sonnet→Haiku")
-        total_cw - ((32.0 + 95.0 + 48.0 + 48.0 + 88.0 + 80.0) * scale) as i32, // Target = remainder
-        (48.0 * scale) as i32, // In (~48px)
-        (48.0 * scale) as i32, // Out (~48px)
+        total_cw - ((32.0 + 78.0 + 95.0 + 48.0 + 48.0 + 88.0 + 80.0) * scale) as i32, // Target = remainder
+        (48.0 * scale) as i32,                                                        // In (~48px)
+        (48.0 * scale) as i32,                                                        // Out (~48px)
         (88.0 * scale) as i32, // Cache (~88px)
         (80.0 * scale) as i32, // Trim (~80px)
     ];
-    let col_headers = ["#", "Route", "Target", "In", "Out", "Cache", "Trim"];
+    let col_headers = [
+        "#", "Client", "Route", "Target", "In", "Out", "Cache", "Trim",
+    ];
     let mut col_x = pad;
     for (i, label) in col_headers.iter().enumerate() {
         let mut lw = crate::osd::to_utf16_z(label);
@@ -703,7 +803,12 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     }
 
     // Collect newest-first so we can index [i+1] for the gap-to-previous calc.
-    let display_entries: Vec<_> = trace.iter().rev().take(max_rows as usize).collect();
+    // The client filter is applied upstream, so this is the filtered window.
+    let display_entries: Vec<_> = filtered_trace
+        .iter()
+        .rev()
+        .take(max_rows as usize)
+        .collect();
 
     if let Ok(mut hits) = ROW_HITS.lock() {
         hits.clear();
@@ -991,19 +1096,31 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             .is_some_and(|s| *s == CacheState::Expired);
         let is_miss = cache_state.as_ref().is_some_and(|s| *s == CacheState::Miss);
 
-        // ── Route column (col 1) ─────────────────────────────────
-        // Downgraded: "{tier}→{eff}" in accent; otherwise "{tier}" in muted.
-        let (route_text, route_color) = if entry.downgraded {
-            (
-                format!("{:?}\u{2192}{:?}", entry.tier, entry.effective_tier),
-                theme.accent,
-            )
+        // ── Route column (col 2) ─────────────────────────────────
+        // Claude Code: "{tier}" in muted, "{tier}→{eff}" in accent when
+        // downgraded. Codex / OpenAI passthrough have no Claude tier — show the
+        // routing target instead; never a fabricated tier.
+        let (route_cell, route_color) = if entry.downgraded {
+            (route_text(entry), theme.accent)
         } else {
-            (format!("{:?}", entry.tier), theme.text_muted)
+            (route_text(entry), theme.text_muted)
         };
 
+        // Codex rows (Responses wire API) carry no token usage: usage arrives
+        // only in the terminal `response.completed` SSE event, and the native
+        // Codex path forwards bytes without buffering/parsing the stream
+        // (deliberately deferred, see handlers::post_codex_responses). The
+        // Responses API also has no prompt-cache fields at all. Render those
+        // cells as "—" — a 0 would be a fabricated fact. (OpenAI ChatCompletions
+        // rows DO get usage filled from the upstream response, so they are not
+        // affected.)
+        let no_usage = entry.wire_api == WireApi::Responses;
+
         // ── Cache column (col 5) ─────────────────────────────────
-        let cache_text = if cache_hit {
+        let cache_text = if no_usage {
+            // No cache concept on the Responses wire API.
+            "\u{2014}".to_string()
+        } else if cache_hit {
             let ratio_pct = cache_ratio * 100.0;
             match entry.cache_creation_tokens {
                 Some(cc) if cc > 0 => format!("{:.0}% +{}", ratio_pct, fmt_tokens(cc)),
@@ -1065,15 +1182,27 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
 
         let values = [
             entry.seq.to_string(),
-            route_text,
+            entry.client.label().to_string(),
+            route_cell,
             entry.target.clone(),
-            fmt_tokens(total_prompt),
-            fmt_tokens(entry.output_tokens),
+            // Codex rows have no usage — render "—" (see `no_usage` above).
+            if no_usage {
+                "\u{2014}".to_string()
+            } else {
+                fmt_tokens(total_prompt)
+            },
+            if no_usage {
+                "\u{2014}".to_string()
+            } else {
+                fmt_tokens(entry.output_tokens)
+            },
             cache_text,
             trim_text,
         ];
-        // Per-column colors: # and Target/In/Out in theme.text; Route/Cache/Trim have own colors.
+        // Per-column colors: #, Client, Target, In and Out in theme.text;
+        // Route/Cache/Trim have own colors.
         let col_colors = [
+            theme.text,
             theme.text,
             route_color,
             theme.text,
@@ -1403,6 +1532,17 @@ unsafe extern "system" fn panel_wndproc(
                 {
                     return LRESULT(HTCLIENT as isize);
                 }
+                // Client-filter chip sits in the caption band, so exempt it so
+                // clicks reach WM_LBUTTONDOWN instead of dragging the window.
+                if let Ok(rect) = FILTER_CHIP_RECT.lock()
+                    && let Some((fx, fy, fw, fh)) = *rect
+                    && pt.x >= fx
+                    && pt.x < fx + fw
+                    && pt.y >= fy
+                    && pt.y < fy + fh
+                {
+                    return LRESULT(HTCLIENT as isize);
+                }
                 let font_h = -(14.0 * scale) as i32;
                 let header_bottom = pad + font_h.abs() + 8 + 4 + (28.0 * scale) as i32;
                 if pt.y < header_bottom {
@@ -1512,6 +1652,20 @@ unsafe extern "system" fn panel_wndproc(
                         let theme = (*state_ptr).clone();
                         crate::overlays::measure_panel::show(&theme);
                     }
+                    return LRESULT(0);
+                }
+                // Check client-filter chip — cycles All → Claude Code → Codex → OpenAI.
+                if let Ok(rect) = FILTER_CHIP_RECT.lock()
+                    && let Some((fx, fy, fw, fh)) = *rect
+                    && x >= fx
+                    && x < fx + fw
+                    && y >= fy
+                    && y < fy + fh
+                {
+                    let cur = CLIENT_FILTER.load(Ordering::Relaxed);
+                    // -1 (All) → 0 (Claude Code) → 1 (Codex) → 2 (OpenAI) → -1.
+                    CLIENT_FILTER.store(if cur >= 2 { -1 } else { cur + 1 }, Ordering::Relaxed);
+                    paint_panel(hwnd, 0.0, 0, 0);
                     return LRESULT(0);
                 }
                 // Check close button

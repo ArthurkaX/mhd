@@ -1458,13 +1458,12 @@ unsafe extern "system" fn models_popup_wndproc(
                             .filter(|(_, sel)| **sel)
                             .map(|(id, _)| id.clone())
                             .collect();
-                        let old_results: std::collections::HashMap<String, Option<bool>> =
-                            state
-                                .models
-                                .iter()
-                                .zip(state.model_test_results.iter())
-                                .map(|(id, tr)| (id.clone(), *tr))
-                                .collect();
+                        let old_results: std::collections::HashMap<String, Option<bool>> = state
+                            .models
+                            .iter()
+                            .zip(state.model_test_results.iter())
+                            .map(|(id, tr)| (id.clone(), *tr))
+                            .collect();
 
                         state.models = *fetched.clone();
                         state.model_selected = state
@@ -1475,12 +1474,7 @@ unsafe extern "system" fn models_popup_wndproc(
                         state.model_test_results = state
                             .models
                             .iter()
-                            .map(|m| {
-                                old_results
-                                    .get(m)
-                                    .copied()
-                                    .unwrap_or(None)
-                            })
+                            .map(|m| old_results.get(m).copied().unwrap_or(None))
                             .collect();
                         // Reset scroll position
                         state.content_scroll_y = 0;

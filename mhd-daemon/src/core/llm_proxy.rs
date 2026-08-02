@@ -9,6 +9,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
 
+use llm_proxy::ClientKind;
 use llm_proxy::ProxyControl;
 use llm_proxy::QuotaSnapshot;
 use llm_proxy::state::{TraceEntry, VisionTraceEntry};
@@ -33,6 +34,12 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
     if guard.is_some() {
         return true;
     }
+    // The listener runs only while at least one client is enabled. This guard
+    // keeps `start` (boot path, reload, toggle) from ever opening a port when
+    // the user has switched every client off.
+    if !any_client_enabled(cfg) {
+        return false;
+    }
     let main = cfg.providers.first();
     let pcfg = llm_proxy::Config {
         anthropic_key: cfg.anthropic_key.clone(),
@@ -43,6 +50,13 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         haiku_target: cfg.haiku.clone(),
         fable_target: cfg.fable.clone(),
         codex_target: "native".to_string(),
+        // Per-client switches from the daemon config, defaulting on so an
+        // upgrade never silently kills a route the user already relies on.
+        client_claude_code_enabled: cfg.client_claude_code_enabled,
+        client_codex_enabled: cfg.client_codex_enabled,
+        client_openai_enabled: cfg.client_openai_enabled,
+        trim_codex_enabled: cfg.trim_codex_enabled,
+        trim_openai_enabled: cfg.trim_openai_enabled,
         log_level: cfg.log_level.clone(),
         opus_downgrade_enabled: cfg.opus_downgrade_enabled,
         sonnet_downgrade_enabled: cfg.sonnet_downgrade_enabled,
@@ -72,15 +86,14 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         Ok(control) => {
             LAST_PORT.store(cfg.port, Ordering::Relaxed);
 
-            // Why: the quota watcher may have started before the proxy was
-            // running (on daemon boot in App::new). Its earlier call to
-            // set_quota_poll_enabled(true) would have hit a None guard and
-            // been silently dropped. Seeding the flag here closes that
-            // ordering gap. Do this through the newly-created control before
-            // publishing it: `guard` already holds CONTROL, so routing through
-            // `set_quota_poll_enabled` here would attempt to lock CONTROL
-            // again and deadlock every proxy start.
-            control.set_quota_poll_enabled(quota_watcher::is_running());
+            // Why: the Anthropic OAuth quota poller follows the Claude Code
+            // client switch, not the Codex watcher thread. The proxy may start
+            // before or after App::new seeds the watcher; seeding the flag here
+            // closes that ordering gap. Do this through the newly-created
+            // control before publishing it: `guard` already holds CONTROL, so
+            // routing through `set_quota_poll_enabled` here would attempt to
+            // lock CONTROL again and deadlock every proxy start.
+            control.set_quota_poll_enabled(cfg.client_claude_code_enabled);
             *guard = Some(control);
 
             true
@@ -117,44 +130,70 @@ pub fn toggle(cfg: &LlmProxyConfig) -> bool {
 /// stop + start cycle.
 ///
 /// If the proxy is off and `enabled` is true, starts it. No-op if the proxy
-/// is off and enabled is false.
+/// is off and enabled is false. Also reconciles the per-client switches on the
+/// live state and drives the background usage pollers from them.
 pub fn reload(cfg: &LlmProxyConfig) -> bool {
-    let guard = CONTROL.lock().unwrap();
-    if let Some(ref control) = *guard {
-        control.set_target("opus", &cfg.opus);
-        control.set_target("sonnet", &cfg.sonnet);
-        control.set_target("haiku", &cfg.haiku);
-        control.set_target("fable", &cfg.fable);
-        control.set_log_level(&cfg.log_level);
-        control.set_trim_enabled(cfg.trim_enabled);
-        control.set_trim_tool_desc_chars(cfg.trim_tool_desc_chars);
-        control.set_trim_toolresult_head(cfg.trim_toolresult_head);
-        control.set_trim_head_haiku(cfg.trim_head_haiku);
-        control.set_trim_head_harness(cfg.trim_head_harness);
-        control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
-        control.set_trim_ws_enabled(cfg.trim_ws_enabled);
-        control.set_trim_free_target(&cfg.trim_free_target);
-        control.set_trim_strip_thinking(cfg.trim_strip_thinking);
-        control.set_trim_fence_requires_code(cfg.trim_fence_requires_code);
-        control.set_trim_arrow_density_min(cfg.trim_arrow_density_min);
-        control.set_corpus_capture_enabled(cfg.corpus_capture);
-        control.set_retry_enabled(cfg.retry_enabled);
-        control.set_retry_max_attempts(cfg.retry_max_attempts);
-        control.set_retry_base_delay_ms(cfg.retry_base_delay_ms);
-        control.set_retry_max_delay_ms(cfg.retry_max_delay_ms);
-        control.set_throttle_enabled(cfg.throttle_enabled);
-        control.set_throttle_rate(cfg.throttle_rate_per_sec, cfg.throttle_burst);
+    let port_changed;
+    {
+        let guard = CONTROL.lock().unwrap();
+        if let Some(ref control) = *guard {
+            control.set_target("opus", &cfg.opus);
+            control.set_target("sonnet", &cfg.sonnet);
+            control.set_target("haiku", &cfg.haiku);
+            control.set_target("fable", &cfg.fable);
+            control.set_log_level(&cfg.log_level);
+            control.set_trim_enabled(cfg.trim_enabled);
+            control.set_trim_tool_desc_chars(cfg.trim_tool_desc_chars);
+            control.set_trim_toolresult_head(cfg.trim_toolresult_head);
+            control.set_trim_head_haiku(cfg.trim_head_haiku);
+            control.set_trim_head_harness(cfg.trim_head_harness);
+            control.set_trim_toolresult_tail(cfg.trim_toolresult_tail);
+            control.set_trim_ws_enabled(cfg.trim_ws_enabled);
+            control.set_trim_free_target(&cfg.trim_free_target);
+            control.set_trim_strip_thinking(cfg.trim_strip_thinking);
+            control.set_trim_fence_requires_code(cfg.trim_fence_requires_code);
+            control.set_trim_arrow_density_min(cfg.trim_arrow_density_min);
+            control.set_corpus_capture_enabled(cfg.corpus_capture);
+            control.set_retry_enabled(cfg.retry_enabled);
+            control.set_retry_max_attempts(cfg.retry_max_attempts);
+            control.set_retry_base_delay_ms(cfg.retry_base_delay_ms);
+            control.set_retry_max_delay_ms(cfg.retry_max_delay_ms);
+            control.set_throttle_enabled(cfg.throttle_enabled);
+            control.set_throttle_rate(cfg.throttle_rate_per_sec, cfg.throttle_burst);
 
-        if cfg.port != LAST_PORT.load(Ordering::Relaxed) {
+            // Apply the per-client switches so an edited settings.json takes
+            // effect without a restart.
+            control.set_client_enabled(ClientKind::ClaudeCode, cfg.client_claude_code_enabled);
+            control.set_client_enabled(ClientKind::Codex, cfg.client_codex_enabled);
+            control.set_client_enabled(ClientKind::OpenAi, cfg.client_openai_enabled);
+            control.set_trim_enabled_for(ClientKind::Codex, cfg.trim_codex_enabled);
+            control.set_trim_enabled_for(ClientKind::OpenAi, cfg.trim_openai_enabled);
+
+            port_changed = cfg.port != LAST_PORT.load(Ordering::Relaxed);
+        } else {
             drop(guard);
-            stop();
-            return start(cfg);
+            let started = if cfg.enabled { start(cfg) } else { false };
+            // Pollers follow their client even when the proxy is off (the Codex
+            // thread runs in-daemon; the OAuth poll flag is a no-op until the
+            // proxy starts, and start() seeds it from the same switch).
+            reconcile_pollers(cfg);
+            return started;
         }
-        true
-    } else {
-        drop(guard);
-        if cfg.enabled { start(cfg) } else { false }
     }
+    if port_changed {
+        stop();
+        let started = start(cfg);
+        // start() seeds the OAuth poll flag from the Claude Code switch, but the
+        // Codex thread still needs a reconcile after the restart.
+        reconcile_pollers(cfg);
+        return started;
+    }
+    // Run the listener rule after any client-switch change in the config, and
+    // drive the pollers. Done after dropping the lock: both call into functions
+    // that lock CONTROL.
+    reconcile_listener(cfg);
+    reconcile_pollers(cfg);
+    true
 }
 
 /// Current per-tier targets (opus, sonnet, haiku, fable). None if the proxy is off.
@@ -393,4 +432,214 @@ pub fn set_free_target(target: &str) -> bool {
             true
         })
         .unwrap_or(false)
+}
+
+// ── Per-client switches ────────────────────────────────────────────────
+
+/// Whether at least one client is enabled. The embedded listener runs only
+/// while this is true (see [`reconcile_listener`]).
+pub fn any_client_enabled(cfg: &LlmProxyConfig) -> bool {
+    cfg.client_claude_code_enabled || cfg.client_codex_enabled || cfg.client_openai_enabled
+}
+
+/// The listener lifetime rule, implemented in exactly one place: the proxy
+/// listens while at least one client is enabled and stops when all are
+/// disabled. Call after any client-switch change. All-on = running, all-off
+/// = not listening at all.
+pub fn reconcile_listener(cfg: &LlmProxyConfig) -> bool {
+    let running = is_running();
+    if any_client_enabled(cfg) && !running {
+        start(cfg)
+    } else if !any_client_enabled(cfg) && running {
+        stop();
+        false
+    } else {
+        running
+    }
+}
+
+/// Drive the background usage pollers from the per-client switches:
+/// - The Anthropic OAuth quota poller (gated by `quota_poll_enabled` on the
+///   proxy state) runs only when Claude Code is enabled.
+/// - The in-daemon Codex usage-polling thread runs only when Codex is enabled.
+pub fn reconcile_pollers(cfg: &LlmProxyConfig) {
+    set_quota_poll_enabled(cfg.client_claude_code_enabled);
+    if cfg.client_codex_enabled {
+        quota_watcher::start();
+    } else {
+        quota_watcher::stop();
+    }
+}
+
+/// Set a client's per-client switch. Persisted to settings.json so the choice
+/// survives daemon restarts (mirroring `set_target`), then applied to the live
+/// proxy. The listener and the background usage pollers are reconciled by the
+/// caller once the daemon config cache has been updated.
+pub fn set_client_enabled(client: ClientKind, on: bool) -> bool {
+    // Persist the selection so it is restored on the next start.
+    if let Ok(mut settings) = llm_proxy::config::load_settings() {
+        match client {
+            ClientKind::ClaudeCode => settings.client_claude_code_enabled = on,
+            ClientKind::Codex => settings.client_codex_enabled = on,
+            ClientKind::OpenAi => settings.client_openai_enabled = on,
+        }
+        let _ = llm_proxy::config::save_settings(&settings);
+    }
+
+    // Apply to the live proxy if it is running.
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| {
+            c.set_client_enabled(client, on);
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// Current state of a client's switch. Reads the live proxy when running and
+/// falls back to the persisted settings.json otherwise (e.g. all clients off).
+pub fn client_enabled(client: ClientKind) -> bool {
+    if let Some(c) = CONTROL.lock().unwrap().as_ref() {
+        return c.client_enabled(client);
+    }
+    llm_proxy::config::load_settings()
+        .ok()
+        .map_or(false, |s| match client {
+            ClientKind::ClaudeCode => s.client_claude_code_enabled,
+            ClientKind::Codex => s.client_codex_enabled,
+            ClientKind::OpenAi => s.client_openai_enabled,
+        })
+}
+
+/// Set a client's trim switch. Persisted to settings.json so the choice
+/// survives daemon restarts (mirroring `set_target`), then applied to the live
+/// proxy. Each `ClientKind` has its own flag: Claude Code keeps the
+/// `trim_enabled` master under that name so existing settings.json files keep
+/// working, OpenAI and Codex use their own keys.
+///
+/// Currently unused: the only trim UI is `Settings -> LLM Trim`, which writes
+/// settings.json directly and lets the file watcher apply it through `reload`.
+/// Kept because it is the write half of `trim_enabled_for` and the natural
+/// entry point for any future non-file caller.
+#[allow(dead_code)]
+pub fn set_trim_enabled_for(client: ClientKind, on: bool) -> bool {
+    // Persist the selection so it is restored on the next start.
+    if let Ok(mut settings) = llm_proxy::config::load_settings() {
+        match client {
+            ClientKind::Codex => settings.trim_codex_enabled = on,
+            ClientKind::ClaudeCode => settings.trim_enabled = on,
+            // The on-disk key is Option<bool>; a bare `on` would be a type error.
+            ClientKind::OpenAi => settings.trim_openai_enabled = Some(on),
+        }
+        let _ = llm_proxy::config::save_settings(&settings);
+    }
+
+    // Apply to the live proxy if it is running.
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| {
+            c.set_trim_enabled_for(client, on);
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// Current trim state for a client. Reads the live proxy when running and
+/// falls back to the persisted settings.json otherwise. Unused for the same
+/// reason as `set_trim_enabled_for` above.
+#[allow(dead_code)]
+pub fn trim_enabled_for(client: ClientKind) -> bool {
+    if let Some(c) = CONTROL.lock().unwrap().as_ref() {
+        return c.trim_enabled_for(client);
+    }
+    llm_proxy::config::load_settings()
+        .ok()
+        .map_or(false, |s| match client {
+            ClientKind::Codex => s.trim_codex_enabled,
+            ClientKind::ClaudeCode => s.trim_enabled,
+            ClientKind::OpenAi => s.trim_openai(),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The listener lifetime rule: running iff at least one client is enabled,
+    /// regardless of the proxy `enabled` master (the per-client switches now
+    /// drive the listener). Uses port 0 so the test binds an ephemeral port and
+    /// never collides with a user's real proxy on 3456.
+    ///
+    /// `#[ignore]` on purpose: `start` hardcodes `db_log_enabled: true` with no
+    /// seam to turn it off, so running this spawns a real embedded server that
+    /// opens — and migrates — the user's live `proxy.db`. Racing a schema
+    /// migration against a running daemon is not worth one `if`'s worth of
+    /// coverage; the decision predicate itself is covered purely below. Run
+    /// deliberately with `cargo test -p mhd-daemon -- --ignored` when the
+    /// daemon is stopped.
+    #[test]
+    #[ignore = "spawns a real proxy and migrates the user's live proxy.db"]
+    fn listener_runs_iff_at_least_one_client_is_enabled() {
+        let mut cfg = LlmProxyConfig::default();
+        cfg.port = 0;
+
+        // Start from a clean slate.
+        stop();
+        assert!(!is_running());
+
+        // All clients on (default) → running.
+        assert!(reconcile_listener(&cfg));
+        assert!(is_running());
+
+        // One client off keeps the listener running.
+        let mut one_off = cfg.clone();
+        one_off.client_claude_code_enabled = false;
+        assert!(reconcile_listener(&one_off));
+        assert!(is_running());
+
+        // All clients off → listener stops and stays stopped (start is a no-op).
+        let mut all_off = cfg.clone();
+        all_off.client_claude_code_enabled = false;
+        all_off.client_codex_enabled = false;
+        all_off.client_openai_enabled = false;
+        assert!(!reconcile_listener(&all_off));
+        assert!(!is_running());
+        assert!(!start(&all_off));
+        assert!(!is_running());
+
+        // One client back on → listener resumes.
+        all_off.client_codex_enabled = true;
+        assert!(reconcile_listener(&all_off));
+        assert!(is_running());
+
+        // Clean up so other tests never observe a running proxy.
+        stop();
+        assert!(!is_running());
+    }
+
+    #[test]
+    fn any_client_enabled_reflects_the_client_switches() {
+        let cfg = LlmProxyConfig::default();
+        assert!(any_client_enabled(&cfg));
+
+        let mut off = cfg.clone();
+        off.client_claude_code_enabled = false;
+        off.client_codex_enabled = false;
+        off.client_openai_enabled = false;
+        assert!(!any_client_enabled(&off));
+
+        off.client_codex_enabled = true;
+        assert!(any_client_enabled(&off));
+
+        // The OpenAI switch participates like the other two: with it as the
+        // only one left on, the listener rule stays satisfied.
+        off.client_codex_enabled = false;
+        off.client_openai_enabled = true;
+        assert!(any_client_enabled(&off));
+        assert!(!off.client_claude_code_enabled && !off.client_codex_enabled);
+    }
 }

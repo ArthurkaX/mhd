@@ -37,7 +37,9 @@ pub use config::{
     normalize_vision_endpoint, resolve_model_endpoint,
 };
 pub use db_log::{LogEvent, QuotaSnapshot};
-pub use state::{AppState, CodexTarget, Target, Tier, TraceEntry, VisionTraceEntry};
+pub use state::{
+    AppState, ClientKind, CodexTarget, Target, Tier, TraceEntry, VisionTraceEntry, WireApi,
+};
 
 /// Build the Axum router for a given shared state.
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -119,7 +121,9 @@ impl ProxyControl {
     /// any other value is a provider/model id and uses the mHD gateway key.
     pub fn set_codex_target(&self, target: &str) {
         self.state.set_codex_target(CodexTarget::parse(target));
-        if self.persist && let Err(e) = config::save(&self.state.to_config()) {
+        if self.persist
+            && let Err(e) = config::save(&self.state.to_config())
+        {
             tracing::warn!("failed to persist Codex target: {e}");
         }
     }
@@ -410,13 +414,40 @@ impl ProxyControl {
     }
 
     /// Enable or disable the OAuth quota poller on the embedded state.
-    /// Driven at runtime by the daemon's Quota Watcher toggle.
+    /// Driven at runtime by the daemon's Claude Code client switch.
     pub fn set_quota_poll_enabled(&self, enabled: bool) {
         *self
             .state
             .quota_poll_enabled
             .write()
             .unwrap_or_else(|e| e.into_inner()) = enabled;
+    }
+
+    /// Enable or disable a client's ingress. When disabled, the proxy refuses
+    /// that client's route (HTTP 503); the daemon separately stops its
+    /// background usage polling so mhd does no work for a client the user
+    /// does not use.
+    pub fn set_client_enabled(&self, client: ClientKind, on: bool) {
+        self.state.set_client_enabled(client, on);
+    }
+
+    /// Whether a client's ingress is currently enabled.
+    pub fn client_enabled(&self, client: ClientKind) -> bool {
+        self.state.client_enabled(client)
+    }
+
+    /// Enable or disable trim for a client. Each `ClientKind` has its own
+    /// independent flag: Claude Code uses the `trim_enabled` master, OpenAI
+    /// uses `trim_openai_enabled`, Codex uses `trim_codex_enabled` (which
+    /// today gates nothing because trim for the Responses wire API is not
+    /// implemented yet).
+    pub fn set_trim_enabled_for(&self, client: ClientKind, on: bool) {
+        self.state.set_trim_enabled_for(client, on);
+    }
+
+    /// Whether trim is enabled for a client.
+    pub fn trim_enabled_for(&self, client: ClientKind) -> bool {
+        self.state.trim_enabled_for(client)
     }
 
     /// Snapshot of recent routing decisions.

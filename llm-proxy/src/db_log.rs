@@ -79,6 +79,11 @@ pub struct LogEvent {
     pub error: Option<String>,
     pub error_kind: Option<String>,
     pub status: Option<u16>,
+    /// Client family this event came from (slot string, e.g. "claude_code").
+    pub client: Option<String>,
+    /// Wire protocol the event arrived on (slot string, e.g.
+    /// "anthropic_messages").
+    pub wire_api: Option<String>,
 }
 
 /// A typed row for the `requests` table, carrying the start-of-request fields.
@@ -105,6 +110,11 @@ pub struct RequestRow {
     /// Value of the `x-client-run-id` request header, if the client sent one.
     /// Lets proxy rows be stitched to a harness-side session log by run id.
     pub client_run_id: Option<String>,
+    /// Client family this request came from (slot string, e.g. "claude_code").
+    pub client: Option<String>,
+    /// Wire protocol the request arrived on (slot string, e.g.
+    /// "anthropic_messages").
+    pub wire_api: Option<String>,
     /// Prefix-shape measurements for this request. Independent of the cache
     /// columns and never a substitute for them — see [`crate::prefix`].
     pub prefix: crate::prefix::PrefixStats,
@@ -247,7 +257,9 @@ impl DbLog {
                 duration_ms INTEGER,
                 error       TEXT,
                 error_kind  TEXT,
-                status      INTEGER
+                status      INTEGER,
+                client      TEXT,
+                wire_api    TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_events_seq  ON events(seq);
             CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -289,6 +301,10 @@ impl DbLog {
                 user_agent    TEXT,
                 upstream_model TEXT,
                 client_run_id TEXT,
+                -- Client axis: which client family and wire protocol this
+                -- request came from (see `state::ClientKind` / `WireApi`).
+                client        TEXT,
+                wire_api      TEXT,
                 -- Prefix shape (see the `prefix` module). NOT a cache signal:
                 -- a route can be 90%+ prefix-shared and still never cache.
                 -- msg_digest is JSON [[<hex hash>, <bytes>], ...] over
@@ -422,6 +438,10 @@ impl DbLog {
             "ALTER TABLE requests ADD COLUMN user_agent TEXT",
             "ALTER TABLE requests ADD COLUMN upstream_model TEXT",
             "ALTER TABLE requests ADD COLUMN client_run_id TEXT",
+            "ALTER TABLE requests ADD COLUMN client TEXT",
+            "ALTER TABLE requests ADD COLUMN wire_api TEXT",
+            "ALTER TABLE events ADD COLUMN client TEXT",
+            "ALTER TABLE events ADD COLUMN wire_api TEXT",
             "ALTER TABLE requests ADD COLUMN msg_digest TEXT",
             "ALTER TABLE requests ADD COLUMN msg_total_chars INTEGER",
             "ALTER TABLE requests ADD COLUMN prefix_shared_chars INTEGER",
@@ -429,6 +449,23 @@ impl DbLog {
         ] {
             let _ = conn.execute(stmt, []);
         }
+        // Backfill the client axis for rows written before it existed. Those
+        // rows cannot be told apart — the same code path served both Claude
+        // Code and OpenAI passthrough, so they are a mix of the two. Label
+        // them all Claude Code / Anthropic Messages so the columns are never
+        // NULL, and do NOT treat any pre-migration row as authoritative on
+        // the client axis. `WHERE client IS NULL` keeps this idempotent: new
+        // inserts always carry a value, so later opens touch nothing.
+        let _ = conn.execute(
+            "UPDATE requests SET client = 'claude_code', wire_api = 'anthropic_messages'
+              WHERE client IS NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE events SET client = 'claude_code', wire_api = 'anthropic_messages'
+              WHERE client IS NULL",
+            [],
+        );
         // The NULL-vs-0 epoch watermark. Every row written before the cache columns learned
         // to store NULL kept 0 whether or not the upstream reported anything, so the
         // distinction is unrecoverable for them. We do NOT rewrite that history -- past
@@ -449,8 +486,19 @@ impl DbLog {
         ) {
             eprintln!("mhd: proxy.db: idx_requests_client_run not created: {e}");
         }
+        // Index for client-axis analytics (per-client dashboards/quota charts).
+        // Placed here, after the ALTERs, for the same reason as
+        // idx_requests_client_run: on an existing database the `client`
+        // column only exists once the migration above has run, and creating
+        // the index inside the batch would abort the whole schema batch.
+        if let Err(e) = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client)",
+            [],
+        ) {
+            eprintln!("mhd: proxy.db: idx_requests_client not created: {e}");
+        }
         // Only now, with the schema actually in place, record the version.
-        conn.pragma_update(None, "user_version", 5)?;
+        conn.pragma_update(None, "user_version", 6)?;
         Ok(Self {
             conn: Mutex::new(conn),
             corpus_max_rows,
@@ -486,8 +534,9 @@ impl DbLog {
             let _ = conn.execute(
                 "INSERT INTO events (ts, seq, event_type, tier, effective_tier, target,
                                      model, target_model, reason, detail, inflight,
-                                     duration_ms, error, error_kind, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                                     duration_ms, error, error_kind, status,
+                                     client, wire_api)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 rusqlite::params![
                     ts,
                     seq,
@@ -504,6 +553,8 @@ impl DbLog {
                     event.error,
                     event.error_kind,
                     event.status.map(|v| v as i16),
+                    event.client,
+                    event.wire_api,
                 ],
             );
         }
@@ -520,10 +571,10 @@ impl DbLog {
                     downgraded, downgrade_reason,
                     trim_applied, trim_preset, trim_config,
                     trim_tokens_before, trim_tokens_after, trim_stages,
-                    user_agent, client_run_id,
+                    user_agent, client_run_id, client, wire_api,
                     msg_digest, msg_total_chars,
                     prefix_shared_chars, prefix_shared_chars_sent
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
                 rusqlite::params![
                     row.run_id as i64,
                     row.seq as i64,
@@ -542,6 +593,8 @@ impl DbLog {
                     row.trim_stages,
                     row.user_agent,
                     row.client_run_id,
+                    row.client,
+                    row.wire_api,
                     row.prefix.msg_digest,
                     row.prefix.msg_total_chars.map(|v| v as i64),
                     row.prefix.prefix_shared_chars.map(|v| v as i64),
@@ -993,6 +1046,8 @@ mod tests {
                 "msg_total_chars",
                 "prefix_shared_chars",
                 "prefix_shared_chars_sent",
+                "client",
+                "wire_api",
             ] {
                 let n: i64 = guard
                     .query_row(
@@ -1178,6 +1233,63 @@ mod tests {
                 Some(3)
             )
         );
+    }
+
+    /// The client-axis columns must land in the columns they name — the insert
+    /// binds 23 positional params and a column-order slip would silently write
+    /// `client` into a neighbouring field. Rows written before the client axis
+    /// existed (client NULL) are backfilled to 'claude_code' on open, never
+    /// left NULL.
+    #[test]
+    fn client_columns_round_trip_and_backfill() {
+        let (db, tmp) = open_temp_db(0);
+        db.insert_request(&RequestRow {
+            run_id: 1,
+            seq: 1,
+            ts_start: "2026-08-01T00:00:00Z".to_string(),
+            tier: Some("opus".to_string()),
+            effective_tier: Some("haiku".to_string()),
+            client: Some("codex".to_string()),
+            wire_api: Some("responses".to_string()),
+            ..Default::default()
+        });
+        // A pre-client-style row: client/wire_api stay NULL on insert.
+        db.insert_request(&RequestRow {
+            run_id: 1,
+            seq: 2,
+            ts_start: "2026-08-01T00:00:00Z".to_string(),
+            ..Default::default()
+        });
+
+        // The explicit row lands in the columns it names.
+        {
+            let conn = db.conn.lock().expect("lock");
+            let (client, wire_api): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT client, wire_api FROM requests WHERE seq = 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("row");
+            assert_eq!(client.as_deref(), Some("codex"));
+            assert_eq!(wire_api.as_deref(), Some("responses"));
+        }
+        drop(db);
+
+        // Reopening backfills the NULL row as claude_code and leaves the
+        // explicit row alone.
+        let db = DbLog::open(tmp.as_ref(), 0).expect("reopen");
+        let conn = db.conn.lock().expect("lock");
+        let (c1, c2): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT (SELECT client FROM requests WHERE seq = 1),
+                        (SELECT client FROM requests WHERE seq = 2)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("row");
+        assert_eq!(c1.as_deref(), Some("codex"), "explicit value untouched");
+        assert_eq!(c2.as_deref(), Some("claude_code"), "NULL row backfilled");
     }
 
     /// The three route states must stay distinguishable through the view.

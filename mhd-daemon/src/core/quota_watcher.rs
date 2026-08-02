@@ -3,7 +3,12 @@
 //! Polls subscription quota windows (5h / 7d) on a periodic timer inside the
 //! daemon process. Currently imports Codex JSONL and fetches Codex live quota;
 //! the storage layer is provider-neutral (`store_live_snapshot` takes the
-//! provider as a string). Toggle on/off via tray or action binding.
+//! provider as a string).
+//!
+//! The thread follows the Codex per-client switch: it runs only while Codex is
+//! enabled (tray "Codex: proxy"). The Anthropic OAuth quota poller lives on the
+//! proxy's own runtime and is gated separately by the Claude Code switch via
+//! `set_quota_poll_enabled` — this module no longer touches that flag.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +26,7 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 /// Whether the watcher is currently running.
+#[allow(dead_code)] // state query kept for instrumentation/UI; start/stop are idempotent
 pub fn is_running() -> bool {
     RUNNING.load(Ordering::SeqCst)
 }
@@ -32,11 +38,6 @@ pub fn start() -> bool {
     }
 
     RUNNING.store(true, Ordering::SeqCst);
-
-    // Why: push the enabled state to the proxy's poller so it starts polling.
-    // If the proxy isn't running yet, this is a silent no-op; the proxy's own
-    // start() seeds the flag from is_running() when it comes up.
-    crate::core::llm_proxy::set_quota_poll_enabled(true);
 
     let handle = std::thread::spawn(move || {
         run_loop();
@@ -53,10 +54,6 @@ pub fn start() -> bool {
 /// Stop the background watcher thread.
 pub fn stop() {
     RUNNING.store(false, Ordering::SeqCst);
-
-    // Why: push the disabled state to the proxy's poller so it stops polling.
-    // Silent no-op if the proxy isn't running.
-    crate::core::llm_proxy::set_quota_poll_enabled(false);
 
     if let Ok(mut guard) = THREAD.lock()
         && let Some(handle) = guard.take()

@@ -183,16 +183,28 @@ The selector shows the configured targets for each Claude tier. Pick `native` to
 The tray menu exposes the operational controls:
 
 - **LLM Models** - open the model selector.
-- **LLM Proxy on/off** - toggle the embedded proxy server.
-- **Trim (compress requests)** - toggle request compression for all proxy traffic.
+- **Claude Code: proxy** - route Claude Code through the proxy. Turning it off
+  also stops the Anthropic OAuth usage poller, so mhd does no background work
+  for a client you do not use.
+- **Codex: proxy** - route Codex through the proxy. Turning it off also stops
+  the Codex usage poller.
+- **OpenAI: proxy** - route OpenAI-compatible clients (Zed / opencode / pi)
+  through the proxy.
 - **Proxy Trace** - inspect recent routing decisions.
 - **Settings -> LLM Proxy** - configure providers, models, keys, and defaults.
+- **Settings -> LLM Trim** - request compression, with an independent switch
+  per client (Claude Code / OpenAI / Codex).
+
+The listener runs only while at least one client is enabled. Turn all three
+off and the proxy closes its port.
 
 ## Trace View
 
 The proxy trace overlay shows recent requests and routing decisions. It is useful for checking:
 
 - which tier Claude Code requested;
+- which client sent the request (`Client` column: Claude Code / Codex / OpenAI),
+  with a chip on the summary line to filter the view down to one client;
 - which target the proxy selected;
 - whether traffic went to Anthropic native or a provider;
 - whether an automatic downgrade rule changed the target;

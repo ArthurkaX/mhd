@@ -21,7 +21,11 @@ const CODEX_ORIGIN: &str = "https://chatgpt.com/backend-api/codex";
 /// Decode a Codex JSON request for local corpus analysis while retaining the
 /// original bytes for native forwarding.
 pub fn decode_request(incoming: &HeaderMap, body: &[u8]) -> Result<Value> {
-    let decoded = if incoming.get("content-encoding").and_then(|v| v.to_str().ok()) == Some("zstd") {
+    let decoded = if incoming
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        == Some("zstd")
+    {
         zstd::decode_all(body)?
     } else {
         body.to_vec()
@@ -147,7 +151,9 @@ async fn forward_side_chat_adapter(
                 for part in parts {
                     let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
                     if !matches!(kind, "input_text" | "output_text") {
-                        anyhow::bail!("Codex side adapter supports text content only (got '{kind}')");
+                        anyhow::bail!(
+                            "Codex side adapter supports text content only (got '{kind}')"
+                        );
                     }
                     if let Some(text) = part.get("text").and_then(Value::as_str) {
                         out.push_str(text);
@@ -164,17 +170,28 @@ async fn forward_side_chat_adapter(
         Value::String(text) => messages.push(serde_json::json!({"role":"user","content":text})),
         Value::Array(items) => {
             for item in items {
-                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("message");
-                if matches!(item_type, "reasoning" | "response.output_text" | "summary_text" | "additional_tools" | "item_reference") {
+                let item_type = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("message");
+                if matches!(
+                    item_type,
+                    "reasoning"
+                        | "response.output_text"
+                        | "summary_text"
+                        | "additional_tools"
+                        | "item_reference"
+                ) {
                     continue;
                 }
                 let role = match item.get("role").and_then(Value::as_str).unwrap_or("user") {
                     "developer" => "system",
                     role => role,
                 };
-                if item_type != "message" || item.get("content").is_none()
-                {
-                    anyhow::bail!("Codex side adapter does not support Responses item type '{item_type}'")
+                if item_type != "message" || item.get("content").is_none() {
+                    anyhow::bail!(
+                        "Codex side adapter does not support Responses item type '{item_type}'"
+                    )
                 }
                 let content = text_content(item.get("content").unwrap_or(&Value::Null))?;
                 messages.push(serde_json::json!({"role": role, "content": content}));
@@ -188,14 +205,26 @@ async fn forward_side_chat_adapter(
         "stream": true,
         "stream_options": {"include_usage": true}
     });
-    let base = state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()).trim_end_matches('/').to_string();
-    let key = state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let upstream = state.http_stream.post(format!("{base}/chat/completions"))
+    let base = state
+        .upstream_base_url
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .trim_end_matches('/')
+        .to_string();
+    let key = state
+        .upstream_key
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let upstream = state
+        .http_stream
+        .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
         .header("x-bf-vk", key)
         .json(&request_body)
-        .send().await?;
+        .send()
+        .await?;
     let status = StatusCode::from_u16(upstream.status().as_u16())?;
     if !status.is_success() {
         let text = upstream.text().await.unwrap_or_default();
@@ -235,7 +264,10 @@ async fn forward_side_chat_adapter(
         yield Ok(frame("response.output_item.done", serde_json::json!({"type":"response.output_item.done","sequence_number":sequence,"output_index":0,"item":item}))); sequence += 1;
         yield Ok(frame("response.completed", serde_json::json!({"type":"response.completed","sequence_number":sequence,"response":{"id":id,"object":"response","status":"completed","output":[item]}})));
     };
-    Ok(Response::builder().status(status).header("content-type", "text/event-stream").body(Body::from_stream(output))?)
+    Ok(Response::builder()
+        .status(status)
+        .header("content-type", "text/event-stream")
+        .body(Body::from_stream(output))?)
 }
 
 /// Whether an incoming `/v1/models` request is a Codex discovery request.

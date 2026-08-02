@@ -61,9 +61,18 @@ pub struct LlmModel {
 }
 
 /// Validated quota watcher config (from TOML).
+///
+/// SUPERSEDED: the background usage pollers now follow the per-client switches
+/// (`client_codex_enabled` drives the in-daemon Codex polling thread,
+/// `client_claude_code_enabled` drives the Anthropic OAuth poller). This key is
+/// left readable so a stale `false` in a user's config.toml cannot silently
+/// disable polling, but it is no longer treated as the master.
 #[derive(Debug, Clone, Default)]
 pub struct QuotaWatcherConfig {
-    /// Enable the background subscription-quota watcher.
+    /// Legacy master switch for the background subscription-quota watcher.
+    /// Kept for backward compatibility / schema stability only — no longer
+    /// consulted at runtime.
+    #[allow(dead_code)]
     pub enabled: bool,
 }
 
@@ -137,6 +146,30 @@ pub struct LlmProxyConfig {
     pub throttle_rate_per_sec: f64,
     /// Bucket capacity (max instantaneous burst) for the token-bucket throttle.
     pub throttle_burst: f64,
+    /// Per-client master switch for Claude Code. When false, the Claude Code
+    /// ingress route is refused and its Anthropic OAuth quota poller stops.
+    /// Default: on — the user's existing config predates these keys, and a
+    /// false default would silently kill their working routes after upgrade.
+    pub client_claude_code_enabled: bool,
+    /// Per-client master switch for Codex. When false, the Codex ingress route
+    /// is refused and the in-daemon Codex usage-polling thread stops.
+    /// Default: on — same reasoning as `client_claude_code_enabled`.
+    pub client_codex_enabled: bool,
+    /// Per-client master switch for OpenAI-compatible clients. When false, the
+    /// `/v1/chat/completions` ingress route is refused. No background polling
+    /// today, so this only gates the route. Deliberately kept out of the tray
+    /// for now. Default: on — same reasoning as `client_claude_code_enabled`.
+    pub client_openai_enabled: bool,
+    /// Codex trim switch. Trim for the Responses wire API is NOT implemented
+    /// yet, so this gates nothing today; it exists so the client axis is
+    /// complete and the engine can be added behind it without a UI change.
+    /// Default: off.
+    pub trim_codex_enabled: bool,
+    /// OpenAI-compatible client trim switch. The on-disk key is an
+    /// `Option<bool>` resolved through `Settings::trim_openai()`, which follows
+    /// the `trim_enabled` master while the key is absent so upgrades do not
+    /// change behaviour.
+    pub trim_openai_enabled: bool,
 }
 
 impl Default for LlmProxyConfig {
@@ -177,6 +210,11 @@ impl Default for LlmProxyConfig {
             throttle_enabled: false,
             throttle_rate_per_sec: 10.0,
             throttle_burst: 10.0,
+            client_claude_code_enabled: true,
+            client_codex_enabled: true,
+            client_openai_enabled: true,
+            trim_codex_enabled: false,
+            trim_openai_enabled: false,
         }
     }
 }
@@ -225,7 +263,9 @@ pub struct AppConfig {
     pub quiet_exclude: Vec<String>,
     /// LLM proxy integration config.
     pub llm_proxy: LlmProxyConfig,
-    /// Quota watcher config.
+    /// Quota watcher config. SUPERSEDED by the per-client switches — retained
+    /// so a legacy `[quota_watcher]` / `[codex_watcher]` section still parses.
+    #[allow(dead_code)]
     pub quota_watcher: QuotaWatcherConfig,
 }
 
@@ -529,6 +569,27 @@ impl AppConfig {
                 .map(|s| s.throttle_rate_per_sec)
                 .unwrap_or(10.0),
             throttle_burst: settings.as_ref().map(|s| s.throttle_burst).unwrap_or(10.0),
+            // Defaults are true so an upgrade never silently kills a route the
+            // user already relies on; existing settings.json files lack these keys.
+            client_claude_code_enabled: settings
+                .as_ref()
+                .map(|s| s.client_claude_code_enabled)
+                .unwrap_or(true),
+            client_codex_enabled: settings
+                .as_ref()
+                .map(|s| s.client_codex_enabled)
+                .unwrap_or(true),
+            client_openai_enabled: settings
+                .as_ref()
+                .map(|s| s.client_openai_enabled)
+                .unwrap_or(true),
+            trim_codex_enabled: settings
+                .as_ref()
+                .map(|s| s.trim_codex_enabled)
+                .unwrap_or(false),
+            // Resolve the Option<bool> through trim_openai(): an absent key
+            // keeps following trim_enabled, so an upgrade flips nothing.
+            trim_openai_enabled: settings.as_ref().map(|s| s.trim_openai()).unwrap_or(false),
         }
     }
 

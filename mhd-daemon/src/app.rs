@@ -41,8 +41,10 @@ pub trait DaemonControl: Send + Sync {
     /// Whether blackbox is currently running.
     #[cfg(feature = "blackbox")]
     fn blackbox_enabled(&self) -> bool;
-    /// Toggle the quota watcher and persist the new startup state.
-    fn toggle_quota_watcher(&self) -> bool;
+    /// Enable or disable a client's proxy route and its background usage
+    /// polling. Persists to settings.json, updates the daemon config cache,
+    /// and reconciles the listener and the pollers.
+    fn set_client_enabled(&self, client: llm_proxy::ClientKind, on: bool) -> bool;
     /// Quick Note config snapshot.
     fn quicknote_config(&self) -> QuickNoteConfig;
     /// Quick Draw save directory.
@@ -106,24 +108,12 @@ impl DaemonControl for AppHandle {
             *config = new_config;
         }
 
-        let watcher_enabled = self
-            .config
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .quota_watcher
-            .enabled;
-        if watcher_enabled != crate::core::quota_watcher::is_running() {
-            if watcher_enabled {
-                crate::core::quota_watcher::start();
-            } else {
-                crate::core::quota_watcher::stop();
-            }
-        }
-
         self.osd.set_theme(self.theme());
 
         // Push runtime changes to the embedded proxy so they take effect on
-        // the next request without a restart.
+        // the next request without a restart. reload() applies the per-client
+        // switches and reconciles the background usage pollers from them (the
+        // Codex thread now follows the Codex switch, not [quota_watcher].enabled).
         let proxy_cfg = self
             .config
             .lock()
@@ -204,39 +194,24 @@ impl DaemonControl for AppHandle {
         crate::blackbox::is_logging()
     }
 
-    fn toggle_quota_watcher(&self) -> bool {
-        let enabled = !crate::core::quota_watcher::is_running();
-        let content = match std::fs::read_to_string(&self.config_path) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!("mhd: cannot persist quota-watcher state: {e}");
-                return !enabled;
+    fn set_client_enabled(&self, client: llm_proxy::ClientKind, on: bool) -> bool {
+        // Update the cached daemon config so tray checkboxes and subsequent
+        // reconcile calls see the new value, then persist + apply live and
+        // reconcile the listener and the pollers.
+        let cfg = {
+            let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+            let lp = &mut config.llm_proxy;
+            match client {
+                llm_proxy::ClientKind::ClaudeCode => lp.client_claude_code_enabled = on,
+                llm_proxy::ClientKind::Codex => lp.client_codex_enabled = on,
+                llm_proxy::ClientKind::OpenAi => lp.client_openai_enabled = on,
             }
+            lp.clone()
         };
-        let new_content = match update_quota_watcher_setting(&content, enabled) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!("mhd: cannot persist quota-watcher state: {e}");
-                return !enabled;
-            }
-        };
-        if let Err(e) = std::fs::write(&self.config_path, new_content) {
-            eprintln!("mhd: cannot persist quota-watcher state: {e}");
-            return !enabled;
-        }
-
-        self.config
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .quota_watcher
-            .enabled = enabled;
-
-        if enabled {
-            crate::core::quota_watcher::start()
-        } else {
-            crate::core::quota_watcher::stop();
-            false
-        }
+        crate::llm_proxy::set_client_enabled(client, on);
+        crate::llm_proxy::reconcile_pollers(&cfg);
+        crate::llm_proxy::reconcile_listener(&cfg);
+        on
     }
 
     fn quicknote_config(&self) -> QuickNoteConfig {
@@ -281,139 +256,19 @@ impl DaemonControl for AppHandle {
     }
 }
 
-/// Update only `[quota_watcher].enabled` (or legacy `[codex_watcher].enabled`),
-/// preserving the rest of config.toml.
-///
-/// # Why:
-/// Prefers the new `[quota_watcher]` section name but falls back to the legacy
-/// `[codex_watcher]` section — the user's existing section header is rewritten
-/// IN PLACE, never renamed behind their back, and a duplicate section is never
-/// created.
-fn update_quota_watcher_setting(content: &str, enabled: bool) -> Result<String, String> {
-    if !content.trim().is_empty() {
-        toml::from_str::<toml::Value>(content).map_err(|e| e.to_string())?;
-    }
-
-    let newline = if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
-
-    // Try new section name first, then legacy.
-    let section = lines
-        .iter()
-        .position(|line| line.trim() == "[quota_watcher]")
-        .or_else(|| lines.iter().position(|line| line.trim() == "[codex_watcher]"));
-
-    if let Some(section_idx) = section {
-        let section_end = lines
-            .iter()
-            .enumerate()
-            .skip(section_idx + 1)
-            .find(|(_, line)| {
-                let trimmed = line.trim();
-                trimmed.starts_with('[') && trimmed.ends_with(']')
-            })
-            .map(|(idx, _)| idx)
-            .unwrap_or(lines.len());
-
-        let enabled_line = (section_idx + 1..section_end).find(|&idx| {
-            lines[idx]
-                .split_once('=')
-                .is_some_and(|(key, _)| key.trim() == "enabled")
-        });
-
-        if let Some(idx) = enabled_line {
-            let indentation: String = lines[idx]
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .collect();
-            let comment = lines[idx]
-                .split_once('=')
-                .and_then(|(_, value)| value.find('#').map(|pos| value[pos..].trim()));
-            lines[idx] = format!(
-                "{indentation}enabled = {enabled}{}",
-                comment.map(|c| format!(" {c}")).unwrap_or_default()
-            );
-        } else {
-            lines.insert(section_idx + 1, format!("enabled = {enabled}"));
-        }
-    } else {
-        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
-            lines.push(String::new());
-        }
-        lines.push("[quota_watcher]".to_string());
-        lines.push(format!("enabled = {enabled}"));
-    }
-
-    let mut updated = lines.join(newline);
-    updated.push_str(newline);
-    toml::from_str::<toml::Value>(&updated).map_err(|e| e.to_string())?;
-    Ok(updated)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::update_quota_watcher_setting;
-
-    #[test]
-    fn adds_missing_quota_watcher_section_without_changing_other_settings() {
-        let input = "theme = \"dark\"\n\n[[binding]]\ntrigger = \"f1\"\naction = \"note\"\n";
-        let updated = update_quota_watcher_setting(input, true).unwrap();
-
-        assert!(updated.contains("theme = \"dark\""));
-        assert!(updated.contains("[quota_watcher]\nenabled = true"));
-        assert!(updated.contains("[[binding]]"));
-    }
-
-    #[test]
-    fn updates_existing_quota_watcher_section_and_preserves_comment() {
-        let input = "[quota_watcher]\r\nenabled = false # keep enabled\r\n\r\n[quicknote]\r\nenabled = true\r\n";
-        let updated = update_quota_watcher_setting(input, true).unwrap();
-
-        assert!(updated.contains("enabled = true # keep enabled"));
-        assert!(updated.contains("[quicknote]\r\nenabled = true"));
-        assert!(!updated.contains("enabled = false"));
-    }
-
-    #[test]
-    fn updates_existing_legacy_codex_watcher_section_in_place() {
-        // Legacy [codex_watcher] section header is kept in place — not renamed.
-        let input = "[codex_watcher]\nenabled = false\n\n[quicknote]\nenabled = true\n";
-        let updated = update_quota_watcher_setting(input, true).unwrap();
-
-        // Section header stays legacy
-        assert!(updated.contains("[codex_watcher]"));
-        assert!(updated.contains("enabled = true"));
-        assert!(updated.contains("[quicknote]\nenabled = true"));
-        assert!(!updated.contains("[quota_watcher]"));
-        assert!(!updated.contains("enabled = false"));
-    }
-
-    #[test]
-    fn updates_existing_legacy_codex_watcher_preserves_comment() {
-        let input = "[codex_watcher]\r\nenabled = false # keep enabled\r\n\r\n[quicknote]\r\nenabled = true\r\n";
-        let updated = update_quota_watcher_setting(input, true).unwrap();
-
-        assert!(updated.contains("[codex_watcher]"));
-        assert!(updated.contains("enabled = true # keep enabled"));
-        assert!(updated.contains("[quicknote]\r\nenabled = true"));
-        assert!(!updated.contains("[quota_watcher]"));
-        assert!(!updated.contains("enabled = false"));
-    }
-
-    #[test]
-    fn adds_quota_watcher_when_neither_section_exists() {
-        let input = "theme = \"dark\"\nvolume_step = 2\n\n[[binding]]\ntrigger = \"f1\"\naction = \"note\"\n";
-        let updated = update_quota_watcher_setting(input, false).unwrap();
-
-        assert!(updated.contains("theme = \"dark\""));
-        assert!(updated.contains("volume_step = 2"));
-        assert!(updated.contains("[quota_watcher]\nenabled = false"));
-        assert!(updated.contains("[[binding]]"));
-        assert!(!updated.contains("[codex_watcher]"));
+impl AppHandle {
+    /// Legacy toggle for the Codex quota watcher.
+    ///
+    /// SUPERSEDED: the standalone quota-watcher toggle was removed; the Codex
+    /// usage-polling thread now follows the Codex per-client switch (tray
+    /// "Codex: proxy"). Kept as an inherent method so keybindings that still
+    /// bind `toggle_quota_watcher` / `toggle_codex_watcher` keep working.
+    pub fn toggle_quota_watcher(&self) -> bool {
+        let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        let on = !cfg.llm_proxy.client_codex_enabled;
+        drop(cfg);
+        self.set_client_enabled(llm_proxy::ClientKind::Codex, on);
+        on
     }
 }
 
@@ -450,7 +305,11 @@ impl App {
 
         let native_theme = crate::native_theme::load_theme(app_config.theme.as_deref());
 
-        let quota_watcher_enabled = app_config.quota_watcher.enabled;
+        // The Codex usage-polling thread follows the Codex per-client switch.
+        // The legacy [quota_watcher].enabled key is left readable but no longer
+        // treated as the master (a stale `false` in a user's config must not
+        // silently disable polling).
+        let codex_watcher_enabled = app_config.llm_proxy.client_codex_enabled;
         let running = Arc::new(AtomicBool::new(true));
         let hook_thread_id = Arc::new(AtomicU32::new(0));
         let config = Arc::new(Mutex::new(app_config));
@@ -482,8 +341,10 @@ impl App {
             );
         }
 
-        // Auto-start quota watcher if enabled in config
-        if quota_watcher_enabled {
+        // Auto-start the Codex usage-polling thread if the Codex client is
+        // enabled in config. The Anthropic OAuth poller is seeded separately by
+        // the proxy's own start() from the Claude Code switch.
+        if codex_watcher_enabled {
             crate::core::quota_watcher::start();
         }
 

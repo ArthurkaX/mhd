@@ -96,6 +96,38 @@ pub struct Settings {
     #[serde(default)]
     pub trim_enabled: bool,
 
+    /// Per-client master switch for Claude Code. When false, the Claude Code
+    /// ingress route is refused and its background usage polling is skipped.
+    /// Default: on — the user's live settings.json predates this key, and a
+    /// false default would silently kill the Claude Code route after upgrade.
+    #[serde(default = "default_client_claude_code_enabled")]
+    pub client_claude_code_enabled: bool,
+
+    /// Per-client master switch for Codex. Default: on — same reasoning as
+    /// `client_claude_code_enabled`: existing settings.json files lack the key.
+    #[serde(default = "default_client_codex_enabled")]
+    pub client_codex_enabled: bool,
+
+    /// Per-client master switch for OpenAI-compatible clients. Default: on —
+    /// same reasoning as `client_claude_code_enabled`.
+    #[serde(default = "default_client_openai_enabled")]
+    pub client_openai_enabled: bool,
+
+    /// Codex trim switch. Trim for the Responses wire API is NOT implemented
+    /// yet, so this gates nothing today; it exists so the client axis is
+    /// complete and the engine can be added behind it without a UI change.
+    /// Default: off.
+    #[serde(default)]
+    pub trim_codex_enabled: bool,
+
+    /// OpenAI-compatible client trim switch. `None` means the key predates the
+    /// per-client split, where OpenAI traffic followed `trim_enabled` — an
+    /// upgrade must not change behaviour either way, so it resolves to
+    /// `trim_enabled` until the user explicitly picks a value. See
+    /// [`Settings::trim_openai`].
+    #[serde(default)]
+    pub trim_openai_enabled: Option<bool>,
+
     /// Master switch for replay-corpus capture (stores full pre-trim request bodies in proxy.db). Default: off.
     #[serde(default)]
     pub corpus_capture: bool,
@@ -194,6 +226,15 @@ pub struct Settings {
     pub corpus_max_rows: usize,
 }
 
+impl Settings {
+    /// Resolved OpenAI trim flag. Absent in settings.json means the key
+    /// predates the per-client split, where OpenAI traffic followed
+    /// `trim_enabled` — so an upgrade must not change behaviour either way.
+    pub fn trim_openai(&self) -> bool {
+        self.trim_openai_enabled.unwrap_or(self.trim_enabled)
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -212,6 +253,11 @@ impl Default for Settings {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: false,
+            client_claude_code_enabled: default_client_claude_code_enabled(),
+            client_codex_enabled: default_client_codex_enabled(),
+            client_openai_enabled: default_client_openai_enabled(),
+            trim_codex_enabled: false,
+            trim_openai_enabled: None,
             corpus_capture: false,
             db_log_enabled: default_db_log_enabled(),
             trim_tool_desc_chars: default_trim_tool_desc_chars(),
@@ -293,6 +339,11 @@ pub struct Config {
     /// Sonnet downgrade when no thinking.
     pub sonnet_downgrade_enabled: bool,
     pub trim_enabled: bool,
+    pub client_claude_code_enabled: bool,
+    pub client_codex_enabled: bool,
+    pub client_openai_enabled: bool,
+    pub trim_codex_enabled: bool,
+    pub trim_openai_enabled: bool,
     pub corpus_capture: bool,
     /// Whether to write structured events to `proxy.db`.
     pub db_log_enabled: bool,
@@ -353,6 +404,11 @@ impl Config {
             opus_downgrade_enabled: settings.opus_downgrade_enabled,
             sonnet_downgrade_enabled: settings.sonnet_downgrade_enabled,
             trim_enabled: settings.trim_enabled,
+            client_claude_code_enabled: settings.client_claude_code_enabled,
+            client_codex_enabled: settings.client_codex_enabled,
+            client_openai_enabled: settings.client_openai_enabled,
+            trim_codex_enabled: settings.trim_codex_enabled,
+            trim_openai_enabled: settings.trim_openai(),
             corpus_capture: settings.corpus_capture,
             db_log_enabled: settings.db_log_enabled,
             trim_tool_desc_chars: settings.trim_tool_desc_chars,
@@ -394,6 +450,11 @@ impl Config {
             vision_model: None,
             vision_prompt: default_vision_prompt(),
             trim_enabled: self.trim_enabled,
+            client_claude_code_enabled: self.client_claude_code_enabled,
+            client_codex_enabled: self.client_codex_enabled,
+            client_openai_enabled: self.client_openai_enabled,
+            trim_codex_enabled: self.trim_codex_enabled,
+            trim_openai_enabled: Some(self.trim_openai_enabled),
             corpus_capture: self.corpus_capture,
             db_log_enabled: self.db_log_enabled,
             trim_tool_desc_chars: self.trim_tool_desc_chars,
@@ -537,6 +598,18 @@ fn default_throttle_burst() -> f64 {
 
 fn default_trim_ws_enabled() -> bool {
     false
+}
+
+fn default_client_claude_code_enabled() -> bool {
+    true
+}
+
+fn default_client_codex_enabled() -> bool {
+    true
+}
+
+fn default_client_openai_enabled() -> bool {
+    true
 }
 
 fn default_trim_free_target() -> String {
@@ -815,4 +888,55 @@ pub fn save_models(models: &[Model]) -> anyhow::Result<()> {
     let data = serde_json::to_string_pretty(models)?;
     std::fs::write(models_path(&dir), data)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `trim_openai_enabled` key predates the per-client split: OpenAI
+    /// traffic has always followed `trim_enabled`, so an absent key must
+    /// resolve to `trim_enabled` for both values — an upgrade flips nothing.
+    #[test]
+    fn trim_openai_none_follows_trim_enabled() {
+        let mut settings = Settings::default();
+        settings.trim_enabled = true;
+        settings.trim_openai_enabled = None;
+        assert!(settings.trim_openai(), "absent key + master on = on");
+
+        settings.trim_enabled = false;
+        settings.trim_openai_enabled = None;
+        assert!(
+            !settings.trim_openai(),
+            "absent key + master off = off (no silent flip to on)"
+        );
+    }
+
+    /// Once the user explicitly picks a value, it wins over `trim_enabled`
+    /// in both directions — that is the whole point of the per-client split.
+    #[test]
+    fn trim_openai_explicit_value_wins() {
+        let mut settings = Settings::default();
+        settings.trim_enabled = true;
+        settings.trim_openai_enabled = Some(false);
+        assert!(!settings.trim_openai(), "Some(false) beats master on");
+
+        settings.trim_enabled = false;
+        settings.trim_openai_enabled = Some(true);
+        assert!(settings.trim_openai(), "Some(true) beats master off");
+    }
+
+    /// The Settings->Config boundary resolves the option once; the Config
+    /// ->Settings boundary writes a concrete value back (never None again).
+    #[test]
+    fn trim_openai_round_trips_through_config() {
+        let mut settings = Settings::default();
+        settings.trim_enabled = true;
+        settings.trim_openai_enabled = None;
+        let cfg = Config::from_settings_secrets(&settings, &Secrets::default());
+        assert!(cfg.trim_openai_enabled);
+
+        let back = cfg.into_settings();
+        assert_eq!(back.trim_openai_enabled, Some(true));
+    }
 }

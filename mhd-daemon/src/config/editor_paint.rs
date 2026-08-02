@@ -1554,29 +1554,80 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
         text_color: theme_text_muted(state),
     });
 
-    // ── Master toggle "Compress outgoing requests" ────────────────────
-    let is_master_hovered = state.hovered_target == SettingsHit::TrimToggle;
+    // ── Per-client trim toggles ──────────────────────────────────────
+    // Claude Code
+    let is_cc_hovered = state.hovered_target == SettingsHit::TrimClaudeCodeToggle;
     ctls.push(Control::Toggle {
         rect: RECT {
             left: pad,
-            top: lay.llm_trim.master_y + (row_h - toggle_h) / 2,
+            top: lay.llm_trim.trim_cc_y + (row_h - toggle_h) / 2,
             right: pad + toggle_w,
-            bottom: lay.llm_trim.master_y + (row_h + toggle_h) / 2,
+            bottom: lay.llm_trim.trim_cc_y + (row_h + toggle_h) / 2,
         },
         is_on: state.trim_enabled,
-        is_hovered: is_master_hovered,
-        hit: SettingsHit::TrimToggle,
+        is_hovered: is_cc_hovered,
+        hit: SettingsHit::TrimClaudeCodeToggle,
     });
     ctls.push(Control::Label {
         rect: RECT {
             left: pad + toggle_w + (4.0 * scale) as i32,
-            top: lay.llm_trim.master_y,
+            top: lay.llm_trim.trim_cc_y,
             right: win_w_val - pad,
-            bottom: lay.llm_trim.master_y + row_h,
+            bottom: lay.llm_trim.trim_cc_y + row_h,
         },
-        label: "Compress outgoing requests".into(),
+        label: "Claude Code".into(),
         font: FontChoice::Body,
         text_color: theme_text(state),
+    });
+
+    // OpenAI (Zed / opencode)
+    let is_openai_hovered = state.hovered_target == SettingsHit::TrimOpenAiToggle;
+    ctls.push(Control::Toggle {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.trim_openai_y + (row_h - toggle_h) / 2,
+            right: pad + toggle_w,
+            bottom: lay.llm_trim.trim_openai_y + (row_h + toggle_h) / 2,
+        },
+        is_on: state.trim_openai_enabled,
+        is_hovered: is_openai_hovered,
+        hit: SettingsHit::TrimOpenAiToggle,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad + toggle_w + (4.0 * scale) as i32,
+            top: lay.llm_trim.trim_openai_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.trim_openai_y + row_h,
+        },
+        label: "OpenAI (Zed / opencode)".into(),
+        font: FontChoice::Body,
+        text_color: theme_text(state),
+    });
+
+    // Codex — trim not implemented for the Responses wire API. The toggle
+    // still shows the stored value but carries no hit, so clicks land nowhere.
+    ctls.push(Control::Toggle {
+        rect: RECT {
+            left: pad,
+            top: lay.llm_trim.trim_codex_y + (row_h - toggle_h) / 2,
+            right: pad + toggle_w,
+            bottom: lay.llm_trim.trim_codex_y + (row_h + toggle_h) / 2,
+        },
+        is_on: state.trim_codex_enabled,
+        is_hovered: false,
+        hit: SettingsHit::None,
+    });
+    ctls.push(Control::Label {
+        rect: RECT {
+            left: pad + toggle_w + (4.0 * scale) as i32,
+            top: lay.llm_trim.trim_codex_y,
+            right: win_w_val - pad,
+            bottom: lay.llm_trim.trim_codex_y + row_h,
+        },
+        label: "Codex \u{2014} not implemented".into(),
+        font: FontChoice::Body,
+        text_color: theme_text_muted(state),
     });
 
     // ── Grouped head-budget rows ─────────────────────────────────────

@@ -276,14 +276,16 @@ pub struct LlmProxyLayout {
 
 #[derive(Copy, Clone)]
 pub struct LlmTrimLayout {
-    pub top_y: i32,        // "Request Compression" header
-    pub master_y: i32,     // master toggle row
-    pub groups_hdr_y: i32, // "head budget per traffic group" sub-header
-    pub row_a_y: i32,      // Native big row
-    pub row_b_y: i32,      // Native Haiku row
-    pub row_c_y: i32,      // Harness row
-    pub cheap_hdr_y: i32,  // "Cheapest / free model" sub-header
-    pub free_y: i32,       // free-target combo row (KEEP name)
+    pub top_y: i32,         // "Request Compression" header
+    pub trim_cc_y: i32,     // Claude Code trim toggle row
+    pub trim_openai_y: i32, // OpenAI trim toggle row
+    pub trim_codex_y: i32,  // Codex trim toggle row (non-interactive)
+    pub groups_hdr_y: i32,  // "head budget per traffic group" sub-header
+    pub row_a_y: i32,       // Native big row
+    pub row_b_y: i32,       // Native Haiku row
+    pub row_c_y: i32,       // Harness row
+    pub cheap_hdr_y: i32,   // "Cheapest / free model" sub-header
+    pub free_y: i32,        // free-target combo row (KEEP name)
     pub row_h: i32,
     pub combo_w: i32, // free-target combo width (KEEP)
     pub arrow_w: i32, // width of the "→" value button
@@ -294,8 +296,10 @@ fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
     let help_h = (16.0 * c.scale) as i32;
     let gap = (6.0 * c.scale) as i32;
     let top_y = c.content_y;
-    let master_y = top_y + section_h + gap;
-    let groups_hdr_y = master_y + row_h + gap * 2;
+    let trim_cc_y = top_y + section_h + gap;
+    let trim_openai_y = trim_cc_y + row_h + gap;
+    let trim_codex_y = trim_openai_y + row_h + gap;
+    let groups_hdr_y = trim_codex_y + row_h + gap * 2;
     let group_stride = row_h + help_h + gap;
     // Sub-header row, then a hint line (Calculate button explanation), then rows.
     let row_a_y = groups_hdr_y + section_h + gap + help_h + gap;
@@ -305,7 +309,9 @@ fn compute_llm_trim_layout(c: &CommonLayout) -> LlmTrimLayout {
     let free_y = cheap_hdr_y + section_h + gap;
     LlmTrimLayout {
         top_y,
-        master_y,
+        trim_cc_y,
+        trim_openai_y,
+        trim_codex_y,
         groups_hdr_y,
         row_a_y,
         row_b_y,
@@ -683,5 +689,62 @@ fn compute_llm_proxy_layout(c: &CommonLayout) -> LlmProxyLayout {
         vision_combo_w: (250.0 * c.scale) as i32,
         vision_test_w: (80.0 * c.scale) as i32,
         vision_prompt_w: (80.0 * c.scale) as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The LLM Trim page has three per-client toggle rows. Every section must
+    /// sit strictly below the one before it so no control overlaps: header,
+    /// then Claude Code / OpenAI / Codex rows, then the head-budget sub-header
+    /// and the whole chain below it.
+    #[test]
+    fn llm_trim_layout_rows_are_strictly_increasing() {
+        let c = compute_common_layout(1.0);
+        let l = compute_llm_trim_layout(&c);
+
+        assert!(l.top_y < l.trim_cc_y, "header above Claude Code row");
+        assert!(
+            l.trim_cc_y < l.trim_openai_y,
+            "Claude Code above OpenAI row"
+        );
+        assert!(l.trim_openai_y < l.trim_codex_y, "OpenAI above Codex row");
+        assert!(
+            l.trim_codex_y + l.row_h <= l.groups_hdr_y,
+            "Codex row does not overlap the head-budget sub-header"
+        );
+        assert!(
+            l.groups_hdr_y < l.row_a_y,
+            "sub-header above Native big row"
+        );
+        assert!(l.row_a_y < l.row_b_y, "Native big above Native Haiku row");
+        assert!(l.row_b_y < l.row_c_y, "Native Haiku above Harness row");
+        assert!(
+            l.row_c_y < l.cheap_hdr_y,
+            "Harness row above free-model header"
+        );
+        assert!(
+            l.cheap_hdr_y < l.free_y,
+            "free-model header above combo row"
+        );
+    }
+
+    /// The page grew from one master toggle to three per-client rows, so the
+    /// chain below (and the scroll extent derived from `free_y`) shifted down
+    /// by exactly two extra rows: `groups_hdr_y` sits three full rows plus the
+    /// inter-row gaps below the first toggle row.
+    #[test]
+    fn llm_trim_three_toggle_rows_shift_scroll_extent() {
+        let c = compute_common_layout(1.0);
+        let l = compute_llm_trim_layout(&c);
+        let section_h = (20.0 * c.scale) as i32;
+        let gap = (6.0 * c.scale) as i32;
+        assert_eq!(
+            l.groups_hdr_y - (l.top_y + section_h + gap),
+            3 * l.row_h + 4 * gap,
+            "three toggle rows and the trailing gap*2 push the sub-header down by two extra rows"
+        );
     }
 }
