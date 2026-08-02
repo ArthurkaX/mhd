@@ -9,6 +9,7 @@ pub mod bench;
 pub mod cache_bench;
 pub mod config;
 pub mod content_mix;
+pub mod corpus;
 pub mod db_log;
 pub mod handlers;
 pub mod measure;
@@ -51,7 +52,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/v1/responses",
-            post(handlers::post_codex_responses).get(handlers::get_codex_websocket_fallback),
+            post(handlers::post_codex_responses).get(handlers::get_codex_websocket),
         )
         .route("/v1/models", get(handlers::get_models))
         .route("/set_model/{slot}", post(handlers::set_model))

@@ -72,10 +72,22 @@ impl ClientKind {
         }
     }
 
-    /// Human-readable name for menus and the trace overlay.
+    /// Human-readable name for menus and the trace filter chip.
     pub fn label(&self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+            Self::OpenAi => "OpenAI",
+        }
+    }
+
+    /// Compact name for the trace table, whose Client column competes for
+    /// width with the target model. Only "Claude Code" is long enough to be
+    /// worth shortening; the other two already fit and stay spelled out, so
+    /// the column never trades clarity for width it does not need.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "CC",
             Self::Codex => "Codex",
             Self::OpenAi => "OpenAI",
         }
@@ -811,6 +823,20 @@ impl AppState {
     /// Delegates to the race-free [`crate::db_log::DbLog::mark_request_cancelled`]
     /// — a no-op if a real completion already wrote `ts_end`. Best-effort.
     pub fn mark_request_cancelled(&self, req_id: u64, duration_ms: Option<u64>) {
+        // Keep the live overlay in sync with the durable row. A real
+        // completion sets a status before the guard is dropped, so this only
+        // marks entries that are still genuinely in flight. 499 is the
+        // conventional client-closed status and lets Proxy Trace render the
+        // cancellation instead of leaving token columns as unexplained dashes.
+        {
+            let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
+            for entry in trace.iter_mut().rev() {
+                if entry.seq == req_id && entry.status.is_none() {
+                    entry.status = Some(499);
+                    break;
+                }
+            }
+        }
         if let Ok(guard) = self.db_log.lock()
             && let Some(ref db) = *guard
         {
@@ -1315,6 +1341,10 @@ mod tests {
         assert_eq!(ClientKind::ClaudeCode.label(), "Claude Code");
         assert_eq!(ClientKind::Codex.label(), "Codex");
         assert_eq!(ClientKind::OpenAi.label(), "OpenAI");
+        // The trace table shortens only the one name that does not fit.
+        assert_eq!(ClientKind::ClaudeCode.short_label(), "CC");
+        assert_eq!(ClientKind::Codex.short_label(), "Codex");
+        assert_eq!(ClientKind::OpenAi.short_label(), "OpenAI");
     }
 
     #[test]

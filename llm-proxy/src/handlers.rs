@@ -6,12 +6,17 @@ use std::sync::Arc;
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, State},
+    extract::{
+        Path, State,
+        ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade},
+    },
     http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::providers;
 use crate::state::{AppState, ClientKind, CodexTarget, Target, Tier, TraceEntry, WireApi};
@@ -745,7 +750,9 @@ pub async fn post_codex_responses(
     // Record the request before forwarding so in-flight Codex requests are
     // visible in the trace. `tier`/`effective_tier` are None — Codex is not a
     // Claude tier. Responses-aware trim is not implemented, so the trim fields
-    // are false/zeros. `status` lands just below once the upstream responds.
+    // are false/zeros. `status` and the token counts land when the usage tap
+    // closes the row at end-of-stream for successes, and immediately on the
+    // error path below.
     let target = state.codex_target();
     state.push_trace(TraceEntry {
         seq: req_id,
@@ -776,13 +783,12 @@ pub async fn post_codex_responses(
         prefix: crate::prefix::PrefixStats::default(),
     });
 
-    // Forward the raw bytes. The upstream status and the wall duration are
-    // known as soon as response headers arrive, so fill the trace entry then.
-    // Token usage stays unrecorded: it rides inside the terminal
-    // `response.completed` SSE event, which is only observable at end-of-stream,
-    // and the native Codex path deliberately forwards bytes without parsing SSE
-    // (see `providers/codex.rs`). Wrapping the stream to scan for it would
-    // restructure that path, so it is deferred — the stream stays incremental.
+    // Forward the raw bytes. On success the response is handed to a usage tap
+    // that scans the SSE stream for the terminal `response.completed` event and
+    // extracts its `usage` integers — metadata only, never prompt text, OAuth
+    // tokens or headers. The tap yields chunks downstream unchanged and closes
+    // the row at end-of-stream, so status/duration/tokens all measure the full
+    // stream rather than the response headers.
     let result = match &target {
         CodexTarget::Native => {
             crate::providers::codex::forward(
@@ -815,30 +821,264 @@ pub async fn post_codex_responses(
         }
     };
     let status = resp.status().as_u16();
-    let duration_ms = crate::providers::now_unix_ms().saturating_sub(started_ms);
-    state.update_trace_tokens(
-        req_id,
-        0,
-        0,
-        None,
-        None,
-        Some(duration_ms),
-        Some(status),
-        None,
-    );
-    Ok(resp)
+    if (200..300).contains(&status) {
+        // Success: install the usage tap and let it close the row when the
+        // stream ends. The token counts ride the terminal `response.completed`
+        // SSE event, only observable at end-of-stream, so the entry stays
+        // "in flight" in the overlay until then — the correct reading for a
+        // streaming response, and it makes the duration measure the stream
+        // rather than the headers.
+        Ok(crate::providers::codex::tap_response_usage(
+            state.clone(),
+            req_id,
+            started_ms,
+            status,
+            resp,
+        ))
+    } else {
+        // Error response: the body is not an SSE stream, so there is no usage
+        // to extract. Close the row now with the duration measured to the
+        // headers, mirroring the header-time close the tap replaces.
+        let duration_ms = crate::providers::now_unix_ms().saturating_sub(started_ms);
+        state.update_trace_tokens(
+            req_id,
+            0,
+            0,
+            None,
+            None,
+            Some(duration_ms),
+            Some(status),
+            None,
+        );
+        Ok(resp)
+    }
 }
 
-/// Codex first attempts a WebSocket upgrade. We intentionally return a quick
-/// 404 so the supported HTTPS/SSE fallback is selected; no OAuth is sent to a
-/// different destination and no fake WebSocket framing is attempted.
-///
-/// This stays a plain 404 even when the Codex client is disabled — no
-/// `client_enabled` gate here. Codex treats the 404 as the signal to fall back
-/// to HTTPS/SSE, so answering 503 would change its retry behaviour and strand
-/// it instead of routing it to the working path.
-pub async fn get_codex_websocket_fallback() -> StatusCode {
-    StatusCode::NOT_FOUND
+struct ActiveCodexWebSocketRequest {
+    req_id: u64,
+    started_ms: u64,
+    _guard: providers::InflightGuard,
+}
+
+type ActiveCodexWebSocket = Arc<TokioMutex<Option<ActiveCodexWebSocketRequest>>>;
+
+/// Codex first attempts a WebSocket upgrade. Native routing is bridged to the
+/// official ChatGPT endpoint; side-provider routing returns 426 so Codex uses
+/// the existing HTTPS adapter, which is the only path that can translate to
+/// Chat Completions.
+pub async fn get_codex_websocket(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<Response, AppError> {
+    if !state.client_enabled(ClientKind::Codex) {
+        return Err(AppError::disabled_client(ClientKind::Codex));
+    }
+    if state.codex_target() != CodexTarget::Native {
+        return Ok((
+            StatusCode::UPGRADE_REQUIRED,
+            "Codex side routing uses HTTPS transport",
+        )
+            .into_response());
+    }
+
+    let (upstream, response_headers) = crate::providers::codex::connect_websocket(&headers)
+        .await
+        .map_err(AppError::from)?;
+    let on_upgrade = ws.on_upgrade(move |client| async move {
+        bridge_codex_websocket(state, headers, client, upstream).await;
+    });
+    let mut response = on_upgrade.into_response();
+    for name in [
+        "x-reasoning-included",
+        "x-models-etag",
+        "openai-model",
+        "x-codex-turn-state",
+    ] {
+        if let Some(value) = response_headers.get(name) {
+            response.headers_mut().insert(name, value.clone());
+        }
+    }
+    Ok(response)
+}
+
+async fn bridge_codex_websocket(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    client: WebSocket,
+    upstream: crate::providers::codex::CodexWebSocket,
+) {
+    let active: ActiveCodexWebSocket = Arc::new(TokioMutex::new(None));
+    let (mut client_tx, mut client_rx) = client.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream.split();
+
+    let active_from_client = Arc::clone(&active);
+    let state_from_client = Arc::clone(&state);
+    let headers_from_client = headers.clone();
+    let mut client_to_upstream = tokio::spawn(async move {
+        while let Some(Ok(message)) = client_rx.next().await {
+            // A native WebSocket is pinned to the native route. If routing is
+            // switched to a side provider while this connection is idle, close
+            // before forwarding the next logical request so Codex reconnects
+            // and takes the HTTPS adapter path.
+            if state_from_client.codex_target() != CodexTarget::Native {
+                let _ = upstream_tx
+                    .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                    .await;
+                break;
+            }
+            if let AxumMessage::Text(text) = &message {
+                observe_codex_request(
+                    &state_from_client,
+                    &headers_from_client,
+                    &active_from_client,
+                    text.as_str(),
+                )
+                .await;
+            }
+            let Some(message) = crate::providers::codex::to_tungstenite_message(message) else {
+                continue;
+            };
+            if upstream_tx.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let active_from_upstream = Arc::clone(&active);
+    let state_from_upstream = Arc::clone(&state);
+    let mut upstream_to_client = tokio::spawn(async move {
+        while let Some(Ok(message)) = upstream_rx.next().await {
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = &message {
+                observe_codex_response(&state_from_upstream, &active_from_upstream, text.as_str())
+                    .await;
+            }
+            let Some(message) = crate::providers::codex::to_axum_message(message) else {
+                continue;
+            };
+            if client_tx.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut client_to_upstream => upstream_to_client.abort(),
+        _ = &mut upstream_to_client => client_to_upstream.abort(),
+    }
+
+    // Dropping an active guard marks the logical request as client-cancelled.
+    let _ = active.lock().await.take();
+}
+
+async fn observe_codex_request(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    active: &ActiveCodexWebSocket,
+    text: &str,
+) {
+    let Ok(payload) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    if payload.get("type").and_then(Value::as_str) != Some("response.create") {
+        return;
+    }
+
+    let _ = active.lock().await.take();
+    let req_id = state.next_req_id();
+    let started_ms = crate::providers::now_unix_ms();
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let is_probe = payload.get("generate").and_then(Value::as_bool) == Some(false);
+    state.capture_request_body(req_id, Some(&model), "codex", &payload);
+    state.push_trace(TraceEntry {
+        seq: req_id,
+        client: ClientKind::Codex,
+        wire_api: WireApi::Responses,
+        tier: None,
+        effective_tier: None,
+        target: CodexTarget::Native.as_str().to_string(),
+        model,
+        downgraded: false,
+        reason: String::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
+        trim_applied: false,
+        trim_tokens_before: 0,
+        trim_tokens_after: 0,
+        trim_preset: String::new(),
+        trim_config_json: String::new(),
+        trim_stages_json: String::new(),
+        started_ms,
+        prefix_hash: 0,
+        status: None,
+        is_probe,
+        user_agent: headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        client_run_id: client_run_id(headers),
+        prefix: crate::prefix::PrefixStats::default(),
+    });
+    *active.lock().await = Some(ActiveCodexWebSocketRequest {
+        req_id,
+        started_ms,
+        _guard: providers::InflightGuard::new(Arc::clone(state), req_id),
+    });
+}
+
+async fn observe_codex_response(state: &Arc<AppState>, active: &ActiveCodexWebSocket, text: &str) {
+    let Ok(payload) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    let event_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let terminal = event_type == "response.completed"
+        || event_type == "response.failed"
+        || event_type == "response.incomplete"
+        || event_type == "error";
+    if !terminal {
+        return;
+    }
+    let Some(request) = active.lock().await.take() else {
+        return;
+    };
+    let duration_ms = crate::providers::now_unix_ms().saturating_sub(request.started_ms);
+    if event_type == "response.completed" {
+        let usage = crate::providers::codex::parse_responses_usage(&format!("data: {text}"))
+            .unwrap_or((0, 0, None));
+        state.update_trace_tokens(
+            request.req_id,
+            usage.0,
+            usage.1,
+            usage.2,
+            None,
+            Some(duration_ms),
+            Some(200),
+            None,
+        );
+    } else {
+        let status = payload
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok())
+            .or(Some(502));
+        state.mark_request_failed(
+            request.req_id,
+            Some(duration_ms),
+            status,
+            "Codex WebSocket response failed",
+            "CODEX_WS_ERR",
+        );
+    }
+    drop(request);
 }
 
 // ─── Model switching endpoints ───────────────────────────────────────

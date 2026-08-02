@@ -49,8 +49,12 @@ path = "src/bin/content_mix.rs"
 name = "codex_wire_probe"
 path = "src/bin/codex_wire_probe.rs"
 
+[[bin]]
+name = "corpus_migrate"
+path = "src/bin/corpus_migrate.rs"
+
 [dependencies]
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 reqwest = { workspace = true, features = ["stream", "blocking"] }
 futures-util = "0.3"
 async-stream = "0.3"
@@ -58,6 +62,7 @@ bytes = "1"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 tower-http = { version = "0.6", features = ["catch-panic"] }
 anyhow = "1.0"
 base64 = "0.22"

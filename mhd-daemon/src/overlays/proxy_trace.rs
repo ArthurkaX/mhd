@@ -72,6 +72,79 @@ fn fmt_tokens(n: u64) -> String {
     }
 }
 
+/// Whether a row has reported any token usage at all. `input_tokens` and
+/// `output_tokens` are 0 until the response lands and `cache_read_tokens` is
+/// `None` on routes that report no cache field, so a row with all three empty
+/// is either still streaming (Codex rows close only at end-of-stream) or came
+/// from a route that reports no counts — either way rendering "0" would state
+/// a fact we do not have, so the In/Out/Cache cells show "—" instead.
+fn no_reported_usage(
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: Option<u64>,
+) -> bool {
+    input_tokens == 0 && output_tokens == 0 && cache_read_tokens.is_none()
+}
+
+/// Whether the four-state cache classifier (COLD / EXPIRED / MISS) may run for
+/// a row. It needs `cache_read == 0` and a sizeable prompt, and it is built on
+/// `prefix_hash` plus the prefix-seen-before history — which mHD only computes
+/// for Anthropic traffic. The Responses wire API never gets a prefix hash (the
+/// native Codex path does not parse the body), so its `prefix_hash` is
+/// structurally 0 and the `h != 0` guard would fall through to the
+/// inter-request gap heuristic, labeling the row cold/expired/miss on pure
+/// timing evidence — a guess presented as a fact. Excluded here so those rows
+/// stay unclassified instead.
+fn cache_classifier_applies(
+    wire_api: WireApi,
+    cache_read_tokens: Option<u64>,
+    total_prompt: u64,
+) -> bool {
+    cache_read_tokens.is_some_and(|n| n == 0)
+        && total_prompt >= 1024
+        && wire_api != WireApi::Responses
+}
+
+/// Render the Cache column text for a row. Pure: the caller already computed
+/// `no_usage`, the hit flag and ratio from `cache_read_tokens`, and the
+/// four-state classification booleans. Returns "" when a reported `cache_read
+/// == 0` gets no classifier label (the excluded-wire and small-prompt cases),
+/// matching how the row renders an empty cell rather than a guess.
+fn cache_cell_text(
+    no_usage: bool,
+    cache_hit: bool,
+    cache_ratio: f64,
+    cache_read: Option<u64>,
+    cache_creation: Option<u64>,
+    is_cold: bool,
+    is_expired: bool,
+    gap_secs: Option<u64>,
+    is_miss: bool,
+) -> String {
+    if no_usage {
+        "\u{2014}".to_string()
+    } else if cache_hit {
+        let ratio_pct = cache_ratio * 100.0;
+        match cache_creation {
+            Some(cc) if cc > 0 => format!("{:.0}% +{}", ratio_pct, fmt_tokens(cc)),
+            _ => format!("{:.0}%", ratio_pct),
+        }
+    } else if cache_read.is_none() {
+        "\u{2014}".to_string()
+    } else if is_cold {
+        "cold".to_string()
+    } else if is_expired {
+        match gap_secs {
+            Some(g) => format!("expired {}m", g / 60),
+            None => "expired".to_string(),
+        }
+    } else if is_miss {
+        "miss".to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Route-column text. Claude Code rows render their tier — "Tier" when plain,
 /// "Tier→Tier" when downgraded. Rows from non-Claude clients (Codex, OpenAI
 /// passthrough) have no Claude tier at all; `None` must never render a
@@ -88,6 +161,17 @@ fn route_text(e: &TraceEntry) -> String {
             Some(tier) => format!("{:?}", tier),
             None => e.target.clone(),
         }
+    }
+}
+
+/// Target-column text. The routing marker `native` does not tell which model
+/// handled the request, so native rows show the model requested by the client.
+/// Provider routes already store the effective upstream model in `target`.
+fn target_text(e: &TraceEntry) -> String {
+    if e.target == "native" && !e.model.is_empty() {
+        e.model.clone()
+    } else {
+        e.target.clone()
     }
 }
 
@@ -676,83 +760,8 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         *r = Some((chip_x, chip_y, chip_w, chip_h));
     }
 
-    // ── Quota line ───────────────────────────────────────────────
-    let quota_y = summary_y + row_h;
-    {
-        let q = llm_proxy::get_quota();
-        let (text, color) = match q {
-            Some(q) => {
-                fn bar(util: f64) -> String {
-                    let mut f = (util * 5.0).floor() as i32;
-                    if util > 0.0 && f == 0 { f = 1; }
-                    let f = f.clamp(0, 5);
-                    let mut s = String::with_capacity(5);
-                    for _ in 0..f { s.push('\u{25B0}'); }
-                    for _ in f..5 { s.push('\u{25B1}'); }
-                    s
-                }
-                fn countdown(reset: Option<i64>) -> String {
-                    let reset = match reset { Some(r) => r, None => return "\u{2014}".to_string() };
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let rem = reset - now;
-                    if rem <= 0 { return "now".to_string(); }
-                    let h = rem / 3600;
-                    let m = (rem % 3600) / 60;
-                    if h > 0 { format!("{h}h{m:02}m") } else { format!("{m}m") }
-                }
-                let status = q.h5_status.clone().unwrap_or_else(|| "?".to_string());
-                let util = q.h5_utilization.unwrap_or(0.0);
-                // Color by 5h pressure: red >=0.9 or warning/reject status, amber >=0.7, else accent.
-                let warn = status.contains("warning") || status.contains("reject") || status.contains("exceed");
-                let color = if util >= 0.9 || warn {
-                    Argb::new(255, 235, 100, 100)
-                } else if util >= 0.7 {
-                    Argb::new(255, 235, 185, 90)
-                } else {
-                    theme.accent
-                };
-                let text = format!(
-                    "5h {} {}%    7d {} {}%    \u{27F3} {}",
-                    bar(q.h5_utilization.unwrap_or(0.0)),
-                    (q.h5_utilization.unwrap_or(0.0) * 100.0).round() as i64,
-                    bar(q.d7_utilization.unwrap_or(0.0)),
-                    (q.d7_utilization.unwrap_or(0.0) * 100.0).round() as i64,
-                    countdown(q.h5_reset),
-                );
-                (text, color)
-            }
-            None => (
-                "5h \u{25B1}\u{25B1}\u{25B1}\u{25B1}\u{25B1} \u{2014}    7d \u{25B1}\u{25B1}\u{25B1}\u{25B1}\u{25B1} \u{2014}    \u{27F3} \u{2014}".to_string(),
-                theme.text_muted,
-            ),
-        };
-        unsafe {
-            let _ = SelectObject(dib_dc, hfont_small);
-            let _ = SetTextColor(dib_dc, color.to_colorref());
-        }
-        let mut qw = crate::osd::to_utf16_z(&text);
-        let mut qrc = RECT {
-            left: pad,
-            top: quota_y,
-            right: win_w - pad,
-            bottom: quota_y + row_h,
-        };
-        unsafe {
-            let _ = DrawTextW(
-                dib_dc,
-                &mut qw,
-                &mut qrc,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-            );
-        }
-    }
-
     // ── Column headers ───────────────────────────────────────────
-    // Shift down one row to make room for the summary line.
-    let col_y = quota_y + row_h;
+    let col_y = summary_y + row_h;
     unsafe {
         let _ = SelectObject(dib_dc, hfont_small);
         let _ = SetTextColor(dib_dc, theme.text_muted.to_colorref());
@@ -761,9 +770,9 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
     // Columns: #  Client  Route  Target  In  Out  Cache  Trim
     let col_widths = [
         (32.0 * scale) as i32, // # (~32px)
-        (78.0 * scale) as i32, // Client (~78px — fits "Claude Code")
+        (52.0 * scale) as i32, // Client (~52px — fits "OpenAI"; "CC" for Claude Code)
         (95.0 * scale) as i32, // Route (~95px — fits "Sonnet→Haiku")
-        total_cw - ((32.0 + 78.0 + 95.0 + 48.0 + 48.0 + 88.0 + 80.0) * scale) as i32, // Target = remainder
+        total_cw - ((32.0 + 52.0 + 95.0 + 48.0 + 48.0 + 88.0 + 80.0) * scale) as i32, // Target = remainder
         (48.0 * scale) as i32,                                                        // In (~48px)
         (48.0 * scale) as i32,                                                        // Out (~48px)
         (88.0 * scale) as i32, // Cache (~88px)
@@ -1062,10 +1071,15 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
         // HIT is handled separately (cache_read > 0).
         // hash==0 (unknown): never treated as COLD; falls to gap logic instead.
         //
-        // A route that reported NO cache field at all (cache_read == None) is
-        // excluded from all four: we know nothing, so calling it a MISS would be
-        // inventing a fact. It renders as "—" instead.
-        let cache_miss_candidate = cache_read.is_some_and(|n| n == 0) && total_prompt >= 1024;
+        // Two routes are excluded from all four, staying unclassified instead:
+        // a route that reported NO cache field at all (cache_read == None) — we
+        // know nothing, so calling it a MISS would be inventing a fact — and the
+        // Responses wire API, which never gets a prefix hash (the native Codex
+        // path does not parse the body), so its structurally-0 hash would fall
+        // through to the gap heuristic and label cold/expired/miss on pure
+        // timing evidence. Both render a non-classified cell rather than a guess.
+        let cache_miss_candidate =
+            cache_classifier_applies(entry.wire_api, cache_read, total_prompt);
         let seen_before = prefix_seen_before[i];
         let h = entry.prefix_hash;
         #[derive(PartialEq)]
@@ -1106,41 +1120,31 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
             (route_text(entry), theme.text_muted)
         };
 
-        // Codex rows (Responses wire API) carry no token usage: usage arrives
-        // only in the terminal `response.completed` SSE event, and the native
-        // Codex path forwards bytes without buffering/parsing the stream
-        // (deliberately deferred, see handlers::post_codex_responses). The
-        // Responses API also has no prompt-cache fields at all. Render those
-        // cells as "—" — a 0 would be a fabricated fact. (OpenAI ChatCompletions
-        // rows DO get usage filled from the upstream response, so they are not
-        // affected.)
-        let no_usage = entry.wire_api == WireApi::Responses;
+        // A row with nothing reported is either still streaming (Codex rows
+        // close only at end-of-stream, so usage is legitimately absent while in
+        // flight) or came from a route that reports no counts. Rendering "0"
+        // would state a fact we do not have, so In/Out/Cache show "—" instead.
+        // (Codex rows that have closed DO carry real counts via the usage tap,
+        // which this rule now lets through — the old blanket Responses
+        // exemption is gone.)
+        let no_usage = no_reported_usage(
+            entry.input_tokens,
+            entry.output_tokens,
+            entry.cache_read_tokens,
+        );
 
         // ── Cache column (col 5) ─────────────────────────────────
-        let cache_text = if no_usage {
-            // No cache concept on the Responses wire API.
-            "\u{2014}".to_string()
-        } else if cache_hit {
-            let ratio_pct = cache_ratio * 100.0;
-            match entry.cache_creation_tokens {
-                Some(cc) if cc > 0 => format!("{:.0}% +{}", ratio_pct, fmt_tokens(cc)),
-                _ => format!("{:.0}%", ratio_pct),
-            }
-        } else if cache_read.is_none() {
-            // Route never reported a cache field — unknown, not a miss.
-            "\u{2014}".to_string()
-        } else if is_cold {
-            "cold".to_string()
-        } else if is_expired {
-            match gap_secs_opt {
-                Some(g) => format!("expired {}m", g / 60),
-                None => "expired".to_string(),
-            }
-        } else if is_miss {
-            "miss".to_string()
-        } else {
-            String::new()
-        };
+        let cache_text = cache_cell_text(
+            no_usage,
+            cache_hit,
+            cache_ratio,
+            cache_read,
+            entry.cache_creation_tokens,
+            is_cold,
+            is_expired,
+            gap_secs_opt,
+            is_miss,
+        );
         let cache_color = if cache_hit {
             let t = cache_ratio.clamp(0.0, 1.0);
             hsv_to_argb(120.0 * t, 0.7, 0.9)
@@ -1182,10 +1186,10 @@ fn paint_panel(hwnd: HWND, mut scale: f32, mut win_w: i32, mut win_h: i32) {
 
         let values = [
             entry.seq.to_string(),
-            entry.client.label().to_string(),
+            entry.client.short_label().to_string(),
             route_cell,
-            entry.target.clone(),
-            // Codex rows have no usage — render "—" (see `no_usage` above).
+            target_text(entry),
+            // No usage reported — render "—" (see `no_reported_usage` above).
             if no_usage {
                 "\u{2014}".to_string()
             } else {
@@ -1739,5 +1743,90 @@ unsafe extern "system" fn panel_wndproc(
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The helpers under test take exactly the fields the render path feeds
+    // them, so no TraceEntry scaffolding (or window/server) is needed — these
+    // are the pure decisions that drive the In/Out/Cache cells.
+
+    #[test]
+    fn codex_row_with_reported_usage_renders_values_not_dashes() {
+        // A Codex row closed by the usage tap: input is fresh prompt tokens
+        // (Responses total minus cached), cache_read carries the served count.
+        let no_usage = no_reported_usage(200, 50, Some(800));
+        assert!(!no_usage, "reported usage must not be blanked");
+        // cache_creation is always None on Codex, so total = fresh + cached.
+        let total_prompt = 200 + 800;
+        assert_eq!(fmt_tokens(total_prompt), "1.0k"); // In column
+        assert_eq!(fmt_tokens(50), "50"); // Out column
+        // Cache column: reported hit renders the percentage.
+        assert_eq!(
+            cache_cell_text(
+                false,
+                true,
+                800.0 / total_prompt as f64,
+                Some(800),
+                None,
+                false,
+                false,
+                None,
+                false
+            ),
+            "80%"
+        );
+    }
+
+    #[test]
+    fn codex_row_in_flight_renders_dashes() {
+        // Still streaming: the tap has not seen `response.completed` yet, so
+        // nothing is reported and every cell stays honest as "—".
+        let no_usage = no_reported_usage(0, 0, None);
+        assert!(no_usage);
+        assert_eq!(fmt_tokens(0), "\u{2014}");
+        assert_eq!(
+            cache_cell_text(true, false, 0.0, None, None, false, false, None, false),
+            "\u{2014}"
+        );
+    }
+
+    #[test]
+    fn codex_reported_zero_cache_is_not_classified() {
+        // cache_read == 0 with a large prompt would normally be a
+        // cold/expired/miss candidate, but the Responses wire API never gets a
+        // prefix hash — the classifier would label on timing evidence alone.
+        let total_prompt = 50_000;
+        assert!(!cache_classifier_applies(
+            WireApi::Responses,
+            Some(0),
+            total_prompt
+        ));
+        // Unclassified, the cell renders empty (as a small Claude prompt does)
+        // rather than a guessed label.
+        assert_eq!(
+            cache_cell_text(false, false, 0.0, Some(0), None, false, false, None, false),
+            ""
+        );
+    }
+
+    #[test]
+    fn claude_reported_zero_cache_still_classified() {
+        // A real Claude row reports a prefix hash, so a reported zero cache
+        // with a large prompt is exactly the case the classifier exists for.
+        let total_prompt = 50_000;
+        assert!(cache_classifier_applies(
+            WireApi::AnthropicMessages,
+            Some(0),
+            total_prompt
+        ));
+        // A genuine first fill still renders as COLD.
+        assert_eq!(
+            cache_cell_text(false, false, 0.0, Some(0), None, true, false, None, false),
+            "cold"
+        );
     }
 }
