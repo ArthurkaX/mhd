@@ -3,23 +3,28 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+pub mod control;
+pub mod error;
+
 use axum::{
     Json,
     body::Bytes,
     extract::{
-        Path, State,
+        State,
         ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::providers;
 use crate::state::{AppState, ClientKind, CodexTarget, Target, Tier, TraceEntry, WireApi};
+
+pub use control::{get_config, get_route_stats, health, set_model, toggle_debug};
+pub use error::AppError;
 
 /// Read the `x-client-run-id` header a harness may send to identify its session.
 ///
@@ -1079,220 +1084,6 @@ async fn observe_codex_response(state: &Arc<AppState>, active: &ActiveCodexWebSo
         );
     }
     drop(request);
-}
-
-// ─── Model switching endpoints ───────────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct SetModelBody {
-    /// Routing target: `native` for Anthropic, or an upstream model id like
-    /// `sva-opencode/glm-5.1`.
-    id: String,
-}
-
-/// `POST /set_model/{slot}` — change a tier's routing target on the fly.
-/// `slot` is `opus`, `sonnet`, `haiku`, or `fable`.
-///
-/// Body (JSON): `{"id": "<native|model-id>"}`
-///
-/// Examples:
-///   curl -X POST "http://localhost:3456/set_model/sonnet" \
-///        -H "content-type: application/json" \
-///        -d '{"id":"sva-opencode/qwen3.7-max"}'
-///   curl -X POST "http://localhost:3456/set_model/sonnet" \
-///        -H "content-type: application/json" \
-///        -d '{"id":"native"}'
-pub async fn set_model(
-    State(state): State<Arc<AppState>>,
-    Path(slot): Path<String>,
-    Json(body): Json<SetModelBody>,
-) -> Result<Json<Value>, AppError> {
-    let target = Target::parse(&body.id);
-
-    // Capture the previous target for this slot so the switch is auditable.
-    let cfg_before = state.to_config();
-    let old_target = match slot.as_str() {
-        "opus" => cfg_before.opus_target,
-        "sonnet" => cfg_before.sonnet_target,
-        "haiku" => cfg_before.haiku_target,
-        "fable" => cfg_before.fable_target,
-        "codex" => cfg_before.codex_target.clone(),
-        _ => String::new(),
-    };
-
-    if slot == "codex" {
-        state.set_codex_target(CodexTarget::parse(&body.id));
-    } else if !state.set_target(&slot, target.clone()) {
-        return Err(AppError::bad_request(format!(
-            "Unknown slot '{slot}'. Use: opus, sonnet, haiku, fable, codex"
-        )));
-    }
-
-    // Record the model/provider switch so cache misses after it are explainable.
-    state.log_event(crate::db_log::LogEvent {
-        seq: 0,
-        event_type: "MODEL_SWITCH".to_string(),
-        target: Some(if slot == "codex" {
-            body.id.clone()
-        } else {
-            target.as_str().to_string()
-        }),
-        model: Some(slot.clone()),
-        reason: Some(format!(
-            "slot={} {} -> {}",
-            slot,
-            old_target,
-            target.as_str()
-        )),
-        ..Default::default()
-    });
-
-    // Persist the change so it survives restarts.
-    if let Err(e) = crate::config::save(&state.to_config()) {
-        tracing::warn!("Failed to persist config: {e}");
-    }
-
-    let effective_target = if slot == "codex" {
-        state.codex_target().as_str().to_string()
-    } else {
-        target.as_str().to_string()
-    };
-    Ok(Json(serde_json::json!({
-        "status": "ok",
-        "slot": slot,
-        "target": effective_target,
-    })))
-}
-
-/// `GET /config` — show the current effective routing config (keys masked).
-pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(serde_json::json!({
-        "opus": state.opus_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
-        "sonnet": state.sonnet_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
-        "haiku": state.haiku_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
-        "fable": state.fable_target.read().unwrap_or_else(|e| e.into_inner()).as_str(),
-        "codex": state.codex_target().as_str(),
-        "upstream_base_url": *state.upstream_base_url.read().unwrap_or_else(|e| e.into_inner()),
-        "anthropic_key_set": !state.anthropic_key.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
-        "upstream_key_set": !state.upstream_key.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
-        "log_level": state.log_level.read().unwrap_or_else(|e| e.into_inner()).as_str(),
-    }))
-}
-
-/// `POST /debug` — toggle debug dump mode.
-pub async fn toggle_debug(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let mut ll = state.log_level.write().unwrap_or_else(|e| e.into_inner());
-    let new = match *ll {
-        crate::state::DebugLevel::None => crate::state::DebugLevel::Maximal,
-        _ => crate::state::DebugLevel::None,
-    };
-    *ll = new;
-    Json(serde_json::json!({ "log_level": new.as_str() }))
-}
-
-/// `GET /health` — health check.
-/// `GET /stats/routes` — per-route cache verdict, so a client can decide at
-/// runtime whether a route is worth shaping requests for instead of hardcoding
-/// an assumption.
-///
-/// Each entry reports two independent booleans:
-///   * `reports` — the route sends cache fields at all.
-///   * `caches`  — it has actually served cached tokens.
-///
-/// `reports: false` means **nothing is known** about this route's caching. It is
-/// not the same answer as `reports: true, caches: false` ("asked, told no"), and
-/// clients must not collapse the two. `reporting_requests` is exposed so callers
-/// can see how much evidence is behind the verdict.
-///
-/// Counts cover successful requests only, and only those logged since the
-/// schema-v3 migration — older rows cannot distinguish absent from zero. A route
-/// that has only pre-migration traffic is therefore absent from this list
-/// entirely, which again means "unknown", not "does not cache".
-/// Returns an empty array when the DB log is disabled.
-pub async fn get_route_stats(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let rows = state.route_cache();
-    Json(Value::Array(
-        rows.into_iter()
-            .map(|r| {
-                serde_json::json!({
-                    "route": r.route,
-                    "reports": r.reports(),
-                    "caches": r.caches(),
-                    "requests": r.requests,
-                    "reporting_requests": r.reporting_requests,
-                    "cache_read_tokens": r.cache_read_tokens,
-                    "cache_creation_tokens": r.cache_creation_tokens,
-                    "last_seen": r.last_seen,
-                })
-            })
-            .collect(),
-    ))
-}
-
-pub async fn health() -> Json<Value> {
-    Json(serde_json::json!({
-        "status": "ok",
-        "service": "llm-proxy",
-        "version": env!("CARGO_PKG_VERSION"),
-    }))
-}
-
-// ─── Error handling ──────────────────────────────────────────────────
-
-/// Wrapper error type that renders as an HTTP error response.
-///
-/// Carries the HTTP status and the `error.type` string so the single renderer
-/// below can express both the generic 502 `proxy_error` shape and
-/// intentionally-shaped responses like the disabled-client 503. One renderer
-/// means the exact wire shape lives in exactly one place.
-pub struct AppError {
-    err: anyhow::Error,
-    status: StatusCode,
-    error_type: &'static str,
-}
-
-impl AppError {
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self {
-            err: anyhow::anyhow!(msg.into()),
-            status: StatusCode::BAD_GATEWAY,
-            error_type: "proxy_error",
-        }
-    }
-
-    /// A 503 `mhd_client_disabled` — ingress refused for a client the user does
-    /// not use. This is a resource switch (mHD does no work for a client that
-    /// is switched off), not an access-control feature.
-    pub fn disabled_client(client: ClientKind) -> Self {
-        Self {
-            err: anyhow::anyhow!(format!(
-                "mHD proxy is disabled for client '{}'",
-                client.slot()
-            )),
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            error_type: "mhd_client_disabled",
-        }
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> axum::response::Response {
-        let msg = format!("{}", self.err);
-        let body = serde_json::json!({
-            "error": { "type": self.error_type, "message": msg }
-        });
-        (self.status, Json(body)).into_response()
-    }
-}
-
-impl<E: Into<anyhow::Error>> From<E> for AppError {
-    fn from(err: E) -> Self {
-        Self {
-            err: err.into(),
-            status: StatusCode::BAD_GATEWAY,
-            error_type: "proxy_error",
-        }
-    }
 }
 
 #[cfg(test)]

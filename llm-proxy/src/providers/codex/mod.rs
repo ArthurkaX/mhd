@@ -4,6 +4,13 @@
 //! The WebSocket path bridges frames unchanged and observes only the small
 //! `response.create`/terminal-event metadata needed for trace accounting.
 
+mod responses;
+
+/// Compatibility export for trace handlers and existing provider tests.
+pub(crate) fn parse_responses_usage(line: &str) -> Option<(u64, u64, Option<u64>)> {
+    responses::parse_usage(line)
+}
+
 use anyhow::Result;
 use axum::{
     body::Body,
@@ -237,7 +244,7 @@ pub fn tap_response_usage(
             while let Some(pos) = line_buf.iter().position(|&b| b == b'\n') {
                 let line_bytes: Vec<u8> = line_buf.drain(..=pos).collect();
                 if let Ok(line) = std::str::from_utf8(&line_bytes) {
-                    if let Some(found) = parse_responses_usage(line.trim()) {
+                    if let Some(found) = responses::parse_usage(line.trim()) {
                         usage = Some(found);
                     }
                 }
@@ -279,40 +286,6 @@ pub fn tap_response_usage(
     // remaining headers (content-type, openai-beta, ...) pass through unchanged.
     parts.headers.remove("content-length");
     Response::from_parts(parts, Body::from_stream(s))
-}
-
-/// Parse the token usage out of one SSE `data:` line (any SSE event).
-///
-/// Returns `(input_tokens, output_tokens, cache_read_tokens)` — note the token
-/// mapping, the one subtle part. The OpenAI Responses API counts the TOTAL
-/// prompt in `usage.input_tokens`, cached tokens INCLUDED, while the trace
-/// columns follow Anthropic's meaning where `input_tokens` EXCLUDES
-/// `cache_read_input_tokens`. So the cached tokens are split out here: the `In`
-/// column shows fresh prompt tokens billed at 1× and the cache column shows what
-/// was served from the prompt cache, making the two client families read the
-/// same way. `cache_creation` is always `None` — the Responses API reports no
-/// cache-write count, and writing 0 would make the route look like it reported
-/// "no cache". Returns `None` for anything that is not a well-formed
-/// `response.completed` carrying a `usage` object — callers degrade to "no
-/// usage recorded" without erroring.
-pub(crate) fn parse_responses_usage(line: &str) -> Option<(u64, u64, Option<u64>)> {
-    let json_str = line.trim().strip_prefix("data:")?.trim();
-    let v: Value = serde_json::from_str(json_str).ok()?;
-    if v.get("type").and_then(Value::as_str) != Some("response.completed") {
-        return None;
-    }
-    let usage = v.get("response")?.get("usage")?;
-    let input_total = usage.get("input_tokens")?.as_u64()?;
-    let output = usage.get("output_tokens")?.as_u64()?;
-    let cache_read = usage
-        .get("input_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(Value::as_u64);
-    Some((
-        input_total.saturating_sub(cache_read.unwrap_or(0)),
-        output,
-        cache_read,
-    ))
 }
 
 /// Build the Responses-API `usage` object for the side adapter's synthesized
