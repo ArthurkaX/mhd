@@ -157,15 +157,41 @@ fn looks_like_code(text: &str) -> bool {
     false
 }
 
+/// Whether a file extension is in the protected set: docs, source code, and
+/// structured/config files — the files a model must reproduce byte-exactly to
+/// Edit, plus doc/art-prone files. Case-insensitive.
+///
+/// Shared by the native provenance gate (Layer 1 of `tool_result_protected`,
+/// where the extension has already been lowercased by the caller) and the Codex
+/// command-haystack gate in `codex_trim.rs`. Both must protect exactly the same
+/// set, so the list lives here, not copied.
+pub(crate) fn is_protected_ext(ext: &str) -> bool {
+    let e = ext.to_ascii_lowercase();
+    let e = e.as_str();
+    matches!(
+        e,
+        // documentation
+        "md" | "markdown" | "txt" | "rst" | "adoc" | "org"
+        // source code — never elide; the model needs exact bytes to Edit
+        | "py" | "js" | "mjs" | "cjs" | "ts" | "jsx" | "tsx" | "rs" | "go"
+        | "java" | "kt" | "scala" | "c" | "h" | "cc" | "cpp" | "hpp" | "cxx"
+        | "cs" | "rb" | "php" | "swift" | "m" | "mm" | "lua" | "dart" | "ex" | "exs"
+        | "sh" | "bash" | "zsh" | "ps1" | "sql" | "r" | "jl" | "pl" | "pm"
+        // structured / config — edited exactly too
+        | "json" | "jsonc" | "yaml" | "yml" | "toml" | "ini" | "xml"
+        | "html" | "htm" | "css" | "scss" | "less" | "vue" | "svelte"
+    )
+}
+
 /// Returns `true` when the tool_result block must be left completely untouched
 /// (no whitespace compression, no head/tail truncation).
 ///
 /// Layered — any single layer returning `true` protects the whole block:
 ///
-/// 1. **Provenance** — `src_ext` is the lowercased file extension of the file
-///    the tool_result came from (derived by the caller from the correlated
-///    `tool_use` block). Doc/art-prone extensions are always protected:
-///    `md`, `markdown`, `txt`, `rst`, `adoc`, `org`.
+/// 1. **Provenance** — `src_ext` is the file extension of the file the
+///    tool_result came from (derived by the caller from the correlated
+///    `tool_use` block, lowercased). Doc/art-prone extensions are always
+///    protected: `md`, `markdown`, `txt`, `rst`, `adoc`, `org`.
 /// 2. **Fenced code block** — `text.contains("```")` → protected.
 /// 3. **Diagram detection — density + structural glyphs.**
 ///    An absolute glyph count ≥ 6 misfires on large files where a few unicode
@@ -186,21 +212,9 @@ pub fn tool_result_protected(
     fence_requires_code: bool,
     arrow_density_min: f64,
 ) -> bool {
-    // Layer 1: provenance
+    // Layer 1: provenance.
     if let Some(ext) = src_ext
-        && matches!(
-            ext,
-            // documentation
-            "md" | "markdown" | "txt" | "rst" | "adoc" | "org"
-            // source code — never elide; the model needs exact bytes to Edit
-            | "py" | "js" | "mjs" | "cjs" | "ts" | "jsx" | "tsx" | "rs" | "go"
-            | "java" | "kt" | "scala" | "c" | "h" | "cc" | "cpp" | "hpp" | "cxx"
-            | "cs" | "rb" | "php" | "swift" | "m" | "mm" | "lua" | "dart" | "ex" | "exs"
-            | "sh" | "bash" | "zsh" | "ps1" | "sql" | "r" | "jl" | "pl" | "pm"
-            // structured / config — edited exactly too
-            | "json" | "jsonc" | "yaml" | "yml" | "toml" | "ini" | "xml"
-            | "html" | "htm" | "css" | "scss" | "less" | "vue" | "svelte"
-        )
+        && is_protected_ext(ext)
     {
         return true;
     }
@@ -651,8 +665,9 @@ pub(crate) fn compress_head_tail(
 /// Recursively truncate every `"description"` string value (anywhere under
 /// `node`) longer than `max_chars` Unicode chars to `max_chars` chars (cut on a
 /// char boundary) + a single `…` marker. Deterministic; leaves all other
-/// content untouched.
-fn truncate_descriptions(node: &mut Value, max_chars: usize) {
+/// content untouched. Shared by the native (Anthropic/OpenAI) trim and the
+/// Codex Responses trim (`codex_trim.rs`).
+pub(crate) fn truncate_descriptions(node: &mut Value, max_chars: usize) {
     match node {
         Value::Object(map) => {
             for (k, v) in map.iter_mut() {

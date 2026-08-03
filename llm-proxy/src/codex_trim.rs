@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::content_mix::{ContentClass, classify_block};
-use crate::native_trim::compress_head_tail;
+use crate::native_trim::{compress_head_tail, truncate_descriptions};
 
 // Small Codex turns are common. Keep a floor to avoid touching tiny payloads,
 // but let the content-aware pass inspect bodies from 8 KiB upward. The pass
@@ -19,6 +19,9 @@ const MIN_BYTES: usize = 8 * 1024;
 const SAFE_HEAD_CHARS: usize = 2_000;
 const SAFE_TAIL_CHARS: usize = 800;
 const SAFE_MIN_ELIDE: usize = 2_000;
+// CC parity: truncate tool `description` strings to the same cap as the native
+// engine's `NativeKnobs::tool_max_desc_chars` default.
+const MAX_DESC_CHARS: usize = 150;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageInfo {
@@ -133,9 +136,25 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                     }
                 }
             }
-            // These item types are deliberately protected in the first stage.
+            "additional_tools" => {
+                // Codex has no top-level `tools` key — descriptions live inside
+                // an `input` item of this type. Truncate only the `tools` array;
+                // fail-open (no-op) when `tools` is missing or not an array.
+                if let Some(tools) = candidate_input[index]
+                    .get_mut("tools")
+                    .and_then(Value::as_array_mut)
+                {
+                    let before = serde_json::to_string(tools).unwrap_or_default();
+                    for tool in tools.iter_mut() {
+                        truncate_descriptions(tool, MAX_DESC_CHARS);
+                    }
+                    let after = serde_json::to_string(tools).unwrap_or_default();
+                    changed |= before.chars().count() > after.chars().count();
+                }
+            }
+            // These item types are deliberately protected.
             "message" | "reasoning" | "compaction" | "compaction_trigger" | "custom_tool_call"
-            | "function_call" | "additional_tools" => {}
+            | "function_call" => {}
             _ => return TrimOutcome::unchanged(body, "unknown_item_type"),
         }
     }
@@ -311,6 +330,10 @@ fn compress_repeated_lines(text: &str) -> String {
 pub struct QualityReport {
     pub relationships_preserved: bool,
     pub structured_content_preserved: bool,
+    /// The ordered `additional_tools[].tools[].name` list (and thus the tool
+    /// count) is identical before/after. Description truncation must never drop
+    /// or reorder a tool identity.
+    pub tool_names_preserved: bool,
 }
 
 /// Check invariants that must hold for a transformed Responses body.
@@ -318,7 +341,32 @@ pub fn quality_check(before: &Value, after: &Value) -> QualityReport {
     QualityReport {
         relationships_preserved: relationship_keys(before) == relationship_keys(after),
         structured_content_preserved: protected_content_unchanged(before, after),
+        tool_names_preserved: tool_names(before) == tool_names(after),
     }
+}
+
+/// The ordered list of every `additional_tools[].tools[].name` across all
+/// `additional_tools` items in the body. Comparing two bodies by this vector
+/// proves the tool identity list (order and count) survived trim unchanged.
+fn tool_names(body: &Value) -> Vec<String> {
+    let mut names = Vec::new();
+    let Some(items) = body.get("input").and_then(Value::as_array) else {
+        return names;
+    };
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("additional_tools") {
+            continue;
+        }
+        let Some(tools) = item.get("tools").and_then(Value::as_array) else {
+            continue;
+        };
+        for tool in tools {
+            if let Some(name) = tool.get("name").and_then(Value::as_str) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names
 }
 
 fn relationship_keys(body: &Value) -> Vec<(usize, String, Option<String>)> {
@@ -629,5 +677,48 @@ mod tests {
     #[test]
     fn websocket_non_create_event_is_fail_open() {
         assert!(trim_responses_text(r#"{"type":"response.cancel"}"#).is_none());
+    }
+
+    #[test]
+    fn additional_tools_descriptions_truncated_and_names_survive() {
+        let long = "x".repeat(5_000);
+        let body = serde_json::json!({
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {"name": "exec", "description": long.clone()},
+                    {"name": "wait", "description": long}
+                ]
+            }]
+        });
+        let out = trim_responses(body.clone());
+        assert!(out.applied);
+        let tools = &out.body["input"][0]["tools"];
+        assert_eq!(tools[0]["name"], "exec");
+        assert_eq!(tools[1]["name"], "wait");
+        let d0 = tools[0]["description"].as_str().unwrap();
+        assert_eq!(d0.chars().count(), MAX_DESC_CHARS + 1, "150 chars + marker");
+        assert!(d0.ends_with('…'));
+        let d1 = tools[1]["description"].as_str().unwrap();
+        assert_eq!(d1.chars().count(), MAX_DESC_CHARS + 1);
+        assert!(d1.ends_with('…'));
+        assert!(quality_check(&body, &out.body).tool_names_preserved);
+    }
+
+    #[test]
+    fn additional_tools_missing_tools_array_fails_open() {
+        // Over MIN_BYTES so the pass runs, but `tools` is not an array → no-op.
+        let body = serde_json::json!({
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": "x".repeat(9_000)
+            }]
+        });
+        let out = trim_responses(body.clone());
+        assert!(!out.applied);
+        assert_eq!(out.reason, "no_change");
+        assert_eq!(out.body, body);
     }
 }

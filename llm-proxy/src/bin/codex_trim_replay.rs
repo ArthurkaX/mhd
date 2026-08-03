@@ -36,6 +36,7 @@ fn main() {
     let mut classes = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut relationship_failures = 0usize;
     let mut structured_failures = 0usize;
+    let mut tool_names_failures = 0usize;
     let mut log_classified = 0usize;
     let mut log_repeat_applied = 0usize;
     let mut diagnostic_head_tail_applied = 0usize;
@@ -61,6 +62,9 @@ fn main() {
             if !quality.structured_content_preserved {
                 structured_failures += 1;
             }
+            if !quality.tool_names_preserved {
+                tool_names_failures += 1;
+            }
             applied += 1;
             before += outcome.tokens_before as usize;
             after += outcome.tokens_after as usize;
@@ -85,6 +89,7 @@ fn main() {
     println!("classified outputs: {classes:?}");
     println!("quality relationship failures: {relationship_failures}");
     println!("quality structured-content failures: {structured_failures}");
+    println!("quality tool-names failures: {tool_names_failures}");
     println!("log outputs classified: {log_classified}");
     println!("log-repeat stage applied: {log_repeat_applied}");
     println!("safe-diagnostic head-tail stage applied: {diagnostic_head_tail_applied}");
