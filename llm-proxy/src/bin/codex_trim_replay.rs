@@ -33,15 +33,28 @@ fn main() {
     let mut after = 0usize;
     let mut stages = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut reasons = std::collections::BTreeMap::<&'static str, usize>::new();
+    let mut classes = std::collections::BTreeMap::<&'static str, usize>::new();
+    let mut relationship_failures = 0usize;
+    let mut structured_failures = 0usize;
 
     for row in rows {
         total += 1;
         let compressed = row.expect("read body");
         let json = decompress_body(&compressed).expect("decompress body");
         let body: Value = serde_json::from_str(&json).expect("parse JSON body");
-        let outcome = codex_trim::trim_responses(body);
+        let outcome = codex_trim::trim_responses(body.clone());
         *reasons.entry(outcome.reason).or_default() += 1;
+        for class in &outcome.classes {
+            *classes.entry(class).or_default() += 1;
+        }
         if outcome.applied {
+            let quality = codex_trim::quality_check(&body, &outcome.body);
+            if !quality.relationships_preserved {
+                relationship_failures += 1;
+            }
+            if !quality.structured_content_preserved {
+                structured_failures += 1;
+            }
             applied += 1;
             before += outcome.tokens_before as usize;
             after += outcome.tokens_after as usize;
@@ -57,6 +70,9 @@ fn main() {
     println!("trim candidates applied: {applied}");
     println!("fail-open/no-gain: {fail_open}");
     println!("reasons: {reasons:?}");
+    println!("classified outputs: {classes:?}");
+    println!("quality relationship failures: {relationship_failures}");
+    println!("quality structured-content failures: {structured_failures}");
     if applied > 0 {
         let saved = before.saturating_sub(after);
         println!("estimated tokens before: {before}");
