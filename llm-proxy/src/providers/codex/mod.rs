@@ -1,8 +1,8 @@
 //! Native Codex (ChatGPT OAuth) Responses passthrough.
 //!
-//! The HTTPS path can apply an opt-in conservative trim before forwarding.
-//! The WebSocket path remains unchanged and observes only the small
-//! `response.create`/terminal-event metadata needed for trace accounting.
+//! The HTTPS and native WebSocket paths can apply the same opt-in conservative
+//! trim to client `response.create` messages. WebSocket framing and all other
+//! event types remain unchanged.
 
 mod responses;
 

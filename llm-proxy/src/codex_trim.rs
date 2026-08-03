@@ -146,6 +146,17 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
     }
 }
 
+/// Decode and trim one text WebSocket `response.create` message. Any other
+/// event, invalid JSON, or unsupported shape returns `None` so the caller can
+/// forward the original frame unchanged.
+pub fn trim_responses_text(text: &str) -> Option<TrimOutcome> {
+    let body = serde_json::from_str::<Value>(text).ok()?;
+    if body.get("type").and_then(Value::as_str) != Some("response.create") {
+        return None;
+    }
+    Some(trim_responses(body))
+}
+
 fn normalize_tool_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut blank_lines = 0usize;
@@ -452,5 +463,27 @@ mod tests {
     fn log_marker_is_idempotent() {
         let text = "2026-08-03 12:00:00 INFO worker\n[mhd-trim: omitted 8 repeated log lines]";
         assert_eq!(compress_repeated_lines(text), text);
+    }
+
+    #[test]
+    fn websocket_response_create_trim_preserves_event_type() {
+        let body = serde_json::json!({
+            "type": "response.create",
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "ws_call",
+                "output": large_text()
+            }]
+        });
+        let text = serde_json::to_string(&body).unwrap();
+        let outcome = trim_responses_text(&text).unwrap();
+        assert!(outcome.applied);
+        assert_eq!(outcome.body["type"], "response.create");
+        assert_eq!(outcome.body["input"][0]["call_id"], "ws_call");
+    }
+
+    #[test]
+    fn websocket_non_create_event_is_fail_open() {
+        assert!(trim_responses_text(r#"{"type":"response.cancel"}"#).is_none());
     }
 }

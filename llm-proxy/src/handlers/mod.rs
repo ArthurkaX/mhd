@@ -776,7 +776,7 @@ pub async fn post_codex_responses(
             trim_config_json = serde_json::json!({
                 "engine": "codex_responses",
                 "stage": outcome.stages.first().map(|stage| stage.name).unwrap_or("none"),
-                "classes": outcome.classes,
+                "classes": &outcome.classes,
             })
             .to_string();
             trim_stages_json = serde_json::to_string(
@@ -969,15 +969,40 @@ async fn bridge_codex_websocket(
                     .await;
                 break;
             }
-            if let AxumMessage::Text(text) = &message {
-                observe_codex_request(
-                    &state_from_client,
-                    &headers_from_client,
-                    &active_from_client,
-                    text.as_str(),
-                )
-                .await;
-            }
+            let message = match message {
+                AxumMessage::Text(text) => {
+                    let original = text.to_string();
+                    let mut trim_outcome = None;
+                    let outgoing = if state_from_client.trim_enabled_for(ClientKind::Codex) {
+                        if let Some(outcome) = crate::codex_trim::trim_responses_text(&original) {
+                            if outcome.applied {
+                                if let Ok(trimmed) = serde_json::to_string(&outcome.body) {
+                                    trim_outcome = Some(outcome);
+                                    trimmed
+                                } else {
+                                    original.clone()
+                                }
+                            } else {
+                                original.clone()
+                            }
+                        } else {
+                            original.clone()
+                        }
+                    } else {
+                        original.clone()
+                    };
+                    observe_codex_request(
+                        &state_from_client,
+                        &headers_from_client,
+                        &active_from_client,
+                        &original,
+                        trim_outcome.as_ref(),
+                    )
+                    .await;
+                    AxumMessage::Text(outgoing.into())
+                }
+                message => message,
+            };
             let Some(message) = crate::providers::codex::to_tungstenite_message(message) else {
                 continue;
             };
@@ -1018,6 +1043,7 @@ async fn observe_codex_request(
     headers: &HeaderMap,
     active: &ActiveCodexWebSocket,
     text: &str,
+    trim: Option<&crate::codex_trim::TrimOutcome>,
 ) {
     let Ok(payload) = serde_json::from_str::<Value>(text) else {
         return;
@@ -1036,6 +1062,31 @@ async fn observe_codex_request(
         .to_string();
     let is_probe = payload.get("generate").and_then(Value::as_bool) == Some(false);
     state.capture_request_body(req_id, Some(&model), "codex", &payload);
+    let (trim_applied, trim_tokens_before, trim_tokens_after, trim_config_json, trim_stages_json) =
+        if let Some(outcome) = trim {
+            (
+                true,
+                outcome.tokens_before,
+                outcome.tokens_after,
+                serde_json::json!({
+                    "engine": "codex_responses",
+                    "transport": "websocket",
+                    "stage": outcome.stages.first().map(|stage| stage.name).unwrap_or("none"),
+                    "classes": &outcome.classes,
+                })
+                .to_string(),
+                serde_json::to_string(
+                    &outcome
+                        .stages
+                        .iter()
+                        .map(|stage| stage.name)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default(),
+            )
+        } else {
+            (false, 0, 0, String::new(), String::new())
+        };
     state.push_trace(TraceEntry {
         seq: req_id,
         client: ClientKind::Codex,
@@ -1050,12 +1101,16 @@ async fn observe_codex_request(
         output_tokens: 0,
         cache_read_tokens: None,
         cache_creation_tokens: None,
-        trim_applied: false,
-        trim_tokens_before: 0,
-        trim_tokens_after: 0,
-        trim_preset: String::new(),
-        trim_config_json: String::new(),
-        trim_stages_json: String::new(),
+        trim_applied,
+        trim_tokens_before,
+        trim_tokens_after,
+        trim_preset: if trim_applied {
+            "responses-v1".to_string()
+        } else {
+            String::new()
+        },
+        trim_config_json,
+        trim_stages_json,
         started_ms,
         prefix_hash: 0,
         status: None,
