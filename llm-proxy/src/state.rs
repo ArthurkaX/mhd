@@ -363,9 +363,8 @@ pub struct AppState {
     /// [`Self::client_claude_code_enabled`].
     pub client_openai_enabled: RwLock<bool>,
 
-    /// Codex trim switch. Trim for the Responses wire API is NOT implemented
-    /// yet, so this gates nothing today; it exists so the client axis is
-    /// complete and the engine can be added behind it without a UI change.
+    /// Codex Responses trim switch for HTTPS and native WebSocket transports.
+    /// The conservative engine is fail-open and default-off.
     pub trim_codex_enabled: RwLock<bool>,
 
     /// OpenAI-compatible client trim switch. Independent of `trim_enabled`;

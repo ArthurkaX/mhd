@@ -36,6 +36,7 @@ fn main() {
     let mut classes = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut relationship_failures = 0usize;
     let mut structured_failures = 0usize;
+    let mut log_classified = 0usize;
     let mut log_repeat_applied = 0usize;
 
     for row in rows {
@@ -47,6 +48,9 @@ fn main() {
         *reasons.entry(outcome.reason).or_default() += 1;
         for class in &outcome.classes {
             *classes.entry(class).or_default() += 1;
+            if *class == "logs / timestamped" {
+                log_classified += 1;
+            }
         }
         if outcome.applied {
             let quality = codex_trim::quality_check(&body, &outcome.body);
@@ -77,6 +81,7 @@ fn main() {
     println!("classified outputs: {classes:?}");
     println!("quality relationship failures: {relationship_failures}");
     println!("quality structured-content failures: {structured_failures}");
+    println!("log outputs classified: {log_classified}");
     println!("log-repeat stage applied: {log_repeat_applied}");
     if applied > 0 {
         let saved = before.saturating_sub(after);

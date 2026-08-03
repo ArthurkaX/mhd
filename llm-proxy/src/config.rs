@@ -113,10 +113,8 @@ pub struct Settings {
     #[serde(default = "default_client_openai_enabled")]
     pub client_openai_enabled: bool,
 
-    /// Codex trim switch. Trim for the Responses wire API is NOT implemented
-    /// yet, so this gates nothing today; it exists so the client axis is
-    /// complete and the engine can be added behind it without a UI change.
-    /// Default: off.
+    /// Codex Responses trim switch for HTTPS and native WebSocket transports.
+    /// The conservative engine is fail-open and default-off.
     #[serde(default)]
     pub trim_codex_enabled: bool,
 

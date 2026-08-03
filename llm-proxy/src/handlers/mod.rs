@@ -976,20 +976,12 @@ async fn bridge_codex_websocket(
                     let outgoing = if state_from_client.trim_enabled_for(ClientKind::Codex) {
                         if let Some(outcome) = crate::codex_trim::trim_responses_text(&original) {
                             if outcome.applied {
-                                if let Ok(trimmed) = serde_json::to_string(&outcome.body) {
-                                    trim_outcome = Some(outcome);
-                                    trimmed
-                                } else {
-                                    original.clone()
-                                }
-                            } else {
-                                original.clone()
+                                trim_outcome = Some(outcome);
                             }
-                        } else {
-                            original.clone()
                         }
+                        crate::codex_trim::trim_responses_text_if_enabled(&original, true)
                     } else {
-                        original.clone()
+                        crate::codex_trim::trim_responses_text_if_enabled(&original, false)
                     };
                     observe_codex_request(
                         &state_from_client,

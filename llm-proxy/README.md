@@ -273,7 +273,19 @@ Key properties:
 
 - **Zero extra model calls.** Compression is pure local computation (powered by [`llmtrim-core`](https://github.com/fkiene/llmtrim)), adding milliseconds rather than a round-trip.
 - **Fail-open.** Any error, a request below the size threshold, or a result that does not actually shrink forwards the original request untouched. Trim never breaks a request.
-- **One toggle, both protocols.** A single switch governs Claude Code (`/v1/messages`) and OpenAI-compatible (`/v1/chat/completions`) traffic.
+- **Independent client switches.** Claude Code, OpenAI-compatible clients, and Codex each have their own trim switch. Codex uses the same conservative Responses engine for HTTPS (`/v1/responses`) and native WebSocket `response.create` frames; other WebSocket events and binary frames pass through unchanged.
 - **`auto` preset.** By default Trim picks the per-request strategy (agent / code / rag / aggressive) from the request shape, so it adapts to mixed clients automatically.
+
+For Codex, only tool-output text is eligible. Content is classified as logs,
+source code, structured JSON/configuration, tabular data, or other text. Source,
+structured, and tabular content is protected; repeated log lines are compressed
+only when they are consecutive and replaced with an explicit
+`[mhd-trim: omitted N repeated log lines]` marker. Unknown request shapes,
+backend-owned state, invalid JSON, and no-gain results remain fail-open.
+
+The Proxy Trace records `trim_applied`, estimated tokens before/after,
+`trim_preset=responses-v1`, transport, classified content, and stage names.
+The offline `codex_trim_replay` report additionally checks relationship keys,
+protected content, fail-open reasons, and aggregate token estimates before/after.
 
 Enable it from **Settings -> LLM Proxy -> Request Compression**, or the **Trim (compress requests)** tray item. Per-request savings show up in the [Proxy Trace](#trace-view) overlay.

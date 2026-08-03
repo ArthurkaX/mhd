@@ -157,6 +157,24 @@ pub fn trim_responses_text(text: &str) -> Option<TrimOutcome> {
     Some(trim_responses(body))
 }
 
+/// Prepare one client-to-upstream WebSocket text frame.
+///
+/// The disabled and non-`response.create` paths return the exact original
+/// frame. This keeps the transport boundary fail-open and makes the bridge
+/// policy independently testable without a live upstream connection.
+pub fn trim_responses_text_if_enabled(text: &str, enabled: bool) -> String {
+    if !enabled {
+        return text.to_owned();
+    }
+    let Some(outcome) = trim_responses_text(text) else {
+        return text.to_owned();
+    };
+    if !outcome.applied {
+        return text.to_owned();
+    }
+    serde_json::to_string(&outcome.body).unwrap_or_else(|_| text.to_owned())
+}
+
 fn normalize_tool_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut blank_lines = 0usize;
@@ -457,6 +475,30 @@ mod tests {
         assert!(!out.applied);
         assert_eq!(out.reason, "no_change");
         assert!(quality_check(&body, &out.body).structured_content_preserved);
+    }
+
+    #[test]
+    fn websocket_trim_is_opt_in_and_preserves_non_create_frames() {
+        let body = serde_json::json!({
+            "type": "response.create",
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "ws_1",
+                "output": large_text()
+            }]
+        });
+        let original = serde_json::to_string(&body).unwrap();
+        assert_eq!(trim_responses_text_if_enabled(&original, false), original);
+
+        let trimmed = trim_responses_text_if_enabled(&original, true);
+        assert_ne!(trimmed, original);
+        let parsed: Value = serde_json::from_str(&trimmed).unwrap();
+        assert_eq!(parsed["type"], "response.create");
+        assert_eq!(parsed["input"][0]["call_id"], "ws_1");
+
+        let other = r#"{"type":"response.cancel","response_id":"resp_1"}"#;
+        assert_eq!(trim_responses_text_if_enabled(other, true), other);
+        assert_eq!(trim_responses_text_if_enabled("not-json", true), "not-json");
     }
 
     #[test]
