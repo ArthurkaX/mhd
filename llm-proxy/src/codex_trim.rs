@@ -3,11 +3,21 @@
 //! Only text inside tool outputs may be normalized;
 //! calls, ids, reasoning, messages, tools, and backend-owned state remain
 //! untouched. Any shape outside that contract returns the original payload.
+//!
+//! Protection is by *provenance* — the command that produced an output, matched
+//! through its `call_id` — not by content class. Outputs that are file reads of
+//! code/doc files, orphaned outputs (no matching call), and `apply_patch`
+//! context are left byte-identical; everything else is eligible for
+//! whitespace / repeated-line / head-tail compression.
+
+use std::collections::HashMap;
 
 use serde_json::Value;
 
 use crate::content_mix::{ContentClass, classify_block};
-use crate::native_trim::{compress_head_tail, truncate_descriptions};
+use crate::native_trim::{
+    compress_head_tail, is_protected_ext, tool_result_protected, truncate_descriptions,
+};
 
 // Small Codex turns are common. Keep a floor to avoid touching tiny payloads,
 // but let the content-aware pass inspect bodies from 8 KiB upward. The pass
@@ -22,6 +32,34 @@ const SAFE_MIN_ELIDE: usize = 2_000;
 // CC parity: truncate tool `description` strings to the same cap as the native
 // engine's `NativeKnobs::tool_max_desc_chars` default.
 const MAX_DESC_CHARS: usize = 150;
+
+// ── provenance-gated protection (A2) ─────────────────────────────────────────
+
+/// Item-level protection reason labels. A block protected by provenance (or
+/// orphaned) is left byte-identical. Per-block content protection ("content")
+/// and the eligible fallback are decided inside `transform_tool_text`.
+const ORPHAN: &str = "orphan";
+const PROVENANCE_READ: &str = "provenance_read";
+const APPLY_PATCH: &str = "apply_patch";
+
+/// Read verbs for the A2.2 file-read rule: a command is a protected file read
+/// when it contains one of these verbs AND a token whose extension is in the
+/// protected set. Hyphens are kept so `Get-Content` reads as one word.
+const READ_VERBS: [&str; 13] = [
+    "get-content",
+    "gc",
+    "cat",
+    "type",
+    "sed",
+    "head",
+    "tail",
+    "rg",
+    "grep",
+    "less",
+    "more",
+    "nl",
+    "bat",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageInfo {
@@ -83,6 +121,23 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
         .and_then(Value::as_array_mut)
         .expect("input shape was checked above");
 
+    // A1: immutable provenance pass — `call_id → lowercased command text`. The
+    // `custom_tool_call.input` is JavaScript source, not JSON; it is used
+    // verbatim as the haystack (the shell command is a string literal inside
+    // it). `function_call.arguments` is JSON text, also used verbatim.
+    let provenance: HashMap<&str, String> = input
+        .iter()
+        .filter_map(|item| {
+            let call_id = item.get("call_id").and_then(Value::as_str)?;
+            let command = match item.get("type").and_then(Value::as_str)? {
+                "custom_tool_call" => item.get("input").and_then(Value::as_str),
+                "function_call" => item.get("arguments").and_then(Value::as_str),
+                _ => return None,
+            }?;
+            Some((call_id, command.to_ascii_lowercase()))
+        })
+        .collect();
+
     let mut changed = false;
     let mut repeated_line_trim_allowed = false;
     let mut head_tail_trim_applied = false;
@@ -93,6 +148,10 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
         };
         match item_type {
             "function_call_output" | "custom_tool_call_output" => {
+                let item_reason = item_protection(
+                    original_item.get("call_id").and_then(Value::as_str),
+                    &provenance,
+                );
                 let Some(output) = candidate_input[index].get_mut("output") else {
                     return TrimOutcome::unchanged(body, "custom_output_missing");
                 };
@@ -102,6 +161,7 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                     let normalized = transform_tool_text(
                         text,
                         class,
+                        item_reason,
                         &mut repeated_line_trim_allowed,
                         &mut head_tail_trim_applied,
                     );
@@ -128,6 +188,7 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                         let normalized = transform_tool_text(
                             &text,
                             class,
+                            item_reason,
                             &mut repeated_line_trim_allowed,
                             &mut head_tail_trim_applied,
                         );
@@ -241,21 +302,34 @@ fn normalize_tool_text(text: &str) -> String {
     out
 }
 
+/// Transform one tool-output text block.
+///
+/// `item_reason` is the item-level provenance protection (`Some("orphan" |
+/// "provenance_read" | "apply_patch")`) when provenance protects this output;
+/// per-block content protection (fenced code, diagrams — CC parity layers 2-3)
+/// is checked here. A protected block is returned byte-identical.
+///
+/// Otherwise the block is eligible regardless of content class: whitespace
+/// normalization always applies, repeated-line compression stays gated on the
+/// four diagnostic classes (it is a separate, safe op), and head/tail
+/// compression now applies unconditionally to any eligible block.
 fn transform_tool_text(
     text: &str,
     class: ContentClass,
+    item_reason: Option<&'static str>,
     repeated_line_trim_allowed: &mut bool,
     head_tail_trim_applied: &mut bool,
 ) -> String {
-    // These classes are data-bearing. Even whitespace-only changes can be
-    // meaningful in source, serialized records, or aligned columns.
-    if matches!(
-        class,
-        ContentClass::SourceCode
-            | ContentClass::StructuredData
-            | ContentClass::Diff
-            | ContentClass::Tabular
-    ) {
+    if item_reason.is_some() || tool_result_protected(text, None, true, 0.01) {
+        return text.to_owned();
+    }
+    // A4 idempotence: an already-trimmed block carries one of our markers and
+    // must pass through byte-identical. Without this guard, re-normalizing an
+    // elided block could collapse a blank-line run at the head/marker seam
+    // (the head cut can end in blanks, and the marker adds one more newline),
+    // so the second pass would not be a no-op. Same marker philosophy as
+    // `compress_repeated_lines`.
+    if text.contains("[mhd-trim: omitted ") || text.contains("...[elided ") {
         return text.to_owned();
     }
     *repeated_line_trim_allowed |= matches!(
@@ -278,18 +352,60 @@ fn transform_tool_text(
     } else {
         normalized
     };
-    if diagnostic_class
-        && let Some(compressed) = compress_head_tail(
-            &normalized,
-            SAFE_HEAD_CHARS,
-            SAFE_TAIL_CHARS,
-            SAFE_MIN_ELIDE,
-        )
-    {
+    if let Some(compressed) = compress_head_tail(
+        &normalized,
+        SAFE_HEAD_CHARS,
+        SAFE_TAIL_CHARS,
+        SAFE_MIN_ELIDE,
+    ) {
         *head_tail_trim_applied = true;
         return compressed;
     }
     normalized
+}
+
+/// Item-level provenance protection (A2.1-A2.3). Returns the reason when the
+/// output's `call_id` is an orphan or its command reads a protected file or
+/// applies a patch; `None` when provenance does not protect.
+fn item_protection<'a>(
+    call_id: Option<&'a str>,
+    provenance: &HashMap<&'a str, String>,
+) -> Option<&'static str> {
+    let Some(cid) = call_id else {
+        return Some(ORPHAN);
+    };
+    let Some(command) = provenance.get(cid) else {
+        return Some(ORPHAN);
+    };
+    command_protection(command)
+}
+
+/// A2.2 + A2.3 on a lowercased command haystack: a protected file read
+/// (read verb AND a protected-extension token) or an `apply_patch`.
+fn command_protection(command_lower: &str) -> Option<&'static str> {
+    if read_verb_seen(command_lower) && protected_ext_word_seen(command_lower) {
+        return Some(PROVENANCE_READ);
+    }
+    if command_lower.contains("apply_patch") {
+        return Some(APPLY_PATCH);
+    }
+    None
+}
+
+/// Split a command haystack into matching words: alphanumeric runs plus
+/// hyphens, so `Get-Content` / `apply_patch`-style tokens survive and words
+/// glued to JS punctuation (`{command:"cat`) still match.
+fn command_words(s: &str) -> impl Iterator<Item = &str> {
+    s.split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|w| !w.is_empty())
+}
+
+fn read_verb_seen(command_lower: &str) -> bool {
+    command_words(command_lower).any(|w| READ_VERBS.iter().any(|v| w.eq_ignore_ascii_case(v)))
+}
+
+fn protected_ext_word_seen(command_lower: &str) -> bool {
+    command_words(command_lower).any(is_protected_ext)
 }
 
 /// Replace only consecutive identical non-empty diagnostic lines with an
@@ -417,7 +533,7 @@ fn protected_texts(body: &Value) -> Vec<(usize, usize, String)> {
             continue;
         };
         if let Some(text) = output.as_str() {
-            if is_protected_class(text) {
+            if is_content_protected(text) {
                 protected.push((item_index, 0, text.to_owned()));
             }
         } else if let Some(blocks) = output.as_array() {
@@ -425,7 +541,7 @@ fn protected_texts(body: &Value) -> Vec<(usize, usize, String)> {
                 let Some(text) = block.get("text").and_then(Value::as_str) else {
                     continue;
                 };
-                if is_protected_class(text) {
+                if is_content_protected(text) {
                     protected.push((item_index, block_index, text.to_owned()));
                 }
             }
@@ -449,11 +565,12 @@ fn output_text(body: &Value, item_index: usize, block_index: usize) -> Option<St
         .map(str::to_owned)
 }
 
-fn is_protected_class(text: &str) -> bool {
-    matches!(
-        classify_block(text, None, ""),
-        ContentClass::SourceCode | ContentClass::StructuredData | ContentClass::Tabular
-    )
+/// Content-based protection (A2.4, CC parity layers 2-3): fenced code and
+/// diagrams stay byte-identical regardless of provenance. The quality gate
+/// verifies exactly this set survives trim — provenance-protected blocks
+/// (orphan / file read / apply_patch) are enforced by the trim path itself.
+fn is_content_protected(text: &str) -> bool {
+    tool_result_protected(text, None, true, 0.01)
 }
 
 #[cfg(test)]
@@ -471,6 +588,10 @@ mod tests {
         let body = serde_json::json!({
             "model": "gpt-5.6-luna",
             "input": [{
+                "type": "function_call",
+                "call_id": "call_123",
+                "arguments": "{\"cell_id\":\"220\",\"yield_time_ms\":1000}"
+            }, {
                 "type": "function_call_output",
                 "call_id": "call_123",
                 "output": large_text()
@@ -480,7 +601,7 @@ mod tests {
         });
         let out = trim_responses(body.clone());
         assert!(out.applied);
-        assert_eq!(out.body["input"][0]["call_id"], "call_123");
+        assert_eq!(out.body["input"][1]["call_id"], "call_123");
         assert_eq!(out.body["tools"][0]["name"], "keep_me");
         assert_eq!(out.body["instructions"], "keep instructions");
         assert!(out.tokens_after < out.tokens_before);
@@ -501,6 +622,10 @@ mod tests {
     fn trims_string_custom_output_without_touching_call_id() {
         let body = serde_json::json!({
             "input": [{
+                "type": "custom_tool_call",
+                "call_id": "custom_123",
+                "input": "const r = await tools.shell_command({command:\"echo hi\"}); text(r)"
+            }, {
                 "type": "custom_tool_call_output",
                 "call_id": "custom_123",
                 "output": (0..1200).map(|i| format!("line {i}    \n\n\n\n")).collect::<String>()
@@ -508,7 +633,7 @@ mod tests {
         });
         let out = trim_responses(body);
         assert!(out.applied);
-        assert_eq!(out.body["input"][0]["call_id"], "custom_123");
+        assert_eq!(out.body["input"][1]["call_id"], "custom_123");
     }
 
     #[test]
@@ -535,12 +660,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let body = serde_json::json!({
-            "input": [{"type": "custom_tool_call_output", "call_id": "log_1", "output": output}]
+            "input": [
+                {"type": "custom_tool_call", "call_id": "log_1",
+                 "input": "const r = await tools.shell_command({command:\"npm test\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "log_1", "output": output}
+            ]
         });
         let out = trim_responses(body.clone());
         assert!(out.applied);
         assert!(
-            out.body["input"][0]["output"]
+            out.body["input"][1]["output"]
                 .as_str()
                 .unwrap()
                 .contains("[mhd-trim: omitted ")
@@ -576,16 +705,19 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let body = serde_json::json!({
-            "input": [{
-                "type": "function_call_output",
-                "call_id": "diag_1",
-                "output": output
-            }]
+            "input": [
+                {"type": "function_call", "call_id": "diag_1", "arguments": "{\"cell_id\":\"1\"}"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "diag_1",
+                    "output": output
+                }
+            ]
         });
         let out = trim_responses(body.clone());
         assert!(out.applied);
-        assert_eq!(out.body["input"][0]["call_id"], "diag_1");
-        let trimmed = out.body["input"][0]["output"].as_str().unwrap();
+        assert_eq!(out.body["input"][1]["call_id"], "diag_1");
+        let trimmed = out.body["input"][1]["output"].as_str().unwrap();
         assert!(trimmed.contains("...[elided "));
         assert!(trimmed.starts_with("error[E0000]: diagnostic line 0"));
         assert!(trimmed.ends_with("error[E0399]: diagnostic line 1399"));
@@ -631,11 +763,14 @@ mod tests {
     fn websocket_trim_is_opt_in_and_preserves_non_create_frames() {
         let body = serde_json::json!({
             "type": "response.create",
-            "input": [{
-                "type": "function_call_output",
-                "call_id": "ws_1",
-                "output": large_text()
-            }]
+            "input": [
+                {"type": "function_call", "call_id": "ws_1", "arguments": "{\"cell_id\":\"1\"}"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "ws_1",
+                    "output": large_text()
+                }
+            ]
         });
         let original = serde_json::to_string(&body).unwrap();
         assert_eq!(trim_responses_text_if_enabled(&original, false), original);
@@ -644,7 +779,7 @@ mod tests {
         assert_ne!(trimmed, original);
         let parsed: Value = serde_json::from_str(&trimmed).unwrap();
         assert_eq!(parsed["type"], "response.create");
-        assert_eq!(parsed["input"][0]["call_id"], "ws_1");
+        assert_eq!(parsed["input"][1]["call_id"], "ws_1");
 
         let other = r#"{"type":"response.cancel","response_id":"resp_1"}"#;
         assert_eq!(trim_responses_text_if_enabled(other, true), other);
@@ -661,17 +796,20 @@ mod tests {
     fn websocket_response_create_trim_preserves_event_type() {
         let body = serde_json::json!({
             "type": "response.create",
-            "input": [{
-                "type": "function_call_output",
-                "call_id": "ws_call",
-                "output": large_text()
-            }]
+            "input": [
+                {"type": "function_call", "call_id": "ws_call", "arguments": "{\"cell_id\":\"1\"}"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "ws_call",
+                    "output": large_text()
+                }
+            ]
         });
         let text = serde_json::to_string(&body).unwrap();
         let outcome = trim_responses_text(&text).unwrap();
         assert!(outcome.applied);
         assert_eq!(outcome.body["type"], "response.create");
-        assert_eq!(outcome.body["input"][0]["call_id"], "ws_call");
+        assert_eq!(outcome.body["input"][1]["call_id"], "ws_call");
     }
 
     #[test]
@@ -720,5 +858,120 @@ mod tests {
         assert!(!out.applied);
         assert_eq!(out.reason, "no_change");
         assert_eq!(out.body, body);
+    }
+
+    #[test]
+    fn orphan_output_is_byte_stable() {
+        // A call_id with no matching call, and an output with no call_id at all,
+        // are orphans — without provenance we cannot know the bytes are not an
+        // exact file read a later apply_patch depends on, so both stay intact.
+        let body = serde_json::json!({
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_ghost",
+                "output": large_text()
+            }]
+        });
+        let out = trim_responses(body.clone());
+        assert!(!out.applied);
+        assert_eq!(out.reason, "no_change");
+        assert_eq!(out.body, body);
+
+        let no_call_id = serde_json::json!({
+            "input": [{"type": "custom_tool_call_output", "output": large_text()}]
+        });
+        let out2 = trim_responses(no_call_id.clone());
+        assert!(!out2.applied);
+        assert_eq!(out2.body, no_call_id);
+    }
+
+    #[test]
+    fn cat_rs_provenance_protects_large_output() {
+        // `cat foo.rs` is a file read of a protected extension: even a large
+        // output that would otherwise be elided stays byte-identical.
+        let output = large_text();
+        let body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "call_read",
+                 "input": "const r = await tools.shell_command({command:\"cat foo.rs\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "call_read", "output": output.clone()}
+            ]
+        });
+        let out = trim_responses(body.clone());
+        assert!(!out.applied);
+        assert_eq!(out.body, body);
+        assert_eq!(out.body["input"][1]["output"], output);
+    }
+
+    #[test]
+    fn cargo_build_provenance_does_not_protect() {
+        // `cargo build 2>&1` has neither a read verb nor a protected path — the
+        // output is eligible and head/tail elision applies.
+        let output = (0..1400)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "call_build",
+                 "input": "const r = await tools.shell_command({command:\"cargo build 2>&1\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "call_build", "output": output}
+            ]
+        });
+        let out = trim_responses(body.clone());
+        assert!(out.applied);
+        assert!(out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
+    }
+
+    #[test]
+    fn read_notes_md_protects_but_runner_does_not() {
+        // A read verb + a protected extension protects...
+        let output = large_text();
+        let read_body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "r",
+                 "input": "const r = await tools.shell_command({command:\"Get-Content notes.md -Raw\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "r", "output": output.clone()}
+            ]
+        });
+        let read_out = trim_responses(read_body.clone());
+        assert!(!read_out.applied);
+        assert_eq!(read_out.body, read_body);
+
+        // ...but a bare `.sh` argument to a runner is not a read: verb and
+        // extension must BOTH be present, so this output is elided.
+        let run_body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "s",
+                 "input": "const r = await tools.shell_command({command:\"run_tests.sh --verbose\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "s", "output": output}
+            ]
+        });
+        let run_out = trim_responses(run_body.clone());
+        assert!(run_out.applied);
+        assert!(run_out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
+    }
+
+    #[test]
+    fn rerun_on_trimmed_body_is_noop() {
+        // Determinism + idempotence: the second pass must be a byte-stable no-op
+        // (the `[mhd-trim: omitted` / `...[elided ` markers guard against nesting).
+        // The orphan-protected output stays large so the trimmed body remains
+        // above MIN_BYTES and the second pass genuinely re-inspects it rather
+        // than bailing out at below_min_size.
+        let body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "c",
+                 "input": "const r = await tools.shell_command({command:\"echo hello\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "c", "output": large_text()},
+                {"type": "function_call_output", "call_id": "orphan", "output": large_text()}
+            ]
+        });
+        let first = trim_responses(body.clone());
+        assert!(first.applied);
+        let second = trim_responses(first.body.clone());
+        assert!(!second.applied);
+        assert_eq!(second.reason, "no_change");
+        assert_eq!(second.body, first.body);
     }
 }
