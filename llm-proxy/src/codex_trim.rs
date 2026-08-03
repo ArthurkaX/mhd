@@ -190,6 +190,11 @@ fn transform_tool_text(text: &str, class: ContentClass, strong_trim_allowed: &mu
 /// structured, tabular, or ambiguous content: removing repeated lines there
 /// could alter a program, a record set, or a value sequence.
 fn compress_repeated_lines(text: &str) -> String {
+    const MARKER: &str = "[mhd-trim: omitted ";
+    // A replayed/already-trimmed body must remain stable; never nest markers.
+    if text.contains(MARKER) {
+        return text.to_owned();
+    }
     let lines: Vec<&str> = text.lines().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -224,7 +229,7 @@ pub struct QualityReport {
 pub fn quality_check(before: &Value, after: &Value) -> QualityReport {
     QualityReport {
         relationships_preserved: relationship_keys(before) == relationship_keys(after),
-        structured_content_preserved: protected_content_safe(after),
+        structured_content_preserved: protected_content_unchanged(before, after),
     }
 }
 
@@ -252,41 +257,67 @@ fn relationship_keys(body: &Value) -> Vec<(usize, String, Option<String>)> {
         .unwrap_or_default()
 }
 
-fn protected_content_safe(body: &Value) -> bool {
-    body.get("input")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items.iter().all(|item| {
-                let Some(kind) = item.get("type").and_then(Value::as_str) else {
-                    return true;
-                };
-                if !matches!(kind, "function_call_output" | "custom_tool_call_output") {
-                    return true;
-                }
-                let Some(output) = item.get("output") else {
-                    return true;
-                };
-                let texts: Vec<&str> = if let Some(text) = output.as_str() {
-                    vec![text]
-                } else if let Some(blocks) = output.as_array() {
-                    blocks
-                        .iter()
-                        .filter_map(|block| block.get("text").and_then(Value::as_str))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                texts.into_iter().all(|text| {
-                    !matches!(
-                        classify_block(text, None, ""),
-                        ContentClass::SourceCode
-                            | ContentClass::StructuredData
-                            | ContentClass::Tabular
-                    ) || !text.contains("[mhd-trim: omitted ")
-                })
-            })
+fn protected_content_unchanged(before: &Value, after: &Value) -> bool {
+    protected_texts(before)
+        .into_iter()
+        .all(|(item, block, text)| {
+            output_text(after, item, block).is_some_and(|candidate| candidate == text)
         })
-        .unwrap_or(true)
+}
+
+fn protected_texts(body: &Value) -> Vec<(usize, usize, String)> {
+    let mut protected = Vec::new();
+    let Some(items) = body.get("input").and_then(Value::as_array) else {
+        return protected;
+    };
+    for (item_index, item) in items.iter().enumerate() {
+        if !matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call_output") | Some("custom_tool_call_output")
+        ) {
+            continue;
+        }
+        let Some(output) = item.get("output") else {
+            continue;
+        };
+        if let Some(text) = output.as_str() {
+            if is_protected_class(text) {
+                protected.push((item_index, 0, text.to_owned()));
+            }
+        } else if let Some(blocks) = output.as_array() {
+            for (block_index, block) in blocks.iter().enumerate() {
+                let Some(text) = block.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                if is_protected_class(text) {
+                    protected.push((item_index, block_index, text.to_owned()));
+                }
+            }
+        }
+    }
+    protected
+}
+
+fn output_text(body: &Value, item_index: usize, block_index: usize) -> Option<String> {
+    let output = body.get("input")?.get(item_index)?.get("output")?;
+    if block_index == 0 {
+        if let Some(text) = output.as_str() {
+            return Some(text.to_owned());
+        }
+    }
+    output
+        .as_array()?
+        .get(block_index)?
+        .get("text")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn is_protected_class(text: &str) -> bool {
+    matches!(
+        classify_block(text, None, ""),
+        ContentClass::SourceCode | ContentClass::StructuredData | ContentClass::Tabular
+    )
 }
 
 #[cfg(test)]
@@ -415,5 +446,11 @@ mod tests {
         assert!(!out.applied);
         assert_eq!(out.reason, "no_change");
         assert!(quality_check(&body, &out.body).structured_content_preserved);
+    }
+
+    #[test]
+    fn log_marker_is_idempotent() {
+        let text = "2026-08-03 12:00:00 INFO worker\n[mhd-trim: omitted 8 repeated log lines]";
+        assert_eq!(compress_repeated_lines(text), text);
     }
 }

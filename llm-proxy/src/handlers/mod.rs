@@ -775,7 +775,8 @@ pub async fn post_codex_responses(
             trim_preset = "responses-v1".to_string();
             trim_config_json = serde_json::json!({
                 "engine": "codex_responses",
-                "stage": "tool_output_whitespace",
+                "stage": outcome.stages.first().map(|stage| stage.name).unwrap_or("none"),
+                "classes": outcome.classes,
             })
             .to_string();
             trim_stages_json = serde_json::to_string(

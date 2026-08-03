@@ -36,6 +36,7 @@ fn main() {
     let mut classes = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut relationship_failures = 0usize;
     let mut structured_failures = 0usize;
+    let mut log_repeat_applied = 0usize;
 
     for row in rows {
         total += 1;
@@ -59,6 +60,9 @@ fn main() {
             before += outcome.tokens_before as usize;
             after += outcome.tokens_after as usize;
             for stage in outcome.stages {
+                if stage.name == "tool_output_whitespace_and_log_repeats" {
+                    log_repeat_applied += 1;
+                }
                 *stages.entry(stage.name).or_default() += 1;
             }
         } else {
@@ -73,6 +77,7 @@ fn main() {
     println!("classified outputs: {classes:?}");
     println!("quality relationship failures: {relationship_failures}");
     println!("quality structured-content failures: {structured_failures}");
+    println!("log-repeat stage applied: {log_repeat_applied}");
     if applied > 0 {
         let saved = before.saturating_sub(after);
         println!("estimated tokens before: {before}");
