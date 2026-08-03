@@ -41,8 +41,13 @@ fn main() {
     let mut log_repeat_applied = 0usize;
     let mut diagnostic_head_tail_applied = 0usize;
     // Protection-reason histogram over every inspected block: reason → (blocks, chars).
-    let mut protection_hist =
-        std::collections::BTreeMap::<&'static str, (usize, usize)>::new();
+    let mut protection_hist = std::collections::BTreeMap::<&'static str, (usize, usize)>::new();
+    let mut protected_blocks = 0usize;
+    let mut protected_chars = 0usize;
+    let mut eligible_blocks = 0usize;
+    let mut eligible_chars = 0usize;
+    let mut below_threshold_blocks = 0usize;
+    let mut below_threshold_chars = 0usize;
     // Chars saved split by lever.
     let mut lever_savings = std::collections::BTreeMap::<&'static str, usize>::new();
     // Corpus-wide raw bytes (all bodies, not just shrunk ones) for the headline %.
@@ -68,11 +73,25 @@ fn main() {
             let entry = protection_hist.entry(reason).or_insert((0, 0));
             entry.0 += 1;
             entry.1 += chars;
+            if *reason == "none (elided)" {
+                if *chars >= codex_trim::MIN_TOOL_OUTPUT_CHARS {
+                    eligible_blocks += 1;
+                    eligible_chars += chars;
+                } else {
+                    below_threshold_blocks += 1;
+                    below_threshold_chars += chars;
+                }
+            } else {
+                protected_blocks += 1;
+                protected_chars += chars;
+            }
         }
         for (lever, chars) in &outcome.saved_by_lever {
             *lever_savings.entry(*lever).or_default() += chars;
         }
-        let after_bytes = serde_json::to_vec(&outcome.body).map(|v| v.len()).unwrap_or(0);
+        let after_bytes = serde_json::to_vec(&outcome.body)
+            .map(|v| v.len())
+            .unwrap_or(0);
         corpus_after += after_bytes;
         if outcome.applied {
             let quality = codex_trim::quality_check(&body, &outcome.body);
@@ -124,6 +143,11 @@ fn main() {
     }
     println!("stages: {stages:?}");
     println!("protection reasons (blocks, chars): {protection_hist:?}");
+    println!("protected output:       {protected_blocks} blocks / {protected_chars} chars");
+    println!("eligible output:        {eligible_blocks} blocks / {eligible_chars} chars");
+    println!(
+        "below output threshold:  {below_threshold_blocks} blocks / {below_threshold_chars} chars"
+    );
     println!("chars saved by lever: {lever_savings:?}");
     if corpus_before > 0 {
         let corpus_saved = corpus_before.saturating_sub(corpus_after);

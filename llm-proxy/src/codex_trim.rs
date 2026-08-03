@@ -10,28 +10,28 @@
 //! context are left byte-identical; everything else is eligible for
 //! whitespace / repeated-line / head-tail compression.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::content_mix::{ContentClass, classify_block};
-use crate::native_trim::{
-    compress_head_tail, is_protected_ext, tool_result_protected, truncate_descriptions,
-};
+use crate::native_trim::{compress_head_tail, is_protected_ext, tool_result_protected};
 
-// Small Codex turns are common. Keep a floor to avoid touching tiny payloads,
-// but let the content-aware pass inspect bodies from 8 KiB upward. The pass
-// still changes only recognized tool-output text and remains fail-open.
-const MIN_BYTES: usize = 8 * 1024;
+// Apply the eligibility floor to each tool-output block, not to the complete
+// Responses request. A small request can still contain one large diagnostic.
+pub const MIN_TOOL_OUTPUT_CHARS: usize = 2 * 1024;
 // Codex diagnostics in the observed corpus are shorter than the native CC
 // 8K trigger. Keep a substantial head and tail, but make the Codex gate fit
 // those real tool outputs without widening eligibility to unknown content.
 const SAFE_HEAD_CHARS: usize = 2_000;
 const SAFE_TAIL_CHARS: usize = 800;
 const SAFE_MIN_ELIDE: usize = 2_000;
-// CC parity: truncate tool `description` strings to the same cap as the native
-// engine's `NativeKnobs::tool_max_desc_chars` default.
-const MAX_DESC_CHARS: usize = 150;
+// Diagnostics are useful at both ends (command header and final status), but
+// often arrive in medium-sized blocks. A smaller elision gate improves the
+// yield without broadening eligibility to prose or structured content.
+const DIAGNOSTIC_HEAD_CHARS: usize = 1_600;
+const DIAGNOSTIC_TAIL_CHARS: usize = 800;
+const DIAGNOSTIC_MIN_ELIDE: usize = 1_200;
 
 // ── provenance-gated protection (A2) ─────────────────────────────────────────
 
@@ -125,8 +125,8 @@ impl TrimOutcome {
 /// block is returned byte-for-byte equivalent as JSON without modification.
 pub fn trim_responses(body: Value) -> TrimOutcome {
     let before = match serde_json::to_vec(&body) {
-        Ok(bytes) if bytes.len() >= MIN_BYTES => bytes,
-        _ => return TrimOutcome::unchanged(body, "below_min_size"),
+        Ok(bytes) => bytes,
+        _ => return TrimOutcome::unchanged(body, "unserializable_body"),
     };
 
     let Some(object) = body.as_object() else {
@@ -228,29 +228,20 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                     }
                 }
             }
-            "additional_tools" => {
-                // Codex has no top-level `tools` key — descriptions live inside
-                // an `input` item of this type. Truncate only the `tools` array;
-                // fail-open (no-op) when `tools` is missing or not an array.
-                if let Some(tools) = candidate_input[index]
-                    .get_mut("tools")
-                    .and_then(Value::as_array_mut)
-                {
-                    let before = serde_json::to_string(tools).unwrap_or_default();
-                    for tool in tools.iter_mut() {
-                        truncate_descriptions(tool, MAX_DESC_CHARS);
-                    }
-                    let after = serde_json::to_string(tools).unwrap_or_default();
-                    let saved = before.chars().count().saturating_sub(after.chars().count());
-                    if saved > 0 {
-                        changed = true;
-                        *saved_by_lever.entry("tool_descriptions").or_default() += saved;
-                    }
-                }
-            }
             // These item types are deliberately protected.
-            "message" | "reasoning" | "compaction" | "compaction_trigger" | "custom_tool_call"
-            | "function_call" => {}
+            //
+            // `additional_tools` carries Codex's tool descriptions, and truncating
+            // them is NOT the safe lever it is on the Anthropic path. The only
+            // executable tool is `exec`, whose description is a ~25k-char
+            // JavaScript API contract enumerating every callable `tools.*` member
+            // of the V8 isolate. Cutting it to a fixed prefix strips that
+            // enumeration, the model then invents member names, and every tool
+            // call dies with a ReferenceError before reaching the shell. The two
+            // other tools seen in the corpus are 350 and 43 chars, so a
+            // name-scoped exemption would buy nothing either — the whole lever is
+            // the `exec` contract. Leave descriptions byte-identical.
+            "additional_tools" | "message" | "reasoning" | "compaction" | "compaction_trigger"
+            | "custom_tool_call" | "function_call" => {}
             _ => return TrimOutcome::unchanged(body, "unknown_item_type"),
         }
     }
@@ -360,11 +351,15 @@ fn transform_block(
     saved_by_lever: &mut BTreeMap<&'static str, usize>,
     protection_reasons: &mut Vec<(&'static str, usize)>,
 ) -> String {
+    if text.chars().count() < MIN_TOOL_OUTPUT_CHARS {
+        protection_reasons.push((ELIGIBLE, text.chars().count()));
+        return text.to_owned();
+    }
     if let Some(reason) = item_reason {
         protection_reasons.push((reason, text.chars().count()));
         return text.to_owned();
     }
-    if tool_result_protected(text, None, true, 0.01) {
+    if content_class_protected(class) || tool_result_protected(text, None, true, 0.01) {
         protection_reasons.push((CONTENT, text.chars().count()));
         return text.to_owned();
     }
@@ -375,6 +370,22 @@ fn transform_block(
         repeated_line_trim_allowed,
         head_tail_trim_applied,
         saved_by_lever,
+    )
+}
+
+/// Structured or ambiguous output is byte-sensitive even when provenance does
+/// not identify it as a file read. In particular, a linked `function_call`
+/// may generate JSON/source through an arbitrary shell command, so provenance
+/// alone cannot be the only protection layer.
+fn content_class_protected(class: ContentClass) -> bool {
+    matches!(
+        class,
+        ContentClass::SourceCode
+            | ContentClass::StructuredData
+            | ContentClass::Diff
+            | ContentClass::Tabular
+            | ContentClass::DirListing
+            | ContentClass::Ambiguous
     )
 }
 
@@ -408,7 +419,10 @@ fn transform_tool_text(
             | ContentClass::TestOutput
     );
     let normalized = normalize_tool_text(text);
-    let whitespace_saved = text.chars().count().saturating_sub(normalized.chars().count());
+    let whitespace_saved = text
+        .chars()
+        .count()
+        .saturating_sub(normalized.chars().count());
     if whitespace_saved > 0 {
         *saved_by_lever.entry("whitespace").or_default() += whitespace_saved;
     }
@@ -421,7 +435,10 @@ fn transform_tool_text(
     );
     let normalized = if diagnostic_class {
         let compressed = compress_repeated_lines(&normalized);
-        let repeats_saved = normalized.chars().count().saturating_sub(compressed.chars().count());
+        let repeats_saved = normalized
+            .chars()
+            .count()
+            .saturating_sub(compressed.chars().count());
         if repeats_saved > 0 {
             *saved_by_lever.entry("repeats").or_default() += repeats_saved;
         }
@@ -429,14 +446,21 @@ fn transform_tool_text(
     } else {
         normalized
     };
-    if let Some(compressed) = compress_head_tail(
-        &normalized,
-        SAFE_HEAD_CHARS,
-        SAFE_TAIL_CHARS,
-        SAFE_MIN_ELIDE,
-    ) {
+    let (head, tail, min_elide) = if diagnostic_class {
+        (
+            DIAGNOSTIC_HEAD_CHARS,
+            DIAGNOSTIC_TAIL_CHARS,
+            DIAGNOSTIC_MIN_ELIDE,
+        )
+    } else {
+        (SAFE_HEAD_CHARS, SAFE_TAIL_CHARS, SAFE_MIN_ELIDE)
+    };
+    if let Some(compressed) = compress_head_tail(&normalized, head, tail, min_elide) {
         *head_tail_trim_applied = true;
-        let head_tail_saved = normalized.chars().count().saturating_sub(compressed.chars().count());
+        let head_tail_saved = normalized
+            .chars()
+            .count()
+            .saturating_sub(compressed.chars().count());
         if head_tail_saved > 0 {
             *saved_by_lever.entry("head_tail").or_default() += head_tail_saved;
         }
@@ -562,10 +586,50 @@ pub struct QualityReport {
 /// Check invariants that must hold for a transformed Responses body.
 pub fn quality_check(before: &Value, after: &Value) -> QualityReport {
     QualityReport {
-        relationships_preserved: relationship_keys(before) == relationship_keys(after),
+        relationships_preserved: relationship_keys(before) == relationship_keys(after)
+            && relationships_valid(before)
+            && relationships_valid(after),
         structured_content_preserved: protected_content_unchanged(before, after),
         tool_names_preserved: tool_names(before) == tool_names(after),
     }
+}
+
+/// Validate the Responses tool graph, not just the visible `call_id` fields.
+/// Every output must point to exactly one preceding function/custom call and
+/// every call id must be unique within the request. This catches malformed
+/// fixtures as well as accidental relationship changes during future trims.
+fn relationships_valid(body: &Value) -> bool {
+    let Some(items) = body.get("input").and_then(Value::as_array) else {
+        return true;
+    };
+    let mut calls = HashMap::<&str, usize>::new();
+    let mut outputs = HashSet::<&str>::new();
+    for (index, item) in items.iter().enumerate() {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+        match item_type {
+            "function_call" | "custom_tool_call" => {
+                let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+                    return false;
+                };
+                if calls.insert(call_id, index).is_some() {
+                    return false;
+                }
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(&call_index) = calls.get(call_id) else {
+                    return false;
+                };
+                if call_index >= index || !outputs.insert(call_id) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 /// The ordered list of every `additional_tools[].tools[].name` across all
@@ -867,6 +931,68 @@ mod tests {
     }
 
     #[test]
+    fn linked_source_and_json_outputs_are_left_byte_stable() {
+        let source = (0..900)
+            .map(|i| format!("fn keep_me_{i}() {{ return; }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let json = serde_json::to_string(&(0..5000).collect::<Vec<_>>()).unwrap();
+        let body = serde_json::json!({
+            "input": [
+                {"type": "function_call", "call_id": "src_1", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "src_1", "output": source},
+                {"type": "function_call", "call_id": "json_1", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "json_1", "output": json}
+            ]
+        });
+        let out = trim_responses(body.clone());
+        assert!(!out.applied);
+        assert_eq!(out.reason, "no_change");
+        assert_eq!(out.body, body);
+        assert!(quality_check(&body, &out.body).structured_content_preserved);
+    }
+
+    #[test]
+    fn large_output_is_trimmed_even_when_request_is_below_old_global_gate() {
+        let output = (0..240)
+            .map(|i| format!("error: diagnostic line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = serde_json::json!({
+            "input": [
+                {"type": "function_call", "call_id": "small_req", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "small_req", "output": output}
+            ]
+        });
+        let before = serde_json::to_vec(&body).unwrap().len();
+        assert!(
+            before < 8 * 1024,
+            "fixture must stay below the old request gate"
+        );
+        let out = trim_responses(body.clone());
+        assert!(out.applied);
+        assert!(out.tokens_after < out.tokens_before);
+        assert_eq!(out.body["input"][1]["call_id"], "small_req");
+    }
+
+    #[test]
+    fn quality_check_rejects_orphan_and_duplicate_relationships() {
+        let orphan = serde_json::json!({
+            "input": [{"type": "function_call_output", "call_id": "missing", "output": "x"}]
+        });
+        assert!(!quality_check(&orphan, &orphan).relationships_preserved);
+
+        let duplicate = serde_json::json!({
+            "input": [
+                {"type": "function_call", "call_id": "same", "arguments": "{}"},
+                {"type": "function_call", "call_id": "same", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "same", "output": "x"}
+            ]
+        });
+        assert!(!quality_check(&duplicate, &duplicate).relationships_preserved);
+    }
+
+    #[test]
     fn websocket_trim_is_opt_in_and_preserves_non_create_frames() {
         let body = serde_json::json!({
             "type": "response.create",
@@ -925,30 +1051,54 @@ mod tests {
     }
 
     #[test]
-    fn additional_tools_descriptions_truncated_and_names_survive() {
-        let long = "x".repeat(5_000);
+    fn additional_tools_descriptions_are_never_truncated() {
+        // Regression guard: the `exec` description is the JavaScript API contract
+        // for the V8 isolate. Truncating it made the model invent `tools.*`
+        // members and every call died with a ReferenceError. Descriptions must
+        // survive byte-identical even when another lever trims the same body.
+        let long = "x".repeat(25_000);
+        let output = (0..1400)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = serde_json::json!({
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [
+                        {"name": "exec", "description": long.clone()},
+                        {"name": "wait", "description": long.clone()}
+                    ]
+                },
+                {"type": "custom_tool_call", "call_id": "call_build",
+                 "input": "const r = await tools.shell_command({command:\"cargo build 2>&1\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "call_build", "output": output}
+            ]
+        });
+        let out = trim_responses(body.clone());
+        // The elision lever still fires on the unprotected tool output ...
+        assert!(out.applied);
+        // ... while the tool block is returned untouched.
+        assert_eq!(out.body["input"][0], body["input"][0]);
+        assert_eq!(out.body["input"][0]["tools"][0]["description"], long);
+        assert_eq!(out.body["input"][0]["tools"][1]["description"], long);
+        assert!(quality_check(&body, &out.body).tool_names_preserved);
+    }
+
+    #[test]
+    fn additional_tools_alone_is_a_no_op() {
         let body = serde_json::json!({
             "input": [{
                 "type": "additional_tools",
                 "role": "developer",
-                "tools": [
-                    {"name": "exec", "description": long.clone()},
-                    {"name": "wait", "description": long}
-                ]
+                "tools": [{"name": "exec", "description": "x".repeat(25_000)}]
             }]
         });
         let out = trim_responses(body.clone());
-        assert!(out.applied);
-        let tools = &out.body["input"][0]["tools"];
-        assert_eq!(tools[0]["name"], "exec");
-        assert_eq!(tools[1]["name"], "wait");
-        let d0 = tools[0]["description"].as_str().unwrap();
-        assert_eq!(d0.chars().count(), MAX_DESC_CHARS + 1, "150 chars + marker");
-        assert!(d0.ends_with('…'));
-        let d1 = tools[1]["description"].as_str().unwrap();
-        assert_eq!(d1.chars().count(), MAX_DESC_CHARS + 1);
-        assert!(d1.ends_with('…'));
-        assert!(quality_check(&body, &out.body).tool_names_preserved);
+        assert!(!out.applied);
+        assert_eq!(out.reason, "no_change");
+        assert_eq!(out.body, body);
     }
 
     #[test]
@@ -1027,7 +1177,12 @@ mod tests {
         });
         let out = trim_responses(body.clone());
         assert!(out.applied);
-        assert!(out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
+        assert!(
+            out.body["input"][1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
     }
 
     #[test]
@@ -1056,7 +1211,12 @@ mod tests {
         });
         let run_out = trim_responses(run_body.clone());
         assert!(run_out.applied);
-        assert!(run_out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
+        assert!(
+            run_out.body["input"][1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
     }
 
     #[test]
@@ -1074,7 +1234,12 @@ mod tests {
         });
         let out = trim_responses(body.clone());
         assert!(out.applied);
-        assert!(out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
+        assert!(
+            out.body["input"][1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
     }
 
     #[test]
