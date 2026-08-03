@@ -1,12 +1,17 @@
-//! dump_body — decompress and inspect captured request bodies from proxy.db.
+//! dump_body — decompress and inspect captured request bodies from the corpus.
 //!
 //! Usage:
-//!   dump_body [--db <path>] [--run-id <id>] [--seq <n>] [--last] [--tools] [--raw]
+//!   dump_body [--db <path>] [--provider <name>] [--run-id <id>] [--seq <n>] [--last] [--tools] [--raw]
 //!
 //! The proxy stores full request bodies (zstd) in `request_bodies` when
 //! `corpus_capture = true`. This reads them back for offline inspection —
 //! primarily to harvest an agent's tool-call stream (e.g. pi-lens
 //! `ast_grep_replace` pattern→rewrite payloads) from a captured run.
+//!
+//! The corpus is the per-provider file `corpus-<provider>.db` sitting next to
+//! proxy.db; --db names proxy.db and --provider (default: anthropic) selects
+//! which per-provider file to read. Before the split, bodies live in the
+//! shared `request_bodies` table inside proxy.db and that is read instead.
 //!
 //! Modes:
 //!   --list           list runs (run_id, rows, first/last ts, models) and exit
@@ -19,9 +24,8 @@
 
 use llm_proxy::config::config_dir;
 use llm_proxy::db_log::decompress_body;
-use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn arg(flag: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
@@ -37,8 +41,20 @@ fn main() {
     let db_path = arg("--db")
         .map(PathBuf::from)
         .unwrap_or_else(|| config_dir().join("proxy.db"));
-    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .unwrap_or_else(|_| panic!("cannot open {}", db_path.display()));
+    let provider = arg("--provider").unwrap_or_else(|| "anthropic".to_string());
+
+    // The corpus is the per-provider file `corpus-<provider>.db` next to
+    // proxy.db, falling back to the legacy shared `request_bodies` table
+    // inside proxy.db for pre-migration databases. `None` means nothing was
+    // captured for this provider yet.
+    let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(conn) = llm_proxy::corpus::open_read(&dir, &provider) else {
+        panic!(
+            "no captured bodies for provider '{provider}' — no {} or empty legacy request_bodies in {}",
+            llm_proxy::corpus::corpus_path(dir, &provider).display(),
+            dir.join("proxy.db").display(),
+        );
+    };
 
     if has("--list") {
         let mut stmt = conn

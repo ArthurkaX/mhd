@@ -210,6 +210,9 @@ The proxy trace overlay shows recent requests and routing decisions. It is usefu
 - whether an automatic downgrade rule changed the target;
 - whether [Request Compression](#request-compression-trim) shrank the request, and by how much;
 - requests from OpenAI-compatible clients (e.g. Zed), shown with their model and token usage;
+- Codex token usage, which the Responses API only reports in the terminal
+  `response.completed` event — the row therefore stays in flight until the
+  stream ends, and then fills in;
 - whether requests are currently in flight.
 
 ## Configuration Files
@@ -228,6 +231,19 @@ Files:
 | `secrets.json` | Anthropic and upstream API keys, protected through Windows DPAPI. |
 | `providers.json` | OpenAI-compatible provider names and endpoints. |
 | `models.json` | Selectable model IDs, display names, providers, and tier tags. |
+| `proxy.db` | Request trace, token usage, quota snapshots, and bench runs. |
+| `corpus-<provider>.db` | Captured pre-trim request bodies, one file per provider, used by the offline bench and tuning tools. |
+
+One corpus file per provider rather than one shared table, because retention is
+a row count: a small Codex body and a large Claude Code body cost one row each,
+so a burst from one client used to evict the other's history one for one. Each
+file now expires on its own schedule, which means `corpus_max_rows` is a
+per-file cap and total rows on disk can reach that cap times the number of
+providers.
+
+Older databases keep their bodies in a `request_bodies` table inside
+`proxy.db`; the tools still read it, and `corpus_migrate` moves the rows out
+(run it with `--dry-run` first).
 
 Older `[llm_proxy]` TOML settings are migrated into these files on startup.
 

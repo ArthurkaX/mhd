@@ -207,21 +207,13 @@ pub fn run_tune(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Option<TuneResult>, String> {
     let t0 = std::time::Instant::now();
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-
-    // Gracefully handle a missing table.
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !exists {
+    // The corpus lives next to proxy.db: a per-provider file when it exists,
+    // else the legacy `request_bodies` table in proxy.db. Either way the
+    // returned connection exposes the table as plain `request_bodies`.
+    let dir = db_path.parent().unwrap_or(Path::new(""));
+    let Some(conn) = crate::corpus::open_read(dir, "anthropic") else {
         return Ok(None);
-    }
+    };
 
     let mut stmt = conn
         .prepare("SELECT run_id, body FROM request_bodies WHERE provider='anthropic' ORDER BY run_id, id")
@@ -386,44 +378,55 @@ pub fn run_bucket_tune(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Option<TuneResult>, String> {
     let t0 = std::time::Instant::now();
+    // `requests` stays in proxy.db; the bodies may now live in a per-provider
+    // file attached as the `corpus` schema (or fall back to the legacy table in
+    // this same database). `None` means no corpus rows for this provider — the
+    // same graceful empty as a missing table.
+    let provider = match bucket {
+        Bucket::Native | Bucket::CcGateway => "anthropic",
+        Bucket::OtherOpenai => "openai",
+    };
+    let dir = db_path.parent().unwrap_or(Path::new(""));
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-
-    // Gracefully handle a missing table.
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !exists {
+    let Some(schema) = crate::corpus::attach_read(&conn, dir, provider) else {
         return Ok(None);
-    }
+    };
 
+    // `schema` is one of the corpus module's own fixed literals (`"corpus"` or
+    // `"main"`), never caller input — formatting it in is safe. `requests`
+    // always stays in the connection's `main` database. The `provider` filter
+    // is deliberately kept even though the per-provider file already holds a
+    // single provider: it is a correct no-op there and strictly required on
+    // the legacy fallback, so one query text works in both worlds.
     let query = match bucket {
         Bucket::Native => {
-            "SELECT rb.run_id, rb.body FROM request_bodies rb \
-             JOIN requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
-             WHERE rb.provider='anthropic' AND r.target='native' \
-             ORDER BY rb.run_id, rb.id"
+            format!(
+                "SELECT rb.run_id, rb.body FROM {schema}.request_bodies rb \
+                 JOIN main.requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
+                 WHERE rb.provider='anthropic' AND r.target='native' \
+                 ORDER BY rb.run_id, rb.id"
+            )
         }
         Bucket::CcGateway => {
-            "SELECT rb.run_id, rb.body FROM request_bodies rb \
-             JOIN requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
-             WHERE rb.provider='anthropic' AND r.target!='native' \
-             ORDER BY rb.run_id, rb.id"
+            format!(
+                "SELECT rb.run_id, rb.body FROM {schema}.request_bodies rb \
+                 JOIN main.requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
+                 WHERE rb.provider='anthropic' AND r.target!='native' \
+                 ORDER BY rb.run_id, rb.id"
+            )
         }
         Bucket::OtherOpenai => {
-            "SELECT rb.run_id, rb.body FROM request_bodies rb \
-             JOIN requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
-             WHERE rb.provider='openai' \
-             ORDER BY rb.run_id, rb.id"
+            format!(
+                "SELECT rb.run_id, rb.body FROM {schema}.request_bodies rb \
+                 JOIN main.requests r ON r.run_id=rb.run_id AND r.seq=rb.seq \
+                 WHERE rb.provider='openai' \
+                 ORDER BY rb.run_id, rb.id"
+            )
         }
     };
 
-    let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
         .map_err(|e| e.to_string())?;
@@ -565,6 +568,8 @@ pub fn run_bucket_tune(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::corpus::{insert_body, open_write};
+    use tempfile::TempDir;
 
     /// Helper: build a SweepPoint quickly.
     fn sp(desc_chars: usize, avg_trim_pct: f64, fail_open_ok: bool) -> SweepPoint {
@@ -757,6 +762,137 @@ mod tests {
         assert_eq!(
             classify_verdict(&points, 0, 80, 0.0, 0.0),
             TuneVerdict::NotWorth
+        );
+    }
+
+    // ── corpus JOIN parity ──────────────────────────────────────────────────
+
+    /// The `requests` metadata rows (with the live schema's `target` column)
+    /// that `run_bucket_tune`'s JOIN filters on.
+    fn seed_requests(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE requests (
+                 run_id INTEGER NOT NULL,
+                 seq    INTEGER NOT NULL,
+                 target TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_requests_run_seq ON requests(run_id, seq);",
+        )
+        .expect("requests schema");
+        for (run_id, seq) in [(1i64, 1i64), (1, 2), (2, 1)] {
+            conn.execute(
+                "INSERT INTO requests (run_id, seq, target) VALUES (?1, ?2, 'native')",
+                rusqlite::params![run_id, seq],
+            )
+            .expect("insert request");
+        }
+    }
+
+    /// Insert three bodies (two runs; `run_id`-grouped so the sweep's session
+    /// grouping sees identical order on both sides). `request_bodies` must
+    /// already exist on `conn` — created either by the legacy hand-rolled table
+    /// or by `corpus::open_write`.
+    fn seed_bodies(conn: &Connection) {
+        for (run_id, seq) in [(1u64, 1u64), (1, 2), (2, 1)] {
+            let body = format!(
+                r#"{{"model":"claude-sonnet-4-6","messages":[{{"role":"user","content":[{{
+                     "type":"tool_result","tool_use_id":"tu_{run_id}_{seq}",
+                     "content":"{}"}}]}}]}}"#,
+                "A".repeat(9000)
+            );
+            insert_body(
+                conn,
+                run_id,
+                seq,
+                "2026-08-01T00:00:00Z",
+                None,
+                "anthropic",
+                &body,
+                0,
+            );
+        }
+    }
+
+    /// Run `run_bucket_tune` and reduce the result to the numbers that prove
+    /// the JOIN fed identical rows: the body count plus every sweep point's
+    /// values. Same computation on both sides => bit-identical floats.
+    fn tune_summary(db_path: &Path) -> Result<(usize, Vec<(usize, usize, bool, f64)>), String> {
+        let res = run_bucket_tune(
+            db_path,
+            &NativeKnobs::default(),
+            &[4000],
+            0,
+            0,
+            Bucket::Native,
+            SweepKnob::DescChars,
+            |_, _| {},
+        )?
+        .expect("corpus must not be empty");
+        let points = res
+            .points
+            .iter()
+            .map(|p| (p.desc_chars, p.n_trimmed, p.fail_open_ok, p.avg_trim_pct))
+            .collect();
+        Ok((res.n_bodies, points))
+    }
+
+    /// The whole split exists so the `request_bodies` JOIN can read the same
+    /// rows through an attached per-provider corpus file as it did when both
+    /// tables lived in one legacy database. This is the property that test
+    /// pins: identical rows in, identical tune numbers out.
+    #[test]
+    fn bucket_tune_join_parity_legacy_vs_split() {
+        let tmp = TempDir::new().expect("tempdir");
+
+        // Legacy arrangement: both tables in one proxy.db — `attach_read` falls
+        // back to `main.request_bodies` because no per-provider file exists.
+        let legacy_dir = tmp.path().join("legacy");
+        std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
+        let legacy_db = legacy_dir.join("proxy.db");
+        {
+            let conn = Connection::open(&legacy_db).expect("legacy open");
+            conn.execute_batch(
+                "CREATE TABLE request_bodies (
+                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                     run_id    INTEGER NOT NULL,
+                     seq       INTEGER NOT NULL,
+                     ts        TEXT    NOT NULL,
+                     model     TEXT,
+                     provider  TEXT,
+                     body      BLOB    NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_request_bodies_run_seq
+                     ON request_bodies(run_id, seq);",
+            )
+            .expect("legacy request_bodies schema");
+            seed_bodies(&conn);
+            seed_requests(&conn);
+        }
+
+        // Split arrangement: requests in proxy.db, bodies in corpus-anthropic.db
+        // — `attach_read` attaches the per-provider file as the `corpus` schema.
+        let split_dir = tmp.path().join("split");
+        std::fs::create_dir_all(&split_dir).expect("split dir");
+        let split_db = split_dir.join("proxy.db");
+        {
+            let conn = Connection::open(&split_db).expect("split main open");
+            seed_requests(&conn);
+        }
+        {
+            let per = open_write(&split_dir, "anthropic").expect("split corpus open");
+            seed_bodies(&per);
+        }
+
+        let legacy = tune_summary(&legacy_db).expect("legacy tune must run");
+        let split = tune_summary(&split_db).expect("split tune must run");
+        assert_eq!(
+            legacy, split,
+            "the JOIN must feed identical rows through the attached corpus file \
+             and through the legacy single-database table"
+        );
+        assert_eq!(
+            legacy.0, 3,
+            "both arrangements must surface all three bodies"
         );
     }
 }

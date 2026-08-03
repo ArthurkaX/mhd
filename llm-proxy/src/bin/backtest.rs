@@ -4,10 +4,15 @@
 //!   backtest [--db <path>] [--desc-chars <comma-list>] [--engine <native>]
 //!            [--provider <anthropic|openai>]
 //!
-//! Reads all rows from `request_bodies` in proxy.db, sweeps the
+//! Reads all rows from `request_bodies` for the selected provider, sweeps the
 //! `tool_max_desc_chars` lever across the specified values, and prints a table
 //! showing savings at each setting so the autotune curve is visible without
 //! calling the real LLM.
+//!
+//! --db names the proxy database file; the corpus is the per-provider file
+//! `corpus-<provider>.db` sitting next to it in the same directory, falling
+//! back to the legacy shared `request_bodies` table inside proxy.db for
+//! pre-migration databases.
 //!
 //! The corpus is populated when `corpus_capture = true` in llm-proxy settings.
 //! --provider selects which corpus rows to measure (default: anthropic).
@@ -17,9 +22,9 @@
 use llm_proxy::config::config_dir;
 use llm_proxy::db_log::decompress_body;
 use llm_proxy::native_trim::{NativeKnobs, trim_native_openai};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ── pricing ───────────────────────────────────────────────────────────────────
 
@@ -127,20 +132,9 @@ fn apply_engine(
 // ── corpus reader ─────────────────────────────────────────────────────────────
 
 fn read_corpus(conn: &Connection) -> Vec<BodyRow> {
-    // Gracefully handle a missing table (corpus not yet populated).
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-
-    if !table_exists {
-        return Vec::new();
-    }
-
+    // The caller already holds a connection that is guaranteed to have rows
+    // (`corpus::open_read` returned `Some`), so no table-existence probe is
+    // needed here.
     let mut stmt =
         match conn.prepare("SELECT model, provider, body FROM request_bodies ORDER BY id") {
             Ok(s) => s,
@@ -376,17 +370,17 @@ fn main() {
 
     eprintln!("DB: {}", db_path.display());
 
-    // Open read-only — never write to the corpus.
-    let conn = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Cannot open DB at {}: {e}", db_path.display());
-            eprintln!();
-            eprintln!("If the file does not exist yet, set corpus_capture = true in");
-            eprintln!("llm-proxy settings, restart the daemon, generate some Claude Code");
-            eprintln!("traffic, then re-run.");
-            std::process::exit(1);
-        }
+    // Open the corpus read-only — never write to it. `None` means no rows for
+    // the selected provider in either the per-provider file next to proxy.db
+    // or the legacy shared table, which is the empty-corpus state.
+    let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(conn) = llm_proxy::corpus::open_read(&dir, &provider) else {
+        println!();
+        println!("Corpus is empty — no rows in request_bodies.");
+        println!();
+        println!("Set corpus_capture = true in llm-proxy settings, restart the daemon,");
+        println!("generate some Claude Code traffic, then re-run.");
+        return;
     };
 
     let rows = read_corpus(&conn);

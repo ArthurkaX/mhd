@@ -41,7 +41,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use crate::cache_bench::{Chain, load_chains};
@@ -1193,22 +1192,15 @@ fn analyze_body(body: &Value, knobs: &NativeKnobs) -> Vec<(ContentClass, usize, 
 /// Read-only. Returns `Ok(None)` when the corpus has no usable anthropic rows,
 /// mirroring `cache_bench::run_cache_bench`.
 pub fn run_content_mix(db_path: &Path) -> Result<Option<ContentMixReport>, String> {
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !exists {
+    // The corpus lives next to proxy.db: a per-provider file when it exists,
+    // else the legacy `request_bodies` table in proxy.db. Either way the
+    // returned connection exposes the table as plain `request_bodies`.
+    let dir = db_path.parent().unwrap_or(Path::new(""));
+    let Some(conn) = crate::corpus::open_read(dir, "anthropic") else {
         return Ok(None);
-    }
+    };
 
-    let chains: Vec<Chain> = load_chains(&conn)?;
+    let chains: Vec<Chain> = load_chains(&conn, "main")?;
     if chains.is_empty() {
         return Ok(None);
     }

@@ -6,7 +6,6 @@
 
 use crate::db_log::decompress_body;
 use crate::native_trim::{NativeKnobs, trim_native};
-use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::path::Path;
 
@@ -47,21 +46,16 @@ pub fn run_anthropic_bench(
     knobs: &NativeKnobs,
 ) -> Result<Option<BenchResult>, String> {
     let t0 = std::time::Instant::now();
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-
-    // Gracefully handle a missing table.
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !exists {
-        return Ok(None);
-    }
+    // The corpus lives next to proxy.db: either the per-provider file
+    // `corpus-anthropic.db` or, before the split, the legacy `request_bodies`
+    // table inside proxy.db itself. `open_read` picks whichever one holds rows
+    // and returns `None` when neither does — the same "no anthropic corpus"
+    // state the sqlite_master probe used to detect, and `Ok(None)` here.
+    let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let conn = match crate::corpus::open_read(dir, "anthropic") {
+        Some(c) => c,
+        None => return Ok(None),
+    };
 
     let mut stmt = conn
         .prepare("SELECT body FROM request_bodies WHERE provider='anthropic' ORDER BY id")
@@ -170,6 +164,60 @@ mod tests {
         assert!(
             after < before,
             "trim should reduce tokens for oversized desc"
+        );
+    }
+
+    #[test]
+    fn test_bench_reads_legacy_proxy_db_fallback() {
+        // End-to-end upgrade path: a proxy.db whose `request_bodies` table is
+        // still the single shared corpus (no per-provider file exists) must
+        // drive the bench exactly as before the storage split. Rows go in
+        // through `corpus::insert_body` so the test exercises the real
+        // compress+store path, not a hand-rolled table.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let dir = tmp.path();
+        let conn = rusqlite::Connection::open(dir.join("proxy.db")).expect("legacy open");
+        conn.execute_batch(
+            "CREATE TABLE request_bodies (
+                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                 run_id    INTEGER NOT NULL,
+                 seq       INTEGER NOT NULL,
+                 ts        TEXT    NOT NULL,
+                 model     TEXT,
+                 provider  TEXT,
+                 body      BLOB    NOT NULL
+             );",
+        )
+        .expect("legacy schema");
+        for (run_id, seq) in [(1, 1), (1, 2)] {
+            let body = format!(
+                r#"{{"run_id":{run_id},"seq":{seq},"messages":[{{"role":"user","content":"hello"}}]}}"#
+            );
+            crate::corpus::insert_body(
+                &conn,
+                run_id,
+                seq,
+                "2026-08-01T00:00:00Z",
+                None,
+                "anthropic",
+                &body,
+                0,
+            );
+        }
+        drop(conn);
+        assert!(
+            !dir.join("corpus-anthropic.db").exists(),
+            "no per-provider file — this test proves the legacy fallback"
+        );
+
+        let knobs = NativeKnobs::default();
+        let result = run_anthropic_bench(&dir.join("proxy.db"), &knobs)
+            .expect("bench must run against the legacy table")
+            .expect("legacy rows must not read as an empty corpus");
+        assert_eq!(result.n_bodies, 2, "both legacy rows measured");
+        assert!(
+            result.fail_open_ok,
+            "trim must never grow a body (fail-open invariant)"
         );
     }
 }

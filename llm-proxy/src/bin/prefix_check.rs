@@ -4,19 +4,25 @@
 //! Usage:
 //!   prefix_check [--db <path>] [--provider <anthropic|openai>]
 //!
-//! Reads all rows from `request_bodies`, groups by run_id ordered by seq,
-//! and for each consecutive pair (N, N+1) within the same run, compares how
-//! many leading `messages[]` turns are byte-identical both before and after
-//! native trimming.  Reports pairs where trim reduces the shared prefix —
-//! meaning trim may break implicit prefix-caching on the provider side.
+//! Reads all rows from `request_bodies` for the selected provider, groups by
+//! run_id ordered by seq, and for each consecutive pair (N, N+1) within the
+//! same run, compares how many leading `messages[]` turns are byte-identical
+//! both before and after native trimming.  Reports pairs where trim reduces
+//! the shared prefix — meaning trim may break implicit prefix-caching on the
+//! provider side.
+//!
+//! --db names the proxy database file; the corpus is the per-provider file
+//! `corpus-<provider>.db` sitting next to it in the same directory, falling
+//! back to the legacy shared `request_bodies` table inside proxy.db for
+//! pre-migration databases.
 
 use llm_proxy::config::config_dir;
 use llm_proxy::db_log::decompress_body;
 use llm_proxy::native_trim::{NativeKnobs, trim_native, trim_native_openai};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ── canonical JSON serialization (sorted keys) ───────────────────────────────
 
@@ -132,19 +138,8 @@ struct BodyRow {
 }
 
 fn read_corpus(conn: &Connection, provider: &str) -> Vec<BodyRow> {
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-
-    if !table_exists {
-        return Vec::new();
-    }
-
+    // The caller already holds a connection with rows (`open_read` returned
+    // `Some`), so the table always exists and no probe is needed.
     let mut stmt = match conn.prepare(
         "SELECT id, run_id, seq, body FROM request_bodies WHERE provider = ?1 ORDER BY run_id, seq",
     ) {
@@ -199,17 +194,18 @@ fn main() {
     eprintln!("DB: {}", db_path.display());
     eprintln!("Provider: {provider}");
 
-    // ── open DB read-only ─────────────────────────────────────────────────
-    let conn = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Cannot open DB at {}: {e}", db_path.display());
-            eprintln!();
-            eprintln!("If the file does not exist yet, set corpus_capture = true in");
-            eprintln!("llm-proxy settings, restart the daemon, generate some Claude Code");
-            eprintln!("traffic, then re-run.");
-            std::process::exit(1);
-        }
+    // ── open the corpus read-only ─────────────────────────────────────────
+    // The per-provider corpus file lives next to proxy.db; `None` means no
+    // rows for this provider in either that file or the legacy shared table,
+    // which is the empty-corpus state.
+    let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(conn) = llm_proxy::corpus::open_read(&dir, &provider) else {
+        println!();
+        println!("Corpus is empty — no rows in request_bodies for provider '{provider}'.");
+        println!();
+        println!("Set corpus_capture = true in llm-proxy settings, restart the daemon,");
+        println!("generate some {provider} traffic, then re-run.");
+        return;
     };
 
     let rows = read_corpus(&conn, &provider);

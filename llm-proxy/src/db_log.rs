@@ -57,8 +57,9 @@
 //! SELECT * FROM events WHERE event_type = 'HANG';
 //! ```
 
-use std::path::Path;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -206,14 +207,27 @@ pub fn read_latest_quota(db_path: &Path) -> Option<QuotaSnapshot> {
 /// Wraps a SQLite connection.
 pub struct DbLog {
     conn: Mutex<Connection>,
-    /// Maximum number of rows to keep in `request_bodies`. 0 = unlimited.
+    /// Maximum rows to keep per provider corpus file (0 = unlimited). The cap
+    /// is per-provider: each provider gets its own file with an independent
+    /// retention lifetime, so the worst case is `corpus_max_rows × number of
+    /// providers` rows on disk. That spread is the deliberate cost of never
+    /// letting one provider evict another; the knob is the user's to lower.
     pub corpus_max_rows: usize,
+    /// Directory holding `proxy.db` and the per-provider `corpus-<provider>.db`
+    /// files. Derived from the path [`open`](Self::open) was given.
+    corpus_dir: PathBuf,
+    /// One cached write connection per provider, opened lazily on first capture
+    /// so a fresh SQLite open never runs on the request hot path. Each provider
+    /// has its own `Mutex<Connection>`: writes for different providers never
+    /// contend, and the map lock is never held across a write — the compression
+    /// inside `corpus::insert_body` stays on the per-provider lock only.
+    corpus_conns: Mutex<HashMap<String, Arc<Mutex<Connection>>>>,
 }
 
 impl DbLog {
     /// Open (or create) the SQLite database at `db_path` and create the schema
-    /// if it doesn't exist. `corpus_max_rows` caps the `request_bodies` table
-    /// (0 = unlimited).
+    /// if it doesn't exist. `corpus_max_rows` caps each per-provider corpus file
+    /// (0 = unlimited); the files live in the same directory as `db_path`.
     pub fn open(db_path: &Path, corpus_max_rows: usize) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
         // NOTE: user_version is bumped at the END of this function, once the schema and
@@ -334,11 +348,11 @@ impl DbLog {
                 text TEXT NOT NULL
             );
 
-            -- request_bodies: corpus for offline backtest. `body` is a
-            -- zstd-compressed BLOB (decompress_body). Capped at
-            -- corpus_max_rows (default 5000), shared across anthropic+openai
-            -- providers -- heavy deepseek/openai traffic evicts old anthropic
-            -- bodies, so keep an eye on provider balance before backtesting.
+            -- request_bodies: LEGACY corpus table, written only by builds
+            -- before the per-provider split. corpus::open_read still falls
+            -- back to it until a migration tool moves the rows out; live
+            -- captures go to the per-provider corpus-<provider>.db files.
+            -- `body` is a zstd-compressed BLOB (decompress_body).
             CREATE TABLE IF NOT EXISTS request_bodies (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id    INTEGER NOT NULL,
@@ -499,9 +513,17 @@ impl DbLog {
         }
         // Only now, with the schema actually in place, record the version.
         conn.pragma_update(None, "user_version", 6)?;
+        // The per-provider corpus files live next to proxy.db; a path with no
+        // parent (a bare filename, a root) falls back to the working directory.
+        let corpus_dir = db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
         Ok(Self {
             conn: Mutex::new(conn),
             corpus_max_rows,
+            corpus_dir,
+            corpus_conns: Mutex::new(HashMap::new()),
         })
     }
 
@@ -730,10 +752,11 @@ impl DbLog {
         }
     }
 
-    /// Insert a captured pre-trim request body. Best-effort: errors are swallowed.
-    /// The body is zstd-compressed (level 9) before storage.
-    /// After a successful insert, prunes the oldest rows so at most
-    /// `corpus_max_rows` rows remain (0 = unlimited).
+    /// Insert a captured pre-trim request body into the per-provider corpus
+    /// file. Best-effort: errors are swallowed and the request proceeds — a
+    /// corpus failure never touches the main `DbLog` connection. The body is
+    /// zstd-compressed (level 9) and the file is pruned to `corpus_max_rows`
+    /// rows (0 = unlimited), per provider.
     pub fn insert_request_body(
         &self,
         run_id: u64,
@@ -743,23 +766,40 @@ impl DbLog {
         provider: &str,
         body: &str,
     ) {
-        let compressed = compress_body(body);
-        if compressed.is_empty() {
-            return; // compression produced nothing (only on encode error); skip row
-        }
-        if let Ok(conn) = self.conn.lock() {
-            let inserted = conn.execute(
-                "INSERT INTO request_bodies (run_id, seq, ts, model, provider, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![run_id as i64, seq as i64, ts, model, provider, compressed],
-            );
-            if inserted.is_ok() && self.corpus_max_rows > 0 {
-                let max = self.corpus_max_rows as i64;
-                let _ = conn.execute(
-                    "DELETE FROM request_bodies WHERE id NOT IN \
-                     (SELECT id FROM request_bodies ORDER BY id DESC LIMIT ?1)",
-                    rusqlite::params![max],
-                );
+        // Capture runs on the request hot path, so the per-provider write
+        // connection is opened lazily on first use and cached for the life of
+        // the log. The map lock covers only the get-or-insert of the
+        // per-provider handle and is released before the write itself:
+        // corpus::insert_body compresses the whole body (zstd level 9) while
+        // holding the provider connection lock, so doing that under the map
+        // lock would serialize every provider's compression behind one
+        // process-wide mutex. The per-provider lock therefore serializes
+        // writes for that provider only — a Connection is not safe to use
+        // concurrently — while different providers proceed entirely in
+        // parallel.
+        let conn_arc = {
+            let Ok(mut conns) = self.corpus_conns.lock() else {
+                return;
+            };
+            if !conns.contains_key(provider) {
+                let Ok(conn) = crate::corpus::open_write(&self.corpus_dir, provider) else {
+                    return; // best-effort: a corpus failure never blocks the request
+                };
+                conns.insert(provider.to_string(), Arc::new(Mutex::new(conn)));
             }
+            conns.get(provider).expect("inserted above").clone()
+        };
+        if let Ok(conn) = conn_arc.lock() {
+            crate::corpus::insert_body(
+                &conn,
+                run_id,
+                seq,
+                ts,
+                model,
+                provider,
+                body,
+                self.corpus_max_rows,
+            );
         }
     }
 
@@ -1077,22 +1117,23 @@ mod tests {
 
     // ── corpus_max_rows prune tests ───────────────────────────────────────────
 
-    /// Build a DbLog backed by a named temp file that SQLite can open.
-    /// rusqlite supports ":memory:" but we need a file path for `DbLog::open`.
-    fn open_temp_db(corpus_max_rows: usize) -> (DbLog, tempfile::TempPath) {
-        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        let path = tmp.into_temp_path();
-        let db = DbLog::open(path.as_ref(), corpus_max_rows).expect("open");
-        (db, path)
+    /// Build a DbLog backed by a temp directory: `proxy.db` plus the per-provider
+    /// `corpus-<provider>.db` files live next to it inside that directory.
+    fn open_temp_db(corpus_max_rows: usize) -> (DbLog, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let db = DbLog::open(&tmp.path().join("proxy.db"), corpus_max_rows).expect("open");
+        (db, tmp)
     }
 
-    fn insert_n_bodies(db: &DbLog, n: u64) {
+    fn insert_n_bodies(db: &DbLog, provider: &str, n: u64) {
         for i in 0..n {
             let body = format!(r#"{{"seq":{}}}"#, i);
-            db.insert_request_body(1, i, "2024-01-01T00:00:00Z", None, "test", &body);
+            db.insert_request_body(1, i, "2024-01-01T00:00:00Z", None, provider, &body);
         }
     }
 
+    /// Row count in the legacy `main.request_bodies` table — which captures must
+    /// now keep empty, since they go to the per-provider files instead.
     fn count_bodies(db: &DbLog) -> i64 {
         let guard = db.conn.lock().unwrap();
         guard
@@ -1100,28 +1141,165 @@ mod tests {
             .unwrap_or(0)
     }
 
-    fn min_id_bodies(db: &DbLog) -> i64 {
-        let guard = db.conn.lock().unwrap();
-        guard
-            .query_row("SELECT MIN(id) FROM request_bodies", [], |row| row.get(0))
-            .unwrap_or(0)
+    fn count_rows_in(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM request_bodies", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+    }
+
+    #[test]
+    fn corpus_inserts_go_to_per_provider_file_not_legacy_table() {
+        let (db, tmp) = open_temp_db(0);
+        insert_n_bodies(&db, "anthropic", 3);
+
+        // The legacy table in proxy.db must stay empty — capture no longer
+        // writes there; the table is a read-only fallback now.
+        assert_eq!(
+            count_bodies(&db),
+            0,
+            "legacy request_bodies must stay empty"
+        );
+
+        // The per-provider file holds every row, readable through the public
+        // reader with no special plumbing.
+        let read = crate::corpus::open_read(tmp.path(), "anthropic")
+            .expect("per-provider corpus readable");
+        assert_eq!(
+            count_rows_in(&read),
+            3,
+            "all rows landed in the per-provider file"
+        );
+        drop(db); // close the cached corpus connections before the dir is removed
+    }
+
+    #[test]
+    fn corpus_two_providers_share_nothing() {
+        let (db, tmp) = open_temp_db(4);
+        // The anthropic flood blows past its cap; codex stays well under its own.
+        insert_n_bodies(&db, "anthropic", 7);
+        insert_n_bodies(&db, "codex", 2);
+
+        // Two files, one per provider — the whole point of the split.
+        assert!(tmp.path().join("corpus-anthropic.db").exists());
+        assert!(tmp.path().join("corpus-codex.db").exists());
+
+        // Each cap applies to its own file: neither provider can evict the other.
+        let anthropic =
+            crate::corpus::open_read(tmp.path(), "anthropic").expect("anthropic corpus");
+        assert_eq!(
+            count_rows_in(&anthropic),
+            4,
+            "anthropic pruned to its own cap"
+        );
+        let codex = crate::corpus::open_read(tmp.path(), "codex").expect("codex corpus");
+        assert_eq!(
+            count_rows_in(&codex),
+            2,
+            "codex untouched by anthropic writes"
+        );
+        drop(db);
+    }
+
+    /// Interleaved writes to two providers through one DbLog must each land in
+    /// their own file, in their own order, with no cross-contamination. This
+    /// exercises the per-provider connection cache: both handles live in the
+    /// same map, each opened once on first use and reused for every later
+    /// write. Lock granularity itself (the map lock being released before the
+    /// write) is not asserted here — that would take a timing-based probe, and
+    /// a flaky test is worse than no test; the correctness of the split is
+    /// what this verifies.
+    #[test]
+    fn corpus_two_providers_interleaved_land_in_own_files() {
+        let (db, tmp) = open_temp_db(0);
+        for i in 0..3u64 {
+            let body = format!(r#"{{"seq":{},"provider":"anthropic"}}"#, i);
+            db.insert_request_body(1, i, "2026-08-01T00:00:00Z", None, "anthropic", &body);
+            let body = format!(r#"{{"seq":{},"provider":"codex"}}"#, i);
+            db.insert_request_body(1, i, "2026-08-01T00:00:00Z", None, "codex", &body);
+        }
+
+        let anthropic =
+            crate::corpus::open_read(tmp.path(), "anthropic").expect("anthropic corpus");
+        assert_eq!(count_rows_in(&anthropic), 3, "all anthropic rows landed");
+        let codex = crate::corpus::open_read(tmp.path(), "codex").expect("codex corpus");
+        assert_eq!(count_rows_in(&codex), 3, "all codex rows landed");
+
+        // Neither provider leaks into the other's file.
+        let anthropic_provider: String = anthropic
+            .query_row("SELECT provider FROM request_bodies LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .expect("anthropic provider");
+        assert_eq!(anthropic_provider, "anthropic");
+        let codex_provider: String = codex
+            .query_row("SELECT provider FROM request_bodies LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .expect("codex provider");
+        assert_eq!(codex_provider, "codex");
+
+        // Lazy-open cached exactly one connection per provider.
+        {
+            let conns = db.corpus_conns.lock().expect("map lock");
+            assert_eq!(conns.len(), 2, "one cached connection per provider");
+            assert!(conns.contains_key("anthropic"));
+            assert!(conns.contains_key("codex"));
+        }
+        drop(db);
+    }
+
+    #[test]
+    fn corpus_rows_written_by_dblog_are_readable_through_open_read() {
+        let (db, tmp) = open_temp_db(0);
+        let body = r#"{"model":"claude-opus-4-5","messages":[{"role":"user","content":"Hello"}]}"#;
+        db.insert_request_body(
+            7,
+            3,
+            "2026-08-01T00:00:00Z",
+            Some("claude-opus-4-5"),
+            "anthropic",
+            body,
+        );
+
+        let read = crate::corpus::open_read(tmp.path(), "anthropic").expect("readable");
+        let stored: Vec<u8> = read
+            .query_row(
+                "SELECT body FROM request_bodies WHERE run_id = 7 AND seq = 3",
+                [],
+                |r| r.get(0),
+            )
+            .expect("row");
+        assert_eq!(
+            crate::db_log::decompress_body(&stored).as_deref(),
+            Some(body),
+            "zstd round-trip must be lossless"
+        );
+        drop(db);
     }
 
     #[test]
     fn corpus_prune_keeps_newest_n_rows() {
-        let (db, _tmp) = open_temp_db(10);
-        // Insert 12; only the newest 10 should survive.
-        insert_n_bodies(&db, 12);
-        assert_eq!(count_bodies(&db), 10, "expected 10 rows after pruning");
+        let (db, tmp) = open_temp_db(10);
+        // Insert 12; only the newest 10 should survive in the per-provider file.
+        insert_n_bodies(&db, "anthropic", 12);
+        let read = crate::corpus::open_read(tmp.path(), "anthropic").expect("corpus");
+        assert_eq!(count_rows_in(&read), 10, "expected 10 rows after pruning");
         // The oldest 2 (id=1, id=2) should be gone; MIN(id) must be 3.
-        assert_eq!(min_id_bodies(&db), 3, "expected ids 3..12 to remain");
+        let min_id: i64 = read
+            .query_row("SELECT MIN(id) FROM request_bodies", [], |row| row.get(0))
+            .unwrap_or(0);
+        assert_eq!(min_id, 3, "expected ids 3..12 to remain");
+        drop(db);
     }
 
     #[test]
     fn corpus_unlimited_keeps_all_rows() {
-        let (db, _tmp) = open_temp_db(0); // 0 = unlimited
-        insert_n_bodies(&db, 5);
-        assert_eq!(count_bodies(&db), 5, "expected all 5 rows to remain");
+        let (db, tmp) = open_temp_db(0); // 0 = unlimited
+        insert_n_bodies(&db, "anthropic", 5);
+        let read = crate::corpus::open_read(tmp.path(), "anthropic").expect("corpus");
+        assert_eq!(count_rows_in(&read), 5, "expected all 5 rows to remain");
+        drop(db);
     }
 
     // ── NULL-vs-0 cache semantics + route_cache verdict ──────────────────────
@@ -1278,7 +1456,7 @@ mod tests {
 
         // Reopening backfills the NULL row as claude_code and leaves the
         // explicit row alone.
-        let db = DbLog::open(tmp.as_ref(), 0).expect("reopen");
+        let db = DbLog::open(&tmp.path().join("proxy.db"), 0).expect("reopen");
         let conn = db.conn.lock().expect("lock");
         let (c1, c2): (Option<String>, Option<String>) = conn
             .query_row(

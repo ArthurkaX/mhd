@@ -591,23 +591,15 @@ pub fn run_cache_bench(
     db_path: &Path,
     knobs: &NativeKnobs,
 ) -> Result<Option<CacheBenchResult>, String> {
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-
-    // Gracefully handle a missing table.
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_bodies'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !exists {
+    // The corpus lives next to proxy.db: a per-provider file when it exists,
+    // else the legacy `request_bodies` table in proxy.db. Either way the
+    // returned connection exposes the table as plain `request_bodies`.
+    let dir = db_path.parent().unwrap_or(Path::new(""));
+    let Some(conn) = crate::corpus::open_read(dir, "anthropic") else {
         return Ok(None);
-    }
+    };
 
-    let chains = load_chains(&conn)?;
+    let chains = load_chains(&conn, "main")?;
     if chains.is_empty() {
         return Ok(None);
     }
@@ -631,12 +623,17 @@ pub fn run_cache_bench(
 /// `run_id` identifies the daemon *process* run, inside which unrelated client
 /// sessions interleave. Grouping by `run_id` alone would let two strangers'
 /// identical `system`/`tools` count as a cache hit.
-pub(crate) fn load_chains(conn: &Connection) -> Result<Vec<Chain>, String> {
+pub(crate) fn load_chains(conn: &Connection, schema: &str) -> Result<Vec<Chain>, String> {
+    // `schema` is always one of the corpus module's own fixed literals —
+    // `"main"` when the connection came from `corpus::open_read`, or
+    // `"corpus"`/`"main"` when it came from `corpus::attach_read` — never
+    // caller input, so formatting it into the SQL is safe. Do not "fix" this
+    // into a parameterized query: the qualifier is not a value.
     let mut stmt = conn
-        .prepare(
-            "SELECT run_id, seq, ts, body FROM request_bodies \
+        .prepare(&format!(
+            "SELECT run_id, seq, ts, body FROM {schema}.request_bodies \
              WHERE provider='anthropic' ORDER BY run_id, seq",
-        )
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -821,10 +818,18 @@ pub fn run_calibration(
     db_path: &Path,
     knobs: &NativeKnobs,
 ) -> Result<Option<CalibrationReport>, String> {
+    let dir = db_path.parent().unwrap_or(Path::new(""));
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open {}: {e}", db_path.display()))?;
 
-    let chains = load_chains(&conn)?;
+    // `requests` stays in proxy.db; the bodies may now live in a per-provider
+    // file attached as the `corpus` schema (or fall back to the legacy table
+    // in this same database). `None` means no corpus rows for this provider.
+    let Some(schema) = crate::corpus::attach_read(&conn, dir, "anthropic") else {
+        return Ok(None);
+    };
+
+    let chains = load_chains(&conn, schema)?;
     if chains.is_empty() {
         return Ok(None);
     }
@@ -834,7 +839,7 @@ pub fn run_calibration(
         .prepare(
             "SELECT run_id, seq, trim_applied, trim_config, input_tokens, \
              cache_read_tokens, cache_creation_tokens, prefix_shared_chars_sent \
-             FROM requests",
+             FROM main.requests",
         )
         .map_err(|e| e.to_string())?;
     let live_rows = stmt
