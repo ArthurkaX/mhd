@@ -445,6 +445,13 @@ pub struct AppState {
     /// single poll.
     pub last_quota_poll: RwLock<Option<(crate::db_log::QuotaSnapshot, std::time::Instant)>>,
 
+    /// Wakes the OAuth quota poller early when a UI surface needs a current
+    /// reading (tray tooltip hover). Why a Notify rather than spawning a fetch:
+    /// `ProxyControl` holds no runtime handle, and routing the request through
+    /// the existing poll loop reuses its token read, 401-suspension and 429
+    /// backoff instead of duplicating them.
+    pub quota_refresh: tokio::sync::Notify,
+
     /// Master switch for the OAuth quota poller. Default false — the daemon
     /// pushes the real value on proxy start (which may arrive after the watcher
     /// has already started), so staying off until explicitly enabled is the
@@ -555,6 +562,7 @@ impl AppState {
             quota_poll_enabled: RwLock::new(false),
             last_quota: RwLock::new(None),
             last_quota_poll: RwLock::new(None),
+            quota_refresh: tokio::sync::Notify::new(),
             run_id,
         })
     }
@@ -1045,6 +1053,44 @@ impl AppState {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|(snap, _)| snap.clone())
+    }
+
+    /// Ask the quota poller to fetch a fresh reading as soon as it can. Returns
+    /// immediately; the poller applies its own minimum interval, so calling this
+    /// on every tooltip hover is safe.
+    pub fn request_quota_refresh(&self) {
+        self.quota_refresh.notify_one();
+    }
+
+    /// Freshest quota reading from either recording path, with its age.
+    ///
+    /// Why not `get_quota`: that one reads only the header slot, which is written
+    /// by proxied traffic and never expires, so it can outrank a much newer OAuth
+    /// poll sitting in `last_quota_poll`. Callers that display a number to the
+    /// user want whichever slot was written last.
+    pub fn get_quota_fresh(&self) -> Option<(crate::db_log::QuotaSnapshot, std::time::Duration)> {
+        let header = self
+            .last_quota
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let poll = self
+            .last_quota_poll
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match (header, poll) {
+            (Some(h), Some(p)) => {
+                if h.1 >= p.1 {
+                    Some((h.0, h.1.elapsed()))
+                } else {
+                    Some((p.0, p.1.elapsed()))
+                }
+            }
+            (Some(h), None) => Some((h.0, h.1.elapsed())),
+            (None, Some(p)) => Some((p.0, p.1.elapsed())),
+            (None, None) => None,
+        }
     }
 
     /// Allocate the next request id.

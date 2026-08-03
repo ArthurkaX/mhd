@@ -1,8 +1,9 @@
 //! Background poller for Anthropic OAuth usage endpoint.
 //!
 //! Reads the OAuth access token from the Claude Code credentials file,
-//! then polls `https://api.anthropic.com/api/oauth/usage` every 5 minutes,
-//! storing the result in the `quota` table of proxy.db.
+//! then polls `https://api.anthropic.com/api/oauth/usage` every 10 minutes
+//! (and early on demand from a tray hover), storing the result in the `quota`
+//! table of proxy.db.
 //!
 //! Only active when the credentials file exists and carries a token (Pro/Max
 //! subscription billing). API-key users are untouched — the poller skips
@@ -14,6 +15,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use serde::Deserialize;
 
@@ -335,15 +337,41 @@ async fn poll_once(state: &Arc<AppState>, token: &str) -> Result<Option<u64>, Po
 
 // ── Background poller task ───────────────────────────────────────────────
 
+/// Background cadence for the OAuth usage poll. Upstream quantises utilisation
+/// to whole percentage points, so ~90% of 5-minute samples reported no change;
+/// a 10-minute background cadence loses no resolution, and hover-triggered
+/// refreshes cover the moment the user actually looks.
+const POLL_INTERVAL_SECS: u64 = 600;
+
+/// Floor between two on-demand (hover-triggered) polls, so a hover storm
+/// cannot turn into a request storm.
+const MIN_ON_DEMAND_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether a wakeup should actually hit the network.
+///
+/// Scheduled ticks always poll. On-demand wakeups are throttled to
+/// `MIN_ON_DEMAND_INTERVAL` since the last successful attempt.
+fn should_poll(on_demand: bool, last_poll_at: Option<Instant>, now: Instant) -> bool {
+    if !on_demand {
+        return true;
+    }
+    match last_poll_at {
+        None => true,
+        Some(last) => now.duration_since(last) >= MIN_ON_DEMAND_INTERVAL,
+    }
+}
+
 /// Background poller — spawned by [`crate::start_embedded_with`] as a tokio
-/// task. Fetches the OAuth usage endpoint on a 300s cadence and writes quota
-/// snapshots to proxy.db.
+/// task. Fetches the OAuth usage endpoint on a 10-minute cadence and writes
+/// quota snapshots to proxy.db. The poller also wakes early on demand (a tray
+/// hover calls [`AppState::request_quota_refresh`]) so the value the user sees
+/// is current.
 ///
 /// Resilience:
 /// - 10s initial sleep so the daemon finishes starting.
 /// - Errors are logged on first occurrence only (suppressed repeats to avoid
 ///   endless warning spam when a persistent condition like a revoked token
-///   produces the same error every 5 minutes).
+///   produces the same error every 10 minutes).
 /// - HTTP 429 with a `Retry-After` header sleeps that long before resuming
 ///   the normal cadence.
 /// - Missing or empty credentials skip the poll quietly (API-key billing).
@@ -352,8 +380,11 @@ pub(crate) async fn poll_loop(state: Arc<AppState>) {
     // Let the daemon finish starting up before the first poll.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let mut interval = tokio::time::interval(Duration::from_secs(300));
+    let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // When the last actual poll happened, for throttling on-demand wakeups.
+    let mut last_poll_at: Option<std::time::Instant> = None;
 
     // Track the last error message to suppress repeated identical warnings.
     let mut last_err: Option<String> = None;
@@ -361,17 +392,23 @@ pub(crate) async fn poll_loop(state: Arc<AppState>) {
     // until restart. Only 401/403 set this; it is cleared on re-enable so the
     // user can cycle the Quota Watcher toggle to retry with fresh credentials.
     let mut auth_failed: bool = false;
-    // Track the gate state so we only log on transitions (not every 300s tick).
+    // Track the gate state so we only log on transitions (not every tick).
     let mut last_enabled: Option<bool> = None;
 
     loop {
-        interval.tick().await;
+        // Why select over the tick and the Notify: a scheduled tick always
+        // polls, while a hover-triggered wakeup is only a *hint* that is
+        // throttled below so a hover storm cannot hammer the endpoint.
+        let on_demand = tokio::select! {
+            _ = interval.tick() => false,
+            _ = state.quota_refresh.notified() => true,
+        };
 
         // Read the gate flag — the daemon drives this from the Quota Watcher.
         let enabled = state.is_quota_poll_enabled();
 
         // Why: log only on transitions so a disabled poller doesn't produce
-        // one log line every 5 minutes forever.
+        // one log line every 10 minutes forever.
         match (last_enabled, enabled) {
             (Some(false), true) => {
                 tracing::info!("mhd: quota poller enabled");
@@ -395,6 +432,11 @@ pub(crate) async fn poll_loop(state: Arc<AppState>) {
             continue;
         }
 
+        // Throttle on-demand wakeups; scheduled ticks always poll.
+        if !should_poll(on_demand, last_poll_at, std::time::Instant::now()) {
+            continue;
+        }
+
         // Read the token fresh each time so credential changes are picked up.
         // Also clear stale error tracking: the auth state changed.
         let token = match read_oauth_token() {
@@ -405,6 +447,9 @@ pub(crate) async fn poll_loop(state: Arc<AppState>) {
             }
         };
 
+        // Why: record the attempt here (before the await) so an in-flight poll
+        // anchors the throttle; a hover during the poll is coalesced away.
+        last_poll_at = Some(std::time::Instant::now());
         match poll_once(&state, &token).await {
             Ok(Some(retry_after)) => {
                 // Server asked us to back off (429 with Retry-After).
@@ -610,5 +655,39 @@ mod tests {
     fn test_poll_once_error_other_variant() {
         let e = PollOnceError::Other("test".into());
         assert!(matches!(&e, PollOnceError::Other(_)));
+    }
+
+    // ── should_poll ─────────────────────────────────────────────────────
+
+    /// A scheduled tick always polls, even immediately after a previous poll.
+    #[test]
+    fn test_should_poll_scheduled_always_polls() {
+        let now = Instant::now();
+        let last = now.checked_sub(Duration::from_secs(1)).unwrap();
+        assert!(should_poll(false, Some(last), now));
+        assert!(should_poll(false, None, now));
+    }
+
+    /// An on-demand wakeup with no prior poll always polls.
+    #[test]
+    fn test_should_poll_on_demand_no_prior_polls() {
+        let now = Instant::now();
+        assert!(should_poll(true, None, now));
+    }
+
+    /// An on-demand wakeup 10s after a poll is throttled.
+    #[test]
+    fn test_should_poll_on_demand_10s_throttled() {
+        let now = Instant::now();
+        let last = now.checked_sub(Duration::from_secs(10)).unwrap();
+        assert!(!should_poll(true, Some(last), now));
+    }
+
+    /// An on-demand wakeup 90s after a poll is allowed.
+    #[test]
+    fn test_should_poll_on_demand_90s_allowed() {
+        let now = Instant::now();
+        let last = now.checked_sub(Duration::from_secs(90)).unwrap();
+        assert!(should_poll(true, Some(last), now));
     }
 }

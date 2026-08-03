@@ -460,6 +460,16 @@ impl ProxyControl {
         self.state.get_quota()
     }
 
+    /// Freshest Anthropic quota reading with its age, from either recording path.
+    pub fn quota_fresh(&self) -> Option<(crate::db_log::QuotaSnapshot, std::time::Duration)> {
+        self.state.get_quota_fresh()
+    }
+
+    /// Ask the quota poller for a fresh reading (throttled by the poller itself).
+    pub fn request_quota_refresh(&self) {
+        self.state.request_quota_refresh();
+    }
+
     /// Record a vision screenshot request in the live trace buffer.
     pub fn push_vision_trace(&self, entry: VisionTraceEntry) {
         self.state.push_vision_trace(entry);

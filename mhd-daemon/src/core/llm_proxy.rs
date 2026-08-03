@@ -231,6 +231,23 @@ pub fn get_quota() -> Option<QuotaSnapshot> {
     CONTROL.lock().unwrap().as_ref().and_then(|c| c.quota())
 }
 
+/// Freshest Anthropic quota reading with its age, from either recording path.
+pub fn get_quota_fresh() -> Option<(QuotaSnapshot, std::time::Duration)> {
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|c| c.quota_fresh())
+}
+
+/// Ask the quota poller for a fresh reading (throttled by the poller itself).
+/// No-op when the proxy is not running.
+pub fn request_quota_refresh() {
+    if let Some(c) = CONTROL.lock().unwrap().as_ref() {
+        c.request_quota_refresh();
+    }
+}
+
 /// Run the Anthropic trim A/B bench with the currently-live native knobs.
 /// Returns Ok(None) when the corpus has no anthropic rows. Blocking (caller
 /// should run it off the UI thread).
