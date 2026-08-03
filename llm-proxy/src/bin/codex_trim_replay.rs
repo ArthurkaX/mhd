@@ -40,12 +40,22 @@ fn main() {
     let mut log_classified = 0usize;
     let mut log_repeat_applied = 0usize;
     let mut diagnostic_head_tail_applied = 0usize;
+    // Protection-reason histogram over every inspected block: reason → (blocks, chars).
+    let mut protection_hist =
+        std::collections::BTreeMap::<&'static str, (usize, usize)>::new();
+    // Chars saved split by lever.
+    let mut lever_savings = std::collections::BTreeMap::<&'static str, usize>::new();
+    // Corpus-wide raw bytes (all bodies, not just shrunk ones) for the headline %.
+    let mut corpus_before = 0usize;
+    let mut corpus_after = 0usize;
 
     for row in rows {
         total += 1;
         let compressed = row.expect("read body");
         let json = decompress_body(&compressed).expect("decompress body");
         let body: Value = serde_json::from_str(&json).expect("parse JSON body");
+        let body_bytes = serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0);
+        corpus_before += body_bytes;
         let outcome = codex_trim::trim_responses(body.clone());
         *reasons.entry(outcome.reason).or_default() += 1;
         for class in &outcome.classes {
@@ -54,6 +64,16 @@ fn main() {
                 log_classified += 1;
             }
         }
+        for (reason, chars) in &outcome.protection_reasons {
+            let entry = protection_hist.entry(reason).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += chars;
+        }
+        for (lever, chars) in &outcome.saved_by_lever {
+            *lever_savings.entry(*lever).or_default() += chars;
+        }
+        let after_bytes = serde_json::to_vec(&outcome.body).map(|v| v.len()).unwrap_or(0);
+        corpus_after += after_bytes;
         if outcome.applied {
             let quality = codex_trim::quality_check(&body, &outcome.body);
             if !quality.relationships_preserved {
@@ -103,4 +123,15 @@ fn main() {
         );
     }
     println!("stages: {stages:?}");
+    println!("protection reasons (blocks, chars): {protection_hist:?}");
+    println!("chars saved by lever: {lever_savings:?}");
+    if corpus_before > 0 {
+        let corpus_saved = corpus_before.saturating_sub(corpus_after);
+        println!("corpus raw bytes before: {corpus_before}");
+        println!("corpus raw bytes after:  {corpus_after}");
+        println!(
+            "corpus raw savings:       {corpus_saved} ({:.2}%)",
+            corpus_saved as f64 * 100.0 / corpus_before as f64
+        );
+    }
 }

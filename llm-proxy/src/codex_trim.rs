@@ -10,7 +10,7 @@
 //! context are left byte-identical; everything else is eligible for
 //! whitespace / repeated-line / head-tail compression.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
@@ -37,10 +37,13 @@ const MAX_DESC_CHARS: usize = 150;
 
 /// Item-level protection reason labels. A block protected by provenance (or
 /// orphaned) is left byte-identical. Per-block content protection ("content")
-/// and the eligible fallback are decided inside `transform_tool_text`.
+/// and the eligible fallback ("none (elided)") are decided per block in the
+/// trim loop.
 const ORPHAN: &str = "orphan";
 const PROVENANCE_READ: &str = "provenance_read";
 const APPLY_PATCH: &str = "apply_patch";
+const CONTENT: &str = "content";
+const ELIGIBLE: &str = "none (elided)";
 
 /// Read verbs for the A2.2 file-read rule: a command is a protected file read
 /// when it contains one of these verbs AND a token whose extension is in the
@@ -77,6 +80,13 @@ pub struct TrimOutcome {
     pub tokens_after: u64,
     pub stages: Vec<StageInfo>,
     pub classes: Vec<&'static str>,
+    /// Per output block: (protection reason, block char count). Reasons:
+    /// `orphan` | `provenance_read` | `apply_patch` | `content` |
+    /// `none (elided)`. Populated whenever the pass inspected the input.
+    pub protection_reasons: Vec<(&'static str, usize)>,
+    /// Chars saved by lever across this body: `head_tail` | `repeats` |
+    /// `whitespace` | `tool_descriptions`.
+    pub saved_by_lever: BTreeMap<&'static str, usize>,
 }
 
 impl TrimOutcome {
@@ -89,7 +99,22 @@ impl TrimOutcome {
             tokens_after: 0,
             stages: Vec::new(),
             classes: Vec::new(),
+            protection_reasons: Vec::new(),
+            saved_by_lever: BTreeMap::new(),
         }
+    }
+
+    /// Attach per-block protection and per-lever savings to a fail-open outcome
+    /// whose loop still ran (e.g. `no_change`) so the replay histogram counts
+    /// every inspected block, not just the ones in shrunk bodies.
+    fn with_telemetry(
+        mut self,
+        protection_reasons: Vec<(&'static str, usize)>,
+        saved_by_lever: BTreeMap<&'static str, usize>,
+    ) -> Self {
+        self.protection_reasons = protection_reasons;
+        self.saved_by_lever = saved_by_lever;
+        self
     }
 }
 
@@ -142,6 +167,8 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
     let mut repeated_line_trim_allowed = false;
     let mut head_tail_trim_applied = false;
     let mut classes = Vec::new();
+    let mut protection_reasons: Vec<(&'static str, usize)> = Vec::new();
+    let mut saved_by_lever: BTreeMap<&'static str, usize> = BTreeMap::new();
     for (index, original_item) in input.iter().enumerate() {
         let Some(item_type) = original_item.get("type").and_then(Value::as_str) else {
             return TrimOutcome::unchanged(body, "unknown_item_shape");
@@ -158,12 +185,14 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                 if let Some(text) = output.as_str() {
                     let class = classify_block(text, None, "");
                     classes.push(class.label());
-                    let normalized = transform_tool_text(
+                    let normalized = transform_block(
                         text,
                         class,
                         item_reason,
                         &mut repeated_line_trim_allowed,
                         &mut head_tail_trim_applied,
+                        &mut saved_by_lever,
+                        &mut protection_reasons,
                     );
                     changed |= normalized != text;
                     *output = Value::String(normalized);
@@ -185,12 +214,14 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                         };
                         let class = classify_block(&text, None, "");
                         classes.push(class.label());
-                        let normalized = transform_tool_text(
+                        let normalized = transform_block(
                             &text,
                             class,
                             item_reason,
                             &mut repeated_line_trim_allowed,
                             &mut head_tail_trim_applied,
+                            &mut saved_by_lever,
+                            &mut protection_reasons,
                         );
                         changed |= normalized != text;
                         block["text"] = Value::String(normalized);
@@ -210,7 +241,11 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                         truncate_descriptions(tool, MAX_DESC_CHARS);
                     }
                     let after = serde_json::to_string(tools).unwrap_or_default();
-                    changed |= before.chars().count() > after.chars().count();
+                    let saved = before.chars().count().saturating_sub(after.chars().count());
+                    if saved > 0 {
+                        changed = true;
+                        *saved_by_lever.entry("tool_descriptions").or_default() += saved;
+                    }
                 }
             }
             // These item types are deliberately protected.
@@ -221,11 +256,15 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
     }
 
     if !changed {
-        return TrimOutcome::unchanged(body, "no_change");
+        return TrimOutcome::unchanged(body, "no_change")
+            .with_telemetry(protection_reasons, saved_by_lever);
     }
     let after = match serde_json::to_vec(&candidate) {
         Ok(bytes) if bytes.len() < before.len() => bytes,
-        _ => return TrimOutcome::unchanged(body, "no_gain"),
+        _ => {
+            return TrimOutcome::unchanged(body, "no_gain")
+                .with_telemetry(protection_reasons, saved_by_lever);
+        }
     };
     TrimOutcome {
         body: candidate,
@@ -249,6 +288,8 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
             bytes_after: after.len(),
         }],
         classes,
+        protection_reasons,
+        saved_by_lever,
     }
 }
 
@@ -302,27 +343,54 @@ fn normalize_tool_text(text: &str) -> String {
     out
 }
 
-/// Transform one tool-output text block.
+/// Trim one tool-output block, recording its protection reason (per block, in
+/// chars) and per-lever char savings for the replay report.
 ///
 /// `item_reason` is the item-level provenance protection (`Some("orphan" |
-/// "provenance_read" | "apply_patch")`) when provenance protects this output;
-/// per-block content protection (fenced code, diagrams — CC parity layers 2-3)
-/// is checked here. A protected block is returned byte-identical.
-///
-/// Otherwise the block is eligible regardless of content class: whitespace
-/// normalization always applies, repeated-line compression stays gated on the
-/// four diagnostic classes (it is a separate, safe op), and head/tail
-/// compression now applies unconditionally to any eligible block.
-fn transform_tool_text(
+/// "provenance_read" | "apply_patch")`); per-block content protection (fenced
+/// code, diagrams — CC parity layers 2-3) is checked here too. A protected
+/// block is returned byte-identical. Otherwise the block is eligible and goes
+/// through `transform_tool_text`.
+fn transform_block(
     text: &str,
     class: ContentClass,
     item_reason: Option<&'static str>,
     repeated_line_trim_allowed: &mut bool,
     head_tail_trim_applied: &mut bool,
+    saved_by_lever: &mut BTreeMap<&'static str, usize>,
+    protection_reasons: &mut Vec<(&'static str, usize)>,
 ) -> String {
-    if item_reason.is_some() || tool_result_protected(text, None, true, 0.01) {
+    if let Some(reason) = item_reason {
+        protection_reasons.push((reason, text.chars().count()));
         return text.to_owned();
     }
+    if tool_result_protected(text, None, true, 0.01) {
+        protection_reasons.push((CONTENT, text.chars().count()));
+        return text.to_owned();
+    }
+    protection_reasons.push((ELIGIBLE, text.chars().count()));
+    transform_tool_text(
+        text,
+        class,
+        repeated_line_trim_allowed,
+        head_tail_trim_applied,
+        saved_by_lever,
+    )
+}
+
+/// Transform an eligible tool-output text block.
+///
+/// Whitespace normalization always applies; repeated-line compression stays
+/// gated on the four diagnostic classes (a separate, safe op); head/tail
+/// compression applies unconditionally to any eligible block. Every lever
+/// attributes its char savings so the replay can split the total.
+fn transform_tool_text(
+    text: &str,
+    class: ContentClass,
+    repeated_line_trim_allowed: &mut bool,
+    head_tail_trim_applied: &mut bool,
+    saved_by_lever: &mut BTreeMap<&'static str, usize>,
+) -> String {
     // A4 idempotence: an already-trimmed block carries one of our markers and
     // must pass through byte-identical. Without this guard, re-normalizing an
     // elided block could collapse a blank-line run at the head/marker seam
@@ -340,6 +408,10 @@ fn transform_tool_text(
             | ContentClass::TestOutput
     );
     let normalized = normalize_tool_text(text);
+    let whitespace_saved = text.chars().count().saturating_sub(normalized.chars().count());
+    if whitespace_saved > 0 {
+        *saved_by_lever.entry("whitespace").or_default() += whitespace_saved;
+    }
     let diagnostic_class = matches!(
         class,
         ContentClass::Logs
@@ -348,7 +420,12 @@ fn transform_tool_text(
             | ContentClass::TestOutput
     );
     let normalized = if diagnostic_class {
-        compress_repeated_lines(&normalized)
+        let compressed = compress_repeated_lines(&normalized);
+        let repeats_saved = normalized.chars().count().saturating_sub(compressed.chars().count());
+        if repeats_saved > 0 {
+            *saved_by_lever.entry("repeats").or_default() += repeats_saved;
+        }
+        compressed
     } else {
         normalized
     };
@@ -359,6 +436,10 @@ fn transform_tool_text(
         SAFE_MIN_ELIDE,
     ) {
         *head_tail_trim_applied = true;
+        let head_tail_saved = normalized.chars().count().saturating_sub(compressed.chars().count());
+        if head_tail_saved > 0 {
+            *saved_by_lever.entry("head_tail").or_default() += head_tail_saved;
+        }
         return compressed;
     }
     normalized
@@ -383,7 +464,7 @@ fn item_protection<'a>(
 /// A2.2 + A2.3 on a lowercased command haystack: a protected file read
 /// (read verb AND a protected-extension token) or an `apply_patch`.
 fn command_protection(command_lower: &str) -> Option<&'static str> {
-    if read_verb_seen(command_lower) && protected_ext_word_seen(command_lower) {
+    if read_verb_seen(command_lower) && protected_ext_path_seen(command_lower) {
         return Some(PROVENANCE_READ);
     }
     if command_lower.contains("apply_patch") {
@@ -404,8 +485,34 @@ fn read_verb_seen(command_lower: &str) -> bool {
     command_words(command_lower).any(|w| READ_VERBS.iter().any(|v| w.eq_ignore_ascii_case(v)))
 }
 
-fn protected_ext_word_seen(command_lower: &str) -> bool {
-    command_words(command_lower).any(is_protected_ext)
+/// Whether the command haystack references a *path* whose extension is in the
+/// protected set: a `.` with an alphanumeric stem before it and an alphanumeric
+/// extension run after it (`foo.rs`, `notes.md`, `src/main.py`), followed by a
+/// non-alphanumeric boundary.
+///
+/// This deliberately does NOT match bare words equal to a protected extension.
+/// Those fire constantly in the JS wrapper (`C:\` → word `c`, the JS variable
+/// `r`, `tools.shell_command`), which would wrongly protect any command that
+/// merely mentions a read verb; only a real dotted path counts.
+fn protected_ext_path_seen(command_lower: &str) -> bool {
+    let b = command_lower.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        if b[i] == b'.' && i > 0 && b[i - 1].is_ascii_alphanumeric() {
+            let ext_start = i + 1;
+            let mut j = ext_start;
+            while j < n && b[j].is_ascii_alphanumeric() {
+                j += 1;
+            }
+            let boundary_ok = j >= n || !b[j].is_ascii_alphanumeric();
+            if boundary_ok && is_protected_ext(&command_lower[ext_start..j]) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Replace only consecutive identical non-empty diagnostic lines with an
@@ -950,6 +1057,24 @@ mod tests {
         let run_out = trim_responses(run_body.clone());
         assert!(run_out.applied);
         assert!(run_out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
+    }
+
+    #[test]
+    fn read_verb_without_dotted_path_does_not_protect() {
+        // A read verb with NO dotted path must not protect: the `c` in `C:\` and
+        // the JS variable `r` are not file paths, so `Get-Content` with no file
+        // argument is not a protected file read and the output is elided.
+        let output = large_text();
+        let body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "n",
+                 "input": "const r = await tools.shell_command({command:\"Get-Content -Raw\",\"workdir\":\"C:\\\\Users\\\\arthu\\\\dev\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "n", "output": output}
+            ]
+        });
+        let out = trim_responses(body.clone());
+        assert!(out.applied);
+        assert!(out.body["input"][1]["output"].as_str().unwrap().contains("...[elided "));
     }
 
     #[test]
