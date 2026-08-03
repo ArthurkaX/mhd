@@ -7,6 +7,7 @@
 
 pub mod bench;
 pub mod cache_bench;
+pub mod codex_trim;
 pub mod config;
 pub mod content_mix;
 pub mod corpus;

@@ -1,7 +1,7 @@
 //! Native Codex (ChatGPT OAuth) Responses passthrough.
 //!
-//! The HTTPS path deliberately does not parse or transform the Responses body.
-//! The WebSocket path bridges frames unchanged and observes only the small
+//! The HTTPS path can apply an opt-in conservative trim before forwarding.
+//! The WebSocket path remains unchanged and observes only the small
 //! `response.create`/terminal-event metadata needed for trace accounting.
 
 mod responses;
@@ -99,6 +99,23 @@ pub fn decode_request(incoming: &HeaderMap, body: &[u8]) -> Result<Value> {
         body.to_vec()
     };
     Ok(serde_json::from_slice(&decoded)?)
+}
+
+/// Serialize a Responses request using the same content encoding as ingress.
+/// This is used by the opt-in HTTPS trim path; callers can fall back to the
+/// original bytes if serialization or compression fails.
+pub fn encode_request(incoming: &HeaderMap, payload: &Value) -> Result<bytes::Bytes> {
+    let json = serde_json::to_vec(payload)?;
+    let encoded = if incoming
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        == Some("zstd")
+    {
+        zstd::encode_all(json.as_slice(), 0)?
+    } else {
+        json
+    };
+    Ok(encoded.into())
 }
 
 fn allowed_request_headers() -> &'static [&'static str] {
@@ -839,6 +856,29 @@ pub fn is_codex_request(headers: &HeaderMap, query: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_request_round_trips_plain_and_zstd_payloads() {
+        let payload = serde_json::json!({
+            "model": "gpt-5.6-luna",
+            "input": [{"type": "function_call_output", "call_id": "c", "output": "ok"}]
+        });
+
+        let plain = HeaderMap::new();
+        let plain_body = encode_request(&plain, &payload).expect("plain encoding");
+        assert_eq!(
+            decode_request(&plain, &plain_body).expect("plain decoding"),
+            payload
+        );
+
+        let mut zstd = HeaderMap::new();
+        zstd.insert("content-encoding", HeaderValue::from_static("zstd"));
+        let zstd_body = encode_request(&zstd, &payload).expect("zstd encoding");
+        assert_eq!(
+            decode_request(&zstd, &zstd_body).expect("zstd decoding"),
+            payload
+        );
+    }
 
     #[test]
     fn parse_responses_usage_extracts_and_splits_cached_tokens() {

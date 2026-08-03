@@ -53,6 +53,10 @@ path = "src/bin/codex_wire_probe.rs"
 name = "corpus_migrate"
 path = "src/bin/corpus_migrate.rs"
 
+[[bin]]
+name = "codex_trim_replay"
+path = "src/bin/codex_trim_replay.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["macros", "ws"] }
 reqwest = { workspace = true, features = ["stream", "blocking"] }

@@ -740,10 +740,12 @@ pub async fn post_codex_responses(
         .map(|s| s.to_string());
     let client_run_id = client_run_id(&headers);
 
-    // Capture the decoded native wire request only when the existing explicit
-    // corpus-capture setting is enabled. The raw OAuth header is never stored.
+    // Decode once for corpus capture and the opt-in HTTPS trim. The original
+    // payload is always what gets captured; trim must never rewrite the replay
+    // corpus or make a failed transformation unrecoverable.
+    let decoded_payload = crate::providers::codex::decode_request(&headers, &body).ok();
     let mut model_opt: Option<String> = None;
-    if let Ok(payload) = crate::providers::codex::decode_request(&headers, &body) {
+    if let Some(payload) = decoded_payload.as_ref() {
         model_opt = payload
             .get("model")
             .and_then(Value::as_str)
@@ -752,10 +754,44 @@ pub async fn post_codex_responses(
     }
     let model = model_opt.unwrap_or_default();
 
+    let mut outgoing_body = body.clone();
+    let mut trim_applied = false;
+    let mut trim_tokens_before = 0;
+    let mut trim_tokens_after = 0;
+    let mut trim_preset = String::new();
+    let mut trim_config_json = String::new();
+    let mut trim_stages_json = String::new();
+    if state.trim_enabled_for(ClientKind::Codex)
+        && let Some(payload) = decoded_payload.as_ref()
+    {
+        let outcome = crate::codex_trim::trim_responses(payload.clone());
+        if outcome.applied
+            && let Ok(encoded) = crate::providers::codex::encode_request(&headers, &outcome.body)
+        {
+            outgoing_body = encoded;
+            trim_applied = true;
+            trim_tokens_before = outcome.tokens_before;
+            trim_tokens_after = outcome.tokens_after;
+            trim_preset = "responses-v1".to_string();
+            trim_config_json = serde_json::json!({
+                "engine": "codex_responses",
+                "stage": "tool_output_whitespace",
+            })
+            .to_string();
+            trim_stages_json = serde_json::to_string(
+                &outcome
+                    .stages
+                    .iter()
+                    .map(|stage| stage.name)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default();
+        }
+    }
+
     // Record the request before forwarding so in-flight Codex requests are
     // visible in the trace. `tier`/`effective_tier` are None — Codex is not a
-    // Claude tier. Responses-aware trim is not implemented, so the trim fields
-    // are false/zeros. `status` and the token counts land when the usage tap
+    // Claude tier. `status` and the token counts land when the usage tap
     // closes the row at end-of-stream for successes, and immediately on the
     // error path below.
     let target = state.codex_target();
@@ -773,12 +809,12 @@ pub async fn post_codex_responses(
         output_tokens: 0,
         cache_read_tokens: None,
         cache_creation_tokens: None,
-        trim_applied: false,
-        trim_tokens_before: 0,
-        trim_tokens_after: 0,
-        trim_preset: String::new(),
-        trim_config_json: String::new(),
-        trim_stages_json: String::new(),
+        trim_applied,
+        trim_tokens_before,
+        trim_tokens_after,
+        trim_preset,
+        trim_config_json,
+        trim_stages_json,
         started_ms,
         prefix_hash: 0,
         status: None,
@@ -802,12 +838,12 @@ pub async fn post_codex_responses(
                 uri.path(),
                 uri.query(),
                 &headers,
-                body,
+                outgoing_body,
             )
             .await
         }
         CodexTarget::Model(model) => {
-            crate::providers::codex::forward_side(&state, &headers, body, model).await
+            crate::providers::codex::forward_side(&state, &headers, outgoing_body, model).await
         }
     };
     let resp = match result {
