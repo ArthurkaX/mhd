@@ -179,8 +179,6 @@ pub(crate) fn apply_settings(state: &mut SettingsState) {
             settings.sonnet_downgrade_enabled = state.sonnet_downgrade_enabled;
             settings.trim_enabled = state.trim_enabled;
             settings.trim_openai_enabled = Some(state.trim_openai_enabled);
-            // Codex has no trim engine yet; write the stored value back
-            // unchanged so saving this page never clobbers it.
             settings.trim_codex_enabled = state.trim_codex_enabled;
             settings.trim_tool_desc_chars = state.trim_tool_desc_chars;
             settings.trim_toolresult_head = state.trim_toolresult_head;

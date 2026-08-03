@@ -1605,8 +1605,8 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
         text_color: theme_text(state),
     });
 
-    // Codex — trim not implemented for the Responses wire API. The toggle
-    // still shows the stored value but carries no hit, so clicks land nowhere.
+    // Codex — conservative trim for Responses HTTPS and native WebSocket.
+    let is_codex_hovered = state.hovered_target == SettingsHit::TrimCodexToggle;
     ctls.push(Control::Toggle {
         rect: RECT {
             left: pad,
@@ -1615,8 +1615,8 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
             bottom: lay.llm_trim.trim_codex_y + (row_h + toggle_h) / 2,
         },
         is_on: state.trim_codex_enabled,
-        is_hovered: false,
-        hit: SettingsHit::None,
+        is_hovered: is_codex_hovered,
+        hit: SettingsHit::TrimCodexToggle,
     });
     ctls.push(Control::Label {
         rect: RECT {
@@ -1625,9 +1625,9 @@ pub fn build_llm_trim_controls(lay: &Layout, state: &SettingsState) -> ControlLi
             right: win_w_val - pad,
             bottom: lay.llm_trim.trim_codex_y + row_h,
         },
-        label: "Codex \u{2014} not implemented".into(),
+        label: "Codex (Responses)".into(),
         font: FontChoice::Body,
-        text_color: theme_text_muted(state),
+        text_color: theme_text(state),
     });
 
     // ── Grouped head-budget rows ─────────────────────────────────────

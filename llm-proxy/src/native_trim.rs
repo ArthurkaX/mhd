@@ -576,13 +576,30 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 ///   for a future expand-by-id feature).
 /// - Never enlarges (`candidate.chars().count() < total` is guaranteed before returning).
 fn compress_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
+    compress_head_tail(
+        s,
+        knobs.tool_result_head,
+        knobs.tool_result_tail,
+        knobs.tool_result_min_elide,
+    )
+}
+
+/// Shared line-aware head+tail compressor used by native and Codex adapters.
+///
+/// The caller remains responsible for content classification and relationship
+/// checks. This helper only transforms text, never enlarges it, and is safe to
+/// reuse across wire formats because it knows nothing about their JSON shape.
+pub(crate) fn compress_head_tail(
+    s: &str,
+    head: usize,
+    tail: usize,
+    min_elide: usize,
+) -> Option<String> {
     let total = s.chars().count();
-    let head = knobs.tool_result_head;
-    let tail = knobs.tool_result_tail;
 
     // Gate 1: enough chars to drop (checked on raw budget before line-snapping).
     let elided_raw = total.saturating_sub(head + tail);
-    if elided_raw < knobs.tool_result_min_elide {
+    if elided_raw < min_elide {
         return None;
     }
 
@@ -608,7 +625,7 @@ fn compress_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
     let head_len = head_str.chars().count();
     let tail_len = tail_str.chars().count();
     let elided = total.saturating_sub(head_len + tail_len);
-    if elided < knobs.tool_result_min_elide {
+    if elided < min_elide {
         return None;
     }
 

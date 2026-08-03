@@ -7,8 +7,18 @@
 use serde_json::Value;
 
 use crate::content_mix::{ContentClass, classify_block};
+use crate::native_trim::compress_head_tail;
 
-const MIN_BYTES: usize = 16 * 1024;
+// Small Codex turns are common. Keep a floor to avoid touching tiny payloads,
+// but let the content-aware pass inspect bodies from 8 KiB upward. The pass
+// still changes only recognized tool-output text and remains fail-open.
+const MIN_BYTES: usize = 8 * 1024;
+// Codex diagnostics in the observed corpus are shorter than the native CC
+// 8K trigger. Keep a substantial head and tail, but make the Codex gate fit
+// those real tool outputs without widening eligibility to unknown content.
+const SAFE_HEAD_CHARS: usize = 2_000;
+const SAFE_TAIL_CHARS: usize = 800;
+const SAFE_MIN_ELIDE: usize = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageInfo {
@@ -71,7 +81,8 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
         .expect("input shape was checked above");
 
     let mut changed = false;
-    let mut strong_trim_allowed = false;
+    let mut repeated_line_trim_allowed = false;
+    let mut head_tail_trim_applied = false;
     let mut classes = Vec::new();
     for (index, original_item) in input.iter().enumerate() {
         let Some(item_type) = original_item.get("type").and_then(Value::as_str) else {
@@ -85,7 +96,12 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                 if let Some(text) = output.as_str() {
                     let class = classify_block(text, None, "");
                     classes.push(class.label());
-                    let normalized = transform_tool_text(text, class, &mut strong_trim_allowed);
+                    let normalized = transform_tool_text(
+                        text,
+                        class,
+                        &mut repeated_line_trim_allowed,
+                        &mut head_tail_trim_applied,
+                    );
                     changed |= normalized != text;
                     *output = Value::String(normalized);
                 } else {
@@ -106,8 +122,12 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                         };
                         let class = classify_block(&text, None, "");
                         classes.push(class.label());
-                        let normalized =
-                            transform_tool_text(&text, class, &mut strong_trim_allowed);
+                        let normalized = transform_tool_text(
+                            &text,
+                            class,
+                            &mut repeated_line_trim_allowed,
+                            &mut head_tail_trim_applied,
+                        );
                         changed |= normalized != text;
                         block["text"] = Value::String(normalized);
                     }
@@ -134,8 +154,14 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
         tokens_before: (before.len() / 4) as u64,
         tokens_after: (after.len() / 4) as u64,
         stages: vec![StageInfo {
-            name: if strong_trim_allowed {
-                "tool_output_whitespace_and_log_repeats"
+            name: if repeated_line_trim_allowed {
+                if head_tail_trim_applied {
+                    "tool_output_whitespace_and_safe_diagnostics"
+                } else {
+                    "tool_output_whitespace_and_safe_repeats"
+                }
+            } else if head_tail_trim_applied {
+                "tool_output_whitespace_and_safe_diagnostics"
             } else {
                 "tool_output_whitespace"
             },
@@ -196,28 +222,61 @@ fn normalize_tool_text(text: &str) -> String {
     out
 }
 
-fn transform_tool_text(text: &str, class: ContentClass, strong_trim_allowed: &mut bool) -> String {
+fn transform_tool_text(
+    text: &str,
+    class: ContentClass,
+    repeated_line_trim_allowed: &mut bool,
+    head_tail_trim_applied: &mut bool,
+) -> String {
     // These classes are data-bearing. Even whitespace-only changes can be
     // meaningful in source, serialized records, or aligned columns.
     if matches!(
         class,
-        ContentClass::SourceCode | ContentClass::StructuredData | ContentClass::Tabular
+        ContentClass::SourceCode
+            | ContentClass::StructuredData
+            | ContentClass::Diff
+            | ContentClass::Tabular
     ) {
         return text.to_owned();
     }
-    *strong_trim_allowed |= class == ContentClass::Logs;
+    *repeated_line_trim_allowed |= matches!(
+        class,
+        ContentClass::Logs
+            | ContentClass::BuildDiagnostics
+            | ContentClass::StackTrace
+            | ContentClass::TestOutput
+    );
     let normalized = normalize_tool_text(text);
-    if class == ContentClass::Logs {
+    let diagnostic_class = matches!(
+        class,
+        ContentClass::Logs
+            | ContentClass::BuildDiagnostics
+            | ContentClass::StackTrace
+            | ContentClass::TestOutput
+    );
+    let normalized = if diagnostic_class {
         compress_repeated_lines(&normalized)
     } else {
         normalized
+    };
+    if diagnostic_class
+        && let Some(compressed) = compress_head_tail(
+            &normalized,
+            SAFE_HEAD_CHARS,
+            SAFE_TAIL_CHARS,
+            SAFE_MIN_ELIDE,
+        )
+    {
+        *head_tail_trim_applied = true;
+        return compressed;
     }
+    normalized
 }
 
-/// Replace only consecutive identical non-empty log lines with an explicit,
-/// machine-readable marker. This is intentionally not used for source,
-/// structured, tabular, or ambiguous content: removing repeated lines there
-/// could alter a program, a record set, or a value sequence.
+/// Replace only consecutive identical non-empty diagnostic lines with an
+/// explicit, machine-readable marker. This is intentionally not used for
+/// source, structured, tabular, or ambiguous content: removing repeated lines
+/// there could alter a program, a record set, or a value sequence.
 fn compress_repeated_lines(text: &str) -> String {
     const MARKER: &str = "[mhd-trim: omitted ";
     // A replayed/already-trimmed body must remain stable; never nest markers.
@@ -239,7 +298,7 @@ fn compress_repeated_lines(text: &str) -> String {
         out.push_str(lines[i]);
         if count >= 3 && !lines[i].trim().is_empty() {
             out.push_str(&format!(
-                "\n[mhd-trim: omitted {} repeated log lines]",
+                "\n[mhd-trim: omitted {} repeated diagnostic lines]",
                 count - 1
             ));
         }
@@ -459,6 +518,49 @@ mod tests {
                 .unwrap()
                 .contains("mhd-trim: omitted")
         );
+        assert!(quality_check(&body, &out.body).structured_content_preserved);
+    }
+
+    #[test]
+    fn diagnostics_use_shared_head_tail_and_keep_call_id() {
+        let output = (0..1400)
+            .map(|i| format!("error[E{:04}]: diagnostic line {i}", i % 1000))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = serde_json::json!({
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "diag_1",
+                "output": output
+            }]
+        });
+        let out = trim_responses(body.clone());
+        assert!(out.applied);
+        assert_eq!(out.body["input"][0]["call_id"], "diag_1");
+        let trimmed = out.body["input"][0]["output"].as_str().unwrap();
+        assert!(trimmed.contains("...[elided "));
+        assert!(trimmed.starts_with("error[E0000]: diagnostic line 0"));
+        assert!(trimmed.ends_with("error[E0399]: diagnostic line 1399"));
+        assert!(
+            out.stages
+                .iter()
+                .any(|stage| { stage.name == "tool_output_whitespace_and_safe_diagnostics" })
+        );
+        assert!(quality_check(&body, &out.body).relationships_preserved);
+    }
+
+    #[test]
+    fn diff_output_is_left_byte_stable() {
+        let diff = (0..900)
+            .map(|i| format!("@@ -{i},1 +{i},1 @@\n-old {i}\n+new {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = serde_json::json!({
+            "input": [{"type": "function_call_output", "call_id": "diff_1", "output": diff}]
+        });
+        let out = trim_responses(body.clone());
+        assert!(!out.applied);
+        assert_eq!(out.body, body);
         assert!(quality_check(&body, &out.body).structured_content_preserved);
     }
 

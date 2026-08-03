@@ -440,9 +440,7 @@ impl ProxyControl {
 
     /// Enable or disable trim for a client. Each `ClientKind` has its own
     /// independent flag: Claude Code uses the `trim_enabled` master, OpenAI
-    /// uses `trim_openai_enabled`, Codex uses `trim_codex_enabled` (which
-    /// today gates nothing because trim for the Responses wire API is not
-    /// implemented yet).
+    /// uses `trim_openai_enabled`, and Codex uses `trim_codex_enabled`.
     pub fn set_trim_enabled_for(&self, client: ClientKind, on: bool) {
         self.state.set_trim_enabled_for(client, on);
     }

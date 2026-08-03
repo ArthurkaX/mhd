@@ -38,6 +38,7 @@ fn main() {
     let mut structured_failures = 0usize;
     let mut log_classified = 0usize;
     let mut log_repeat_applied = 0usize;
+    let mut diagnostic_head_tail_applied = 0usize;
 
     for row in rows {
         total += 1;
@@ -64,8 +65,11 @@ fn main() {
             before += outcome.tokens_before as usize;
             after += outcome.tokens_after as usize;
             for stage in outcome.stages {
-                if stage.name == "tool_output_whitespace_and_log_repeats" {
+                if stage.name == "tool_output_whitespace_and_safe_repeats" {
                     log_repeat_applied += 1;
+                }
+                if stage.name == "tool_output_whitespace_and_safe_diagnostics" {
+                    diagnostic_head_tail_applied += 1;
                 }
                 *stages.entry(stage.name).or_default() += 1;
             }
@@ -83,6 +87,7 @@ fn main() {
     println!("quality structured-content failures: {structured_failures}");
     println!("log outputs classified: {log_classified}");
     println!("log-repeat stage applied: {log_repeat_applied}");
+    println!("safe-diagnostic head-tail stage applied: {diagnostic_head_tail_applied}");
     if applied > 0 {
         let saved = before.saturating_sub(after);
         println!("estimated tokens before: {before}");

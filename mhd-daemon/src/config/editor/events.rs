@@ -550,6 +550,10 @@ pub(crate) unsafe extern "system" fn settings_wndproc(
                         state.trim_openai_enabled = !state.trim_openai_enabled;
                         paint_settings(hwnd, state_ptr, &state.layout);
                     }
+                    SettingsHit::TrimCodexToggle => {
+                        state.trim_codex_enabled = !state.trim_codex_enabled;
+                        paint_settings(hwnd, state_ptr, &state.layout);
+                    }
                     SettingsHit::HeadArrowNativeBig
                     | SettingsHit::HeadArrowHaiku
                     | SettingsHit::HeadArrowHarness => {

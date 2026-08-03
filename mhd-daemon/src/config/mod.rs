@@ -160,9 +160,7 @@ pub struct LlmProxyConfig {
     /// today, so this only gates the route. Deliberately kept out of the tray
     /// for now. Default: on — same reasoning as `client_claude_code_enabled`.
     pub client_openai_enabled: bool,
-    /// Codex trim switch. Trim for the Responses wire API is NOT implemented
-    /// yet, so this gates nothing today; it exists so the client axis is
-    /// complete and the engine can be added behind it without a UI change.
+    /// Codex trim switch for the Responses HTTPS and native WebSocket APIs.
     /// Default: off.
     pub trim_codex_enabled: bool,
     /// OpenAI-compatible client trim switch. The on-disk key is an
