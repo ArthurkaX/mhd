@@ -83,6 +83,8 @@ pub enum Action {
     ShowCpuPanel,
     /// Show the LLM model selector overlay (per-tier routing for Claude Code).
     ShowLlmModels,
+    /// Show the Codex route selector overlay.
+    ShowCodexModels,
     /// Show the real-time proxy trace window.
     ShowProxyTrace,
     /// Show the LLM Monitor window (overview quota, activity, context trim).
@@ -196,6 +198,7 @@ impl Action {
             }
             "show_cpu_panel" => Ok(Action::ShowCpuPanel),
             "show_llm_models" => Ok(Action::ShowLlmModels),
+            "show_codex_models" => Ok(Action::ShowCodexModels),
             "show_proxy_trace" => Ok(Action::ShowProxyTrace),
             "show_llm_activity" => Ok(Action::ShowLlmActivity),
             "toggle_llm_proxy" => Ok(Action::ToggleLlmProxy),
@@ -375,6 +378,7 @@ impl Action {
             Action::SwitchPowerPlan { .. } => "switch_power_plan",
             Action::ShowCpuPanel => "show_cpu_panel",
             Action::ShowLlmModels => "show_llm_models",
+            Action::ShowCodexModels => "show_codex_models",
             Action::ShowProxyTrace => "show_proxy_trace",
             Action::ShowLlmActivity => "show_llm_activity",
             Action::ToggleLlmProxy => "toggle_llm_proxy",
@@ -438,6 +442,7 @@ impl Action {
             | Action::SwitchPowerPlan { .. }
             | Action::ShowCpuPanel
             | Action::ShowLlmModels
+            | Action::ShowCodexModels
             | Action::ShowProxyTrace
             | Action::ShowLlmActivity
             | Action::ToggleLlmProxy
@@ -773,8 +778,16 @@ pub const ALL_ACTIONS: &[ActionDescriptor] = &[
     },
     ActionDescriptor {
         name: "show_llm_models",
-        label: "LLM Models",
-        description: "Open the LLM proxy model selector.",
+        label: "Claude Code Models",
+        description: "Open the Claude Code model selector.",
+        category: ActionCategory::LlmProxy,
+        param_key: None,
+        param_schema: ActionParamSchema::None,
+    },
+    ActionDescriptor {
+        name: "show_codex_models",
+        label: "Codex Models",
+        description: "Open the Codex route selector.",
         category: ActionCategory::LlmProxy,
         param_key: None,
         param_schema: ActionParamSchema::None,
@@ -1190,7 +1203,7 @@ mod tests {
 
     #[test]
     fn test_find_action_index_found() {
-        assert_eq!(find_action_index("quit"), Some(33)); // quit index in ALL_ACTIONS
+        assert_eq!(find_action_index("quit"), Some(34)); // quit index in ALL_ACTIONS
         assert_eq!(find_action_index("replace_key"), Some(0));
         assert_eq!(find_action_index("brightness_up"), Some(3));
     }

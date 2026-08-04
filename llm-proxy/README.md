@@ -32,8 +32,8 @@ The practical goal is simple: start Claude Code once through the proxy, then use
    - API key;
    - one or more model IDs.
 
-5. Open the **Shortcuts** page and bind `show_llm_models` to a convenient key. A common binding is `Ctrl+Alt+L`.
-6. Press the shortcut while Claude Code is running and choose the active model route.
+5. Open the **Shortcuts** page and bind `show_llm_models` (Claude Code) and `show_codex_models` (Codex) to separate keys.
+6. Press the relevant shortcut and choose the active model route.
 
 Claude Code does not need to be restarted. The next request uses the new route.
 
@@ -164,7 +164,7 @@ Model IDs should match the provider's `/models` result or documented model names
 
 ## Model Selector
 
-Bind the `show_llm_models` action from:
+Bind `show_llm_models` for Claude Code or `show_codex_models` for Codex from:
 
 ```text
 Settings -> Shortcuts
@@ -176,7 +176,7 @@ Example shortcut:
 Ctrl+Alt+L
 ```
 
-The selector shows the configured targets for each Claude tier. Pick `native` to return a tier to Anthropic, or pick one of your configured provider models.
+The Claude Code selector shows configured targets for each Claude tier. The Codex selector currently controls only the `gpt-5.4` route; other Codex models remain native. Pick `native` to return to the official provider, or pick one of your configured provider models.
 
 ## Tray Tools
 

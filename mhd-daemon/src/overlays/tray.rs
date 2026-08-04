@@ -45,6 +45,7 @@ const CMD_NOTE: usize = 5;
 const CMD_DRAW: usize = 6;
 const CMD_CPU_PANEL: usize = 10;
 const CMD_LLM_MODELS: usize = 11;
+const CMD_CODEX_MODELS: usize = 25;
 const CMD_LLM_ACTIVITY: usize = 17;
 const CMD_PROXY_TRACE: usize = 12;
 const CMD_QUIET_TOGGLE: usize = 19;
@@ -224,7 +225,13 @@ fn show_menu(hwnd: HWND) {
             menu,
             MF_BYPOSITION | MF_STRING,
             CMD_LLM_MODELS,
-            "LLM Models",
+            "Claude Code Models",
+        );
+        item(
+            menu,
+            MF_BYPOSITION | MF_STRING,
+            CMD_CODEX_MODELS,
+            "Codex Models",
         );
         item(
             menu,
@@ -418,6 +425,12 @@ unsafe extern "system" fn wnd_proc(
                     }
                     CMD_LLM_MODELS => {
                         crate::overlays::llm_models::show(
+                            state.app.theme(),
+                            state.app.llm_proxy_config(),
+                        );
+                    }
+                    CMD_CODEX_MODELS => {
+                        crate::overlays::llm_models::show_codex(
                             state.app.theme(),
                             state.app.llm_proxy_config(),
                         );

@@ -95,6 +95,9 @@ pub struct LlmProxyConfig {
     pub sonnet: String,
     pub haiku: String,
     pub fable: String,
+    /// Codex gpt-5.4 override: "native" or an upstream model id. Other Codex
+    /// model ids stay native during the initial rollout.
+    pub codex: String,
     /// Shared pool of alternative models offered for every tier.
     pub models: Vec<LlmModel>,
     /// Opus downgrade when no thinking.
@@ -184,6 +187,7 @@ impl Default for LlmProxyConfig {
             sonnet: "native".to_string(),
             haiku: "native".to_string(),
             fable: "native".to_string(),
+            codex: "native".to_string(),
             models: Vec::new(),
             opus_downgrade_enabled: false,
             sonnet_downgrade_enabled: false,
@@ -484,6 +488,10 @@ impl AppConfig {
             fable: settings
                 .as_ref()
                 .map(|s| s.fable_target.clone())
+                .unwrap_or_else(|| "native".to_string()),
+            codex: settings
+                .as_ref()
+                .map(|s| s.codex_target.clone())
                 .unwrap_or_else(|| "native".to_string()),
             models: models
                 .unwrap_or_default()

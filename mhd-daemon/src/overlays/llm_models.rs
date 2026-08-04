@@ -1,10 +1,7 @@
 //! LLM model selector overlay.
 //!
-//! Shows the three Claude tiers (Opus / Sonnet / Haiku). For each tier you pick
-//! a routing target: **Anthropic native**, or any model from the shared pool
-//! configured in `[llm_proxy]`. Clicking a row calls the proxy's `/set_model`
-//! endpoint; the switch takes effect on the proxy's next request (in-flight work
-//! is never interrupted).
+//! Shows separate model selectors for Claude Code and Codex. Claude Code has
+//! tier rows plus the free-tier trim target; Codex has one global route row.
 //!
 //! Structurally modelled on `monitor.rs` (layered popup window on its own
 //! thread, sections + clickable rows, auto-hide, wheel scroll).
@@ -79,6 +76,21 @@ static PANEL_STATE: Mutex<Option<PanelThreadControl>> = Mutex::new(None);
 
 /// Show the model selector overlay (non-blocking).
 pub fn show(theme: NativeTheme, cfg: LlmProxyConfig) {
+    show_kind(theme, cfg, MenuKind::ClaudeCode);
+}
+
+/// Show the Codex route selector (non-blocking).
+pub fn show_codex(theme: NativeTheme, cfg: LlmProxyConfig) {
+    show_kind(theme, cfg, MenuKind::Codex);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuKind {
+    ClaudeCode,
+    Codex,
+}
+
+fn show_kind(theme: NativeTheme, cfg: LlmProxyConfig, kind: MenuKind) {
     let mut guard = PANEL_STATE.lock().unwrap();
     *guard = None; // kill previous
 
@@ -99,7 +111,7 @@ pub fn show(theme: NativeTheme, cfg: LlmProxyConfig) {
     std::thread::Builder::new()
         .name("mhd-llm-models".into())
         .spawn(move || {
-            panel_thread(show_event, show_dying, theme, cfg);
+            panel_thread(show_event, show_dying, theme, cfg, kind);
         })
         .ok();
 }
@@ -126,6 +138,7 @@ struct ScrollState {
 }
 
 struct PanelState {
+    kind: MenuKind,
     tiers: Vec<TierRow>,
     theme: NativeTheme,
     window_pos: Option<POINT>,
@@ -133,9 +146,13 @@ struct PanelState {
     running: bool,
 }
 
-fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
+fn build_tiers(cfg: &LlmProxyConfig, kind: MenuKind) -> Vec<TierRow> {
     let mut options = vec![Opt {
-        label: "Anthropic native".to_string(),
+        label: if kind == MenuKind::ClaudeCode {
+            "Anthropic native".to_string()
+        } else {
+            "ChatGPT native".to_string()
+        },
         target: "native".to_string(),
     }];
     for m in &cfg.models {
@@ -156,6 +173,15 @@ fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
         options: options.clone(),
         selected: 0,
     };
+
+    if kind == MenuKind::Codex {
+        return vec![TierRow {
+            name: "gpt-5.4",
+            slot: "codex",
+            options,
+            selected: 0,
+        }];
+    }
 
     let mut free_options = vec![Opt {
         label: "Off".to_string(),
@@ -180,24 +206,39 @@ fn build_tiers(cfg: &LlmProxyConfig) -> Vec<TierRow> {
 /// Mark the selected option for each tier from the proxy's live config.
 fn refresh_selection(state: &mut PanelState) {
     state.running = crate::llm_proxy::is_running();
-    if let Some((opus, sonnet, haiku, _fable)) = crate::llm_proxy::get_targets() {
-        let targets = [opus, sonnet, haiku];
-        for (tier, current) in state.tiers.iter_mut().zip(targets.iter()) {
-            tier.selected = tier
-                .options
-                .iter()
-                .position(|o| &o.target == current)
-                .unwrap_or(0);
+    match state.kind {
+        MenuKind::ClaudeCode => {
+            if let Some((opus, sonnet, haiku, _fable)) = crate::llm_proxy::get_targets() {
+                let targets = [opus, sonnet, haiku];
+                for (tier, current) in state.tiers.iter_mut().zip(targets.iter()) {
+                    tier.selected = tier
+                        .options
+                        .iter()
+                        .position(|o| &o.target == current)
+                        .unwrap_or(0);
+                }
+            }
+            if let Some(free_target) = crate::llm_proxy::get_trim_free_target()
+                && let Some(tier) = state.tiers.iter_mut().find(|t| t.slot == "free_target")
+            {
+                tier.selected = tier
+                    .options
+                    .iter()
+                    .position(|o| o.target == free_target)
+                    .unwrap_or(0);
+            }
         }
-    }
-    if let Some(free_target) = crate::llm_proxy::get_trim_free_target()
-        && let Some(tier) = state.tiers.iter_mut().find(|t| t.slot == "free_target")
-    {
-        tier.selected = tier
-            .options
-            .iter()
-            .position(|o| o.target == free_target)
-            .unwrap_or(0);
+        MenuKind::Codex => {
+            if let Some(current) = crate::llm_proxy::get_codex_target()
+                && let Some(tier) = state.tiers.first_mut()
+            {
+                tier.selected = tier
+                    .options
+                    .iter()
+                    .position(|o| o.target == current)
+                    .unwrap_or(0);
+            }
+        }
     }
 }
 
@@ -208,6 +249,7 @@ fn panel_thread(
     dying: Arc<std::sync::atomic::AtomicBool>,
     theme: NativeTheme,
     cfg: LlmProxyConfig,
+    kind: MenuKind,
 ) {
     let event = hdl.0;
     unsafe {
@@ -255,7 +297,8 @@ fn panel_thread(
     let panel_w = (PANEL_WIDTH_BASE as f32 * scale) as i32;
 
     let mut state = PanelState {
-        tiers: build_tiers(&cfg),
+        kind,
+        tiers: build_tiers(&cfg, kind),
         theme,
         window_pos: None,
         scroll: ScrollState { y: 0, max: 0 },
@@ -413,6 +456,8 @@ fn apply_selection(state: &mut PanelState, ti: usize, oi: usize) {
     let slot = tier.slot;
     let ok = if slot == "free_target" {
         crate::llm_proxy::set_free_target(&opt.target)
+    } else if slot == "codex" {
+        crate::llm_proxy::set_codex_target(&opt.target)
     } else {
         crate::llm_proxy::set_target(slot, &opt.target)
     };
@@ -499,7 +544,11 @@ fn paint_panel(hwnd: HWND, state: &mut PanelState, work: &RECT, width: i32, scal
         right: width - pad,
         bottom: header_y + font_h.abs() + 4,
     };
-    let mut header_wz = crate::osd::to_utf16_z("LLM Models");
+    let title = match state.kind {
+        MenuKind::ClaudeCode => "Claude Code Models",
+        MenuKind::Codex => "Codex Models",
+    };
+    let mut header_wz = crate::osd::to_utf16_z(title);
     unsafe {
         let _ = DrawTextW(
             frame.dc(),

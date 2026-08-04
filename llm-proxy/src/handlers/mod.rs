@@ -795,7 +795,7 @@ pub async fn post_codex_responses(
     // Claude tier. `status` and the token counts land when the usage tap
     // closes the row at end-of-stream for successes, and immediately on the
     // error path below.
-    let target = state.codex_target();
+    let target = state.codex_target_for_model(&model);
     state.push_trace(TraceEntry {
         seq: req_id,
         client: ClientKind::Codex,
@@ -904,9 +904,10 @@ struct ActiveCodexWebSocketRequest {
 
 type ActiveCodexWebSocket = Arc<TokioMutex<Option<ActiveCodexWebSocketRequest>>>;
 
-/// Codex first attempts a WebSocket upgrade. Native routing is bridged to the
-/// official ChatGPT endpoint; side-provider routing returns 426 so Codex uses
-/// the existing HTTPS adapter, which is the only path that can translate to
+/// Codex first attempts a WebSocket upgrade. Native requests are bridged to
+/// the official ChatGPT endpoint. When a `gpt-5.4` request is selected for a
+/// side provider, the bridge closes before forwarding it so Codex reconnects
+/// through the HTTPS adapter, which is the only path that can translate to
 /// Chat Completions.
 pub async fn get_codex_websocket(
     State(state): State<Arc<AppState>>,
@@ -916,14 +917,6 @@ pub async fn get_codex_websocket(
     if !state.client_enabled(ClientKind::Codex) {
         return Err(AppError::disabled_client(ClientKind::Codex));
     }
-    if state.codex_target() != CodexTarget::Native {
-        return Ok((
-            StatusCode::UPGRADE_REQUIRED,
-            "Codex side routing uses HTTPS transport",
-        )
-            .into_response());
-    }
-
     let (upstream, response_headers) = crate::providers::codex::connect_websocket(&headers)
         .await
         .map_err(AppError::from)?;
@@ -959,19 +952,19 @@ async fn bridge_codex_websocket(
     let headers_from_client = headers.clone();
     let mut client_to_upstream = tokio::spawn(async move {
         while let Some(Ok(message)) = client_rx.next().await {
-            // A native WebSocket is pinned to the native route. If routing is
-            // switched to a side provider while this connection is idle, close
-            // before forwarding the next logical request so Codex reconnects
-            // and takes the HTTPS adapter path.
-            if state_from_client.codex_target() != CodexTarget::Native {
-                let _ = upstream_tx
-                    .send(tokio_tungstenite::tungstenite::Message::Close(None))
-                    .await;
-                break;
-            }
             let message = match message {
                 AxumMessage::Text(text) => {
                     let original = text.to_string();
+                    // A WebSocket can only carry the native Codex protocol.
+                    // If this logical request is the selected offload model,
+                    // close before forwarding it so Codex reconnects through
+                    // the HTTPS side adapter. Other models remain native.
+                    if codex_request_requires_https(&state_from_client, &original) {
+                        let _ = upstream_tx
+                            .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                            .await;
+                        break;
+                    }
                     let mut trim_outcome = None;
                     let outgoing = if state_from_client.trim_enabled_for(ClientKind::Codex) {
                         if let Some(outcome) = crate::codex_trim::trim_responses_text(&original) {
@@ -1028,6 +1021,17 @@ async fn bridge_codex_websocket(
 
     // Dropping an active guard marks the logical request as client-cancelled.
     let _ = active.lock().await.take();
+}
+
+fn codex_request_requires_https(state: &Arc<AppState>, text: &str) -> bool {
+    let Ok(payload) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    if payload.get("type").and_then(Value::as_str) != Some("response.create") {
+        return false;
+    }
+    let model = payload.get("model").and_then(Value::as_str).unwrap_or_default();
+    state.codex_target_for_model(model) != CodexTarget::Native
 }
 
 async fn observe_codex_request(
@@ -1242,20 +1246,23 @@ mod tests {
     /// With Codex enabled the gate must NOT fire, and the request must still be
     /// recorded in the trace as a Codex/Responses entry with no Claude tier.
     ///
-    /// The side-target path is chosen with an empty body: `decode_request`
-    /// fails on empty bytes, so `forward_side` bails before any network I/O —
-    /// the trace entry is pushed before forwarding and survives the failure.
+    /// The side-target path is chosen for gpt-5.4 with a body that is valid JSON
+    /// but has no input. The adapter bails before any network I/O — the trace
+    /// entry is pushed before forwarding and survives the failure.
     #[tokio::test]
     async fn enabled_codex_path_is_not_gated_and_records_trace_entry() {
         let state = AppState::from_config(&Config::default());
         assert!(state.client_enabled(ClientKind::Codex));
 
         state.set_codex_target(CodexTarget::Model("test-side-model".to_string()));
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({"model":"gpt-5.4"})).expect("encode body"),
+        );
         let err = post_codex_responses(
             State(state.clone()),
             HeaderMap::new(),
             Uri::from_static("/v1/responses"),
-            Bytes::new(),
+            body,
         )
         .await
         .unwrap_err();

@@ -49,7 +49,7 @@ pub fn start(cfg: &LlmProxyConfig) -> bool {
         sonnet_target: cfg.sonnet.clone(),
         haiku_target: cfg.haiku.clone(),
         fable_target: cfg.fable.clone(),
-        codex_target: "native".to_string(),
+        codex_target: cfg.codex.clone(),
         // Per-client switches from the daemon config, defaulting on so an
         // upgrade never silently kills a route the user already relies on.
         client_claude_code_enabled: cfg.client_claude_code_enabled,
@@ -141,6 +141,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
             control.set_target("sonnet", &cfg.sonnet);
             control.set_target("haiku", &cfg.haiku);
             control.set_target("fable", &cfg.fable);
+            control.set_codex_target(&cfg.codex);
             control.set_log_level(&cfg.log_level);
             control.set_trim_enabled(cfg.trim_enabled);
             control.set_trim_tool_desc_chars(cfg.trim_tool_desc_chars);
@@ -199,6 +200,11 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
 /// Current per-tier targets (opus, sonnet, haiku, fable). None if the proxy is off.
 pub fn get_targets() -> Option<(String, String, String, String)> {
     CONTROL.lock().unwrap().as_ref().map(|c| c.targets())
+}
+
+/// Current gpt-5.4 Codex override target, or None if the proxy is off.
+pub fn get_codex_target() -> Option<String> {
+    CONTROL.lock().unwrap().as_ref().map(|c| c.codex_target())
 }
 
 /// Snapshot of recent proxy routing decisions.
@@ -426,6 +432,25 @@ pub fn set_target(slot: &str, target: &str) -> bool {
         .unwrap()
         .as_ref()
         .map(|c| c.set_target(slot, target))
+        .unwrap_or(false)
+}
+
+/// Set and persist the gpt-5.4 Codex override. The change applies to the next
+/// matching request; other Codex models remain native.
+pub fn set_codex_target(target: &str) -> bool {
+    if let Ok(mut settings) = llm_proxy::config::load_settings() {
+        settings.codex_target = target.to_string();
+        let _ = llm_proxy::config::save_settings(&settings);
+    }
+
+    CONTROL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| {
+            c.set_codex_target(target);
+            true
+        })
         .unwrap_or(false)
 }
 

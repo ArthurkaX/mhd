@@ -63,7 +63,8 @@ pub struct Settings {
     #[serde(default = "default_fable_target")]
     pub fable_target: String,
 
-    /// Codex Responses route: `native` or provider/model id.
+    /// Codex gpt-5.4 override: `native` or provider/model id. Other Codex
+    /// models remain native during the initial rollout.
     #[serde(default = "default_codex_target")]
     pub codex_target: String,
 

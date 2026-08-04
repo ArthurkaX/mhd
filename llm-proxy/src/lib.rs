@@ -119,8 +119,9 @@ impl ProxyControl {
         ok
     }
 
-    /// Set the dedicated Codex Responses route. `native` keeps ChatGPT OAuth;
-    /// any other value is a provider/model id and uses the mHD gateway key.
+    /// Set the gpt-5.4 Codex override. `native` keeps ChatGPT OAuth; any other
+    /// value is a provider/model id and uses the mHD gateway key. Other Codex
+    /// model ids remain native.
     pub fn set_codex_target(&self, target: &str) {
         self.state.set_codex_target(CodexTarget::parse(target));
         if self.persist

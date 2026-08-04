@@ -177,8 +177,9 @@ pub enum Target {
     Model(String),
 }
 
-/// Codex route target. Kept separate from Claude tier routing because Codex
-/// uses the Responses API and has a native ChatGPT OAuth branch.
+/// Codex route target for the currently supported offload model. Kept separate
+/// from Claude tier routing because Codex uses the Responses API and has a
+/// native ChatGPT OAuth branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexTarget {
     Native,
@@ -200,6 +201,10 @@ impl CodexTarget {
         }
     }
 }
+
+/// Initial Codex offload scope. Other Codex model ids stay on the native route
+/// until an explicit per-model mapping is added.
+pub const CODEX_OFFLOAD_MODEL: &str = "gpt-5.4";
 
 /// A single proxy routing decision recorded for the live trace overlay.
 #[derive(Debug, Clone)]
@@ -1153,6 +1158,16 @@ impl AppState {
         *self.codex_target.write().unwrap_or_else(|e| e.into_inner()) = target;
     }
 
+    /// Resolve the Codex route for one requested model. The current rollout is
+    /// intentionally limited to gpt-5.4; every other model remains native.
+    pub fn codex_target_for_model(&self, model: &str) -> CodexTarget {
+        if model == CODEX_OFFLOAD_MODEL {
+            self.codex_target()
+        } else {
+            CodexTarget::Native
+        }
+    }
+
     /// Whether a given client's ingress is currently enabled.
     pub fn client_enabled(&self, client: ClientKind) -> bool {
         let lock = match client {
@@ -1459,5 +1474,18 @@ mod tests {
         assert!(state.client_enabled(ClientKind::OpenAi));
         state.set_client_enabled(ClientKind::Codex, true);
         assert!(state.client_enabled(ClientKind::Codex));
+    }
+
+    #[test]
+    fn codex_override_is_limited_to_gpt54() {
+        let state = AppState::from_config(&Config::default());
+        state.set_codex_target(CodexTarget::Model("side-model".to_string()));
+
+        assert_eq!(
+            state.codex_target_for_model("gpt-5.4"),
+            CodexTarget::Model("side-model".to_string())
+        );
+        assert_eq!(state.codex_target_for_model("gpt-5.6-luna"), CodexTarget::Native);
+        assert_eq!(state.codex_target_for_model(""), CodexTarget::Native);
     }
 }

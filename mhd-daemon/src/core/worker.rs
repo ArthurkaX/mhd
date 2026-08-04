@@ -251,6 +251,9 @@ fn execute_action(action: &Action, handle: &AppHandle) {
         Action::ShowLlmModels => {
             crate::overlays::llm_models::show(handle.theme(), handle.llm_proxy_config());
         }
+        Action::ShowCodexModels => {
+            crate::overlays::llm_models::show_codex(handle.theme(), handle.llm_proxy_config());
+        }
         Action::ShowProxyTrace => {
             crate::overlays::proxy_trace::show(&handle.theme());
         }

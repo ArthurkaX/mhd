@@ -75,7 +75,8 @@ action = "show_volume_mixer"
    - endpoint: the provider's `/v1` base URL;
    - API key: the provider API key;
    - models: the provider model IDs you want to use.
-5. In **Settings -> Shortcuts**, bind `show_llm_models` to a key such as `Ctrl+Alt+L`.
+5. In **Settings -> Shortcuts**, bind `show_llm_models` (Claude Code) and
+   `show_codex_models` (Codex) to separate keys.
 6. Add the extracted directory to `PATH`, then launch Claude Code through the included wrapper:
 
    ```powershell
@@ -320,8 +321,8 @@ Typical flow:
 2. Start Claude Code through [`claude-mhd.bat`](claude-mhd.bat), for example `C:\Workspace\Active\mhd\claude-mhd.bat`. The wrapper points `ANTHROPIC_BASE_URL` at the local proxy on `127.0.0.1:3456`.
 3. Open **System tray -> mHD -> right click -> Settings -> LLM Proxy**.
 4. Add an OpenAI-compatible provider, API key, and models.
-5. Assign a shortcut for `show_llm_models` on the **Shortcuts** page. For example, `Ctrl+Alt+L`.
-6. Press the shortcut while Claude Code is running and choose the target model for `opus`, `sonnet`, or `haiku`.
+5. Assign shortcuts for `show_llm_models` (Claude Code) and `show_codex_models` (Codex) on the **Shortcuts** page.
+6. Press the Claude Code shortcut to choose a target for `opus`, `sonnet`, or `haiku`, or the Codex shortcut to choose its global route.
 
 The selected route applies to the next Claude Code request. In-flight streams continue on the model they started with, so switching is safe during an active session.
 
@@ -551,7 +552,8 @@ The action list below matches the parser in `mhd-daemon/src/core/action.rs`.
 
 | Action | Fields | Behaviour |
 |--------|--------|-----------|
-| `show_llm_models` | - | Open the model selector overlay to switch proxy routing on the fly. |
+| `show_llm_models` | - | Open the Claude Code model selector overlay. |
+| `show_codex_models` | - | Open the Codex gpt-5.4 route selector overlay. |
 | `toggle_llm_proxy` | - | Enable or disable the LLM proxy server at runtime. |
 
 ---
