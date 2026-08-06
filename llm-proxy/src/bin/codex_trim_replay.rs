@@ -35,6 +35,7 @@ fn main() {
     let mut reasons = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut classes = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut relationship_failures = 0usize;
+    let mut malformed_relationship_inputs = 0usize;
     let mut structured_failures = 0usize;
     let mut tool_names_failures = 0usize;
     let mut log_classified = 0usize;
@@ -46,8 +47,6 @@ fn main() {
     let mut protected_chars = 0usize;
     let mut eligible_blocks = 0usize;
     let mut eligible_chars = 0usize;
-    let mut below_threshold_blocks = 0usize;
-    let mut below_threshold_chars = 0usize;
     // Chars saved split by lever.
     let mut lever_savings = std::collections::BTreeMap::<&'static str, usize>::new();
     // Corpus-wide raw bytes (all bodies, not just shrunk ones) for the headline %.
@@ -74,13 +73,8 @@ fn main() {
             entry.0 += 1;
             entry.1 += chars;
             if *reason == "none (elided)" {
-                if *chars >= codex_trim::MIN_TOOL_OUTPUT_CHARS {
-                    eligible_blocks += 1;
-                    eligible_chars += chars;
-                } else {
-                    below_threshold_blocks += 1;
-                    below_threshold_chars += chars;
-                }
+                eligible_blocks += 1;
+                eligible_chars += chars;
             } else {
                 protected_blocks += 1;
                 protected_chars += chars;
@@ -95,7 +89,9 @@ fn main() {
         corpus_after += after_bytes;
         if outcome.applied {
             let quality = codex_trim::quality_check(&body, &outcome.body);
-            if !quality.relationships_preserved {
+            if !quality.relationships_valid_before {
+                malformed_relationship_inputs += 1;
+            } else if !quality.relationships_preserved {
                 relationship_failures += 1;
             }
             if !quality.structured_content_preserved {
@@ -127,6 +123,7 @@ fn main() {
     println!("reasons: {reasons:?}");
     println!("classified outputs: {classes:?}");
     println!("quality relationship failures: {relationship_failures}");
+    println!("pre-existing malformed tool graphs: {malformed_relationship_inputs}");
     println!("quality structured-content failures: {structured_failures}");
     println!("quality tool-names failures: {tool_names_failures}");
     println!("log outputs classified: {log_classified}");
@@ -145,9 +142,6 @@ fn main() {
     println!("protection reasons (blocks, chars): {protection_hist:?}");
     println!("protected output:       {protected_blocks} blocks / {protected_chars} chars");
     println!("eligible output:        {eligible_blocks} blocks / {eligible_chars} chars");
-    println!(
-        "below output threshold:  {below_threshold_blocks} blocks / {below_threshold_chars} chars"
-    );
     println!("chars saved by lever: {lever_savings:?}");
     if corpus_before > 0 {
         let corpus_saved = corpus_before.saturating_sub(corpus_after);

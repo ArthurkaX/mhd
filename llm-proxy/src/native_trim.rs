@@ -280,7 +280,7 @@ pub fn tool_result_protected(
 /// 3. Collapse runs of 2+ spaces in non-leading positions to a single space.
 ///    Leading indentation (spaces + tabs) is preserved; tabs in the rest of
 ///    the line are never removed or collapsed.
-fn apply_ws_ops(text: &str, knobs: &NativeKnobs) -> String {
+pub(crate) fn apply_ws_ops(text: &str, knobs: &NativeKnobs) -> String {
     let ends_with_newline = text.ends_with('\n');
     let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
 
@@ -546,7 +546,7 @@ fn compress_tool_results(
 /// Apply whitespace ops (if enabled) then head+tail compression to `s`.
 /// Returns `Some(new)` if any transformation occurred; `None` if `s` is
 /// unchanged (never enlarges).
-fn transform_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
+pub(crate) fn transform_text(s: &str, knobs: &NativeKnobs) -> Option<String> {
     // Step 1: whitespace ops (only when enabled).
     let ws_out: Option<String> = if knobs.ws_enabled {
         let after = apply_ws_ops(s, knobs);

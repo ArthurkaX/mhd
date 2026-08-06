@@ -42,6 +42,37 @@ fn client_run_id(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Build the Codex Responses profile from the same live knobs used by the
+/// Claude Code native trim. Codex has no Claude tier, so it uses the regular
+/// tool-result head budget rather than the Haiku override.
+fn codex_trim_knobs(state: &AppState) -> crate::native_trim::NativeKnobs {
+    crate::native_trim::NativeKnobs {
+        tool_max_desc_chars: usize::MAX,
+        tool_result_head: *state
+            .trim_toolresult_head
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        tool_result_tail: *state
+            .trim_toolresult_tail
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        ws_enabled: *state
+            .trim_ws_enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        strip_thinking: false,
+        tool_result_fence_requires_code: *state
+            .trim_fence_requires_code
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        tool_result_arrow_density_min: *state
+            .trim_arrow_density_min
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        ..Default::default()
+    }
+}
+
 /// Derive a stable session hash from a messages payload.
 /// The session is identified by the system prompt + the first user message,
 /// which stay constant across tool loops in one conversation.
@@ -764,7 +795,8 @@ pub async fn post_codex_responses(
     if state.trim_enabled_for(ClientKind::Codex)
         && let Some(payload) = decoded_payload.as_ref()
     {
-        let outcome = crate::codex_trim::trim_responses(payload.clone());
+        let knobs = codex_trim_knobs(state.as_ref());
+        let outcome = crate::codex_trim::trim_responses_with_knobs(payload.clone(), &knobs);
         if outcome.applied
             && let Ok(encoded) = crate::providers::codex::encode_request(&headers, &outcome.body)
         {
@@ -967,14 +999,18 @@ async fn bridge_codex_websocket(
                     }
                     let mut trim_outcome = None;
                     let outgoing = if state_from_client.trim_enabled_for(ClientKind::Codex) {
-                        if let Some(outcome) = crate::codex_trim::trim_responses_text(&original) {
-                            if outcome.applied {
+                        let knobs = codex_trim_knobs(state_from_client.as_ref());
+                        match crate::codex_trim::trim_responses_text_with_knobs(&original, &knobs) {
+                            Some(outcome) if outcome.applied => {
+                                let outgoing = serde_json::to_string(&outcome.body)
+                                    .unwrap_or_else(|_| original.clone());
                                 trim_outcome = Some(outcome);
+                                outgoing
                             }
+                            _ => original.clone(),
                         }
-                        crate::codex_trim::trim_responses_text_if_enabled(&original, true)
                     } else {
-                        crate::codex_trim::trim_responses_text_if_enabled(&original, false)
+                        original.clone()
                     };
                     observe_codex_request(
                         &state_from_client,
@@ -1030,7 +1066,10 @@ fn codex_request_requires_https(state: &Arc<AppState>, text: &str) -> bool {
     if payload.get("type").and_then(Value::as_str) != Some("response.create") {
         return false;
     }
-    let model = payload.get("model").and_then(Value::as_str).unwrap_or_default();
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     state.codex_target_for_model(model) != CodexTarget::Native
 }
 

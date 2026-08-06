@@ -1,54 +1,41 @@
-//! Conservative, pure trimming for OpenAI Responses request bodies.
+//! Pure trimming for OpenAI Responses request bodies, aligned with the native
+//! Claude Code tool-result policy.
 //!
 //! Only text inside tool outputs may be normalized;
 //! calls, ids, reasoning, messages, tools, and backend-owned state remain
 //! untouched. Any shape outside that contract returns the original payload.
 //!
 //! Protection is by *provenance* — the command that produced an output, matched
-//! through its `call_id` — not by content class. Outputs that are file reads of
-//! code/doc files, orphaned outputs (no matching call), and `apply_patch`
-//! context are left byte-identical; everything else is eligible for
-//! whitespace / repeated-line / head-tail compression.
+//! through its `call_id` — plus the same fenced-code and diagram content gates
+//! used by the native engine. Unknown/orphan outputs are eligible, just as an
+//! unmapped native `tool_result` is; only known protected file reads remain
+//! byte-identical.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::content_mix::{ContentClass, classify_block};
-use crate::native_trim::{compress_head_tail, is_protected_ext, tool_result_protected};
-
-// Apply the eligibility floor to each tool-output block, not to the complete
-// Responses request. A small request can still contain one large diagnostic.
-pub const MIN_TOOL_OUTPUT_CHARS: usize = 2 * 1024;
-// Codex diagnostics in the observed corpus are shorter than the native CC
-// 8K trigger. Keep a substantial head and tail, but make the Codex gate fit
-// those real tool outputs without widening eligibility to unknown content.
-const SAFE_HEAD_CHARS: usize = 2_000;
-const SAFE_TAIL_CHARS: usize = 800;
-const SAFE_MIN_ELIDE: usize = 2_000;
-// Diagnostics are useful at both ends (command header and final status), but
-// often arrive in medium-sized blocks. A smaller elision gate improves the
-// yield without broadening eligibility to prose or structured content.
-const DIAGNOSTIC_HEAD_CHARS: usize = 1_600;
-const DIAGNOSTIC_TAIL_CHARS: usize = 800;
-const DIAGNOSTIC_MIN_ELIDE: usize = 1_200;
+use crate::native_trim::{self, NativeKnobs, is_protected_ext, tool_result_protected};
 
 // ── provenance-gated protection (A2) ─────────────────────────────────────────
 
-/// Item-level protection reason labels. A block protected by provenance (or
-/// orphaned) is left byte-identical. Per-block content protection ("content")
+/// Item-level protection reason labels. Per-block content protection ("content")
 /// and the eligible fallback ("none (elided)") are decided per block in the
 /// trim loop.
-const ORPHAN: &str = "orphan";
 const PROVENANCE_READ: &str = "provenance_read";
-const APPLY_PATCH: &str = "apply_patch";
 const CONTENT: &str = "content";
 const ELIGIBLE: &str = "none (elided)";
+const STALE_IMAGE_MARKER: &str = "[mhd-trim: previous image omitted]";
 
 /// Read verbs for the A2.2 file-read rule: a command is a protected file read
 /// when it contains one of these verbs AND a token whose extension is in the
-/// protected set. Hyphens are kept so `Get-Content` reads as one word.
-const READ_VERBS: [&str; 13] = [
+/// protected set. Search commands (`rg`/`grep`) are intentionally absent:
+/// their results remain protected when the content classifier recognizes code,
+/// structured data, or another byte-sensitive shape, while plain search text
+/// may use the normal safe head/tail path.
+/// Hyphens are kept so `Get-Content` reads as one word.
+const READ_VERBS: [&str; 11] = [
     "get-content",
     "gc",
     "cat",
@@ -56,8 +43,6 @@ const READ_VERBS: [&str; 13] = [
     "sed",
     "head",
     "tail",
-    "rg",
-    "grep",
     "less",
     "more",
     "nl",
@@ -81,11 +66,11 @@ pub struct TrimOutcome {
     pub stages: Vec<StageInfo>,
     pub classes: Vec<&'static str>,
     /// Per output block: (protection reason, block char count). Reasons:
-    /// `orphan` | `provenance_read` | `apply_patch` | `content` |
-    /// `none (elided)`. Populated whenever the pass inspected the input.
+    /// `provenance_read` | `content` | `none (elided)`. Populated whenever
+    /// the pass inspected the input.
     pub protection_reasons: Vec<(&'static str, usize)>,
     /// Chars saved by lever across this body: `head_tail` | `repeats` |
-    /// `whitespace` | `tool_descriptions`.
+    /// `whitespace` | `tool_descriptions` | `stale_images`.
     pub saved_by_lever: BTreeMap<&'static str, usize>,
 }
 
@@ -118,12 +103,32 @@ impl TrimOutcome {
     }
 }
 
-/// Trim only harmless whitespace in recognized tool-result text.
+/// Trim recognized tool-result text with the native Claude Code profile.
 ///
-/// The function is fail-open by construction. A request with backend-owned
-/// state (`previous_response_id`), an unknown input item, or an unknown output
-/// block is returned byte-for-byte equivalent as JSON without modification.
+/// The function is fail-open by construction. Backend-owned state
+/// (`previous_response_id`) and every non-tool-output item remain untouched,
+/// except that already-completed image blocks in older user messages may be
+/// removed. Explicit tool-output text in the request is eligible for the same
+/// provenance-gated pass. An unknown input item or unknown output block returns
+/// the original payload without modification.
 pub fn trim_responses(body: Value) -> TrimOutcome {
+    trim_responses_with_knobs(body, &codex_default_knobs())
+}
+
+/// Live/default Codex profile matching Claude Code's current native settings:
+/// 1000 chars from each side, a 4000-char minimum elision, and whitespace ops
+/// enabled. The HTTPS/WebSocket handlers replace these values with live state.
+pub fn codex_default_knobs() -> NativeKnobs {
+    NativeKnobs {
+        tool_result_head: 1_000,
+        tool_result_tail: 1_000,
+        ws_enabled: true,
+        ..NativeKnobs::default()
+    }
+}
+
+/// Apply the Codex Responses trim with an explicit native-style profile.
+pub fn trim_responses_with_knobs(body: Value, knobs: &NativeKnobs) -> TrimOutcome {
     let before = match serde_json::to_vec(&body) {
         Ok(bytes) => bytes,
         _ => return TrimOutcome::unchanged(body, "unserializable_body"),
@@ -132,9 +137,6 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
     let Some(object) = body.as_object() else {
         return TrimOutcome::unchanged(body, "unknown_root_shape");
     };
-    if object.contains_key("previous_response_id") {
-        return TrimOutcome::unchanged(body, "backend_owned_state");
-    }
     let Some(input) = object.get("input").and_then(Value::as_array) else {
         return TrimOutcome::unchanged(body, "missing_input");
     };
@@ -163,12 +165,24 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
         })
         .collect();
 
-    let mut changed = false;
+    let mut saved_by_lever: BTreeMap<&'static str, usize> = BTreeMap::new();
+
+    // Images are needed for the latest user turn, but repeating every prior
+    // base64 image in every subsequent full-history request is pure prompt
+    // ballast after that turn has completed. Keep images only in the last
+    // user message; older image-only messages receive a tiny marker so the
+    // message remains valid and the model can see that the payload was
+    // intentionally elided.
+    let stale_image_savings = prune_stale_input_images(candidate_input);
+    let mut changed = stale_image_savings > 0;
+    if stale_image_savings > 0 {
+        saved_by_lever.insert("stale_images", stale_image_savings);
+    }
     let mut repeated_line_trim_allowed = false;
     let mut head_tail_trim_applied = false;
+    let mut tool_output_changed = false;
     let mut classes = Vec::new();
     let mut protection_reasons: Vec<(&'static str, usize)> = Vec::new();
-    let mut saved_by_lever: BTreeMap<&'static str, usize> = BTreeMap::new();
     for (index, original_item) in input.iter().enumerate() {
         let Some(item_type) = original_item.get("type").and_then(Value::as_str) else {
             return TrimOutcome::unchanged(body, "unknown_item_shape");
@@ -189,11 +203,13 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                         text,
                         class,
                         item_reason,
+                        knobs,
                         &mut repeated_line_trim_allowed,
                         &mut head_tail_trim_applied,
                         &mut saved_by_lever,
                         &mut protection_reasons,
                     );
+                    tool_output_changed |= normalized != text;
                     changed |= normalized != text;
                     *output = Value::String(normalized);
                 } else {
@@ -218,11 +234,13 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                             &text,
                             class,
                             item_reason,
+                            knobs,
                             &mut repeated_line_trim_allowed,
                             &mut head_tail_trim_applied,
                             &mut saved_by_lever,
                             &mut protection_reasons,
                         );
+                        tool_output_changed |= normalized != text;
                         changed |= normalized != text;
                         block["text"] = Value::String(normalized);
                     }
@@ -257,13 +275,9 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
                 .with_telemetry(protection_reasons, saved_by_lever);
         }
     };
-    TrimOutcome {
-        body: candidate,
-        applied: true,
-        reason: "applied",
-        tokens_before: (before.len() / 4) as u64,
-        tokens_after: (after.len() / 4) as u64,
-        stages: vec![StageInfo {
+    let mut stages = Vec::new();
+    if tool_output_changed {
+        stages.push(StageInfo {
             name: if repeated_line_trim_allowed {
                 if head_tail_trim_applied {
                     "tool_output_whitespace_and_safe_diagnostics"
@@ -277,22 +291,87 @@ pub fn trim_responses(body: Value) -> TrimOutcome {
             },
             bytes_before: before.len(),
             bytes_after: after.len(),
-        }],
+        });
+    }
+    if stale_image_savings > 0 {
+        stages.push(StageInfo {
+            name: "stale_input_images",
+            bytes_before: before.len(),
+            bytes_after: after.len(),
+        });
+    }
+    TrimOutcome {
+        body: candidate,
+        applied: true,
+        reason: "applied",
+        tokens_before: (before.len() / 4) as u64,
+        tokens_after: (after.len() / 4) as u64,
+        stages,
         classes,
         protection_reasons,
         saved_by_lever,
     }
 }
 
+/// Remove `input_image` blocks from user messages older than the latest user
+/// message. A request can contain many snapshots of a conversation, but only
+/// the latest user turn can introduce an image that the current request still
+/// needs to inspect. The newest user message is therefore kept byte-for-byte.
+///
+/// Returns the serialized character savings. The caller uses this as telemetry
+/// and as the change bit; unknown message/content shapes are left untouched.
+fn prune_stale_input_images(items: &mut [Value]) -> usize {
+    let last_user_message = items.iter().rposition(|item| {
+        item.get("type").and_then(Value::as_str) == Some("message")
+            && item.get("role").and_then(Value::as_str) == Some("user")
+    });
+    let Some(last_user_message) = last_user_message else {
+        return 0;
+    };
+
+    let mut savings = 0usize;
+    for (index, item) in items.iter_mut().enumerate() {
+        if index == last_user_message
+            || item.get("type").and_then(Value::as_str) != Some("message")
+            || item.get("role").and_then(Value::as_str) != Some("user")
+        {
+            continue;
+        }
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let before_bytes = serde_json::to_vec(content).map_or(0, |bytes| bytes.len());
+        let before_blocks = content.len();
+        content.retain(|block| block.get("type").and_then(Value::as_str) != Some("input_image"));
+        if content.len() == before_blocks {
+            continue;
+        }
+        if content.is_empty() {
+            content.push(serde_json::json!({
+                "type": "input_text",
+                "text": STALE_IMAGE_MARKER,
+            }));
+        }
+        let after_bytes = serde_json::to_vec(content).map_or(0, |bytes| bytes.len());
+        savings += before_bytes.saturating_sub(after_bytes);
+    }
+    savings
+}
+
 /// Decode and trim one text WebSocket `response.create` message. Any other
 /// event, invalid JSON, or unsupported shape returns `None` so the caller can
 /// forward the original frame unchanged.
 pub fn trim_responses_text(text: &str) -> Option<TrimOutcome> {
+    trim_responses_text_with_knobs(text, &codex_default_knobs())
+}
+
+/// Decode and trim one `response.create` frame with an explicit profile.
+pub fn trim_responses_text_with_knobs(text: &str, knobs: &NativeKnobs) -> Option<TrimOutcome> {
     let body = serde_json::from_str::<Value>(text).ok()?;
     if body.get("type").and_then(Value::as_str) != Some("response.create") {
         return None;
     }
-    Some(trim_responses(body))
+    Some(trim_responses_with_knobs(body, knobs))
 }
 
 /// Prepare one client-to-upstream WebSocket text frame.
@@ -301,10 +380,19 @@ pub fn trim_responses_text(text: &str) -> Option<TrimOutcome> {
 /// frame. This keeps the transport boundary fail-open and makes the bridge
 /// policy independently testable without a live upstream connection.
 pub fn trim_responses_text_if_enabled(text: &str, enabled: bool) -> String {
+    trim_responses_text_if_enabled_with_knobs(text, enabled, &codex_default_knobs())
+}
+
+/// Prepare one client-to-upstream frame with an explicit profile.
+pub fn trim_responses_text_if_enabled_with_knobs(
+    text: &str,
+    enabled: bool,
+    knobs: &NativeKnobs,
+) -> String {
     if !enabled {
         return text.to_owned();
     }
-    let Some(outcome) = trim_responses_text(text) else {
+    let Some(outcome) = trim_responses_text_with_knobs(text, knobs) else {
         return text.to_owned();
     };
     if !outcome.applied {
@@ -313,53 +401,33 @@ pub fn trim_responses_text_if_enabled(text: &str, enabled: bool) -> String {
     serde_json::to_string(&outcome.body).unwrap_or_else(|_| text.to_owned())
 }
 
-fn normalize_tool_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut blank_lines = 0usize;
-    for line in text.lines() {
-        let line = line.trim_end();
-        if line.trim().is_empty() {
-            blank_lines += 1;
-            if blank_lines > 2 {
-                continue;
-            }
-        } else {
-            blank_lines = 0;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(line);
-    }
-    out
-}
-
 /// Trim one tool-output block, recording its protection reason (per block, in
 /// chars) and per-lever char savings for the replay report.
 ///
-/// `item_reason` is the item-level provenance protection (`Some("orphan" |
-/// "provenance_read" | "apply_patch")`); per-block content protection (fenced
-/// code, diagrams — CC parity layers 2-3) is checked here too. A protected
-/// block is returned byte-identical. Otherwise the block is eligible and goes
-/// through `transform_tool_text`.
+/// `item_reason` is the item-level provenance protection (`Some("provenance_read")`);
+/// per-block content protection (fenced code, diagrams — CC parity layers 2-3)
+/// is checked here too. A protected block is returned byte-identical. Otherwise
+/// the block is eligible and goes through `transform_tool_text`.
 fn transform_block(
     text: &str,
     class: ContentClass,
     item_reason: Option<&'static str>,
+    knobs: &NativeKnobs,
     repeated_line_trim_allowed: &mut bool,
     head_tail_trim_applied: &mut bool,
     saved_by_lever: &mut BTreeMap<&'static str, usize>,
     protection_reasons: &mut Vec<(&'static str, usize)>,
 ) -> String {
-    if text.chars().count() < MIN_TOOL_OUTPUT_CHARS {
-        protection_reasons.push((ELIGIBLE, text.chars().count()));
-        return text.to_owned();
-    }
     if let Some(reason) = item_reason {
         protection_reasons.push((reason, text.chars().count()));
         return text.to_owned();
     }
-    if content_class_protected(class) || tool_result_protected(text, None, true, 0.01) {
+    if tool_result_protected(
+        text,
+        None,
+        knobs.tool_result_fence_requires_code,
+        knobs.tool_result_arrow_density_min,
+    ) {
         protection_reasons.push((CONTENT, text.chars().count()));
         return text.to_owned();
     }
@@ -367,37 +435,23 @@ fn transform_block(
     transform_tool_text(
         text,
         class,
+        knobs,
         repeated_line_trim_allowed,
         head_tail_trim_applied,
         saved_by_lever,
     )
 }
 
-/// Structured or ambiguous output is byte-sensitive even when provenance does
-/// not identify it as a file read. In particular, a linked `function_call`
-/// may generate JSON/source through an arbitrary shell command, so provenance
-/// alone cannot be the only protection layer.
-fn content_class_protected(class: ContentClass) -> bool {
-    matches!(
-        class,
-        ContentClass::SourceCode
-            | ContentClass::StructuredData
-            | ContentClass::Diff
-            | ContentClass::Tabular
-            | ContentClass::DirListing
-            | ContentClass::Ambiguous
-    )
-}
-
 /// Transform an eligible tool-output text block.
 ///
-/// Whitespace normalization always applies; repeated-line compression stays
-/// gated on the four diagnostic classes (a separate, safe op); head/tail
-/// compression applies unconditionally to any eligible block. Every lever
-/// attributes its char savings so the replay can split the total.
+/// Native whitespace operations apply when enabled; repeated-line compression
+/// stays gated on the four diagnostic classes; head/tail compression follows
+/// the shared native `min_elide` gate. Every lever attributes its char savings
+/// so the replay can split the total.
 fn transform_tool_text(
     text: &str,
     class: ContentClass,
+    knobs: &NativeKnobs,
     repeated_line_trim_allowed: &mut bool,
     head_tail_trim_applied: &mut bool,
     saved_by_lever: &mut BTreeMap<&'static str, usize>,
@@ -418,14 +472,6 @@ fn transform_tool_text(
             | ContentClass::StackTrace
             | ContentClass::TestOutput
     );
-    let normalized = normalize_tool_text(text);
-    let whitespace_saved = text
-        .chars()
-        .count()
-        .saturating_sub(normalized.chars().count());
-    if whitespace_saved > 0 {
-        *saved_by_lever.entry("whitespace").or_default() += whitespace_saved;
-    }
     let diagnostic_class = matches!(
         class,
         ContentClass::Logs
@@ -433,9 +479,9 @@ fn transform_tool_text(
             | ContentClass::StackTrace
             | ContentClass::TestOutput
     );
-    let normalized = if diagnostic_class {
-        let compressed = compress_repeated_lines(&normalized);
-        let repeats_saved = normalized
+    let repeated = if diagnostic_class {
+        let compressed = compress_repeated_lines(text);
+        let repeats_saved = text
             .chars()
             .count()
             .saturating_sub(compressed.chars().count());
@@ -444,62 +490,60 @@ fn transform_tool_text(
         }
         compressed
     } else {
-        normalized
+        text.to_owned()
     };
-    let (head, tail, min_elide) = if diagnostic_class {
-        (
-            DIAGNOSTIC_HEAD_CHARS,
-            DIAGNOSTIC_TAIL_CHARS,
-            DIAGNOSTIC_MIN_ELIDE,
-        )
+    let ws_baseline = if knobs.ws_enabled {
+        native_trim::apply_ws_ops(&repeated, knobs)
     } else {
-        (SAFE_HEAD_CHARS, SAFE_TAIL_CHARS, SAFE_MIN_ELIDE)
+        repeated.clone()
     };
-    if let Some(compressed) = compress_head_tail(&normalized, head, tail, min_elide) {
+    let whitespace_saved = repeated
+        .chars()
+        .count()
+        .saturating_sub(ws_baseline.chars().count());
+    if whitespace_saved > 0 {
+        *saved_by_lever.entry("whitespace").or_default() += whitespace_saved;
+    }
+    let transformed =
+        native_trim::transform_text(&repeated, knobs).unwrap_or_else(|| repeated.clone());
+    if transformed.contains("...[elided ") {
         *head_tail_trim_applied = true;
-        let head_tail_saved = normalized
+        let head_tail_saved = ws_baseline
             .chars()
             .count()
-            .saturating_sub(compressed.chars().count());
+            .saturating_sub(transformed.chars().count());
         if head_tail_saved > 0 {
             *saved_by_lever.entry("head_tail").or_default() += head_tail_saved;
         }
-        return compressed;
     }
-    normalized
+    transformed
 }
 
-/// Item-level provenance protection (A2.1-A2.3). Returns the reason when the
-/// output's `call_id` is an orphan or its command reads a protected file or
-/// applies a patch; `None` when provenance does not protect.
+/// Item-level provenance protection (A2.1-A2.2). Missing or unmatched
+/// provenance is intentionally not a protection reason: the native Claude Code
+/// path likewise trims an unmapped `tool_result` unless its content gate fires.
 fn item_protection<'a>(
     call_id: Option<&'a str>,
     provenance: &HashMap<&'a str, String>,
 ) -> Option<&'static str> {
-    let Some(cid) = call_id else {
-        return Some(ORPHAN);
-    };
-    let Some(command) = provenance.get(cid) else {
-        return Some(ORPHAN);
-    };
+    let cid = call_id?;
+    let command = provenance.get(cid)?;
     command_protection(command)
 }
 
-/// A2.2 + A2.3 on a lowercased command haystack: a protected file read
-/// (read verb AND a protected-extension token) or an `apply_patch`.
+/// A2.2 on a lowercased command haystack: a protected file read (read verb AND
+/// a protected-extension token). Patch output follows the native content gate;
+/// it is not a separate byte-stability class in Claude Code.
 fn command_protection(command_lower: &str) -> Option<&'static str> {
     if read_verb_seen(command_lower) && protected_ext_path_seen(command_lower) {
         return Some(PROVENANCE_READ);
-    }
-    if command_lower.contains("apply_patch") {
-        return Some(APPLY_PATCH);
     }
     None
 }
 
 /// Split a command haystack into matching words: alphanumeric runs plus
-/// hyphens, so `Get-Content` / `apply_patch`-style tokens survive and words
-/// glued to JS punctuation (`{command:"cat`) still match.
+/// hyphens, so `Get-Content`-style tokens survive and words glued to JS
+/// punctuation (`{command:"cat`) still match.
 fn command_words(s: &str) -> impl Iterator<Item = &str> {
     s.split(|c: char| !c.is_alphanumeric() && c != '-')
         .filter(|w| !w.is_empty())
@@ -576,6 +620,10 @@ fn compress_repeated_lines(text: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QualityReport {
     pub relationships_preserved: bool,
+    /// Whether the input tool graph was valid before the trim. An existing
+    /// malformed request is reported separately from a trim-induced change.
+    pub relationships_valid_before: bool,
+    pub relationships_valid_after: bool,
     pub structured_content_preserved: bool,
     /// The ordered `additional_tools[].tools[].name` list (and thus the tool
     /// count) is identical before/after. Description truncation must never drop
@@ -585,10 +633,14 @@ pub struct QualityReport {
 
 /// Check invariants that must hold for a transformed Responses body.
 pub fn quality_check(before: &Value, after: &Value) -> QualityReport {
+    let relationships_valid_before = relationships_valid(before);
+    let relationships_valid_after = relationships_valid(after);
     QualityReport {
         relationships_preserved: relationship_keys(before) == relationship_keys(after)
-            && relationships_valid(before)
-            && relationships_valid(after),
+            && relationships_valid_before
+            && relationships_valid_after,
+        relationships_valid_before,
+        relationships_valid_after,
         structured_content_preserved: protected_content_unchanged(before, after),
         tool_names_preserved: tool_names(before) == tool_names(after),
     }
@@ -736,10 +788,10 @@ fn output_text(body: &Value, item_index: usize, block_index: usize) -> Option<St
         .map(str::to_owned)
 }
 
-/// Content-based protection (A2.4, CC parity layers 2-3): fenced code and
-/// diagrams stay byte-identical regardless of provenance. The quality gate
-/// verifies exactly this set survives trim — provenance-protected blocks
-/// (orphan / file read / apply_patch) are enforced by the trim path itself.
+/// Content-based protection (CC parity layers 2-3): fenced code and diagrams
+/// stay byte-identical regardless of provenance. The quality gate verifies
+/// exactly this set survives trim; known file-read provenance is enforced by
+/// the trim path itself.
 fn is_content_protected(text: &str) -> bool {
     tool_result_protected(text, None, true, 0.01)
 }
@@ -779,14 +831,92 @@ mod tests {
     }
 
     #[test]
-    fn backend_owned_state_fails_open() {
+    fn backend_owned_state_remains_byte_stable_while_tool_output_is_trimmed() {
         let body = serde_json::json!({
             "previous_response_id": "resp_123",
-            "input": [{"type": "function_call_output", "call_id": "c", "output": large_text()}]
+            "input": [
+                {"type": "function_call", "call_id": "c", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c", "output": large_text()}
+            ]
         });
         let out = trim_responses(body.clone());
-        assert!(!out.applied);
-        assert_eq!(out.body, body);
+        assert!(out.applied);
+        assert_eq!(
+            out.body["previous_response_id"],
+            body["previous_response_id"]
+        );
+        assert_eq!(out.body["input"][0], body["input"][0]);
+        assert!(
+            out.body["input"][1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
+    }
+
+    #[test]
+    fn stale_images_are_removed_but_latest_user_image_is_preserved() {
+        let old_image = format!("data:image/png;base64,{}", "A".repeat(20_000));
+        let current_image = format!("data:image/png;base64,{}", "B".repeat(20_000));
+        let body = serde_json::json!({
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": old_image},
+                        {"type": "input_text", "text": "analyze this image"}
+                    ]
+                },
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "done"}
+                ]},
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "continue"},
+                        {"type": "input_image", "image_url": current_image}
+                    ]
+                }
+            ]
+        });
+        let out = trim_responses(body.clone());
+        assert!(out.applied);
+        assert_eq!(out.body["input"][0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(out.body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(out.body["input"][2], body["input"][2]);
+        assert!(out.saved_by_lever.contains_key("stale_images"));
+        assert_eq!(
+            out.stages.last().map(|stage| stage.name),
+            Some("stale_input_images")
+        );
+    }
+
+    #[test]
+    fn image_only_stale_message_gets_marker_and_current_image_is_unchanged() {
+        let current_image = "data:image/png;base64,current";
+        let old_image = format!("data:image/png;base64,{}", "O".repeat(10_000));
+        let body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_image", "image_url": old_image}
+                ]},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_image", "image_url": current_image}
+                ]}
+            ]
+        });
+        let out = trim_responses(body);
+        assert!(out.applied);
+        assert_eq!(
+            out.body["input"][0]["content"][0]["text"],
+            STALE_IMAGE_MARKER
+        );
+        assert_eq!(
+            out.body["input"][1]["content"][0]["image_url"],
+            current_image
+        );
     }
 
     #[test]
@@ -858,13 +988,18 @@ mod tests {
             "input": [{"type": "function_call_output", "call_id": "src_1", "output": source}]
         });
         let out = trim_responses(body.clone());
-        assert!(!out.applied);
-        assert_eq!(out.reason, "no_change");
+        assert!(out.applied);
         assert!(
             !out.body["input"][0]["output"]
                 .as_str()
                 .unwrap()
                 .contains("mhd-trim: omitted")
+        );
+        assert!(
+            out.body["input"][0]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
         );
         assert!(quality_check(&body, &out.body).structured_content_preserved);
     }
@@ -910,8 +1045,13 @@ mod tests {
             "input": [{"type": "function_call_output", "call_id": "diff_1", "output": diff}]
         });
         let out = trim_responses(body.clone());
-        assert!(!out.applied);
-        assert_eq!(out.body, body);
+        assert!(out.applied);
+        assert!(
+            out.body["input"][0]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
         assert!(quality_check(&body, &out.body).structured_content_preserved);
     }
 
@@ -925,8 +1065,13 @@ mod tests {
             }]
         });
         let out = trim_responses(body.clone());
-        assert!(!out.applied);
-        assert_eq!(out.reason, "no_change");
+        assert!(out.applied);
+        assert!(
+            out.body["input"][0]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
         assert!(quality_check(&body, &out.body).structured_content_preserved);
     }
 
@@ -946,9 +1091,19 @@ mod tests {
             ]
         });
         let out = trim_responses(body.clone());
-        assert!(!out.applied);
-        assert_eq!(out.reason, "no_change");
-        assert_eq!(out.body, body);
+        assert!(out.applied);
+        assert!(
+            out.body["input"][1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
+        assert!(
+            out.body["input"][3]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
         assert!(quality_check(&body, &out.body).structured_content_preserved);
     }
 
@@ -1118,10 +1273,9 @@ mod tests {
     }
 
     #[test]
-    fn orphan_output_is_byte_stable() {
-        // A call_id with no matching call, and an output with no call_id at all,
-        // are orphans — without provenance we cannot know the bytes are not an
-        // exact file read a later apply_patch depends on, so both stay intact.
+    fn orphan_output_uses_native_content_gates() {
+        // Missing provenance is not an implicit protection class in Claude
+        // Code. The output is eligible unless its content gate fires.
         let body = serde_json::json!({
             "input": [{
                 "type": "function_call_output",
@@ -1130,16 +1284,25 @@ mod tests {
             }]
         });
         let out = trim_responses(body.clone());
-        assert!(!out.applied);
-        assert_eq!(out.reason, "no_change");
-        assert_eq!(out.body, body);
+        assert!(out.applied);
+        assert!(
+            out.body["input"][0]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
 
         let no_call_id = serde_json::json!({
             "input": [{"type": "custom_tool_call_output", "output": large_text()}]
         });
         let out2 = trim_responses(no_call_id.clone());
-        assert!(!out2.applied);
-        assert_eq!(out2.body, no_call_id);
+        assert!(out2.applied);
+        assert!(
+            out2.body["input"][0]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
     }
 
     #[test]
@@ -1243,12 +1406,34 @@ mod tests {
     }
 
     #[test]
+    fn search_provenance_uses_content_gate_for_plain_results() {
+        let output = large_text();
+        let body = serde_json::json!({
+            "input": [
+                {"type": "custom_tool_call", "call_id": "search",
+                 "input": "const r = await tools.shell_command({command:\"rg -n pattern notes.md\"}); text(r)"},
+                {"type": "custom_tool_call_output", "call_id": "search", "output": output}
+            ]
+        });
+        let out = trim_responses(body);
+        assert!(
+            out.applied,
+            "plain search results should use safe compression"
+        );
+        assert!(
+            out.body["input"][1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("...[elided ")
+        );
+    }
+
+    #[test]
     fn rerun_on_trimmed_body_is_noop() {
         // Determinism + idempotence: the second pass must be a byte-stable no-op
         // (the `[mhd-trim: omitted` / `...[elided ` markers guard against nesting).
-        // The orphan-protected output stays large so the trimmed body remains
-        // above MIN_BYTES and the second pass genuinely re-inspects it rather
-        // than bailing out at below_min_size.
+        // Both outputs are eligible, and the markers make the second pass a
+        // genuine byte-stable no-op.
         let body = serde_json::json!({
             "input": [
                 {"type": "custom_tool_call", "call_id": "c",

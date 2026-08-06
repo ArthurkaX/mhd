@@ -272,16 +272,21 @@ Trim is an optional, deterministic compression pass that runs in-process before 
 Key properties:
 
 - **Zero extra model calls.** Compression is pure local computation (powered by [`llmtrim-core`](https://github.com/fkiene/llmtrim)), adding milliseconds rather than a round-trip.
-- **Fail-open.** Any error, a request below the size threshold, or a result that does not actually shrink forwards the original request untouched. Trim never breaks a request.
-- **Independent client switches.** Claude Code, OpenAI-compatible clients, and Codex each have their own trim switch. Codex uses the same conservative Responses engine for HTTPS (`/v1/responses`) and native WebSocket `response.create` frames; other WebSocket events and binary frames pass through unchanged.
+- **Fail-open.** Any error, unsupported shape, or result that does not actually shrink forwards the original request untouched. Trim never breaks a request.
+- **Independent client switches.** Claude Code, OpenAI-compatible clients, and Codex each have their own trim switch. Codex uses the same native-style Responses policy for HTTPS (`/v1/responses`) and native WebSocket `response.create` frames; other WebSocket events and binary frames pass through unchanged.
 - **`auto` preset.** By default Trim picks the per-request strategy (agent / code / rag / aggressive) from the request shape, so it adapts to mixed clients automatically.
 
-For Codex, only tool-output text is eligible. Content is classified as logs,
-source code, structured JSON/configuration, tabular data, or other text. Source,
-structured, and tabular content is protected; repeated log lines are compressed
-only when they are consecutive and replaced with an explicit
-`[mhd-trim: omitted N repeated log lines]` marker. Unknown request shapes,
-backend-owned state, invalid JSON, and no-gain results remain fail-open.
+For Codex, explicit tool-output text uses the same native profile as Claude
+Code: live head/tail budgets, whitespace operations, a 4000-character minimum
+elision, and the same fenced-code/diagram gates. Known file reads are protected
+by command provenance; orphan or plain JSON/diff/source output is eligible just
+as an unmapped native `tool_result` is. Stale `input_image` blocks are removed
+from older user messages while images in the latest user message are preserved.
+An image-only old message receives `[mhd-trim: previous image omitted]`.
+Backend-owned fields and all other non-tool items remain byte-stable. Repeated
+diagnostic lines are compressed only when consecutive and replaced with
+`[mhd-trim: omitted N repeated log lines]`. Unknown request shapes, invalid
+JSON, and no-gain results remain fail-open.
 
 The Proxy Trace records `trim_applied`, estimated tokens before/after,
 `trim_preset=responses-v1`, transport, classified content, and stage names.
