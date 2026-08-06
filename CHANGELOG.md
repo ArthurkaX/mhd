@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.8.0 - 2026-08-06
+
+- **Native Codex proxy**: OAuth-backed Responses routing, a side-model adapter, separate Codex model selection, and a WebSocket bridge for native `response.create` traffic.
+- **Codex trim**: conservative, fail-open compression for eligible tool output with provenance and content-aware protection, native-style head/tail budgets, whitespace cleanup, diagnostic repeat collapsing, stale-image removal, and protected `additional_tools` descriptions.
+- **Quota visibility**: live Codex quota tracking, Anthropic OAuth usage polling, quota timeline notes, live tray summaries, quota pace display, and dual-window quota charts in the inspector.
+- **LLM Monitor**: standalone `mhd-inspector.exe` with request activity, trim inspection, Anthropic quota, and proxy database views; the release package now ships it next to `mhd.exe`.
+- **Power controls**: quiet mode turns the display off, caps CPU usage, applies EcoQoS, and keeps the machine awake; sleep and hibernate are now bindable actions.
+- **Proxy and telemetry**: cache-weighted offline benchmarks, read-lifecycle probes, content-mix analysis, per-request prefix shape, upstream/client attribution, and self-healing database migrations.
+- **Reliability**: fixed proxy trace deadlocks, UTF-8 cursor boundary handling, model selection during refresh, and several cache/accounting edge cases.
+
 ## 0.7.5 - 2026-07-04
 
 - **LLM Trim settings page**: trim controls moved out of the LLM Proxy tab into a dedicated page — a searchable model picker, grouped `tool_result_head` budget rows sharing a dropdown, a **Calculate** button backed by live Tune data, and a Free-tier (light-trim) picker in the model-selection overlay.
