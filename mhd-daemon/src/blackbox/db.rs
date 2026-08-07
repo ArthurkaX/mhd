@@ -338,6 +338,7 @@ impl Db {
     }
 
     /// Add a time-scoped classification without rewriting historical rows.
+    #[allow(dead_code)]
     pub fn insert_classification(
         &self,
         entity_type: &str,

@@ -82,6 +82,7 @@ pub enum BlackboxEvent {
         kv: Vec<(String, String)>,
     },
     /// Explicit task/project context selected by the user.
+    #[allow(dead_code)]
     ContextSwitch {
         ts: u64,
         context: String,
@@ -495,6 +496,7 @@ impl BlackboxHandle {
         let _ = self.tx.send(BlackboxEvent::ToggleEnabled);
     }
 
+    #[allow(dead_code)]
     pub fn set_context(&self, context: impl Into<String>, note: Option<String>) {
         let _ = self.tx.send(BlackboxEvent::ContextSwitch {
             ts: epoch_secs(),
