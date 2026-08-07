@@ -81,6 +81,12 @@ pub enum BlackboxEvent {
         event: String,
         kv: Vec<(String, String)>,
     },
+    /// Explicit task/project context selected by the user.
+    ContextSwitch {
+        ts: u64,
+        context: String,
+        note: Option<String>,
+    },
     SystemLocked {
         ts: u64,
     },
@@ -157,6 +163,8 @@ pub fn epoch_secs() -> u64 {
 
 const FLUSH_EVENTS: u32 = 50;
 const FLUSH_SECS: u64 = 20;
+/// How long one input event extends the measured active interval.
+const ACTIVE_GRACE_SEC: u64 = 5;
 
 // ── Session state machine ────────────────────────────────────────────────
 
@@ -164,6 +172,7 @@ struct SessionState {
     active: bool,
     started_ts: u64,
     last_action_at: u64,
+    active_sec: u64,
     keyboard_count: u64,
     click_count: u64,
     wheel_count: u64,
@@ -189,6 +198,7 @@ impl SessionState {
             active: false,
             started_ts: 0,
             last_action_at: 0,
+            active_sec: 0,
             keyboard_count: 0,
             click_count: 0,
             wheel_count: 0,
@@ -211,6 +221,7 @@ impl SessionState {
             self.active = true;
             self.started_ts = ts;
             self.last_action_at = ts;
+            self.active_sec = 0;
             self.keyboard_count = 0;
             self.click_count = 0;
             self.wheel_count = 0;
@@ -224,6 +235,9 @@ impl SessionState {
             self.span_wheel = 0;
             self.span_moves = 0;
         } else {
+            self.active_sec = self
+                .active_sec
+                .saturating_add(ts.saturating_sub(self.last_action_at).min(ACTIVE_GRACE_SEC));
             self.last_action_at = ts;
         }
         match kind {
@@ -251,7 +265,9 @@ impl SessionState {
             return None;
         }
         let duration = ts.saturating_sub(self.started_ts);
-        let active_sec = self.last_action_at.saturating_sub(self.started_ts);
+        let active_sec = self
+            .active_sec
+            .saturating_add(ACTIVE_GRACE_SEC.min(ts.saturating_sub(self.last_action_at)));
         let data = SessionEndData {
             started_ts: self.started_ts,
             duration_sec: duration,
@@ -289,7 +305,7 @@ impl SessionState {
         self.span_moves = 0;
         self.span_app = self.last_app_name.clone();
         self.span_win = self.last_window_title.clone();
-        Some(data)
+        (data.duration_sec > 0).then_some(data)
     }
 }
 
@@ -326,14 +342,26 @@ fn get_foreground_title(window_title_filter: &[String]) -> String {
         let mut buf = [0u16; 512];
         let len = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf);
         if len > 0 {
-            redact_title(
+            normalize_title(redact_title(
                 String::from_utf16_lossy(&buf[..len as usize]),
                 window_title_filter,
-            )
+            ))
         } else {
             String::new()
         }
     }
+}
+
+/// Keep long-term window history compact and avoid retaining arbitrarily large
+/// title payloads. Filtering happens before normalization so the redaction
+/// marker can never be truncated into an ambiguous value.
+fn normalize_title(title: String) -> String {
+    if title == "[REDACTED] — Private Browsing" {
+        return title;
+    }
+    let compact = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_TITLE_CHARS: usize = 256;
+    compact.chars().take(MAX_TITLE_CHARS).collect()
 }
 
 fn redact_title(title: String, window_title_filter: &[String]) -> String {
@@ -380,6 +408,40 @@ fn get_app_name() -> Option<String> {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or(path);
         Some(stem)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ForegroundStatus {
+    App,
+    DesktopOrShell,
+    CaptureFailed,
+}
+
+struct ForegroundSnapshot {
+    app: Option<String>,
+    title: String,
+    status: ForegroundStatus,
+}
+
+fn foreground_snapshot(window_title_filter: &[String]) -> ForegroundSnapshot {
+    let title = get_foreground_title(window_title_filter);
+    let app = get_app_name();
+    let status = if app.is_some() {
+        ForegroundStatus::App
+    } else if !title.is_empty() {
+        ForegroundStatus::DesktopOrShell
+    } else {
+        ForegroundStatus::CaptureFailed
+    };
+    ForegroundSnapshot { app, title, status }
+}
+
+fn foreground_status_payload(status: ForegroundStatus) -> &'static str {
+    match status {
+        ForegroundStatus::App => "foreground_status=app",
+        ForegroundStatus::DesktopOrShell => "foreground_status=desktop_or_shell",
+        ForegroundStatus::CaptureFailed => "foreground_status=capture_failed",
     }
 }
 
@@ -432,6 +494,14 @@ impl BlackboxHandle {
     pub fn toggle(&self) {
         let _ = self.tx.send(BlackboxEvent::ToggleEnabled);
     }
+
+    pub fn set_context(&self, context: impl Into<String>, note: Option<String>) {
+        let _ = self.tx.send(BlackboxEvent::ContextSwitch {
+            ts: epoch_secs(),
+            context: context.into(),
+            note,
+        });
+    }
 }
 
 /// Start blackbox monitoring.
@@ -456,13 +526,16 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                 eprintln!("mhd: blackbox: cannot create dir: {e}");
                 return;
             }
-            let db = match Db::open(&db_path()) {
+            let mut db = match Db::open(&db_path()) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("mhd: blackbox: {e}");
                     return;
                 }
             };
+            if let Err(e) = db.start_run(epoch_secs(), env!("CARGO_PKG_VERSION"), None) {
+                eprintln!("mhd: blackbox: {e}");
+            }
 
             let mut session = SessionState::new();
             let mut enabled = true;
@@ -596,6 +669,7 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                         if events_since_flush > 0 {
                             let _ = db.commit();
                         }
+                        let _ = db.end_run(now);
                         break;
                     }
                     BlackboxEvent::QuickNote { ts, text } => {
@@ -635,6 +709,30 @@ pub fn start(config: BlackboxConfig) -> Result<BlackboxHandle, String> {
                             } else {
                                 events_since_flush += 1;
                             }
+                            check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
+                        }
+                    }
+                    BlackboxEvent::ContextSwitch { ts, context, note } => {
+                        if enabled {
+                            ensure_tx(&db, &mut events_since_flush, &mut last_flush_ts);
+                            if let Err(e) =
+                                db.insert_context_event(ts, &context, "manual", note.as_deref())
+                            {
+                                eprintln!("mhd: blackbox: insert context: {e}");
+                            }
+                            let payload = note
+                                .as_deref()
+                                .map(|n| format!("context={context} note=\"{n}\""));
+                            if let Err(e) = db.insert_event(
+                                ts,
+                                "context_switch",
+                                session.last_app_name.as_deref(),
+                                session.last_window_title.as_deref(),
+                                payload.as_deref(),
+                            ) {
+                                eprintln!("mhd: blackbox: insert context_switch: {e}");
+                            }
+                            events_since_flush += 1;
                             check_flush_inner(&db, &mut events_since_flush, &mut last_flush_ts);
                         }
                     }
@@ -869,7 +967,21 @@ fn end_session_and_insert(
 
     // 6. Flush all buffered spans + the final one, all referencing event_id
     for sp in session.closed_spans.drain(..).chain(final_span.into_iter()) {
+        if sp.duration_sec == 0 {
+            continue;
+        }
         let _ = db.insert_app_span(
+            event_id,
+            sp.app.as_deref(),
+            sp.win.as_deref(),
+            sp.started_ts,
+            sp.duration_sec,
+            sp.keyboard,
+            sp.clicks,
+            sp.wheel,
+            sp.moves,
+        );
+        let _ = db.insert_window_span(
             event_id,
             sp.app.as_deref(),
             sp.win.as_deref(),
@@ -896,8 +1008,9 @@ fn check_app_and_title(
     events_since_flush: &mut u32,
     last_flush_ts: &mut u64,
 ) {
-    let app = get_app_name();
-    let title = get_foreground_title(window_title_filter);
+    let snapshot = foreground_snapshot(window_title_filter);
+    let app = snapshot.app;
+    let title = snapshot.title;
 
     let app_changed = app.as_deref() != session.last_app_name.as_deref();
     let title_changed = title != session.last_window_title.as_deref().unwrap_or("");
@@ -905,8 +1018,9 @@ fn check_app_and_title(
     if app_changed || title_changed {
         let ts = epoch_secs();
 
-        // If app changed inside an active session, split the current span
-        if app_changed && session.active {
+        // Split at either an app or title change. app_spans remain available
+        // for app-level aggregation; window_spans preserve the finer context.
+        if (app_changed || title_changed) && session.active {
             let span_end = ts;
             if let Some(sp) = session.take_span(span_end) {
                 session.closed_spans.push(sp);
@@ -946,7 +1060,7 @@ fn check_app_and_title(
                 } else {
                     Some(title.as_str())
                 },
-                None,
+                Some(foreground_status_payload(snapshot.status)),
             );
             *events_since_flush += 1;
         }
@@ -987,7 +1101,7 @@ mod tests {
         let data = data.unwrap();
         assert_eq!(data.started_ts, 1000);
         assert_eq!(data.duration_sec, 14);
-        assert_eq!(data.active_sec, 12); // last_action_at 1012 - started_ts 1000
+        assert_eq!(data.active_sec, 14); // two input gaps plus the final 5-second grace
         assert_eq!(data.keyboard, 1);
         assert_eq!(data.clicks, 1);
         assert_eq!(data.wheel, 1);
@@ -1020,5 +1134,12 @@ mod tests {
         let title = redact_title("Example - Microsoft Edge".to_string(), &filter);
 
         assert_eq!(title, "Example - Microsoft Edge");
+    }
+
+    #[test]
+    fn normalize_title_compacts_and_limits_titles() {
+        let title = normalize_title("  project   —   an extremely long title ".repeat(30));
+        assert!(!title.contains("  "));
+        assert!(title.chars().count() <= 256);
     }
 }
