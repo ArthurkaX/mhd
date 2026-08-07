@@ -1485,7 +1485,10 @@ mod tests {
             state.codex_target_for_model("gpt-5.4"),
             CodexTarget::Model("side-model".to_string())
         );
-        assert_eq!(state.codex_target_for_model("gpt-5.6-luna"), CodexTarget::Native);
+        assert_eq!(
+            state.codex_target_for_model("gpt-5.6-luna"),
+            CodexTarget::Native
+        );
         assert_eq!(state.codex_target_for_model(""), CodexTarget::Native);
     }
 }

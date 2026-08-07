@@ -141,9 +141,9 @@ fn current_cards() -> Vec<QuotaCard> {
             reset: codex.as_ref().and_then(|q| q.resets_at),
             // `event_at` is epoch seconds; clamp a skewed future timestamp to
             // a zero age rather than a negative one.
-            age: codex.as_ref().map(|q| {
-                Duration::from_secs(codex_now.saturating_sub(q.event_at).max(0) as u64)
-            }),
+            age: codex
+                .as_ref()
+                .map(|q| Duration::from_secs(codex_now.saturating_sub(q.event_at).max(0) as u64)),
         },
         QuotaCard {
             name: "Claude",
