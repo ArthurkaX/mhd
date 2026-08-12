@@ -64,7 +64,7 @@ pub struct Settings {
     pub fable_target: String,
 
     /// Codex gpt-5.4 override: `native` or provider/model id. Other Codex
-    /// models remain native during the initial rollout.
+    /// models remain native.
     #[serde(default = "default_codex_target")]
     pub codex_target: String,
 

@@ -827,7 +827,18 @@ pub async fn post_codex_responses(
     // Claude tier. `status` and the token counts land when the usage tap
     // closes the row at end-of-stream for successes, and immediately on the
     // error path below.
-    let target = state.codex_target_for_model(&model);
+    // Codex's remote compaction request can carry the previous model
+    // (normally gpt-5.4) even after the user switches the active model. The
+    // side Chat Completions adapter cannot synthesize Responses compaction
+    // items, so preserve this special request on the native Responses route.
+    let is_compaction = decoded_payload
+        .as_ref()
+        .is_some_and(codex_payload_is_compaction);
+    let target = if is_compaction {
+        CodexTarget::Native
+    } else {
+        state.codex_target_for_model(&model)
+    };
     state.push_trace(TraceEntry {
         seq: req_id,
         client: ClientKind::Codex,
@@ -937,10 +948,10 @@ struct ActiveCodexWebSocketRequest {
 type ActiveCodexWebSocket = Arc<TokioMutex<Option<ActiveCodexWebSocketRequest>>>;
 
 /// Codex first attempts a WebSocket upgrade. Native requests are bridged to
-/// the official ChatGPT endpoint. When a `gpt-5.4` request is selected for a
-/// side provider, the bridge closes before forwarding it so Codex reconnects
-/// through the HTTPS adapter, which is the only path that can translate to
-/// Chat Completions.
+/// the official ChatGPT endpoint. When a request is selected for a side
+/// provider, the bridge closes cleanly before forwarding it so Codex can
+/// reconnect through the HTTPS adapter, which is the only path that can
+/// translate to Chat Completions.
 pub async fn get_codex_websocket(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -978,6 +989,7 @@ async fn bridge_codex_websocket(
     let active: ActiveCodexWebSocket = Arc::new(TokioMutex::new(None));
     let (mut client_tx, mut client_rx) = client.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
+    let (fallback_tx, fallback_rx) = tokio::sync::oneshot::channel::<()>();
 
     let active_from_client = Arc::clone(&active);
     let state_from_client = Arc::clone(&state);
@@ -993,8 +1005,14 @@ async fn bridge_codex_websocket(
                     // the HTTPS side adapter. Other models remain native.
                     if codex_request_requires_https(&state_from_client, &original) {
                         let _ = upstream_tx
-                            .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                            .send(tokio_tungstenite::tungstenite::Message::Close(Some(
+                                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                                    reason: "side provider uses HTTPS adapter".into(),
+                                },
+                            )))
                             .await;
+                        let _ = fallback_tx.send(());
                         break;
                     }
                     let mut trim_outcome = None;
@@ -1036,7 +1054,21 @@ async fn bridge_codex_websocket(
     let active_from_upstream = Arc::clone(&active);
     let state_from_upstream = Arc::clone(&state);
     let mut upstream_to_client = tokio::spawn(async move {
-        while let Some(Ok(message)) = upstream_rx.next().await {
+        let mut fallback_rx = fallback_rx;
+        loop {
+            let message = tokio::select! {
+                _ = &mut fallback_rx => {
+                    let _ = client_tx.send(AxumMessage::Close(Some(
+                        axum::extract::ws::CloseFrame {
+                            code: 1000,
+                            reason: "side provider uses HTTPS adapter".into(),
+                        },
+                    ))).await;
+                    break;
+                }
+                message = upstream_rx.next() => message,
+            };
+            let Some(Ok(message)) = message else { break };
             if let tokio_tungstenite::tungstenite::Message::Text(text) = &message {
                 observe_codex_response(&state_from_upstream, &active_from_upstream, text.as_str())
                     .await;
@@ -1066,11 +1098,34 @@ fn codex_request_requires_https(state: &Arc<AppState>, text: &str) -> bool {
     if payload.get("type").and_then(Value::as_str) != Some("response.create") {
         return false;
     }
+    if codex_payload_is_compaction(&payload) {
+        return false;
+    }
     let model = payload
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default();
     state.codex_target_for_model(model) != CodexTarget::Native
+}
+
+fn codex_payload_is_compaction(payload: &Value) -> bool {
+    let Some(raw) = payload
+        .get("client_metadata")
+        .and_then(|metadata| metadata.get("x-codex-turn-metadata"))
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get("request_kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("compaction")
 }
 
 async fn observe_codex_request(

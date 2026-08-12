@@ -176,7 +176,7 @@ Example shortcut:
 Ctrl+Alt+L
 ```
 
-The Claude Code selector shows configured targets for each Claude tier. The Codex selector currently controls only the `gpt-5.4` route; other Codex models remain native. Pick `native` to return to the official provider, or pick one of your configured provider models.
+The Claude Code selector shows configured targets for each Claude tier. The Codex selector controls the `gpt-5.4` route; other Codex models remain native. Pick `native` to return to the official provider, or pick one of your configured provider models.
 
 ## Tray Tools
 

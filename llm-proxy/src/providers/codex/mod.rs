@@ -318,7 +318,11 @@ fn responses_usage_from_chat(
 ) -> Option<Value> {
     let input = input?;
     let output = output?;
-    let mut usage = serde_json::json!({"input_tokens": input, "output_tokens": output});
+    let mut usage = serde_json::json!({
+        "input_tokens": input,
+        "output_tokens": output,
+        "total_tokens": input.saturating_add(output),
+    });
     if let Some(cached) = cached {
         usage["input_tokens_details"] = serde_json::json!({"cached_tokens": cached});
     }
@@ -715,6 +719,14 @@ async fn forward_side_chat_adapter(
     payload: Value,
     model: &str,
 ) -> Result<Response> {
+    // Keep the model selected by Codex in the synthesized Responses objects.
+    // `model` is the replacement provider model sent to Chat Completions; it
+    // must not leak back to Codex as its active native model.
+    let client_model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("gpt-5.4")
+        .to_string();
     let (request_body, tool_map, dropped) = adapt_request(&payload, model)?;
     if !dropped.is_empty() {
         let summary = dropped
@@ -753,10 +765,13 @@ async fn forward_side_chat_adapter(
     }
     let input_stream = upstream.bytes_stream();
     let output = async_stream::stream! {
-        let id = format!("mhd_resp_{}", crate::providers::now_unix_ms());
-        let item_id = format!("{id}_item");
+        let id = format!("resp_mhd_{}", crate::providers::now_unix_ms());
+        // Codex validates Responses item ids when it feeds the synthesized
+        // response back into the next turn. In particular, message items must
+        // use the `msg_` namespace; arbitrary proxy-local ids are rejected.
+        let item_id = format!("msg_{}", crate::providers::now_unix_ms());
         let frame = |event: &str, data: Value| bytes::Bytes::from(format!("event: {event}\ndata: {data}\n\n"));
-        yield Ok::<bytes::Bytes, std::io::Error>(frame("response.created", serde_json::json!({"type":"response.created","sequence_number":0,"response":{"id":id,"object":"response","status":"in_progress","output":[]}})));
+        yield Ok::<bytes::Bytes, std::io::Error>(frame("response.created", serde_json::json!({"type":"response.created","sequence_number":0,"response":{"id":id,"object":"response","status":"in_progress","model":client_model.clone(),"output":[]}})));
         let mut buf = String::new();
         let mut full_text = String::new();
         let mut sequence = 1u64;
@@ -835,7 +850,7 @@ async fn forward_side_chat_adapter(
             yield Ok(frame("response.output_item.done", serde_json::json!({"type":"response.output_item.done","sequence_number":sequence,"output_index":output_index,"item":item}))); sequence += 1;
             outputs.push(item);
         }
-        let mut completed = serde_json::json!({"type":"response.completed","sequence_number":sequence,"response":{"id":id,"object":"response","status":"completed","output":outputs}});
+        let mut completed = serde_json::json!({"type":"response.completed","sequence_number":sequence,"response":{"id":id,"object":"response","status":"completed","model":client_model,"output":outputs}});
         if let Some(usage) = responses_usage_from_chat(usage_input, usage_output, usage_cached) {
             completed["response"]["usage"] = usage;
         }
@@ -931,11 +946,13 @@ mod tests {
         let usage = responses_usage_from_chat(Some(10), Some(5), Some(3)).expect("usage present");
         assert_eq!(usage["input_tokens"], 10);
         assert_eq!(usage["output_tokens"], 5);
+        assert_eq!(usage["total_tokens"], 15);
         assert_eq!(usage["input_tokens_details"]["cached_tokens"], 3);
         // Cached tokens not reported -> no `input_tokens_details` key at all.
         let usage = responses_usage_from_chat(Some(10), Some(5), None).expect("usage present");
         assert_eq!(usage["input_tokens"], 10);
         assert_eq!(usage["output_tokens"], 5);
+        assert_eq!(usage["total_tokens"], 15);
         assert!(usage.get("input_tokens_details").is_none());
         // No usage at all -> the key is omitted entirely, never zeros.
         assert!(responses_usage_from_chat(None, None, None).is_none());

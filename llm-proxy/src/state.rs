@@ -186,6 +186,9 @@ pub enum CodexTarget {
     Model(String),
 }
 
+/// The targeted Codex offload route. All other Codex model ids remain native.
+pub const CODEX_OFFLOAD_MODEL: &str = "gpt-5.4";
+
 impl CodexTarget {
     pub fn parse(s: &str) -> Self {
         if s.eq_ignore_ascii_case(NATIVE) || s.is_empty() {
@@ -201,10 +204,6 @@ impl CodexTarget {
         }
     }
 }
-
-/// Initial Codex offload scope. Other Codex model ids stay on the native route
-/// until an explicit per-model mapping is added.
-pub const CODEX_OFFLOAD_MODEL: &str = "gpt-5.4";
 
 /// A single proxy routing decision recorded for the live trace overlay.
 #[derive(Debug, Clone)]
@@ -1158,8 +1157,8 @@ impl AppState {
         *self.codex_target.write().unwrap_or_else(|e| e.into_inner()) = target;
     }
 
-    /// Resolve the Codex route for one requested model. The current rollout is
-    /// intentionally limited to gpt-5.4; every other model remains native.
+    /// Resolve the Codex route for the targeted model only. Every other model
+    /// remains on the native path with its original request untouched.
     pub fn codex_target_for_model(&self, model: &str) -> CodexTarget {
         if model == CODEX_OFFLOAD_MODEL {
             self.codex_target()
