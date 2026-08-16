@@ -72,6 +72,12 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 # Autostart mhd at user logon (via scheduled task with highest privileges).
 # autostart = true
 
+# Optional quota pace correction for sleep. Pace is flat from local midnight
+# for this many hours, then advances faster during the remaining hours.
+# Default 0 keeps the original calendar-time pace; 7 models 00:00–07:00.
+# [quota_pace]
+# shift_hours = 7
+
 # Quit mhd (Ctrl+Alt+F12).
 [[binding]]
 trigger = "ctrl+alt+f12"
@@ -205,6 +211,12 @@ const EXAMPLE_CONFIG: &str = r#"# mhd config
 #
 # Autostart mhd at user logon (via scheduled task with highest privileges).
 # autostart = true
+
+# Optional quota pace correction for sleep. Pace is flat from local midnight
+# for this many hours, then advances faster during the remaining hours.
+# Default 0 keeps the original calendar-time pace; 7 models 00:00–07:00.
+# [quota_pace]
+# shift_hours = 7
 
 # Behavioural logger (disabled by default).
 # [blackbox]

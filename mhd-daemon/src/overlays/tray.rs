@@ -493,7 +493,9 @@ unsafe extern "system" fn wnd_proc(
 
 /// Build the fixed-size UTF-16 buffer required by `NOTIFYICONDATAW::szTip`.
 fn tray_tip_text() -> [u16; 128] {
-    let text = crate::overlays::quota_pace::tray_tooltip();
+    let text = state_ref()
+        .map(|state| crate::overlays::quota_pace::tray_tooltip(&state.app))
+        .unwrap_or_default();
     let encoded: Vec<u16> = text.encode_utf16().collect();
     let mut out = [0u16; 128];
     let len = encoded.len().min(out.len() - 1);

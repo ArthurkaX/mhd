@@ -462,6 +462,7 @@ The main config file is TOML. It can define:
 - quick note settings;
 - power plan order;
 - optional developer-only blackbox settings when compiled with that feature;
+- optional quota pace sleep correction;
 - bindings.
 
 LLM proxy settings are managed through the native settings UI and stored under:
@@ -476,6 +477,14 @@ Optional KeyCast placement can be configured manually:
 [keycast]
 position = "bottom_center"
 duration_ms = 1200
+```
+
+To keep the tray quota `pace` flat during sleep and make the daytime slope
+steeper, configure the number of flat hours from local midnight:
+
+```toml
+[quota_pace]
+shift_hours = 7 # flat 00:00–07:00; default 0 keeps calendar-time pace
 ```
 
 ---

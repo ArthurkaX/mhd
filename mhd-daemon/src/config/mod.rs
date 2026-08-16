@@ -76,6 +76,20 @@ pub struct QuotaWatcherConfig {
     pub enabled: bool,
 }
 
+/// Pace display configuration for the tray quota tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotaPaceConfig {
+    /// Flat hours from local midnight. Zero preserves the old calendar-time
+    /// pace calculation; seven gives a flat 00:00–07:00 night window.
+    pub shift_hours: u8,
+}
+
+impl Default for QuotaPaceConfig {
+    fn default() -> Self {
+        Self { shift_hours: 0 }
+    }
+}
+
 /// Validated LLM proxy config (loaded from JSON files).
 #[derive(Debug, Clone)]
 pub struct LlmProxyConfig {
@@ -269,6 +283,8 @@ pub struct AppConfig {
     /// so a legacy `[quota_watcher]` / `[codex_watcher]` section still parses.
     #[allow(dead_code)]
     pub quota_watcher: QuotaWatcherConfig,
+    /// Pace display configuration for the tray tooltip.
+    pub quota_pace: QuotaPaceConfig,
 }
 
 impl AppConfig {
@@ -432,6 +448,16 @@ impl AppConfig {
                     .as_ref()
                     .and_then(|c| c.enabled)
                     .unwrap_or(false),
+            },
+            quota_pace: QuotaPaceConfig {
+                // Keep the pre-existing calendar-time calculation as the
+                // default. Values above 23 would leave no daytime slope.
+                shift_hours: raw
+                    .quota_pace
+                    .as_ref()
+                    .and_then(|c| c.shift_hours)
+                    .unwrap_or(0)
+                    .min(23) as u8,
             },
         })
     }
@@ -853,6 +879,11 @@ impl AppConfig {
         &self.keycast
     }
 
+    /// Quota pace display configuration.
+    pub fn quota_pace(&self) -> QuotaPaceConfig {
+        self.quota_pace
+    }
+
     /// LLM proxy configuration.
     pub fn llm_proxy(&self) -> &LlmProxyConfig {
         &self.llm_proxy
@@ -956,6 +987,19 @@ action = "quit"
         );
         let cfg = parse(&toml);
         assert!(cfg.autostart());
+    }
+
+    #[test]
+    fn parse_config_with_quota_pace_shift() {
+        let toml = format!(
+            r#"[quota_pace]
+shift_hours = 7
+{}
+            "#,
+            valid_config()
+        );
+        let cfg = parse(&toml);
+        assert_eq!(cfg.quota_pace().shift_hours, 7);
     }
 
     #[test]

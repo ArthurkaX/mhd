@@ -3,6 +3,8 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::app::AppHandle;
+
 /// Age past which the tooltip admits the number may be out of date. Sits
 /// above the 10-minute background cadence so a normally-polling system never
 /// shows the marker — it appears only when the poller is off, suspended on a
@@ -36,10 +38,15 @@ struct QuotaCard {
 }
 
 /// Short system-tray tooltip containing the current 7-day quota summary.
-pub fn tray_tooltip() -> String {
+pub fn tray_tooltip(app: &AppHandle) -> String {
+    let shift_hours = app
+        .config
+        .lock()
+        .map(|config| config.quota_pace().shift_hours)
+        .unwrap_or(0);
     cached_cards()
         .iter()
-        .map(tray_tooltip_line)
+        .map(|card| tray_tooltip_line(card, shift_hours))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -76,18 +83,18 @@ fn cached_cards() -> Vec<QuotaCard> {
     cards
 }
 
-fn tray_tooltip_line(card: &QuotaCard) -> String {
+fn tray_tooltip_line(card: &QuotaCard, shift_hours: u8) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    tray_tooltip_line_at(card, now)
+    tray_tooltip_line_at(card, now, shift_hours)
 }
 
 /// Format one card with an injectable wall-clock `now` (epoch seconds) so tests
 /// can pin the pace and reset math. The public [`tray_tooltip_line`] passes the
 /// real clock.
-fn tray_tooltip_line_at(card: &QuotaCard, now: i64) -> String {
+fn tray_tooltip_line_at(card: &QuotaCard, now: i64, shift_hours: u8) -> String {
     let Some(used) = card.used else {
         return format!("{}: quota data unavailable", card.name);
     };
@@ -97,7 +104,8 @@ fn tray_tooltip_line_at(card: &QuotaCard, now: i64) -> String {
     let seconds_left = reset.saturating_sub(now).max(0);
     // Deviation from a uniform-consumption line stretched across the 7-day
     // window: +N = ahead (overspending), -N = behind (slack left).
-    let elapsed_frac = (1.0 - (seconds_left as f64 / (7.0 * 86_400.0))).clamp(0.0, 1.0);
+    let elapsed = (7 * 86_400 - seconds_left).clamp(0, 7 * 86_400);
+    let elapsed_frac = pace_elapsed_fraction(elapsed, local_seconds_since_midnight(), shift_hours);
     let pace = used - elapsed_frac * 100.0;
     let until_reset =
         mhd_telemetry::query::time_to_reset(Some(reset)).unwrap_or_else(|| "unknown".into());
@@ -119,6 +127,51 @@ fn tray_tooltip_line_at(card: &QuotaCard, now: i64) -> String {
         }
     }
     line
+}
+
+/// Return the fraction of the quota window that belongs to the active part of
+/// the day. With `shift_hours = 7`, local 00:00–07:00 contributes no elapsed
+/// pace time, while the remaining 17 hours carry the whole daily slope.
+///
+/// The window is seven days long, so its total active duration is independent
+/// of the phase at which the provider reset occurs. The phase is obtained from
+/// the local clock, while the arithmetic remains epoch-based and testable.
+fn pace_elapsed_fraction(elapsed: i64, now_phase: i64, shift_hours: u8) -> f64 {
+    let total = 7 * 86_400_i64;
+    let elapsed = elapsed.clamp(0, total);
+    let shift_seconds = i64::from(shift_hours.min(23)) * 3_600;
+    if shift_seconds == 0 {
+        return elapsed as f64 / total as f64;
+    }
+
+    let active_total = total - 7 * shift_seconds;
+    if active_total <= 0 {
+        return 0.0;
+    }
+
+    // The provider window starts exactly seven days before its reset. Rewind
+    // the current local phase by the elapsed amount to get the window phase.
+    let start_phase = (now_phase - elapsed.rem_euclid(86_400)).rem_euclid(86_400);
+    let night = night_seconds_between(start_phase, elapsed, shift_seconds);
+    ((elapsed - night) as f64 / active_total as f64).clamp(0.0, 1.0)
+}
+
+fn night_seconds_between(mut phase: i64, mut seconds: i64, night_end: i64) -> i64 {
+    let mut night = 0;
+    while seconds > 0 {
+        let segment = seconds.min(86_400 - phase);
+        night += (segment.min((night_end - phase).max(0))).max(0);
+        seconds -= segment;
+        phase = (phase + segment).rem_euclid(86_400);
+    }
+    night
+}
+
+fn local_seconds_since_midnight() -> i64 {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+
+    let time = unsafe { GetLocalTime() };
+    i64::from(time.wHour) * 3_600 + i64::from(time.wMinute) * 60 + i64::from(time.wSecond)
 }
 
 fn current_cards() -> Vec<QuotaCard> {
@@ -178,7 +231,7 @@ mod tests {
     #[test]
     fn line_fresh_below_threshold_is_unchanged() {
         let card = card_with_age(Some(STALE_AFTER - Duration::from_secs(1)));
-        let line = tray_tooltip_line_at(&card, 1000000000);
+        let line = tray_tooltip_line_at(&card, 1000000000, 0);
         // No age marker, wording identical to today.
         assert!(!line.contains("ago"));
         assert!(line.starts_with("Codex: spent 7d 20%"));
@@ -188,7 +241,7 @@ mod tests {
     #[test]
     fn line_20_minutes_renders_minutes_suffix() {
         let card = card_with_age(Some(Duration::from_secs(20 * 60)));
-        let line = tray_tooltip_line_at(&card, 1000000000);
+        let line = tray_tooltip_line_at(&card, 1000000000, 0);
         assert!(line.ends_with(" · 20m ago"));
     }
 
@@ -196,7 +249,7 @@ mod tests {
     #[test]
     fn line_3_hours_renders_hours_suffix() {
         let card = card_with_age(Some(Duration::from_secs(3 * 60 * 60)));
-        let line = tray_tooltip_line_at(&card, 1000000000);
+        let line = tray_tooltip_line_at(&card, 1000000000, 0);
         assert!(line.ends_with(" · 3h ago"));
     }
 
@@ -209,7 +262,24 @@ mod tests {
             reset: None,
             age: Some(Duration::from_secs(20 * 60)),
         };
-        let line = tray_tooltip_line_at(&card, 1000000000);
+        let line = tray_tooltip_line_at(&card, 1000000000, 0);
         assert_eq!(line, "Codex: quota data unavailable");
+    }
+
+    #[test]
+    fn seven_hour_shift_makes_night_flat_and_day_steeper() {
+        // Inject local phases so the test is independent of the machine clock.
+        assert_eq!(pace_elapsed_fraction(2 * 3_600, 2 * 3_600, 7), 0.0);
+        let two_day_hours = 9 * 3_600;
+        let expected = 2.0 / (7.0 * 17.0);
+        assert!((pace_elapsed_fraction(two_day_hours, two_day_hours, 7) - expected).abs() < 1e-9);
+        assert_eq!(pace_elapsed_fraction(7 * 86_400, 0, 7), 1.0);
+        assert_eq!(pace_elapsed_fraction(0, 0, 7), 0.0);
+    }
+
+    #[test]
+    fn night_seconds_helper_counts_midnight_to_seven() {
+        assert_eq!(night_seconds_between(0, 7 * 3_600, 7 * 3_600), 7 * 3_600);
+        assert_eq!(night_seconds_between(7 * 3_600, 17 * 3_600, 7 * 3_600), 0);
     }
 }

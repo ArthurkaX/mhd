@@ -96,6 +96,15 @@ pub struct RawQuotaWatcher {
     pub enabled: Option<bool>,
 }
 
+/// Raw TOML `[quota_pace]` section.
+#[derive(Debug, Deserialize)]
+pub struct RawQuotaPace {
+    /// Number of hours at the start of each local day during which pace is
+    /// flat. `7` models a 00:00–07:00 sleep window.
+    #[serde(default, alias = "pace_shift_hours", alias = "night_hours")]
+    pub shift_hours: Option<u64>,
+}
+
 /// Top-level TOML config structure.
 #[derive(Debug, Deserialize)]
 pub struct RawConfig {
@@ -134,6 +143,8 @@ pub struct RawConfig {
     #[serde(default)]
     #[serde(alias = "codex_watcher")]
     pub quota_watcher: Option<RawQuotaWatcher>,
+    #[serde(default)]
+    pub quota_pace: Option<RawQuotaPace>,
     #[serde(default)]
     pub binding: Vec<RawBinding>,
 }
