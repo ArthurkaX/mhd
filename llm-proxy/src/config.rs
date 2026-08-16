@@ -512,7 +512,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_port() -> u16 {
-    3456
+    8317
 }
 
 fn default_upstream_base_url() -> String {

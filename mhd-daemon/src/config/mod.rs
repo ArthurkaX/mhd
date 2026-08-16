@@ -191,7 +191,7 @@ impl Default for LlmProxyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            port: 3456,
+            port: 8317,
             log_level: "none".to_string(),
             providers: Vec::new(),
             bind_address: "127.0.0.1".to_string(),
@@ -478,7 +478,7 @@ impl AppConfig {
 
         LlmProxyConfig {
             enabled: settings.as_ref().map(|s| s.enabled).unwrap_or(false),
-            port: settings.as_ref().map(|s| s.port).unwrap_or(3456),
+            port: settings.as_ref().map(|s| s.port).unwrap_or(8317),
             log_level: settings
                 .as_ref()
                 .map(|s| s.log_level.clone())
@@ -706,7 +706,7 @@ impl AppConfig {
         // Build settings
         let settings = llm_proxy::config::Settings {
             enabled: lp.enabled.unwrap_or(false),
-            port: lp.port.unwrap_or(3456),
+            port: lp.port.unwrap_or(8317),
             upstream_base_url: upstream_base_url
                 .unwrap_or_else(|| llm_proxy::config::Settings::default().upstream_base_url),
             log_level: lp.log_level.unwrap_or_else(|| "none".to_string()),

@@ -183,7 +183,7 @@ pub fn show_config_editor(handle: AppHandle) {
             .unwrap_or_default(),
         proxy_bind_address: llm_proxy::config::load_settings()
             .map(|s| format!("{}:{}", s.bind_ip, s.port))
-            .unwrap_or_else(|_| "127.0.0.1:3456".to_string()),
+            .unwrap_or_else(|_| "127.0.0.1:8317".to_string()),
         opus_downgrade_enabled: llm_proxy::config::load_settings()
             .map(|s| s.opus_downgrade_enabled)
             .unwrap_or(false),

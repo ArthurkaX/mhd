@@ -85,12 +85,12 @@ action = "show_volume_mixer"
 
 7. Press the hotkey and assign a target to `opus`, `sonnet`, or `haiku`.
 
-The wrapper points Claude Code at the local proxy on `127.0.0.1:3456`. It also identifies Claude Code sub-agents as Sonnet 4.6, so the Sonnet tier can be routed to a separate provider or model.
+The wrapper points Claude Code at the local proxy on `127.0.0.1:8317`. It also identifies Claude Code sub-agents as Sonnet 4.6, so the Sonnet tier can be routed to a separate provider or model.
 
 ```mermaid
 flowchart LR
     CLI["Claude Code CLI"]
-    Proxy["mHD<br/>127.0.0.1:3456"]
+    Proxy["mHD<br/>127.0.0.1:8317"]
     Opus["Anthropic Opus<br/>planning and review"]
     Provider["OpenAI-compatible provider<br/>implementation"]
     Small["Another model<br/>lightweight work"]
@@ -318,7 +318,7 @@ This is meant for workflows where the expensive model should stay available for 
 Typical flow:
 
 1. Run mHD.
-2. Start Claude Code through [`claude-mhd.bat`](claude-mhd.bat), for example `C:\Workspace\Active\mhd\claude-mhd.bat`. The wrapper points `ANTHROPIC_BASE_URL` at the local proxy on `127.0.0.1:3456`.
+2. Start Claude Code through [`claude-mhd.bat`](claude-mhd.bat), for example `C:\Workspace\Active\mhd\claude-mhd.bat`. The wrapper points `ANTHROPIC_BASE_URL` at the local proxy on `127.0.0.1:8317`.
 3. Open **System tray -> mHD -> right click -> Settings -> LLM Proxy**.
 4. Add an OpenAI-compatible provider, API key, and models.
 5. Assign shortcuts for `show_llm_models` (Claude Code) and `show_codex_models` (Codex) on the **Shortcuts** page.
@@ -334,12 +334,12 @@ Routing targets can be:
 Two optional features build on this:
 
 - **Request Compression (Trim)** - a built-in, clean-room native trim engine. A single toggle deterministically shrinks outgoing requests (verbose tool output, logs, diffs, duplicate lines, bulky JSON) without busting the Anthropic prompt cache, with no extra model calls. It applies to both Claude Code and OpenAI-compatible traffic. The legacy [`llmtrim`](https://github.com/fkiene/llmtrim)-based engine remains selectable as a fallback via the `trim_engine` toggle.
-- **OpenAI-compatible clients** - editors like Zed can point at the same proxy (`http://127.0.0.1:3456/v1`) for streaming, a `/v1/models` list, and the same compression, and they show up in the Proxy Trace too.
+- **OpenAI-compatible clients** - editors like Zed can point at the same proxy (`http://127.0.0.1:8317/v1`) for streaming, a `/v1/models` list, and the same compression, and they show up in the Proxy Trace too.
 
 ```mermaid
 flowchart LR
     CLI["Claude Code CLI"]
-    Proxy["mHD LLM Proxy<br/>local 127.0.0.1:3456"]
+    Proxy["mHD LLM Proxy<br/>local 127.0.0.1:8317"]
     User["You<br/>tray / Ctrl+Alt+L"]
     Anthropic["Anthropic<br/>native passthrough"]
     Provider["OpenAI-compatible provider<br/>your API key"]

@@ -16,7 +16,7 @@ The practical goal is simple: start Claude Code once through the proxy, then use
    The wrapper sets:
 
    ```bat
-   ANTHROPIC_BASE_URL=http://127.0.0.1:3456
+   ANTHROPIC_BASE_URL=http://127.0.0.1:8317
    ```
 
 3. Open the mHD tray menu:
@@ -44,7 +44,7 @@ Claude Code normally talks directly to Anthropic. The proxy inserts a local rout
 ```mermaid
 flowchart LR
     CLI["Claude Code CLI"]
-    Proxy["mHD LLM Proxy<br/>local 127.0.0.1:3456"]
+    Proxy["mHD LLM Proxy<br/>local 127.0.0.1:8317"]
     User["You<br/>tray / Ctrl+Alt+L"]
     Anthropic["Anthropic<br/>native passthrough"]
     Provider["OpenAI-compatible provider<br/>your API key"]
@@ -87,7 +87,7 @@ The repository includes [`../claude-mhd.bat`](../claude-mhd.bat):
 ```bat
 @echo off
 setlocal
-set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"
+set "ANTHROPIC_BASE_URL=http://127.0.0.1:8317"
 REM set "ANTHROPIC_AUTH_TOKEN=unused"
 call claude %*
 ```
@@ -111,7 +111,7 @@ OpenAI-compatible surface. Add a provider in Zed's `settings.json`:
   "language_models": {
     "openai_compatible": {
       "mhd": {
-        "api_url": "http://localhost:3456/v1",
+        "api_url": "http://localhost:8317/v1",
         "api_key": "ignored-by-proxy",
         "available_models": [
           { "name": "sva-opencode/deepseek-v4-flash", "max_tokens": 1048576 }
@@ -122,8 +122,8 @@ OpenAI-compatible surface. Add a provider in Zed's `settings.json`:
 }
 ```
 
-The proxy listens on `127.0.0.1:3456`. Zed adds `/chat/completions` and `/models`
-to the base URL automatically, so `http://localhost:3456/v1` is all you need.
+The proxy listens on `127.0.0.1:8317`. Zed adds `/chat/completions` and `/models`
+to the base URL automatically, so `http://localhost:8317/v1` is all you need.
 
 Each model `name` is forwarded to the upstream gateway as-is, so use IDs your
 gateway understands (the same ones you would configure on the LLM Proxy page).

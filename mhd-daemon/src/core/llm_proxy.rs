@@ -614,7 +614,7 @@ mod tests {
     /// The listener lifetime rule: running iff at least one client is enabled,
     /// regardless of the proxy `enabled` master (the per-client switches now
     /// drive the listener). Uses port 0 so the test binds an ephemeral port and
-    /// never collides with a user's real proxy on 3456.
+    /// never collides with a user's real proxy on 8317.
     ///
     /// `#[ignore]` on purpose: `start` hardcodes `db_log_enabled: true` with no
     /// seam to turn it off, so running this spawns a real embedded server that

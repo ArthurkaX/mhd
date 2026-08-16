@@ -327,7 +327,7 @@ action = "quit"
 #
 # [llm_proxy]
 # enabled = true
-# port = 3456
+# port = 8317
 # endpoint = "http://your-gateway:8080/v1"
 # api_key = "your-gateway-api-key"
 #

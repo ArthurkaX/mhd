@@ -340,7 +340,7 @@ fn resolve_claude_exe() -> std::path::PathBuf {
 }
 
 /// Proxy base URL the spawned `claude` should target. Reads `port` / `bind_ip` from
-/// settings.json (defaulting to 127.0.0.1:3456) so the workload hits the live proxy
+/// settings.json (defaulting to 127.0.0.1:8317) so the workload hits the live proxy
 /// even when it's bound to a non-default port -- mirrors what `claude-mhd` does.
 fn proxy_base_url() -> String {
     let v = read_settings_value();
@@ -348,7 +348,7 @@ fn proxy_base_url() -> String {
         .as_ref()
         .and_then(|v| v.get("port"))
         .and_then(|p| p.as_u64())
-        .unwrap_or(3456);
+        .unwrap_or(8317);
     // The proxy may bind 0.0.0.0; always connect via loopback regardless of bind_ip.
     format!("http://127.0.0.1:{port}")
 }

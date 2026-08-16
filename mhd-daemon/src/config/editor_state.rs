@@ -253,7 +253,7 @@ pub struct SettingsState {
     pub providers: Vec<UiProvider>,
     /// Anthropic API key for native passthrough (global proxy setting).
     pub anthropic_key: String,
-    /// Proxy bind address like "127.0.0.1:3456".
+    /// Proxy bind address like "127.0.0.1:8317".
     pub proxy_bind_address: String,
     /// Opus downgrade toggle.
     pub opus_downgrade_enabled: bool,

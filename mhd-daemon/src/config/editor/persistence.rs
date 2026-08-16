@@ -166,7 +166,7 @@ pub(crate) fn apply_settings(state: &mut SettingsState) {
 
         // Save proxy bind address (port + IP) to settings.json
         if let Ok(mut settings) = llm_proxy::config::load_settings() {
-            // Parse bind address like "127.0.0.1:3456"
+            // Parse bind address like "127.0.0.1:8317"
             if let Some((ip, port_str)) = state.proxy_bind_address.rsplit_once(':') {
                 if let Ok(port) = port_str.parse::<u16>() {
                     settings.port = port;
