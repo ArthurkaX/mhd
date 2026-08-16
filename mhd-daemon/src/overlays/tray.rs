@@ -80,12 +80,27 @@ fn state_ref() -> Option<&'static TrayState> {
 // ── Icon loading ───────────────────────────────────────────────────────
 
 /// Launch the LLM Monitor (mhd-inspector --monitor) as a separate process.
-fn launch_llm_monitor() {
-    let exe = std::env::current_exe()
+fn launch_llm_monitor(app: &AppHandle) {
+    let Some(exe) = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("mhd-inspector.exe")));
-    let Some(exe) = exe else { return };
-    let _ = std::process::Command::new(exe).arg("--monitor").spawn();
+        .and_then(|p| p.parent().map(|d| d.join("mhd-inspector.exe")))
+    else {
+        app.osd
+            .show_notify("LLM Activity: could not locate mhd-inspector", 2500);
+        return;
+    };
+
+    if !exe.is_file() {
+        app.osd.show_notify(
+            format!("LLM Activity unavailable: {} is missing", exe.display()),
+            3500,
+        );
+        return;
+    }
+
+    if let Err(error) = std::process::Command::new(&exe).arg("--monitor").spawn() {
+        app.osd.show_notify(format!("LLM Activity could not open: {error}"), 3500);
+    }
 }
 
 pub(crate) fn load_tray_icon() -> HICON {
@@ -436,7 +451,7 @@ unsafe extern "system" fn wnd_proc(
                         );
                     }
                     CMD_LLM_ACTIVITY => {
-                        launch_llm_monitor();
+                        launch_llm_monitor(&state.app);
                     }
                     CMD_PROXY_TRACE => {
                         crate::overlays::proxy_trace::show(&state.app.theme());
