@@ -686,10 +686,20 @@ pub async fn stream_request(
         // *byte* and decode each complete line separately.
         let mut buf: Vec<u8> = Vec::new();
         let mut had_error = false;
+        let mut saw_content = false;
+        let mut stream_err: Option<String> = None;
+        let mut raw_head: Vec<u8> = Vec::new();
 
         while let Some(item) = byte_stream.next().await {
             let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
             buf.extend_from_slice(&chunk);
+
+            // Kept only to diagnose upstreams that answer 200 with a non-SSE
+            // error body: hold the first 512 raw bytes of the response.
+            if raw_head.len() < 512 {
+                let take = (512 - raw_head.len()).min(chunk.len());
+                raw_head.extend_from_slice(&chunk[..take]);
+            }
 
             // Process complete lines (split on byte \n).
             while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
@@ -705,13 +715,31 @@ pub async fn stream_request(
                 // with an empty `choices` array, which the guard below skips.
                 translator.observe_usage(&v);
 
+                // An upstream error object rides an SSE chunk with no
+                // `choices`, so the guard below would otherwise drop it
+                // silently.
+                if stream_err.is_none()
+                    && let Some(err_val) = v.get("error").filter(|e| !e.is_null())
+                {
+                    let truncated: String = serde_json::to_string(err_val)
+                        .unwrap_or_default()
+                        .chars()
+                        .take(500)
+                        .collect();
+                    stream_err = Some(truncated);
+                }
+
                 let Some(choice) = v
                     .get("choices")
                     .and_then(|c| c.as_array())
                     .and_then(|a| a.first())
                 else { continue };
 
-                for frame in translator.process_chunk(&v, choice) {
+                let frames = translator.process_chunk(&v, choice);
+                if !frames.is_empty() {
+                    saw_content = true;
+                }
+                for frame in frames {
                     yield Ok(frame);
                 }
             }
@@ -725,6 +753,21 @@ pub async fn stream_request(
         let cache_read = translator.cached_tokens;
         let fresh_in = prompt_total.saturating_sub(cache_read.unwrap_or(0));
         let elapsed = started.elapsed().as_millis() as u64;
+        let degraded: Option<(String, &'static str)> = if had_error {
+            None
+        } else if let Some(e) = &stream_err {
+            Some((e.clone(), "UPSTREAM_STREAM_ERR"))
+        } else if !saw_content {
+            Some((
+                format!(
+                    "empty stream, no content blocks (output_tokens={out_tok}); body head: {}",
+                    String::from_utf8_lossy(&raw_head)
+                ),
+                "EMPTY_STREAM",
+            ))
+        } else {
+            None
+        };
         if had_error {
             state_for_log.mark_request_failed(
                 req_id,
@@ -732,6 +775,19 @@ pub async fn stream_request(
                 status_opt,
                 "stream transport error",
                 "STREAM_ERR",
+            );
+        } else if let Some((msg, kind)) = &degraded {
+            state_for_log.mark_request_degraded(
+                req_id,
+                fresh_in,
+                out_tok,
+                cache_read,
+                None,
+                Some(elapsed),
+                status_opt,
+                None,
+                msg,
+                kind,
             );
         } else {
             state_for_log.update_trace_tokens(
@@ -753,6 +809,12 @@ pub async fn stream_request(
                     now_ms(),
                     started.elapsed().as_millis()
                 ));
+            } else if let Some((msg, kind)) = &degraded {
+                state_for_log.log_line(&format!(
+                    "{} #{req_id} stream {kind} after {} ms: {msg}",
+                    now_ms(),
+                    started.elapsed().as_millis()
+                ));
             } else {
                 state_for_log.log_line(&format!(
                     "{} #{req_id} stream DONE after {} ms",
@@ -763,7 +825,7 @@ pub async fn stream_request(
         }
 
         // ── closing events ──────────────────────────────────────────
-        for frame in translator.finalize(had_error) {
+        for frame in translator.finalize(had_error || degraded.is_some()) {
             yield Ok(frame);
         }
     };

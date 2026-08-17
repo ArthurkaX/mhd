@@ -769,6 +769,59 @@ impl AppState {
         }
     }
 
+    /// Record a request that completed at the HTTP level but produced no usable
+    /// result — the upstream answered 200 with an SSE error body, or streamed
+    /// nothing at all. Keeps the observed token counts so the trace shows what
+    /// the upstream actually reported; [`mark_request_failed`], by contrast,
+    /// zeroes them (a failed request bills nothing).
+    /// Best-effort: errors are swallowed and the write is gated on the db being
+    /// enabled — mirrors [`update_trace_tokens`].
+    pub fn mark_request_degraded(
+        &self,
+        req_id: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: Option<u64>,
+        cache_creation_tokens: Option<u64>,
+        duration_ms: Option<u64>,
+        status: Option<u16>,
+        upstream_model: Option<&str>,
+        error: &str,
+        error_kind: &str,
+    ) {
+        let mut trace = self.trace.write().unwrap_or_else(|e| e.into_inner());
+        // Search from the back — the matching entry is almost certainly recent.
+        for entry in trace.iter_mut().rev() {
+            if entry.seq == req_id {
+                entry.input_tokens = input_tokens;
+                entry.output_tokens = output_tokens;
+                entry.cache_read_tokens = cache_read_tokens;
+                entry.cache_creation_tokens = cache_creation_tokens;
+                entry.status = status;
+                break;
+            }
+        }
+        drop(trace);
+        if let Ok(guard) = self.db_log.lock()
+            && let Some(ref db) = *guard
+        {
+            db.update_request_completion(
+                self.run_id,
+                req_id,
+                &crate::providers::now_ms(),
+                duration_ms,
+                Some(input_tokens),
+                Some(output_tokens),
+                cache_read_tokens,
+                cache_creation_tokens,
+                status,
+                Some(error),
+                Some(error_kind),
+                upstream_model,
+            );
+        }
+    }
+
     /// Write a completion UPDATE for a request that terminated with an error,
     /// so the row never stays dangling (ts_end NULL). Input/output are recorded
     /// as 0 (a failed request bills nothing), but the cache columns are left
