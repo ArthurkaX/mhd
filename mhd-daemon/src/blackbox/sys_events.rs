@@ -20,6 +20,7 @@ const WTS_SESSION_UNLOCK_EVENT: u32 = 0x8;
 const PBT_APMSUSPEND: usize = 0x0004;
 const PBT_APMRESUMESUSPEND: usize = 0x0007;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
+const PBT_APMRESUMECRITICAL: usize = 0x0006;
 
 struct ListenerState {
     tx: mpsc::Sender<BlackboxEvent>,
@@ -128,7 +129,18 @@ fn run_message_loop(
         }
 
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+        // GetMessageW returns -1 on error.  BOOL::as_bool() treats any
+        // non-zero value as true, so using it directly can dispatch a stale
+        // MSG forever after a queue error (which is more likely around
+        // suspend/resume).
+        loop {
+            let result = GetMessageW(&mut msg, HWND::default(), 0, 0).0;
+            if result <= 0 {
+                if result < 0 {
+                    eprintln!("mhd: blackbox: sys-events GetMessageW failed");
+                }
+                break;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -142,6 +154,23 @@ fn run_message_loop(
 }
 
 unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    // Never allow a Rust panic to unwind through the Win32 callback ABI.  A
+    // transient power/session notification must not terminate the utility.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unsafe { wnd_proc_inner(hwnd, msg, wparam, lparam) }
+    }));
+    match result {
+        Ok(result) => result,
+        Err(_) => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+unsafe fn wnd_proc_inner(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
@@ -181,7 +210,9 @@ unsafe extern "system" fn wnd_proc(
                 if state.track_suspend {
                     let event = match wparam.0 {
                         PBT_APMSUSPEND => Some(BlackboxEvent::SystemSuspend { ts: epoch_secs() }),
-                        PBT_APMRESUMESUSPEND | PBT_APMRESUMEAUTOMATIC => {
+                        PBT_APMRESUMESUSPEND
+                        | PBT_APMRESUMEAUTOMATIC
+                        | PBT_APMRESUMECRITICAL => {
                             Some(BlackboxEvent::SystemResume { ts: epoch_secs() })
                         }
                         _ => None,
@@ -191,7 +222,16 @@ unsafe extern "system" fn wnd_proc(
                     }
                 }
             }
-            LRESULT(1)
+            // Returning TRUE for unrelated notifications (for example a
+            // charger status change) can interfere with power management.
+            // Only acknowledge the suspend/resume notifications we consume.
+            match wparam.0 {
+                PBT_APMSUSPEND
+                | PBT_APMRESUMESUSPEND
+                | PBT_APMRESUMEAUTOMATIC
+                | PBT_APMRESUMECRITICAL => LRESULT(1),
+                _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+            }
         }
         WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
