@@ -283,11 +283,25 @@ impl Default for Settings {
 
 // ── Providers (plain JSON) ────────────────────────────────────────────
 
+/// Which wire API an upstream model speaks. Almost every OpenAI-compatible
+/// model serves Chat Completions; a few are Responses-only and return HTTP 500
+/// on `/chat/completions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamApi {
+    #[default]
+    ChatCompletions,
+    Responses,
+}
+
 /// An upstream provider (OpenAI-compatible gateway).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Provider {
     pub name: String,
     pub endpoint: String,
+    /// Default wire API for this provider's models. `None` = Chat Completions.
+    #[serde(default)]
+    pub api: Option<UpstreamApi>,
 }
 
 // ── Models (plain JSON) ───────────────────────────────────────────────
@@ -306,6 +320,10 @@ pub struct Model {
     /// quick-switch menus.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Wire API override for this model. `None` = inherit the provider's
+    /// default, which itself falls back to Chat Completions.
+    #[serde(default)]
+    pub api: Option<UpstreamApi>,
 }
 
 // ── Combined Config (public API, backward compatible) ─────────────────
@@ -792,6 +810,82 @@ pub fn normalize_endpoint(raw: &str) -> String {
     format!("{}/chat/completions", trimmed)
 }
 
+/// Resolve which upstream wire API a model id speaks: the model's own
+/// override, else its provider's default, else Chat Completions.
+///
+/// An id absent from `models.json` resolves to Chat Completions — the
+/// behaviour every model had before this flag existed, so unknown ids keep
+/// working exactly as before.
+pub fn resolve_upstream_api(
+    model_id: &str,
+    models: &[Model],
+    providers: &[Provider],
+) -> UpstreamApi {
+    if let Some(model) = models.iter().find(|m| m.id == model_id) {
+        if let Some(api) = model.api {
+            return api;
+        }
+        if let Some(provider) = providers.iter().find(|p| p.name == model.provider) {
+            if let Some(api) = provider.api {
+                return api;
+            }
+        }
+    }
+    UpstreamApi::ChatCompletions
+}
+
+/// Every model id that speaks the Responses API, read from models.json +
+/// providers.json on disk. Used to seed the running proxy on reload.
+pub fn responses_model_ids() -> std::collections::HashSet<String> {
+    let models = load_models().unwrap_or_default();
+    let providers = load_providers().unwrap_or_default();
+    models
+        .iter()
+        .filter(|m| resolve_upstream_api(&m.id, &models, &providers) == UpstreamApi::Responses)
+        .map(|m| m.id.clone())
+        .collect()
+}
+
+/// Carry per-model `api` overrides from the on-disk models.json onto a freshly
+/// rebuilt list. The settings UI has no `api` control, so saving from it would
+/// otherwise erase a hand-set `"api": "responses"`.
+pub fn preserve_model_apis(models: &mut [Model]) {
+    let on_disk = load_models().unwrap_or_default();
+    merge_model_apis(models, &on_disk);
+}
+
+/// Same for providers.json, keyed by provider name.
+pub fn preserve_provider_apis(providers: &mut [Provider]) {
+    let on_disk = load_providers().unwrap_or_default();
+    merge_provider_apis(providers, &on_disk);
+}
+
+/// For every model whose `api` is `None`, fill it from the on-disk entry with
+/// the same `id`. Never overwrite a value that is already `Some`.
+fn merge_model_apis(models: &mut [Model], on_disk: &[Model]) {
+    for model in models.iter_mut() {
+        if model.api.is_some() {
+            continue;
+        }
+        if let Some(disk) = on_disk.iter().find(|d| d.id == model.id) {
+            model.api = disk.api;
+        }
+    }
+}
+
+/// For every provider whose `api` is `None`, fill it from the on-disk entry
+/// with the same `name`. Never overwrite a value that is already `Some`.
+fn merge_provider_apis(providers: &mut [Provider], on_disk: &[Provider]) {
+    for provider in providers.iter_mut() {
+        if provider.api.is_some() {
+            continue;
+        }
+        if let Some(disk) = on_disk.iter().find(|d| d.name == provider.name) {
+            provider.api = disk.api;
+        }
+    }
+}
+
 /// Normalize an endpoint for direct OpenAI-compatible vision requests.
 ///
 /// Keeps an existing `/v1` segment (unlike [`normalize_endpoint`]) and appends
@@ -937,5 +1031,289 @@ mod tests {
 
         let back = cfg.into_settings();
         assert_eq!(back.trim_openai_enabled, Some(true));
+    }
+
+    // ── resolve_upstream_api ──────────────────────────────────────────
+
+    /// A model-level override wins over its provider's default.
+    #[test]
+    fn model_override_beats_provider_default() {
+        let models = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: Some(UpstreamApi::Responses),
+        }];
+        let providers = vec![Provider {
+            name: "p1".to_string(),
+            endpoint: "e".to_string(),
+            api: None,
+        }];
+        assert_eq!(
+            resolve_upstream_api("m1", &models, &providers),
+            UpstreamApi::Responses
+        );
+    }
+
+    /// A model with no override inherits the provider's default.
+    #[test]
+    fn model_inherits_provider_default() {
+        let models = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: None,
+        }];
+        let providers = vec![Provider {
+            name: "p1".to_string(),
+            endpoint: "e".to_string(),
+            api: Some(UpstreamApi::Responses),
+        }];
+        assert_eq!(
+            resolve_upstream_api("m1", &models, &providers),
+            UpstreamApi::Responses
+        );
+    }
+
+    /// An unknown model id falls back to Chat Completions.
+    #[test]
+    fn unknown_model_falls_back_to_chat_completions() {
+        let models: Vec<Model> = vec![];
+        let providers: Vec<Provider> = vec![];
+        assert_eq!(
+            resolve_upstream_api("ghost", &models, &providers),
+            UpstreamApi::ChatCompletions
+        );
+    }
+
+    /// Neither model nor provider sets an api -> Chat Completions.
+    #[test]
+    fn neither_sets_api_falls_back_to_chat_completions() {
+        let models = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: None,
+        }];
+        let providers = vec![Provider {
+            name: "p1".to_string(),
+            endpoint: "e".to_string(),
+            api: None,
+        }];
+        assert_eq!(
+            resolve_upstream_api("m1", &models, &providers),
+            UpstreamApi::ChatCompletions
+        );
+    }
+
+    /// The existing on-disk models.json (no `api` key) still parses.
+    #[test]
+    fn models_json_without_api_still_parses() {
+        let data = r#"[{"provider":"p1","id":"m1","display_name":"M1","tags":[]}]"#;
+        let models: Vec<Model> = serde_json::from_str(data).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].api, None);
+    }
+
+    /// `"responses"` and `"chat_completions"` are the accepted spellings.
+    #[test]
+    fn api_serde_spellings_round_trip() {
+        for (spelling, api) in [
+            ("chat_completions", UpstreamApi::ChatCompletions),
+            ("responses", UpstreamApi::Responses),
+        ] {
+            let json = format!(r#"{{"provider":"p1","id":"m1","api":"{spelling}"}}"#);
+            let model: Model = serde_json::from_str(&json).unwrap();
+            assert_eq!(model.api, Some(api));
+            let round = serde_json::to_string(&model).unwrap();
+            let back: Model = serde_json::from_str(&round).unwrap();
+            assert_eq!(back.api, Some(api));
+        }
+    }
+
+    /// `responses_model_ids()` reads global config paths and cannot be unit
+    /// tested directly, so we exercise the identical collect logic over
+    /// in-memory `Vec<Model>`/`Vec<Provider>` via `resolve_upstream_api`.
+    /// A model whose `"api"` is `"responses"` is the only one collected.
+    #[test]
+    fn collect_models_with_responses_api_returns_only_those() {
+        let models = vec![
+            Model {
+                provider: "p1".to_string(),
+                id: "m-resp".to_string(),
+                display_name: String::new(),
+                tags: vec![],
+                api: Some(UpstreamApi::Responses),
+            },
+            Model {
+                provider: "p1".to_string(),
+                id: "m-chat".to_string(),
+                display_name: String::new(),
+                tags: vec![],
+                api: Some(UpstreamApi::ChatCompletions),
+            },
+            Model {
+                provider: "p1".to_string(),
+                id: "m-default".to_string(),
+                display_name: String::new(),
+                tags: vec![],
+                api: None,
+            },
+        ];
+        let providers = vec![Provider {
+            name: "p1".to_string(),
+            endpoint: "e".to_string(),
+            api: None,
+        }];
+        let ids: std::collections::HashSet<String> = models
+            .iter()
+            .filter(|m| {
+                resolve_upstream_api(&m.id, &models, &providers) == UpstreamApi::Responses
+            })
+            .map(|m| m.id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            std::collections::HashSet::from(["m-resp".to_string()])
+        );
+    }
+
+    /// A provider with `"api": "responses"` makes all of its models resolve to
+    /// Responses, while another provider's models stay Chat Completions.
+    #[test]
+    fn collect_models_inherits_responses_from_provider() {
+        let models = vec![
+            Model {
+                provider: "resp-provider".to_string(),
+                id: "a1".to_string(),
+                display_name: String::new(),
+                tags: vec![],
+                api: None,
+            },
+            Model {
+                provider: "resp-provider".to_string(),
+                id: "a2".to_string(),
+                display_name: String::new(),
+                tags: vec![],
+                api: None,
+            },
+            Model {
+                provider: "chat-provider".to_string(),
+                id: "b1".to_string(),
+                display_name: String::new(),
+                tags: vec![],
+                api: None,
+            },
+        ];
+        let providers = vec![
+            Provider {
+                name: "resp-provider".to_string(),
+                endpoint: "e1".to_string(),
+                api: Some(UpstreamApi::Responses),
+            },
+            Provider {
+                name: "chat-provider".to_string(),
+                endpoint: "e2".to_string(),
+                api: Some(UpstreamApi::ChatCompletions),
+            },
+        ];
+        let ids: std::collections::HashSet<String> = models
+            .iter()
+            .filter(|m| {
+                resolve_upstream_api(&m.id, &models, &providers) == UpstreamApi::Responses
+            })
+            .map(|m| m.id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            std::collections::HashSet::from(["a1".to_string(), "a2".to_string()])
+        );
+    }
+
+    // ── merge_model_apis / merge_provider_apis ─────────────────────────
+
+    /// A rebuilt model with `api: None` picks up `Some(Responses)` from the
+    /// on-disk entry with the same id.
+    #[test]
+    fn rebuilt_model_picks_up_api_from_disk() {
+        let mut models = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: None,
+        }];
+        let on_disk = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: Some(UpstreamApi::Responses),
+        }];
+        merge_model_apis(&mut models, &on_disk);
+        assert_eq!(models[0].api, Some(UpstreamApi::Responses));
+    }
+
+    /// An id absent from disk stays `None`.
+    #[test]
+    fn rebuilt_model_absent_from_disk_stays_none() {
+        let mut models = vec![Model {
+            provider: "p1".to_string(),
+            id: "ghost".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: None,
+        }];
+        let on_disk = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: Some(UpstreamApi::Responses),
+        }];
+        merge_model_apis(&mut models, &on_disk);
+        assert_eq!(models[0].api, None);
+    }
+
+    /// An entry that already has `Some(ChatCompletions)` is NOT overwritten by
+    /// a disk value of `Some(Responses)`.
+    #[test]
+    fn rebuilt_model_existing_api_not_overwritten() {
+        let mut models = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: Some(UpstreamApi::ChatCompletions),
+        }];
+        let on_disk = vec![Model {
+            provider: "p1".to_string(),
+            id: "m1".to_string(),
+            display_name: String::new(),
+            tags: vec![],
+            api: Some(UpstreamApi::Responses),
+        }];
+        merge_model_apis(&mut models, &on_disk);
+        assert_eq!(models[0].api, Some(UpstreamApi::ChatCompletions));
+    }
+
+    /// Providers merge keyed by name, mirroring the model behavior.
+    #[test]
+    fn rebuilt_provider_picks_up_api_from_disk() {
+        let mut providers = vec![Provider {
+            name: "p1".to_string(),
+            endpoint: "e".to_string(),
+            api: None,
+        }];
+        let on_disk = vec![Provider {
+            name: "p1".to_string(),
+            endpoint: "e".to_string(),
+            api: Some(UpstreamApi::Responses),
+        }];
+        merge_provider_apis(&mut providers, &on_disk);
+        assert_eq!(providers[0].api, Some(UpstreamApi::Responses));
     }
 }

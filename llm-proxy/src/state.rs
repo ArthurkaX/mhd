@@ -417,6 +417,10 @@ pub struct AppState {
     /// Master switch for whitespace compression in the native trim engine.
     pub trim_ws_enabled: RwLock<bool>,
 
+    /// Model ids that must be sent to the upstream `/responses` endpoint
+    /// instead of `/chat/completions`. Refreshed on config reload.
+    pub responses_models: RwLock<std::collections::HashSet<String>>,
+
     /// Designated free/cheap-tier target. Empty string disables the feature.
     pub trim_free_target: RwLock<String>,
 
@@ -557,6 +561,7 @@ impl AppState {
             ),
             throttle_probe_bucket: crate::throttle::TokenBucket::new(4.0, 4.0),
             trim_ws_enabled: RwLock::new(cfg.trim_ws_enabled),
+            responses_models: RwLock::new(std::collections::HashSet::new()),
             trim_free_target: RwLock::new(cfg.trim_free_target.clone()),
             trim_strip_thinking: RwLock::new(cfg.trim_strip_thinking),
             trim_fence_requires_code: RwLock::new(cfg.trim_fence_requires_code),
@@ -1262,6 +1267,22 @@ impl AppState {
             ClientKind::OpenAi => &self.trim_openai_enabled,
         };
         *lock.write().unwrap_or_else(|e| e.into_inner()) = on;
+    }
+
+    /// Replace the set of model ids that speak the Responses API.
+    pub fn set_responses_models(&self, ids: std::collections::HashSet<String>) {
+        *self
+            .responses_models
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = ids;
+    }
+
+    /// Whether the given model id must go to the upstream `/responses` endpoint.
+    pub fn is_responses_model(&self, model_id: &str) -> bool {
+        self.responses_models
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(model_id)
     }
 
     /// Snapshot current state back into a Config (for persisting changes).

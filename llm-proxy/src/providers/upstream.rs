@@ -18,14 +18,16 @@ use crate::transform;
 
 use super::{InflightGuard, now_ms};
 
-/// Build an authenticated POST to the upstream `/chat/completions` endpoint,
-/// send it, check for a non-2xx status, and return the response plus the URL
-/// (for logging). Every upstream request path needs this exact ritual.
-async fn post_chat_completions(
+/// Build an authenticated POST to the upstream endpoint (`/chat/completions`
+/// for ordinary chat models, `/responses` for Responses-flagged models), send
+/// it, check for a non-2xx status, and return the response plus the URL (for
+/// logging) and whether the request used the Responses wire format. Every
+/// upstream request path needs this exact ritual.
+async fn post_upstream(
     state: &Arc<AppState>,
     payload: &Value,
     streaming: bool,
-) -> Result<(reqwest::Response, String)> {
+) -> Result<(reqwest::Response, String, bool)> {
     let base_url = state
         .upstream_base_url
         .read()
@@ -36,17 +38,31 @@ async fn post_chat_completions(
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    // Responses-flagged models go to the `/responses` endpoint in the Responses
+    // wire format; everything else keeps hitting `/chat/completions` with the
+    // body untouched.
+    let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    let is_responses = state.is_responses_model(model);
+    let url = upstream_url(&base_url, is_responses);
+
     let client = if streaming {
         &state.http_stream
     } else {
         &state.http
     };
+    // Convert to the Responses body only for Responses models; keep a plain
+    // reference to the original otherwise (no copy on the chat path).
+    let responses_body = if is_responses {
+        Some(super::responses_adapter::chat_to_responses(payload))
+    } else {
+        None
+    };
     let req_builder = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
-        .json(payload);
+        .json(responses_body.as_ref().unwrap_or(payload));
 
     let resp = match req_builder.send().await {
         Ok(r) => r,
@@ -67,9 +83,19 @@ async fn post_chat_completions(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Upstream error (HTTP {}): {}", status, body);
+        anyhow::bail!("Upstream error (HTTP {}) at {}: {}", status, url, body);
     }
-    Ok((resp, url))
+    Ok((resp, url, is_responses))
+}
+
+/// Pick the upstream endpoint path for a model: `/responses` for Responses-flagged
+/// models, `/chat/completions` otherwise. The base may or may not end in a slash.
+fn upstream_url(base: &str, is_responses: bool) -> String {
+    if is_responses {
+        format!("{}/responses", base.trim_end_matches('/'))
+    } else {
+        format!("{}/chat/completions", base.trim_end_matches('/'))
+    }
 }
 
 /// Send an Anthropic-format request to the upstream gateway, forcing the given
@@ -134,7 +160,7 @@ pub async fn send_request(
         ));
     }
 
-    let (resp, _url) = match post_chat_completions(state, &openai_payload, false).await {
+    let (resp, _url, is_responses) = match post_upstream(state, &openai_payload, false).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -162,7 +188,10 @@ pub async fn send_request(
         });
     }
 
-    let openai_resp: Value = resp.json().await?;
+    let mut openai_resp: Value = resp.json().await?;
+    if is_responses {
+        openai_resp = super::responses_adapter::responses_to_chat(&openai_resp);
+    }
     if log {
         state.log_line(&format!(
             "{} #{req_id} upstream DONE after {} ms (inflight now {})",
@@ -614,7 +643,7 @@ pub async fn stream_request(
         ));
     }
 
-    let (resp, _url) = match post_chat_completions(state, &openai_payload, true).await {
+    let (resp, _url, is_responses) = match post_upstream(state, &openai_payload, true).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -689,6 +718,9 @@ pub async fn stream_request(
         let mut saw_content = false;
         let mut stream_err: Option<String> = None;
         let mut raw_head: Vec<u8> = Vec::new();
+        // Responses streams are re-framed into ordinary Chat chunks first, so
+        // the translator below stays unchanged for every path.
+        let mut reframer = super::responses_adapter::ResponsesToChatStream::new();
 
         while let Some(item) = byte_stream.next().await {
             let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
@@ -711,10 +743,6 @@ pub async fn stream_request(
                 if data.is_empty() || data == "[DONE]" { continue; }
                 let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
 
-                // Capture usage first: the `include_usage` trailer rides a chunk
-                // with an empty `choices` array, which the guard below skips.
-                translator.observe_usage(&v);
-
                 // An upstream error object rides an SSE chunk with no
                 // `choices`, so the guard below would otherwise drop it
                 // silently.
@@ -728,19 +756,47 @@ pub async fn stream_request(
                         .collect();
                     stream_err = Some(truncated);
                 }
-
-                let Some(choice) = v
-                    .get("choices")
-                    .and_then(|c| c.as_array())
-                    .and_then(|a| a.first())
-                else { continue };
-
-                let frames = translator.process_chunk(&v, choice);
-                if !frames.is_empty() {
-                    saw_content = true;
+                // Responses errors carry no `error` field — they arrive as typed
+                // events, and the reframer deliberately drops non-content events,
+                // so catch them here before re-framing or they would vanish.
+                if is_responses && stream_err.is_none() {
+                    let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if t == "error" || t == "response.failed" {
+                        let truncated: String = serde_json::to_string(&v)
+                            .unwrap_or_default()
+                            .chars()
+                            .take(500)
+                            .collect();
+                        stream_err = Some(truncated);
+                    }
                 }
-                for frame in frames {
-                    yield Ok(frame);
+
+                // Responses events are re-framed into ordinary Chat chunks
+                // first, so the translator below is unchanged.
+                let chunks: Vec<Value> = if is_responses {
+                    reframer.push_event(&v)
+                } else {
+                    vec![v]
+                };
+                for v in chunks {
+                    // Capture usage first: the `include_usage` trailer rides a
+                    // chunk with an empty `choices` array, which the guard
+                    // below skips.
+                    translator.observe_usage(&v);
+
+                    let Some(choice) = v
+                        .get("choices")
+                        .and_then(|c| c.as_array())
+                        .and_then(|a| a.first())
+                    else { continue };
+
+                    let frames = translator.process_chunk(&v, choice);
+                    if !frames.is_empty() {
+                        saw_content = true;
+                    }
+                    for frame in frames {
+                        yield Ok(frame);
+                    }
                 }
             }
         }
@@ -844,7 +900,7 @@ fn sse(event: &str, data: &Value) -> Bytes {
 /// Used by the `/v1/chat/completions` endpoint for OpenAI-native clients.
 pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value) -> Result<Value> {
     let started = std::time::Instant::now();
-    let (resp, _url) = match post_chat_completions(state, &payload, false).await {
+    let (resp, _url, is_responses) = match post_upstream(state, &payload, false).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -858,7 +914,10 @@ pub async fn send_raw_openai(state: &Arc<AppState>, req_id: u64, payload: Value)
         }
     };
     let status_opt = Some(resp.status().as_u16());
-    let body: Value = resp.json().await?;
+    let mut body: Value = resp.json().await?;
+    if is_responses {
+        body = super::responses_adapter::responses_to_chat(&body);
+    }
     let upstream_model = body
         .get("model")
         .and_then(|m| m.as_str())
@@ -932,7 +991,7 @@ pub async fn stream_raw_openai(
         ));
     }
 
-    let (resp, _url) = match post_chat_completions(state, &payload, true).await {
+    let (resp, _url, is_responses) = match post_upstream(state, &payload, true).await {
         Ok(v) => v,
         Err(e) => {
             state.mark_request_failed(
@@ -963,19 +1022,25 @@ pub async fn stream_raw_openai(
         let mut had_error = false;
 
         // Parallel line buffer used only to observe the OpenAI `usage` block.
-        // The raw upstream bytes are forwarded unchanged — this never alters
-        // what the client receives.
+        // For the chat path the raw upstream bytes are forwarded unchanged —
+        // this never alters what the client receives.
         let mut scan: Vec<u8> = Vec::new();
         let mut in_tok: u64 = 0;
         let mut out_tok: u64 = 0;
         let mut cached_tok: Option<u64> = None;
+        // Responses streams are re-framed into ordinary Chat chunks, so the
+        // client (which asked for Chat SSE) sees the format it expects.
+        let mut reframer = super::responses_adapter::ResponsesToChatStream::new();
 
         while let Some(item) = byte_stream.next().await {
             let chunk = match item { Ok(c) => c, Err(_) => { had_error = true; break } };
-            // Forward verbatim (Bytes clone is a cheap refcount bump).
-            yield Ok::<Bytes, std::io::Error>(chunk.clone());
 
-            // Observe: scan complete `data:` lines for a usage object.
+            if !is_responses {
+                // Forward verbatim (Bytes clone is a cheap refcount bump).
+                yield Ok::<Bytes, std::io::Error>(chunk.clone());
+            }
+
+            // Observe / re-frame: scan complete `data:` lines.
             scan.extend_from_slice(&chunk);
             while let Some(pos) = scan.iter().position(|&b| b == b'\n') {
                 let raw: Vec<u8> = scan.drain(..=pos).collect();
@@ -985,7 +1050,40 @@ pub async fn stream_raw_openai(
                 let data = data.trim();
                 if data.is_empty() || data == "[DONE]" { continue; }
                 let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
-                if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
+
+                if is_responses {
+                    // Re-frame Responses events into Chat chunks and forward
+                    // each, extracting usage exactly as the chat scan does.
+                    for c in reframer.push_event(&v) {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(format!(
+                            "data: {}\n\n",
+                            serde_json::to_string(&c).unwrap_or_default()
+                        )));
+                        if let Some(usage) = c.get("usage").filter(|u| !u.is_null()) {
+                            if let Some(n) = usage
+                                .get("prompt_tokens")
+                                .or_else(|| usage.get("input_tokens"))
+                                .and_then(|n| n.as_u64())
+                            {
+                                in_tok = n;
+                            }
+                            if let Some(n) = usage
+                                .get("completion_tokens")
+                                .or_else(|| usage.get("output_tokens"))
+                                .and_then(|n| n.as_u64())
+                            {
+                                out_tok = n;
+                            }
+                            if let Some(n) = usage
+                                .get("prompt_tokens_details")
+                                .and_then(|d| d.get("cached_tokens"))
+                                .and_then(|n| n.as_u64())
+                            {
+                                cached_tok = Some(n);
+                            }
+                        }
+                    }
+                } else if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
                     if let Some(n) = usage
                         .get("prompt_tokens")
                         .or_else(|| usage.get("input_tokens"))
@@ -1009,6 +1107,12 @@ pub async fn stream_raw_openai(
                     }
                 }
             }
+        }
+
+        // Responses streams do not send a terminal `[DONE]`, and OpenAI clients
+        // wait for it — emit one on the clean path.
+        if is_responses && !had_error {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from("data: [DONE]\n\n"));
         }
 
         // Push final token counts into the trace entry with correctly separated
@@ -1547,5 +1651,61 @@ mod tests {
         assert_eq!(events[0].0, "content_block_stop");
         assert_eq!(events[0].1["index"], 1); // text block index
         assert_eq!(events[1].1["delta"]["stop_reason"], "end_turn");
+    }
+
+    // ── upstream_url endpoint selection ────────────────────────────
+
+    #[test]
+    fn upstream_url_uses_responses_for_responses_models() {
+        assert_eq!(
+            upstream_url("http://up.example.com", true),
+            "http://up.example.com/responses"
+        );
+        assert_eq!(
+            upstream_url("http://up.example.com/", true),
+            "http://up.example.com/responses"
+        );
+    }
+
+    #[test]
+    fn upstream_url_uses_chat_completions_for_chat_models() {
+        assert_eq!(
+            upstream_url("http://up.example.com", false),
+            "http://up.example.com/chat/completions"
+        );
+        // A trailing slash on the base must not double the slash.
+        assert_eq!(
+            upstream_url("http://up.example.com/", false),
+            "http://up.example.com/chat/completions"
+        );
+    }
+
+    // ── Responses stream re-framing → Chat chunks ──────────────────
+
+    #[test]
+    fn responses_stream_reframes_text_deltas_and_terminal() {
+        let mut reframer = crate::providers::responses_adapter::ResponsesToChatStream::new();
+        let mut chunks: Vec<Value> = Vec::new();
+        chunks.extend(reframer.push_event(&json!({
+            "type": "response.output_text.delta", "delta": "Hel"
+        })));
+        chunks.extend(reframer.push_event(&json!({
+            "type": "response.output_text.delta", "delta": "lo"
+        })));
+        chunks.extend(reframer.push_event(&json!({
+            "type": "response.completed",
+            "response": {"status": "completed", "id": "resp_1", "model": "m", "created_at": 1,
+                         "usage": {"input_tokens": 539, "output_tokens": 267, "total_tokens": 806}}
+        })));
+
+        assert_eq!(chunks[0]["choices"][0]["delta"]["content"], "Hel");
+        assert_eq!(chunks[1]["choices"][0]["delta"]["content"], "lo");
+        // Terminal event yields the finish chunk, then the usage chunk.
+        assert_eq!(chunks[2]["choices"][0]["finish_reason"], "stop");
+        assert_eq!(chunks[2]["choices"][0]["delta"], json!({}));
+        // Usage chunk carries empty choices and the usage block.
+        assert_eq!(chunks[3]["choices"], json!([]));
+        assert_eq!(chunks[3]["usage"]["prompt_tokens"], 539);
+        assert_eq!(chunks[3]["usage"]["completion_tokens"], 267);
     }
 }

@@ -242,6 +242,15 @@ impl ProxyControl {
             .unwrap_or_else(|e| e.into_inner()) = enabled;
     }
 
+    /// Replace the set of model ids that speak the Responses API.
+    pub fn set_responses_models(&self, ids: std::collections::HashSet<String>) {
+        *self
+            .state
+            .responses_models
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = ids;
+    }
+
     /// Set the designated free/cheap-tier target (target string, e.g. "native"
     /// or a model id). Requests resolving to this exact target get the light,
     /// non-lossy trim profile. Empty string disables the feature.
@@ -554,6 +563,10 @@ pub fn start_embedded_with(
     apply_env_fallbacks(&mut cfg);
 
     let state = AppState::from_config(&cfg);
+
+    // Seed the Responses-api model set so routing is correct from the first
+    // request, before any reload.
+    state.set_responses_models(config::responses_model_ids());
 
     // Open the database log at startup when configured (independent of verbosity).
     if cfg.db_log_enabled {

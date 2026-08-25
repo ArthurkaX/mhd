@@ -108,21 +108,25 @@ pub(crate) fn apply_settings(state: &mut SettingsState) {
 
     // Persist providers and models to the proxy config
     {
-        let providers: Vec<llm_proxy::config::Provider> = state
+        let mut providers: Vec<llm_proxy::config::Provider> = state
             .providers
             .iter()
             .map(|p| llm_proxy::config::Provider {
                 name: p.name.clone(),
                 endpoint: p.endpoint.clone(),
+                api: None,
             })
             .collect();
+
+        // The settings UI has no `api` control; carry overrides from disk.
+        llm_proxy::config::preserve_provider_apis(&mut providers);
 
         if let Err(e) = llm_proxy::config::save_providers(&providers) {
             eprintln!("mhd: failed to save providers: {e}");
         }
 
         // Models: each UiProvider model becomes a Model tied to that provider.
-        let models: Vec<llm_proxy::config::Model> = state
+        let mut models: Vec<llm_proxy::config::Model> = state
             .providers
             .iter()
             .flat_map(|p| {
@@ -131,9 +135,13 @@ pub(crate) fn apply_settings(state: &mut SettingsState) {
                     id: m.clone(),
                     display_name: m.clone(),
                     tags: vec![],
+                    api: None,
                 })
             })
             .collect();
+
+        // Carry per-model `api` overrides from disk (UI has no `api` control).
+        llm_proxy::config::preserve_model_apis(&mut models);
 
         if let Err(e) = llm_proxy::config::save_models(&models) {
             eprintln!("mhd: failed to save models: {e}");

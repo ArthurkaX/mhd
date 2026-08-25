@@ -161,6 +161,7 @@ pub fn reload(cfg: &LlmProxyConfig) -> bool {
             control.set_retry_max_delay_ms(cfg.retry_max_delay_ms);
             control.set_throttle_enabled(cfg.throttle_enabled);
             control.set_throttle_rate(cfg.throttle_rate_per_sec, cfg.throttle_burst);
+            control.set_responses_models(llm_proxy::config::responses_model_ids());
 
             // Apply the per-client switches so an edited settings.json takes
             // effect without a restart.

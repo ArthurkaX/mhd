@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod codex;
+pub mod responses_adapter;
 pub mod upstream;
 
 use serde_json::Value;

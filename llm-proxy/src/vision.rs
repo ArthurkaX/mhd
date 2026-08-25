@@ -1,5 +1,7 @@
 //! Multimodal vision client for sending screenshot images to vision-capable
-//! LLMs via the OpenAI-compatible `/chat/completions` endpoint.
+//! LLMs via the OpenAI-compatible `/chat/completions` endpoint, transparently
+//! handling models that speak the Responses API by rewriting to `/responses`
+//! and converting the request/reply bodies through the shared adapter.
 //!
 //! Request construction ([`build_multimodal_body`]) and response parsing
 //! ([`parse_vision_response`]) are shared; [`analyze_png_blocking`] ties them
@@ -99,10 +101,36 @@ pub fn parse_vision_response(body: &[u8]) -> Result<String, String> {
 
 // ── Request API ──────────────────────────────────────────────────────────
 
+/// Resolve the HTTP route for a vision request.
+///
+/// The caller hands us a URL already ending in `/chat/completions`. A
+/// Responses-only model needs the sibling `/responses` route instead.
+/// For Chat Completions models the endpoint is returned unchanged.
+fn vision_url(endpoint: &str, is_responses: bool) -> String {
+    if is_responses {
+        // Strip the trailing slash first: otherwise `.../chat/completions/`
+        // fails to match the suffix and we would append to it instead of
+        // replacing it.
+        format!(
+            "{}/responses",
+            endpoint
+                .trim_end_matches('/')
+                .trim_end_matches("/chat/completions")
+        )
+    } else {
+        endpoint.to_string()
+    }
+}
+
 /// Send a non-streaming multimodal request over a blocking HTTP client.
 ///
 /// Encodes the PNG as a `data:image/png;base64,` URL and sends it alongside
 /// the text prompt in a single user message with two content blocks.
+///
+/// If the target model speaks the Responses API, the request body and reply
+/// are converted through the shared adapter and the route is rewritten to
+/// `/responses`; otherwise the request is sent byte-for-byte to
+/// `/chat/completions` as before.
 ///
 /// Returns the model's text response, trimmed.
 pub fn analyze_png_blocking(
@@ -113,11 +141,25 @@ pub fn analyze_png_blocking(
 ) -> anyhow::Result<String> {
     let body = build_multimodal_body(&target.model, prompt, png);
 
+    let models = crate::config::load_models().unwrap_or_default();
+    let providers = crate::config::load_providers().unwrap_or_default();
+    let is_responses = matches!(
+        crate::config::resolve_upstream_api(&target.model, &models, &providers),
+        crate::config::UpstreamApi::Responses
+    );
+
+    let url = vision_url(&target.endpoint, is_responses);
+    let wire_body = if is_responses {
+        crate::providers::responses_adapter::chat_to_responses(&body)
+    } else {
+        body
+    };
+
     let response = client
-        .post(&target.endpoint)
+        .post(&url)
         .header("Authorization", format!("Bearer {}", target.api_key))
         .header("Content-Type", "application/json")
-        .json(&body)
+        .json(&wire_body)
         .send()
         .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
 
@@ -135,5 +177,72 @@ pub fn analyze_png_blocking(
         .map_err(|e| anyhow::anyhow!("Failed to read response: {e}"))?
         .to_vec();
 
+    // A Responses reply must be reshaped into Chat shape before parsing, since
+    // `parse_vision_response` reads `choices[0].message.content`. Never unwrap
+    // on network data — fall through to the existing parser on parse failure.
+    let body_bytes = if is_responses {
+        match serde_json::from_slice::<Value>(&body_bytes) {
+            Ok(reply) => {
+                let chat = crate::providers::responses_adapter::responses_to_chat(&reply);
+                match serde_json::to_vec(&chat) {
+                    Ok(bytes) => bytes,
+                    Err(_) => body_bytes,
+                }
+            }
+            Err(_) => body_bytes,
+        }
+    } else {
+        body_bytes
+    };
+
     parse_vision_response(&body_bytes).map_err(anyhow::Error::msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vision_url_rewrites_chat_to_responses() {
+        let url = vision_url("https://api.example.com/v1/chat/completions", true);
+        assert_eq!(url, "https://api.example.com/v1/responses");
+    }
+
+    #[test]
+    fn vision_url_rewrites_with_trailing_slash() {
+        let url = vision_url("https://api.example.com/v1/chat/completions/", true);
+        assert_eq!(url, "https://api.example.com/v1/responses");
+    }
+
+    #[test]
+    fn vision_url_leaves_chat_completions_unchanged() {
+        let endpoint = "https://api.example.com/v1/chat/completions";
+        assert_eq!(vision_url(endpoint, false), endpoint);
+    }
+
+    #[test]
+    fn chat_to_responses_round_trip_keeps_input_image() {
+        let body = build_multimodal_body(
+            "vision-model",
+            "Analyze this",
+            b"\x89PNG\r\n\x1a\nfake-png-bytes",
+        );
+        let responses = crate::providers::responses_adapter::chat_to_responses(&body);
+        let has_input_image = contains_input_image(&responses);
+        assert!(has_input_image, "Responses body should contain an input_image part");
+    }
+
+    /// Recursively walk the Responses body for any `{"type": "input_image"}` part.
+    fn contains_input_image(value: &Value) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(contains_input_image),
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str) == Some("input_image") {
+                    return true;
+                }
+                map.values().any(contains_input_image)
+            }
+            _ => false,
+        }
+    }
 }

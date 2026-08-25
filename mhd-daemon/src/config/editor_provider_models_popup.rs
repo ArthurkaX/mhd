@@ -1158,7 +1158,12 @@ fn run_single_model_test(
     };
 
     let base = endpoint.trim_end_matches('/');
-    let chat_url = format!("{base}/chat/completions");
+
+    // Probe the SAME endpoint the proxy will really use. A Responses-only
+    // model must hit /responses, not /chat/completions.
+    let models = llm_proxy::config::load_models().unwrap_or_default();
+    let providers = llm_proxy::config::load_providers().unwrap_or_default();
+    let api = llm_proxy::config::resolve_upstream_api(model_id, &models, &providers);
 
     let mut headers = reqwest::header::HeaderMap::new();
     if !api_key.is_empty() {
@@ -1176,15 +1181,28 @@ fn run_single_model_test(
         return false;
     }
 
-    let ping_body = serde_json::json!({
-        "model": model_id,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 50,
-        "stream": false,
-    });
+    let (url, ping_body) = match api {
+        llm_proxy::config::UpstreamApi::Responses => (
+            format!("{base}/responses"),
+            serde_json::json!({
+                "model": model_id,
+                "input": "ping",
+                "max_output_tokens": 16,
+            }),
+        ),
+        llm_proxy::config::UpstreamApi::ChatCompletions => (
+            format!("{base}/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 50,
+                "stream": false,
+            }),
+        ),
+    };
 
     let resp = match client
-        .post(&chat_url)
+        .post(&url)
         .headers(headers)
         .json(&ping_body)
         .send()

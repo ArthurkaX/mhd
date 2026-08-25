@@ -734,12 +734,13 @@ impl AppConfig {
         }
 
         // Build providers (name + endpoint only, keys go to secrets)
-        let providers: Vec<llm_proxy::config::Provider> = if lp.provider.is_empty()
+        let mut providers: Vec<llm_proxy::config::Provider> = if lp.provider.is_empty()
             && let Some(endpoint) = lp.endpoint
         {
             vec![llm_proxy::config::Provider {
                 name: "Default".into(),
                 endpoint,
+                api: None,
             }]
         } else {
             lp.provider
@@ -747,6 +748,7 @@ impl AppConfig {
                 .map(|p| llm_proxy::config::Provider {
                     name: p.name,
                     endpoint: p.endpoint,
+                    api: None,
                 })
                 .collect()
         };
@@ -756,7 +758,7 @@ impl AppConfig {
             .first()
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        let models: Vec<llm_proxy::config::Model> = lp
+        let mut models: Vec<llm_proxy::config::Model> = lp
             .model
             .into_iter()
             .map(|m| {
@@ -770,9 +772,14 @@ impl AppConfig {
                     id: m.id,
                     display_name,
                     tags: m.tags,
+                    api: None,
                 }
             })
             .collect();
+
+        // The settings UI has no `api` control; carry overrides from disk.
+        llm_proxy::config::preserve_provider_apis(&mut providers);
+        llm_proxy::config::preserve_model_apis(&mut models);
 
         // Persist all files
         let _ = std::fs::create_dir_all(&dir);

@@ -1243,17 +1243,35 @@ fn run_provider_test(endpoint: &str, api_key: &str, cancelled: &AtomicBool, hwnd
     // ── Step 3: Send ping ───────────────────────────────────────────
     post_test_update(hwnd, 0, format!("Step 3/3: Sending ping to {model_id}…"));
 
-    let chat_url = format!("{base}/chat/completions");
-    let ping_body = serde_json::json!({
-        "model": model_id,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 5,
-        "stream": false,
-    });
+    // Probe the SAME endpoint the proxy will really use. A Responses-only
+    // model must hit /responses, not /chat/completions.
+    let models = llm_proxy::config::load_models().unwrap_or_default();
+    let providers = llm_proxy::config::load_providers().unwrap_or_default();
+    let api = llm_proxy::config::resolve_upstream_api(model_id, &models, &providers);
+
+    let (test_url, ping_body) = match api {
+        llm_proxy::config::UpstreamApi::Responses => (
+            format!("{base}/responses"),
+            serde_json::json!({
+                "model": model_id,
+                "input": "ping",
+                "max_output_tokens": 16,
+            }),
+        ),
+        llm_proxy::config::UpstreamApi::ChatCompletions => (
+            format!("{base}/chat/completions"),
+            serde_json::json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 5,
+                "stream": false,
+            }),
+        ),
+    };
 
     let start = std::time::Instant::now();
     let ping_resp = match client
-        .post(&chat_url)
+        .post(&test_url)
         .headers(headers)
         .json(&ping_body)
         .send()
